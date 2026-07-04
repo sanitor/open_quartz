@@ -6,7 +6,32 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #1a1a2e;
-  color: #e0e0e0;
-  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: #ffffff;
+  color: #1d1d1f;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: #b3d7ff;
+}
+
+/* Reset default React Flow node styles for custom node types */
+.react-flow__node-input,
+.react-flow__node-output {
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+  width: auto !important;
+  border-radius: 0 !important;
+  text-align: inherit !important;
+  box-shadow: none !important;
+}
+.react-flow__node-input.selectable.selected,
+.react-flow__node-input.selectable:focus,
+.react-flow__node-input.selectable:focus-visible,
+.react-flow__node-output.selectable.selected,
+.react-flow__node-output.selectable:focus,
+.react-flow__node-output.selectable:focus-visible {
+  box-shadow: none !important;
 }

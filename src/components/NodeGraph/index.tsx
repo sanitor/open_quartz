@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   type Node,
@@ -33,9 +34,8 @@ export function NodeGraph() {
   } = useGraphStore();
 
   const defaultEdgeOptions = useMemo(() => ({
-    style: { stroke: '#4fc3f7', strokeWidth: 2 },
-    type: 'smoothstep',
-    animated: true,
+    style: { stroke: '#8e8e93', strokeWidth: 1.5 },
+    type: 'bezier',
   }), []);
 
   const onNodeClick = useCallback(
@@ -62,15 +62,14 @@ export function NodeGraph() {
       onPaneClick={onPaneClick}
       selectionMode={SelectionMode.Partial}
       fitView
-      className="bg-[#1a1a2e]"
-      colorMode="dark"
+      className="bg-[#e0e0e0]"
     >
-      <Background color="#333" gap={20} />
-      <Controls className="!bg-[#16213e] !border-[#0f3460] !text-gray-300" />
+      <Background variant={BackgroundVariant.Cross} color="#c0c0c0" gap={20} size={1.5} bgColor="#e0e0e0" />
+      <Controls className="!bg-white !border !border-[#d2d2d7] !rounded-lg !shadow-sm !text-[#1d1d1f]" />
       <MiniMap
-        className="!bg-[#16213e] !border-[#0f3460]"
-        nodeColor="#533483"
-        maskColor="rgba(0,0,0,0.5)"
+        className="!bg-[#00000066] !border !border-[#ffffff33] !rounded-lg !shadow-sm"
+        nodeColor="#d0d0d0"
+        maskColor="rgba(0,0,0,0.3)"
       />
     </ReactFlow>
   );

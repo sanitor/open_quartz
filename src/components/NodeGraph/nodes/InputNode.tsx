@@ -4,8 +4,8 @@ import type { ShaderNodeData, DataType } from '../../../types';
 import { DATA_TYPE_COLORS } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 
-const ROW_H = 28;
-const HEADER_H = 30;
+const ROW_H = 26;
+const HEADER_H = 28;
 
 type InputNodeType = Node<ShaderNodeData>;
 
@@ -17,7 +17,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentType = (data.inputDataType ?? 'float') as DataType;
-  const color = DATA_TYPE_COLORS[currentType];
+  const accent = '#007aff';
 
   const handleTypeChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -55,20 +55,19 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
 
   return (
     <div
-      className={`rounded-lg border-2 shadow-lg bg-[#1a1a2e] min-w-[180px] ${
-        selected ? 'border-[#e94560]' : 'border-[#0f3460]'
+      className={`rounded-xl border bg-white shadow-sm min-w-[180px] ${
+        selected ? 'border-[#007aff] shadow-md' : 'border-[#d2d2d7]'
       }`}
     >
-      {/* Header */}
       <div
-        className="flex items-center justify-between px-3 rounded-t-md text-sm font-semibold text-white"
-        style={{ height: HEADER_H, backgroundColor: '#0f3460' }}
+        className="flex items-center justify-between px-3 text-[12px] font-semibold text-white rounded-t-xl"
+        style={{ height: HEADER_H, backgroundColor: accent }}
       >
         <span>{data.label}</span>
         <select
           value={currentType}
           onChange={handleTypeChange}
-          className="text-[10px] bg-[#1a1a2e] border border-[#0f3460] rounded px-1 py-0.5 text-gray-300 outline-none cursor-pointer"
+          className="text-[10px] bg-white border border-[#d2d2d7] rounded px-1 py-0.5 text-[#1d1d1f] outline-none cursor-pointer"
         >
           {INPUT_DATA_TYPES.map((t) => (
             <option key={t} value={t}>{t}</option>
@@ -76,53 +75,35 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
         </select>
       </div>
 
-      {/* Image picker / thumbnail for sampler2D */}
       {currentType === 'sampler2D' ? (
-        <div
-          onClick={handleImageClick}
-          className="cursor-pointer"
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="hidden"
-          />
+        <div onClick={handleImageClick} className="cursor-pointer">
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
           {data.imageDataUrl ? (
             <div className="p-2">
-              <img
-                src={data.imageDataUrl}
-                alt={data.imageFileName ?? ''}
-                className="w-full h-24 object-contain rounded"
-              />
-              <div className="text-[10px] text-gray-400 text-center mt-1 truncate px-2">
+              <img src={data.imageDataUrl} alt={data.imageFileName ?? ''} className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+              <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                 {data.imageFileName ?? 'loaded'}
               </div>
             </div>
           ) : (
-            <div
-              className="flex items-center justify-center text-xs text-gray-500 mx-3 my-2 border-2 border-dashed border-[#0f3460] rounded"
-              style={{ height: 80 }}
-            >
+            <div className="flex items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#d2d2d7] rounded" style={{ height: 80 }}>
               Click to load image
             </div>
           )}
         </div>
       ) : (
-        /* Value rows for non-sampler2D types */
-        <div style={{ paddingTop: 4, paddingBottom: 4 }}>
+        <div style={{ paddingTop: 2, paddingBottom: 2 }}>
           {data.inputs.map((port) => (
             <div
               key={port.id}
-              className="flex items-center justify-between text-xs text-gray-300 px-3"
+              className="flex items-center justify-between text-[11px] text-[#1d1d1f] px-3"
               style={{ height: ROW_H }}
             >
               <span>{port.label}</span>
               <input
                 type="text"
                 defaultValue={String(port.defaultValue ?? '')}
-                className="w-20 bg-[#16213e] border border-[#0f3460] rounded px-1 py-0.5 text-right text-gray-200 text-[10px]"
+                className="w-20 bg-white border border-[#d2d2d7] rounded px-1.5 py-0.5 text-right text-[#1d1d1f] text-[10px] outline-none focus:border-[#007aff]"
                 placeholder="value"
               />
             </div>
@@ -130,20 +111,20 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
         </div>
       )}
 
-      {/* Output handle */}
-      <div style={{ paddingTop: 0, paddingBottom: 8 }}>
+      {/* Output port */}
+      <div style={{ paddingTop: 2, paddingBottom: 6 }}>
         {data.outputs.map((port) => (
           <div
             key={port.id}
-            className="flex items-center justify-end text-xs text-gray-300 px-3"
+            className="flex items-center justify-end text-[11px] text-[#1d1d1f] px-3"
             style={{ height: ROW_H, position: 'relative' }}
           >
             <Handle
               type="source"
               position={Position.Right}
               id={port.id}
-              className="!w-3 !h-3 !border-2 !border-[#1a1a2e]"
-              style={{ backgroundColor: color }}
+              className="!w-2.5 !h-2.5 !border-2 !border-white"
+              style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
             />
           </div>
         ))}

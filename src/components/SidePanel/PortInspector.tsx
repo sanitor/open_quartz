@@ -13,11 +13,11 @@ export function PortInspector({ inputs, outputs, uniforms, onUniformChange }: Po
     <div className="space-y-4">
       {/* Inputs */}
       <div>
-        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Inputs</h4>
+        <h4 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-2">Inputs</h4>
         {inputs.length === 0 && (
-          <p className="text-xs text-gray-500 italic">Add uniforms to your shader to create inputs</p>
+          <p className="text-[11px] text-[#aeaeb2] italic">Add uniforms to your shader to create inputs</p>
         )}
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {inputs.map((port) => (
             <PortRow
               key={port.id}
@@ -31,19 +31,19 @@ export function PortInspector({ inputs, outputs, uniforms, onUniformChange }: Po
 
       {/* Outputs */}
       <div>
-        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Outputs</h4>
+        <h4 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-2">Outputs</h4>
         {outputs.length === 0 && (
-          <p className="text-xs text-gray-500 italic">Add out variables to your shader to create outputs</p>
+          <p className="text-[11px] text-[#aeaeb2] italic">Add out variables to your shader to create outputs</p>
         )}
         <div className="space-y-1">
           {outputs.map((port) => (
-            <div key={port.id} className="flex items-center gap-2 text-xs text-gray-300">
+            <div key={port.id} className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">
               <span
-                className="w-2.5 h-2.5 rounded-full inline-block"
+                className="w-2 h-2 rounded-full inline-block"
                 style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
               />
-              <span>{port.label}</span>
-              <span className="text-[10px] text-gray-500">{port.dataType}</span>
+              <span className="font-medium">{port.label}</span>
+              <span className="text-[9px] text-[#aeaeb2]">{port.dataType}</span>
             </div>
           ))}
         </div>
@@ -63,14 +63,14 @@ function PortRow({
 }) {
   if (port.dataType === 'sampler2D') {
     return (
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex items-center gap-2 text-[11px]">
         <span
-          className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
+          className="w-2 h-2 rounded-full inline-block flex-shrink-0"
           style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
         />
-        <span className="text-gray-300 w-20 truncate">{port.label}</span>
-        <span className="text-[10px] text-gray-500 w-12">{port.dataType}</span>
-        <span className="flex-1 text-[10px] text-gray-600 italic text-right">
+        <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
+        <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
+        <span className="flex-1 text-[10px] text-[#aeaeb2] italic text-right">
           ← connect upstream
         </span>
       </div>
@@ -78,18 +78,18 @@ function PortRow({
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs">
+    <div className="flex items-center gap-2 text-[11px]">
       <span
-        className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
+        className="w-2 h-2 rounded-full inline-block flex-shrink-0"
         style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
       />
-      <span className="text-gray-300 w-20 truncate">{port.label}</span>
-      <span className="text-[10px] text-gray-500 w-12">{port.dataType}</span>
+      <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
+      <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
       <input
         type="text"
         value={String(value ?? '')}
         onChange={(e) => onChange(e.target.value)}
-        className="flex-1 bg-[#1a1a2e] border border-[#0f3460] rounded px-2 py-0.5 text-gray-200 text-[11px] outline-none focus:border-[#4fc3f7]"
+        className="flex-1 bg-white border border-[#d2d2d7] rounded px-2 py-0.5 text-[#1d1d1f] text-[11px] outline-none focus:border-[#007aff]"
         placeholder="value"
       />
     </div>

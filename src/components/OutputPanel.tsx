@@ -32,11 +32,11 @@ export function OutputPanel() {
   }, [isRunning]);
 
   return (
-    <div className="h-48 border-t border-[#0f3460] bg-[#16213e] flex-shrink-0 relative">
-      <div className="flex items-center justify-between px-4 py-1 text-xs text-gray-400 border-b border-[#0f3460]">
-        <span>Output Preview</span>
+    <div className="h-48 border-t border-[#d2d2d7] bg-white flex-shrink-0 relative">
+      <div className="flex items-center justify-between px-4 py-1 text-[11px] text-[#86868b] border-b border-[#e8e8ed]">
+        <span className="font-medium">Output Preview</span>
         {isRunning && (
-          <span className="text-[#2ecc71]">● Running</span>
+          <span className="text-[#ff3b30] font-medium">● Running</span>
         )}
       </div>
       <canvas
@@ -47,7 +47,7 @@ export function OutputPanel() {
       />
       {!isRunning && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none top-6">
-          <span className="text-sm text-gray-500">Press Run to preview output</span>
+          <span className="text-[12px] text-[#aeaeb2]">Press Run to preview output</span>
         </div>
       )}
     </div>

@@ -1,64 +1,44 @@
-import { useRef, useEffect } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../../../types';
 
-const ROW_H = 28;
-const HEADER_H = 30;
+const ROW_H = 26;
+const HEADER_H = 28;
 
 type OutputNodeType = Node<ShaderNodeData>;
 
 export function OutputNode({ data, selected }: NodeProps<OutputNodeType>) {
-  const previewRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    if (!previewRef.current) return;
-    const ctx = previewRef.current.getContext('2d');
-    if (!ctx) return;
-    ctx.fillStyle = '#0f3460';
-    ctx.fillRect(0, 0, 160, 90);
-    ctx.fillStyle = '#555';
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('preview', 80, 45);
-  }, []);
+  const accent = '#ff3b30';
 
   return (
     <div
-      className={`rounded-lg border-2 shadow-lg bg-[#1a1a2e] ${
-        selected ? 'border-[#e94560]' : 'border-[#e94560]'
+      className={`rounded-xl border bg-white shadow-sm ${
+        selected ? 'border-[#007aff] shadow-md' : 'border-[#d2d2d7]'
       }`}
     >
-      {/* Header */}
       <div
-        className="flex items-center px-3 rounded-t-md text-sm font-semibold text-white"
-        style={{ height: HEADER_H, backgroundColor: '#e94560' }}
+        className="flex items-center px-3 text-[12px] font-semibold text-white rounded-t-xl"
+        style={{ height: HEADER_H, backgroundColor: accent }}
       >
         {data.label}
       </div>
 
-      <canvas
-        ref={previewRef}
-        width={160}
-        height={90}
-        className="w-[160px] h-[90px] block"
-      />
-
-      {/* Input handles — each in its own positioned row */}
-      <div style={{ paddingTop: 4, paddingBottom: 8 }}>
+      {/* Input handles */}
+      <div style={{ paddingTop: 2, paddingBottom: 6 }}>
         {data.inputs.map((port) => (
           <div
             key={port.id}
-            className="flex items-center text-xs text-gray-300 px-3"
+            className="flex items-center text-[11px] text-[#1d1d1f] px-3"
             style={{ height: ROW_H, position: 'relative' }}
           >
             <Handle
               type="target"
               position={Position.Left}
               id={port.id}
-              className="!w-3 !h-3 !border-2 !border-[#1a1a2e] !bg-[#e94560]"
+              className="!w-2.5 !h-2.5 !border-2 !border-white"
+              style={{ backgroundColor: '#ff3b30' }}
             />
             <span className="ml-4">{port.label}</span>
-            <span className="ml-auto text-[10px] opacity-50">{port.dataType}</span>
+            <span className="ml-auto text-[9px] text-[#aeaeb2]">{port.dataType}</span>
           </div>
         ))}
       </div>

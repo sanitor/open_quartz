@@ -1,6 +1,7 @@
 import { useGraphStore } from '../store/useGraphStore';
 import { serializeProject, downloadProject, deserializeProject } from '../utils/projectIO';
 import { useRef } from 'react';
+import { VERSION } from '../version';
 
 export function Header() {
   const { nodes, edges, projectName, setProjectName, isRunning, setRunning, loadGraph, clearGraph } = useGraphStore();
@@ -33,86 +34,46 @@ export function Header() {
     e.target.value = '';
   };
 
+  const btnClass = 'px-2.5 py-0.5 text-[11px] font-bold text-[#1d1d1f] hover:text-[#007aff] transition-colors cursor-default';
+
   return (
-    <header className="flex items-center gap-3 px-4 py-2 bg-[#16213e] border-b border-[#0f3460] select-none">
-      <h1 className="text-lg font-bold text-[#e94560] mr-4">OpenQuartz</h1>
+    <header className="flex items-center gap-1 px-4 py-1 bg-white border-b border-[#d2d2d7] select-none text-[11px]">
+      <span className="flex items-baseline gap-1.5 mr-2">
+        <span className="font-bold text-[#1d1d1f] text-[11px] tracking-wider">OPENQUARTZ</span>
+        <span className="text-[11px] text-[#aeaeb2]">v{VERSION}</span>
+      </span>
 
       <input
         type="text"
         value={projectName}
         onChange={(e) => setProjectName(e.target.value)}
-        className="bg-[#1a1a2e] border border-[#0f3460] rounded px-2 py-1 text-sm text-gray-200 w-40 outline-none focus:border-[#e94560]"
+        className="border border-[#d2d2d7] rounded px-2 py-0.5 text-[12px] text-[#1d1d1f] bg-white outline-none focus:border-[#007aff] w-32"
       />
 
-      <div className="flex gap-2 ml-auto">
-        <button
-          onClick={() => useGraphStore.getState().addNode('shader')}
-          className="px-3 py-1 text-sm bg-[#533483] hover:bg-[#6c4a9e] rounded transition-colors"
-        >
-          + Shader
-        </button>
-        <button
-          onClick={() => useGraphStore.getState().addInputNode('float')}
-          className="px-3 py-1 text-sm bg-[#0f3460] hover:bg-[#1a5276] rounded transition-colors"
-        >
-          + Input
-        </button>
-        <button
-          onClick={() => useGraphStore.getState().addInputNode('sampler2D')}
-          className="px-3 py-1 text-sm bg-[#1a5276] hover:bg-[#21618c] rounded transition-colors"
-        >
-          + Image
-        </button>
-        <button
-          onClick={() => useGraphStore.getState().addNode('output')}
-          className="px-3 py-1 text-sm bg-[#e94560] hover:bg-[#c73e54] rounded transition-colors"
-        >
-          + Output
-        </button>
-      </div>
+      <span className="mx-1 text-[#c7c7cc]">|</span>
 
-      <div className="flex gap-2">
-        <button
-          onClick={handleSave}
-          className="px-3 py-1 text-sm bg-[#533483] hover:bg-[#6c4a9e] rounded transition-colors"
-        >
-          Save
-        </button>
-        <button
-          onClick={handleLoad}
-          className="px-3 py-1 text-sm bg-[#533483] hover:bg-[#6c4a9e] rounded transition-colors"
-        >
-          Load
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".quartz.json"
-          onChange={handleFileChange}
-          className="hidden"
-        />
-      </div>
+      <button onClick={() => useGraphStore.getState().addNode('shader')} className={btnClass}>+ SHADER</button>
+      <button onClick={() => useGraphStore.getState().addInputNode('float')} className={btnClass}>+ INPUT</button>
+      <button onClick={() => useGraphStore.getState().addInputNode('sampler2D')} className={btnClass}>+ IMAGE</button>
+      <button onClick={() => useGraphStore.getState().addNode('output')} className={btnClass}>+ OUTPUT</button>
 
-      <div className="flex gap-2">
-        <button
-          onClick={() => setRunning(!isRunning)}
-          className={`px-3 py-1 text-sm rounded transition-colors ${
-            isRunning
-              ? 'bg-[#e94560] hover:bg-[#c73e54]'
-              : 'bg-[#2ecc71] hover:bg-[#27ae60]'
-          }`}
-        >
-          {isRunning ? 'Stop' : 'Run'}
-        </button>
-        <button
-          onClick={clearGraph}
-          className="px-3 py-1 text-sm bg-[#555] hover:bg-[#777] rounded transition-colors"
-        >
-          Clear
-        </button>
-      </div>
+      <span className="mx-1 text-[#c7c7cc]">|</span>
+
+      <button onClick={handleSave} className={btnClass}>SAVE</button>
+      <button onClick={handleLoad} className={btnClass}>LOAD</button>
+      <input ref={fileInputRef} type="file" accept=".quartz.json" onChange={handleFileChange} className="hidden" />
+
+      <span className="mx-1 text-[#c7c7cc]">|</span>
+
+      <button
+        onClick={() => setRunning(!isRunning)}
+        className={`px-2.5 py-0.5 text-[11px] font-bold transition-colors cursor-default tracking-wider ${
+          isRunning ? 'text-[#ff3b30] hover:text-[#ff3b30]' : 'text-[#1d1d1f] hover:text-[#007aff]'
+        }`}
+      >
+        {isRunning ? '■ STOP' : '▶ RUN'}
+      </button>
+      <button onClick={clearGraph} className={btnClass}>CLEAR</button>
     </header>
   );
 }
-
-

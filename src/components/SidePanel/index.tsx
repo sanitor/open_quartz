@@ -30,23 +30,23 @@ export function SidePanel() {
 
   if (!selectedNode || !data) {
     return (
-      <aside className="w-72 bg-[#16213e] border-l border-[#0f3460] flex-shrink-0 flex items-center justify-center">
-        <p className="text-sm text-gray-500">Select a node to edit</p>
+      <aside className="w-72 bg-white border-l border-[#d2d2d7] flex-shrink-0 flex items-center justify-center">
+        <p className="text-[12px] text-[#aeaeb2] select-none">Select a node to edit</p>
       </aside>
     );
   }
 
   return (
-    <aside className="w-80 bg-[#16213e] border-l border-[#0f3460] flex-shrink-0 flex flex-col overflow-hidden">
+    <aside className="w-80 bg-white border-l border-[#d2d2d7] flex-shrink-0 flex flex-col overflow-hidden">
       {/* Node header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-[#0f3460]">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-[#e8e8ed]">
         <div>
-          <span className="text-xs text-gray-500">{data.type}</span>
-          <h3 className="text-sm font-semibold text-white">{data.label}</h3>
+          <span className="text-[10px] text-[#86868b] font-medium">{data.type}</span>
+          <h3 className="text-[13px] font-semibold text-[#1d1d1f]">{data.label}</h3>
         </div>
         <button
           onClick={() => { if (selectedNodeId) removeNode(selectedNodeId); }}
-          className="text-xs text-red-400 hover:text-red-300"
+          className="text-[11px] text-[#ff3b30] hover:text-[#d70015]"
         >
           Delete
         </button>
@@ -55,7 +55,7 @@ export function SidePanel() {
       {/* Shader editor (only for shader type) */}
       {data.type === 'shader' && (
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="px-4 py-1.5 text-xs text-gray-400 border-b border-[#0f3460]">
+          <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium border-b border-[#e8e8ed]">
             Shader Editor
           </div>
           <div className="flex-1 overflow-hidden">
@@ -65,7 +65,7 @@ export function SidePanel() {
       )}
 
       {/* Port inspector */}
-      <div className="px-4 py-3 border-t border-[#0f3460] overflow-y-auto flex-shrink-0 max-h-64">
+      <div className="px-4 py-3 border-t border-[#e8e8ed] overflow-y-auto flex-shrink-0 max-h-64">
         <PortInspector
           inputs={data.inputs}
           outputs={data.outputs}

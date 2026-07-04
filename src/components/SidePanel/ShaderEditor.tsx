@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
-import { oneDark } from '@codemirror/theme-one-dark';
 import { javascript } from '@codemirror/lang-javascript';
 
 interface ShaderEditorProps {
@@ -29,13 +28,17 @@ export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
       doc: code,
       extensions: [
         basicSetup,
-        oneDark,
-        javascript(), // GLSL-like syntax highlighting
+        javascript(),
         EditorView.updateListener.of(onUpdate),
         EditorView.theme({
-          '&': { fontSize: '13px', backgroundColor: '#16213e' },
-          '.cm-scroller': { fontFamily: "'Fira Code', 'Consolas', monospace" },
-          '.cm-gutters': { backgroundColor: '#16213e', borderRight: '1px solid #0f3460' },
+          '&': { fontSize: '12px', backgroundColor: '#ffffff' },
+          '.cm-scroller': { fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace" },
+          '.cm-gutters': { backgroundColor: '#fafafa', borderRight: '1px solid #e8e8ed' },
+          '.cm-activeLineGutter': { backgroundColor: '#f0f0f0' },
+          '.cm-activeLine': { backgroundColor: '#f5f5f7' },
+          '.cm-cursor': { borderLeftColor: '#007aff' },
+          '.cm-selectionBackground': { backgroundColor: '#b3d7ff' },
+          '&.cm-focused .cm-selectionBackground': { backgroundColor: '#b3d7ff' },
         }),
       ],
     });
@@ -53,7 +56,6 @@ export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
     };
   }, []);
 
-  // Update code from external changes (e.g. switching nodes)
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
