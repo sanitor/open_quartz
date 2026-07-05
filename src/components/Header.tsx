@@ -1,13 +1,19 @@
 import { useGraphStore } from '../store/useGraphStore';
 import { serializeProject, downloadProject, deserializeProject } from '../utils/projectIO';
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
+import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
 import type { DataType } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
 
 export function Header() {
   const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
+  const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fitAfterLoad = useCallback(() => {
+    requestAnimationFrame(() => fitView({ duration: 200 }));
+  }, [fitView]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -53,9 +59,11 @@ export function Header() {
     reader.onload = (ev) => {
       try {
         const result = deserializeProject(ev.target?.result as string);
+        const baseName = file.name.replace(/\.quartz\.json$/i, '');
         loadGraph(result.nodes, result.edges);
-        setProjectName(result.project.name);
+        setProjectName(baseName);
         setSavedFilePath(file.name);
+        fitAfterLoad();
       } catch (err) {
         console.error('Failed to load project:', err);
         alert('Failed to load project file.');
