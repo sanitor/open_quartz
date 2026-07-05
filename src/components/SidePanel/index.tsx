@@ -10,6 +10,8 @@ export function SidePanel() {
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
 
+  if (!selectedNode || !data) return null;
+
   const handleLabelChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       if (selectedNodeId) {
