@@ -45,7 +45,7 @@ export class WebGLRenderer {
   }
 
   loadImageTexture(id: string, dataUrl: string): Promise<THREE.Texture> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
         const texture = new THREE.Texture(img);
@@ -55,6 +55,7 @@ export class WebGLRenderer {
         this.imageTextures.set(id, texture);
         resolve(texture);
       };
+      img.onerror = () => reject(new Error(`Failed to load image for ${id}`));
       img.src = dataUrl;
     });
   }

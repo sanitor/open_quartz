@@ -66,12 +66,18 @@ export class ExecutionEngine {
 
       if (node.data.type === 'input') {
         if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-          const tex = await this.renderer.loadImageTexture(nodeId, node.data.imageDataUrl);
-          textures.set(nodeId, { kind: 'image', texture: tex });
+          try {
+            const tex = await this.renderer.loadImageTexture(nodeId, node.data.imageDataUrl);
+            textures.set(nodeId, { kind: 'image', texture: tex });
 
-          const target = this.renderer.createTarget(`img_${nodeId}`, w, h);
-          this.renderer.renderSampler2DInput(tex, target);
-          textures.set(nodeId, { kind: 'fbo', target });
+            const target = this.renderer.createTarget(`img_${nodeId}`, w, h);
+            this.renderer.renderSampler2DInput(tex, target);
+            textures.set(nodeId, { kind: 'fbo', target });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`Image load error for node ${nodeId}:`, msg);
+            onNodeError?.(nodeId, msg);
+          }
         }
         continue;
       }
