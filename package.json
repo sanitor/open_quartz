@@ -10,8 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@codemirror/basic-setup": "^0.20.0",
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.4",
     "@codemirror/legacy-modes": "^6.5.3",
     "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.0",

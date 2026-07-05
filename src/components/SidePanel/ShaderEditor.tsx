@@ -3,7 +3,9 @@ import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
 import { glsl } from 'codemirror-lang-glsl';
 import { linter } from '@codemirror/lint';
+import { autocompletion } from '@codemirror/autocomplete';
 import { glslLinter } from '../../engine/shaderLinter';
+import { glslCompletions } from '../../engine/shaderCompletions';
 
 interface ShaderEditorProps {
   code: string;
@@ -30,8 +32,10 @@ export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
       doc: code,
       extensions: [
         basicSetup,
+        EditorView.lineWrapping,
         glsl(),
         linter(glslLinter),
+        autocompletion({ override: [glslCompletions] }),
         EditorView.updateListener.of(onUpdate),
         EditorView.theme({
           '&': { fontSize: '12px', backgroundColor: '#ffffff' },
