@@ -6,7 +6,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType } from '../types';
+import type { ShaderNodeData, DataType, Port } from '../types';
 import { parseShader } from '../engine/shaderParser';
 
 interface HistoryEntry {
@@ -139,6 +139,33 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
   };
 }
 
+function remapEdgePorts(
+  edges: Edge[],
+  nodeId: string,
+  oldInputs: Port[],
+  oldOutputs: Port[],
+  newInputs: Port[],
+  newOutputs: Port[],
+): void {
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    if (e.target === nodeId) {
+      const old = oldInputs.find((p) => p.id === e.targetHandle);
+      if (old) {
+        const match = newInputs.find((p) => p.label === old.label);
+        if (match) edges[i] = { ...e, targetHandle: match.id };
+      }
+    }
+    if (e.source === nodeId) {
+      const old = oldOutputs.find((p) => p.id === e.sourceHandle);
+      if (old) {
+        const match = newOutputs.find((p) => p.label === old.label);
+        if (match) edges[i] = { ...e, sourceHandle: match.id };
+      }
+    }
+  }
+}
+
 export const useGraphStore = create<GraphState>()(
   immer((set, get) => {
     function saveSnapshot() {
@@ -259,8 +286,11 @@ export const useGraphStore = create<GraphState>()(
           const node = state.nodes.find((n) => n.id === id);
           if (!node) return;
           if (data.shaderCode !== undefined) {
+            const oldInputs = node.data.inputs;
+            const oldOutputs = node.data.outputs;
             const parsed = parseShader(data.shaderCode);
             node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
+            remapEdgePorts(state.edges, id, oldInputs, oldOutputs, parsed.inputs, parsed.outputs);
           } else {
             Object.assign(node.data, data);
           }
@@ -272,6 +302,8 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           const node = state.nodes.find((n) => n.id === id);
           if (!node || node.data.type !== 'input') return;
+          const oldInputs = node.data.inputs;
+          const oldOutputs = node.data.outputs;
           const shaderCode = createInputShader(dataType);
           const parsed = parseShader(shaderCode);
           node.data.shaderCode = shaderCode;
@@ -279,6 +311,7 @@ export const useGraphStore = create<GraphState>()(
           node.data.inputs = parsed.inputs;
           node.data.outputs = parsed.outputs;
           node.data.uniforms = {};
+          remapEdgePorts(state.edges, id, oldInputs, oldOutputs, parsed.inputs, parsed.outputs);
         });
       },
 
