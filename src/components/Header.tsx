@@ -1,5 +1,5 @@
 import { useGraphStore } from '../store/useGraphStore';
-import { serializeProject, downloadProject, deserializeProject } from '../utils/projectIO';
+import { serializeProject, deserializeProject, saveFileAs, saveFile } from '../utils/projectIO';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
@@ -10,6 +10,7 @@ export function Header() {
   const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
 
   const fitAfterLoad = useCallback(() => {
     requestAnimationFrame(() => fitView({ duration: 200 }));
@@ -34,17 +35,19 @@ export function Header() {
     return () => document.removeEventListener('keydown', handler);
   }, [undo, redo]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!savedFilePath) return;
     const project = serializeProject(nodes, edges, projectName);
-    downloadProject(project, savedFilePath);
+    await saveFile(project, fileHandleRef.current, savedFilePath);
   };
 
-  const handleSaveAs = () => {
+  const handleSaveAs = async () => {
     const project = serializeProject(nodes, edges, projectName);
-    const fileName = downloadProject(project);
-    const baseName = fileName.replace(/\.quartz\.json$/i, '');
-    setSavedFilePath(fileName);
+    const result = await saveFileAs(project);
+    if (!result) return;
+    fileHandleRef.current = result.handle;
+    const baseName = result.name.replace(/\.quartz\.json$/i, '');
+    setSavedFilePath(result.name);
     setProjectName(baseName);
   };
 
@@ -60,6 +63,7 @@ export function Header() {
       try {
         const result = deserializeProject(ev.target?.result as string);
         const baseName = file.name.replace(/\.quartz\.json$/i, '');
+        fileHandleRef.current = null;
         loadGraph(result.nodes, result.edges);
         setProjectName(baseName);
         setSavedFilePath(file.name);
@@ -247,7 +251,7 @@ export function Header() {
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
-      <button onClick={clearGraph} className={btnClass}>
+      <button onClick={() => { fileHandleRef.current = null; clearGraph(); }} className={btnClass}>
         <span className={iconClass}>✕</span>
         <span>CLEAR</span>
       </button>
