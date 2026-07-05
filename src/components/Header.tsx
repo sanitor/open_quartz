@@ -1,13 +1,32 @@
 import { useGraphStore } from '../store/useGraphStore';
 import { serializeProject, downloadProject, deserializeProject } from '../utils/projectIO';
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { VERSION } from '../version';
 import type { DataType } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
 
 export function Header() {
-  const { nodes, edges, projectName, setProjectName, isRunning, setRunning, loadGraph, clearGraph } = useGraphStore();
+  const { nodes, edges, projectName, setProjectName, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [undo, redo]);
 
   const handleSave = () => {
     const project = serializeProject(nodes, edges, projectName);
@@ -36,7 +55,9 @@ export function Header() {
     e.target.value = '';
   };
 
-  const btnClass = 'px-2.5 py-0.5 text-[11px] font-bold text-[#1d1d1f] hover:text-[#007aff] transition-colors cursor-default';
+  const btnClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] transition-colors cursor-default';
+  const iconClass = 'text-[14px] leading-none font-normal';
+  const svgClass = 'w-[14px] h-[14px]';
 
   const [inputOpen, setInputOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
@@ -61,7 +82,7 @@ export function Header() {
   return (
     <header className="flex items-center gap-1 px-4 py-1 bg-white border-b border-[#d2d2d7] select-none text-[11px]">
       <span className="flex items-baseline gap-1.5 mr-2">
-        <span className="font-bold text-[#1d1d1f] text-[11px] tracking-wider">OPENQUARTZ</span>
+        <span className="font-bold text-[#1d1d1f] text-[13px] tracking-wider">OPENQUARTZ</span>
         <span className="text-[11px] text-[#aeaeb2]">v{VERSION}</span>
       </span>
 
@@ -74,8 +95,47 @@ export function Header() {
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
+      <button onClick={handleSave} className={btnClass}>
+        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414a1 1 0 0 0-.293-.707l-2.414-2.414A1 1 0 0 0 11.586 1H2z" />
+          <path d="M3 1v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V1" />
+          <path d="M5 9a2 2 0 1 1 4 0 2 2 0 0 1-4 0z" />
+        </svg>
+        <span>SAVE</span>
+      </button>
+      <button onClick={handleLoad} className={btnClass}>
+        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M1.5 4.5h4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V5a1 1 0 0 1 .5-.5z" />
+          <path d="M1 7.5h8.5l2 4H2.5z" />
+        </svg>
+        <span>LOAD</span>
+      </button>
+      <input ref={fileInputRef} type="file" accept=".quartz.json" onChange={handleFileChange} className="hidden" />
+
+      <span className="mx-1 text-[#c7c7cc]">|</span>
+
       <div className="relative">
-        <button onClick={() => setShaderOpen(!shaderOpen)} className={btnClass}>+ SHADER</button>
+        <button onClick={() => setShaderOpen(!shaderOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+            <rect x="3.5" y="3.5" width="9" height="9" rx="1" />
+            <line x1="5" y1="3.5" x2="5" y2="1.5" />
+            <line x1="8" y1="3.5" x2="8" y2="1" />
+            <line x1="11" y1="3.5" x2="11" y2="1.5" />
+            <line x1="5" y1="12.5" x2="5" y2="14.5" />
+            <line x1="8" y1="12.5" x2="8" y2="15" />
+            <line x1="11" y1="12.5" x2="11" y2="14.5" />
+            <line x1="3.5" y1="5" x2="1.5" y2="5" />
+            <line x1="3.5" y1="8" x2="1" y2="8" />
+            <line x1="3.5" y1="11" x2="1.5" y2="11" />
+            <line x1="12.5" y1="5" x2="14.5" y2="5" />
+            <line x1="12.5" y1="8" x2="15" y2="8" />
+            <line x1="12.5" y1="11" x2="14.5" y2="11" />
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>SHADER</span>
+            <span className="text-[8px] leading-none font-normal">▾</span>
+          </span>
+        </button>
         {shaderOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShaderOpen(false)} />
@@ -91,7 +151,7 @@ export function Header() {
                       useGraphStore.getState().addShaderNode(item.code, item.label);
                       setShaderOpen(false);
                     }}
-                    className="block w-full text-left px-3 py-1 text-[11px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                    className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
                   >
                     {item.label}
                   </button>
@@ -103,7 +163,16 @@ export function Header() {
       </div>
 
       <div className="relative">
-        <button onClick={() => setInputOpen(!inputOpen)} className={btnClass}>+ INPUT</button>
+        <button onClick={() => setInputOpen(!inputOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+            <circle cx="4.5" cy="8" r="3" />
+            <line x1="7.5" y1="8" x2="14" y2="8" />
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>INPUT</span>
+            <span className="text-[8px] leading-none font-normal">▾</span>
+          </span>
+        </button>
         {inputOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setInputOpen(false)} />
@@ -112,7 +181,7 @@ export function Header() {
                 <button
                   key={type}
                   onClick={() => { useGraphStore.getState().addInputNode(type); setInputOpen(false); }}
-                  className="block w-full text-left px-3 py-1 text-[11px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                  className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
                 >
                   {label}
                 </button>
@@ -122,25 +191,55 @@ export function Header() {
         )}
       </div>
 
-      <button onClick={() => useGraphStore.getState().addNode('output')} className={btnClass}>+ OUTPUT</button>
-
-      <span className="mx-1 text-[#c7c7cc]">|</span>
-
-      <button onClick={handleSave} className={btnClass}>SAVE</button>
-      <button onClick={handleLoad} className={btnClass}>LOAD</button>
-      <input ref={fileInputRef} type="file" accept=".quartz.json" onChange={handleFileChange} className="hidden" />
+      <button onClick={() => useGraphStore.getState().addNode('output')} className={btnClass}>
+        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+          <line x1="2" y1="8" x2="8.5" y2="8" />
+          <circle cx="11.5" cy="8" r="3" />
+        </svg>
+        <span>OUTPUT</span>
+      </button>
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
       <button
-        onClick={() => setRunning(!isRunning)}
-        className={`px-2.5 py-0.5 text-[11px] font-bold transition-colors cursor-default tracking-wider ${
-          isRunning ? 'text-[#ff3b30] hover:text-[#ff3b30]' : 'text-[#1d1d1f] hover:text-[#007aff]'
+        onClick={undo}
+        disabled={undoStack.length === 0}
+        className={`flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold transition-colors cursor-default ${
+          undoStack.length === 0 ? 'text-[#aeaeb2]' : 'text-[#1d1d1f] hover:text-[#007aff]'
         }`}
       >
-        {isRunning ? '■ STOP' : '▶ RUN'}
+        <span className={iconClass}>↩</span>
+        <span>UNDO</span>
       </button>
-      <button onClick={clearGraph} className={btnClass}>CLEAR</button>
+      <button
+        onClick={redo}
+        disabled={redoStack.length === 0}
+        className={`flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold transition-colors cursor-default ${
+          redoStack.length === 0 ? 'text-[#aeaeb2]' : 'text-[#1d1d1f] hover:text-[#007aff]'
+        }`}
+      >
+        <span className={iconClass}>↪</span>
+        <span>REDO</span>
+      </button>
+
+      <span className="mx-1 text-[#c7c7cc]">|</span>
+
+      <button onClick={clearGraph} className={btnClass}>
+        <span className={iconClass}>✕</span>
+        <span>CLEAR</span>
+      </button>
+
+      <div className="ml-auto">
+        <button
+          onClick={() => setRunning(!isRunning)}
+          className={`flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold transition-colors cursor-default ${
+            isRunning ? 'text-[#ff3b30] hover:text-[#ff3b30]' : 'text-[#1d1d1f] hover:text-[#007aff]'
+          }`}
+        >
+          <span className={iconClass}>{isRunning ? '□' : '▷'}</span>
+          <span>{isRunning ? 'STOP' : 'RUN'}</span>
+        </button>
+      </div>
     </header>
   );
 }

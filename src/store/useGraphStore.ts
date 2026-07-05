@@ -9,6 +9,11 @@ import {
 import type { ShaderNodeData, DataType } from '../types';
 import { parseShader } from '../engine/shaderParser';
 
+interface HistoryEntry {
+  nodes: Node<ShaderNodeData>[];
+  edges: Edge[];
+}
+
 interface GraphState {
   nodes: Node<ShaderNodeData>[];
   edges: Edge[];
@@ -17,6 +22,12 @@ interface GraphState {
   projectName: string;
   outputPreviews: Record<string, string>;
 
+  undoStack: HistoryEntry[];
+  redoStack: HistoryEntry[];
+
+  pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
   onConnect: OnConnect;
@@ -79,6 +90,25 @@ function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: D
 }
 
 let nodeCascade = 0;
+const ID_RE = /^(.+?)_(\d+)$/;
+
+function syncCounters(nodes: Node<ShaderNodeData>[]) {
+  let maxNum = 0;
+  let maxCascade = 0;
+  for (const n of nodes) {
+    const m = ID_RE.exec(n.id);
+    if (m) {
+      const num = parseInt(m[2], 10);
+      if (num > maxNum) maxNum = num;
+    }
+    const cx = Math.floor((n.position.x - 100) / 28);
+    const cy = Math.floor((n.position.y - 100) / 28);
+    if (cx > maxCascade) maxCascade = cx;
+    if (cy > maxCascade) maxCascade = cy;
+  }
+  nodeCounter = maxNum;
+  nodeCascade = maxCascade + 1;
+}
 
 function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: number }, inputDataType?: DataType, shaderCodeOverride?: string, labelOverride?: string): Node<ShaderNodeData> {
   nodeCounter++;
@@ -106,117 +136,171 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
 }
 
 export const useGraphStore = create<GraphState>()(
-  immer((set) => ({
-    nodes: [],
-    edges: [],
-    selectedNodeId: null,
-    isRunning: false,
-    projectName: 'Untitled',
-    outputPreviews: {},
-
-    onNodesChange: (changes) => {
+  immer((set, get) => {
+    function saveSnapshot() {
+      const { nodes, edges } = get();
+      const entry = { nodes: structuredClone(nodes), edges: structuredClone(edges) };
       set((state) => {
-        state.nodes = applyNodeChanges(changes, state.nodes) as unknown as Node<ShaderNodeData>[];
+        state.undoStack.push(entry);
+        state.redoStack = [];
+        if (state.undoStack.length > 50) state.undoStack.shift();
       });
-    },
+    }
 
-    onEdgesChange: (changes) => {
-      set((state) => {
-        state.edges = applyEdgeChanges(changes, state.edges);
-      });
-    },
+    return {
+      nodes: [],
+      edges: [],
+      selectedNodeId: null,
+      isRunning: false,
+      projectName: 'Untitled',
+      outputPreviews: {},
+      undoStack: [],
+      redoStack: [],
 
-    onConnect: (connection) => {
-      set((state) => {
-        state.edges = addEdge({ ...connection, type: 'bezier' }, state.edges);
-      });
-    },
+      pushHistory: saveSnapshot,
 
-    addNode: (type, position) => {
-      const node = makeNode(type, position);
-      set((state) => { state.nodes.push(node); });
-    },
+      undo: () => {
+        const { undoStack } = get();
+        if (undoStack.length === 0) return;
+        set((state) => {
+          const prev = state.undoStack.pop()!;
+          state.redoStack.push({ nodes: structuredClone(get().nodes), edges: structuredClone(get().edges) });
+          state.nodes = prev.nodes;
+          state.edges = prev.edges;
+          state.selectedNodeId = null;
+        });
+        syncCounters(get().nodes);
+      },
 
-    addInputNode: (dataType, position) => {
-      const node = makeNode('input', position, dataType);
-      set((state) => { state.nodes.push(node); });
-    },
+      redo: () => {
+        const { redoStack } = get();
+        if (redoStack.length === 0) return;
+        set((state) => {
+          const next = state.redoStack.pop()!;
+          state.undoStack.push({ nodes: structuredClone(get().nodes), edges: structuredClone(get().edges) });
+          state.nodes = next.nodes;
+          state.edges = next.edges;
+          state.selectedNodeId = null;
+        });
+        syncCounters(get().nodes);
+      },
 
-    addShaderNode: (code, label, position) => {
-      const node = makeNode('shader', position, undefined, code, label);
-      set((state) => { state.nodes.push(node); });
-    },
+      onNodesChange: (changes) => {
+        set((state) => {
+          state.nodes = applyNodeChanges(changes, state.nodes) as unknown as Node<ShaderNodeData>[];
+        });
+      },
 
-    removeNode: (id) => {
-      set((state) => {
-        state.nodes = state.nodes.filter((n) => n.id !== id);
-        state.edges = state.edges.filter((e) => e.source !== id && e.target !== id);
-        if (state.selectedNodeId === id) state.selectedNodeId = null;
-      });
-    },
+      onEdgesChange: (changes) => {
+        set((state) => {
+          state.edges = applyEdgeChanges(changes, state.edges);
+        });
+      },
 
-    updateNodeData: (id, data) => {
-      set((state) => {
-        const node = state.nodes.find((n) => n.id === id);
-        if (!node) return;
-        if (data.shaderCode !== undefined) {
-          const parsed = parseShader(data.shaderCode);
-          node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
-        } else {
-          Object.assign(node.data, data);
-        }
-      });
-    },
+      onConnect: (connection) => {
+        saveSnapshot();
+        set((state) => {
+          state.edges = addEdge({ ...connection, type: 'bezier' }, state.edges);
+        });
+      },
 
-    updateNodeInputType: (id, dataType) => {
-      set((state) => {
-        const node = state.nodes.find((n) => n.id === id);
-        if (!node || node.data.type !== 'input') return;
-        const shaderCode = createInputShader(dataType);
-        const parsed = parseShader(shaderCode);
-        node.data.shaderCode = shaderCode;
-        node.data.inputDataType = dataType;
-        node.data.inputs = parsed.inputs;
-        node.data.outputs = parsed.outputs;
-        node.data.uniforms = {};
-      });
-    },
+      addNode: (type, position) => {
+        saveSnapshot();
+        const node = makeNode(type, position);
+        set((state) => { state.nodes.push(node); });
+      },
 
-    setSelectedNode: (id) => {
-      set((state) => { state.selectedNodeId = id; });
-    },
+      addInputNode: (dataType, position) => {
+        saveSnapshot();
+        const node = makeNode('input', position, dataType);
+        set((state) => { state.nodes.push(node); });
+      },
 
-    setRunning: (running) => {
-      set((state) => { state.isRunning = running; });
-    },
+      addShaderNode: (code, label, position) => {
+        saveSnapshot();
+        const node = makeNode('shader', position, undefined, code, label);
+        set((state) => { state.nodes.push(node); });
+      },
 
-    setProjectName: (name) => {
-      set((state) => { state.projectName = name; });
-    },
+      removeNode: (id) => {
+        saveSnapshot();
+        set((state) => {
+          state.nodes = state.nodes.filter((n) => n.id !== id);
+          state.edges = state.edges.filter((e) => e.source !== id && e.target !== id);
+          if (state.selectedNodeId === id) state.selectedNodeId = null;
+        });
+      },
 
-    setOutputPreview: (nodeId, dataUrl) => {
-      set((state) => { state.outputPreviews[nodeId] = dataUrl; });
-    },
+      updateNodeData: (id, data) => {
+        if (data.shaderCode !== undefined) saveSnapshot();
+        set((state) => {
+          const node = state.nodes.find((n) => n.id === id);
+          if (!node) return;
+          if (data.shaderCode !== undefined) {
+            const parsed = parseShader(data.shaderCode);
+            node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
+          } else {
+            Object.assign(node.data, data);
+          }
+        });
+      },
 
-    clearOutputPreviews: () => {
-      set((state) => { state.outputPreviews = {}; });
-    },
+      updateNodeInputType: (id, dataType) => {
+        saveSnapshot();
+        set((state) => {
+          const node = state.nodes.find((n) => n.id === id);
+          if (!node || node.data.type !== 'input') return;
+          const shaderCode = createInputShader(dataType);
+          const parsed = parseShader(shaderCode);
+          node.data.shaderCode = shaderCode;
+          node.data.inputDataType = dataType;
+          node.data.inputs = parsed.inputs;
+          node.data.outputs = parsed.outputs;
+          node.data.uniforms = {};
+        });
+      },
 
-    loadGraph: (nodes, edges) => {
-      set((state) => {
-        state.nodes = nodes;
-        state.edges = edges.map((e) => ({ ...e, type: 'bezier' }));
-        state.selectedNodeId = null;
-      });
-    },
+      setSelectedNode: (id) => {
+        set((state) => { state.selectedNodeId = id; });
+      },
 
-    clearGraph: () => {
-      set((state) => {
-        state.nodes = [];
-        state.edges = [];
-        state.selectedNodeId = null;
-        state.outputPreviews = {};
-      });
-    },
-  })),
+      setRunning: (running) => {
+        set((state) => { state.isRunning = running; });
+      },
+
+      setProjectName: (name) => {
+        set((state) => { state.projectName = name; });
+      },
+
+      setOutputPreview: (nodeId, dataUrl) => {
+        set((state) => { state.outputPreviews[nodeId] = dataUrl; });
+      },
+
+      clearOutputPreviews: () => {
+        set((state) => { state.outputPreviews = {}; });
+      },
+
+      loadGraph: (nodes, edges) => {
+        saveSnapshot();
+        set((state) => {
+          state.nodes = nodes;
+          state.edges = edges.map((e) => ({ ...e, type: 'bezier' }));
+          state.selectedNodeId = null;
+        });
+        syncCounters(nodes);
+      },
+
+      clearGraph: () => {
+        saveSnapshot();
+        set((state) => {
+          state.nodes = [];
+          state.edges = [];
+          state.selectedNodeId = null;
+          state.outputPreviews = {};
+        });
+        nodeCounter = 0;
+        nodeCascade = 0;
+      },
+    };
+  }),
 );
