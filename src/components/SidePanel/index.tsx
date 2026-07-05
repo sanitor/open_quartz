@@ -78,35 +78,48 @@ export function SidePanel() {
         </div>
       )}
 
-      {/* Output preview (only for output type) */}
-      {data.type === 'output' && (
-        <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
-          <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium">
-            Output Preview
+      {/* Output node: inputs first, then preview */}
+      {data.type === 'output' ? (
+        <>
+          <div className="px-4 py-3 border-b border-[#e8e8ed] overflow-y-auto flex-shrink-0">
+            <PortInspector
+              inputs={data.inputs}
+              outputs={[]}
+              uniforms={data.uniforms}
+              onUniformChange={handleUniformChange}
+              showOutputs={false}
+            />
           </div>
-          <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
-            {outputPreviews[selectedNodeId!] ? (
-              <img
-                src={outputPreviews[selectedNodeId!]}
-                alt="output"
-                className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7]"
-              />
-            ) : (
-              <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
-            )}
+          <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
+            <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium">
+              PREVIEW
+            </div>
+            <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
+              {outputPreviews[selectedNodeId!] ? (
+                <img
+                  src={outputPreviews[selectedNodeId!]}
+                  alt="output"
+                  className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7]"
+                />
+              ) : (
+                <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
+              )}
+            </div>
           </div>
-        </div>
+        </>
+      ) : (
+        <>
+          {/* Port inspector for shader/input nodes */}
+          <div className="px-4 py-3 border-t border-[#e8e8ed] overflow-y-auto flex-shrink-0 max-h-64">
+            <PortInspector
+              inputs={data.inputs}
+              outputs={data.outputs}
+              uniforms={data.uniforms}
+              onUniformChange={handleUniformChange}
+            />
+          </div>
+        </>
       )}
-
-      {/* Port inspector */}
-      <div className="px-4 py-3 border-t border-[#e8e8ed] overflow-y-auto flex-shrink-0 max-h-64">
-        <PortInspector
-          inputs={data.inputs}
-          outputs={data.outputs}
-          uniforms={data.uniforms}
-          onUniformChange={handleUniformChange}
-        />
-      </div>
     </aside>
   );
 }
