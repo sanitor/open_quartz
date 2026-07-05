@@ -8,9 +8,11 @@ const HEADER_H = 28;
 
 type OutputNodeType = Node<ShaderNodeData>;
 
-export function OutputNode({ data, selected }: NodeProps<OutputNodeType>) {
-  const accent = '#ff3b30';
+export function OutputNode({ id, data, selected }: NodeProps<OutputNodeType>) {
+  const outputPreviews = useGraphStore((s) => s.outputPreviews);
   const edges = useGraphStore((s) => s.edges);
+  const hasOutput = !!outputPreviews[id];
+  const accent = hasOutput ? '#30d158' : '#8e8e93';
 
   return (
     <div
