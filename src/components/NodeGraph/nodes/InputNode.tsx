@@ -1,9 +1,9 @@
 import { useCallback, useRef } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType } from '../../../types';
-import { DATA_TYPE_COLORS } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 
+const PORT_COLOR = '#8e8e93';
 const ROW_H = 26;
 const HEADER_H = 28;
 
@@ -42,11 +42,11 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
       }`}
     >
       <div
-        className="flex items-center justify-between px-3 rounded-t-xl"
+        className="flex items-center px-3 rounded-t-xl"
         style={{ height: HEADER_H, backgroundColor: accent }}
       >
-        <span className="text-xs font-semibold text-white">{data.label}</span>
-        <span className="text-[10px] text-white/60 font-medium">{currentType.toUpperCase()}</span>
+        <span className="text-xs font-semibold text-white">{currentType.toUpperCase()}</span>
+        <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>
       </div>
 
       {currentType === 'sampler2D' ? (
@@ -73,7 +73,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                 position={Position.Right}
                 id={data.outputs[0].id}
                 className="!w-2.5 !h-2.5 !border-2 !border-white"
-                style={{ backgroundColor: DATA_TYPE_COLORS[data.outputs[0].dataType] }}
+                style={{ backgroundColor: PORT_COLOR }}
               />
             </div>
           )}
@@ -99,7 +99,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                   position={Position.Right}
                   id={data.outputs[0].id}
                   className="!w-2.5 !h-2.5 !border-2 !border-white"
-                  style={{ backgroundColor: DATA_TYPE_COLORS[data.outputs[0].dataType] }}
+                  style={{ backgroundColor: PORT_COLOR }}
                 />
               )}
             </div>

@@ -1,6 +1,8 @@
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../../../types';
+import { useGraphStore } from '../../../store/useGraphStore';
 
+const PORT_COLOR = '#8e8e93';
 const ROW_H = 26;
 const HEADER_H = 28;
 
@@ -8,6 +10,7 @@ type OutputNodeType = Node<ShaderNodeData>;
 
 export function OutputNode({ data, selected }: NodeProps<OutputNodeType>) {
   const accent = '#ff3b30';
+  const edges = useGraphStore((s) => s.edges);
 
   return (
     <div
@@ -16,31 +19,38 @@ export function OutputNode({ data, selected }: NodeProps<OutputNodeType>) {
       }`}
     >
       <div
-        className="flex items-center px-3 text-[12px] font-semibold text-white rounded-t-xl"
+        className="flex items-center px-3 rounded-t-xl"
         style={{ height: HEADER_H, backgroundColor: accent }}
       >
-        {data.label}
+        <span className="text-xs font-semibold text-white">OUTPUT</span>
+        <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>
       </div>
 
       {/* Input handles */}
       <div style={{ paddingTop: 2, paddingBottom: 6 }}>
-        {data.inputs.map((port) => (
-          <div
-            key={port.id}
-            className="flex items-center text-[11px] text-[#1d1d1f] px-3"
-            style={{ height: ROW_H, position: 'relative' }}
-          >
-            <Handle
-              type="target"
-              position={Position.Left}
-              id={port.id}
-              className="!w-2.5 !h-2.5 !border-2 !border-white"
-              style={{ backgroundColor: '#ff3b30' }}
-            />
-            <span className="ml-4">{port.label}</span>
-            <span className="ml-auto text-[9px] text-[#aeaeb2]">{port.dataType}</span>
-          </div>
-        ))}
+        {data.inputs.map((port) => {
+          const connected = edges.some((e) => e.targetHandle === port.id);
+          return (
+            <div
+              key={port.id}
+              className="flex items-center text-[11px] text-[#1d1d1f] px-3"
+              style={{ height: ROW_H, position: 'relative' }}
+            >
+              <Handle
+                type="target"
+                position={Position.Left}
+                id={port.id}
+                className="!w-3 !h-3 !border-2"
+                style={{
+                  borderColor: PORT_COLOR,
+                  backgroundColor: connected ? PORT_COLOR : 'transparent',
+                }}
+              />
+              <span className="ml-4">{port.label}</span>
+              <span className="ml-auto text-[9px] text-[#aeaeb2]">{port.dataType}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
