@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import { WebGLRenderer } from './webglRenderer';
-import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
+import { compileNodeShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
 
 type TextureSource =
@@ -110,15 +110,6 @@ export class ExecutionEngine {
           );
           material = compiled.material;
           upstreamSamplers = compiled.upstreamSamplers;
-
-          const gl = this.renderer!.getContext();
-          const fragSrc = material.fragmentShader as string;
-          if (fragSrc) {
-            const err = validateFragmentShader(gl, fragSrc);
-            if (err) {
-              throw new Error(`Fragment shader compilation failed:\n${err}`);
-            }
-          }
 
           for (const [uniformName, sourceNodeId] of upstreamSamplers) {
             const src = textures.get(sourceNodeId);

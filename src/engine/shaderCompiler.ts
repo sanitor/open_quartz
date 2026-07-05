@@ -16,24 +16,6 @@ function stripInjected(code: string): string {
     .replace(/out\s+vec[234]\s+\w+\s*;/g, '');
 }
 
-export function validateFragmentShader(
-  gl: WebGL2RenderingContext | WebGLRenderingContext,
-  source: string,
-): string | null {
-  const shader = gl.createShader(gl.FRAGMENT_SHADER);
-  if (!shader) return 'Failed to create shader object';
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  const status = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
-  if (!status) {
-    const log = gl.getShaderInfoLog(shader) ?? 'Unknown error';
-    gl.deleteShader(shader);
-    return log;
-  }
-  gl.deleteShader(shader);
-  return null;
-}
-
 export function compileNodeShader(
   nodeShaderCode: string,
   inputPorts: Array<{ label: string; dataType: string }>,

@@ -19,12 +19,13 @@ export default function App() {
         const nodes = state.nodes;
         const edges = state.edges;
 
-        const { setOutputPreview, clearOutputPreviews, setNodeError, clearNodeErrors } = useGraphStore.getState();
+        const { setOutputPreview, clearOutputPreviews, setNodeError, clearNodeErrors, setSelectedNode } = useGraphStore.getState();
         clearOutputPreviews();
         clearNodeErrors();
 
         engine.run(nodes, edges, setOutputPreview, (nodeId, error) => {
           setNodeError(nodeId, error);
+          setSelectedNode(nodeId);
         })
           .catch((err) => console.error('Execution error:', err))
           .finally(() => {

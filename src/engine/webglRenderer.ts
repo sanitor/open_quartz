@@ -25,10 +25,6 @@ export class WebGLRenderer {
     return this.renderer.domElement;
   }
 
-  getContext() {
-    return this.renderer.getContext();
-  }
-
   setSize(width: number, height: number) {
     this.renderer.setSize(width, height);
   }
