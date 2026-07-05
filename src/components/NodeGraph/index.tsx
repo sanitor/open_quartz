@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useEffect, useRef } from 'react';
+import { useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
   Controls,
   MiniMap,
+  useReactFlow,
+  useOnViewportChange,
   type Node,
   type NodeTypes,
   type EdgeTypes,
@@ -34,6 +36,61 @@ interface ClipboardNode {
   type: string;
   position: { x: number; y: number };
   data: ShaderNodeData;
+}
+
+function MiniMapController() {
+  const reactFlowInstance = useReactFlow();
+  const [showMiniMap, setShowMiniMap] = useState(false);
+
+  const checkNodesFit = useCallback(() => {
+    const flowNodes = reactFlowInstance.getNodes();
+    if (flowNodes.length === 0) {
+      setShowMiniMap(false);
+      return;
+    }
+
+    const viewport = reactFlowInstance.getViewport();
+    const bounds = reactFlowInstance.getNodesBounds(flowNodes);
+
+    const container = document.querySelector('.react-flow') as HTMLElement | null;
+    if (!container) return;
+    const { width, height } = container.getBoundingClientRect();
+
+    const viewLeft = -viewport.x / viewport.zoom;
+    const viewTop = -viewport.y / viewport.zoom;
+    const viewRight = viewLeft + width / viewport.zoom;
+    const viewBottom = viewTop + height / viewport.zoom;
+
+    const fits = viewLeft <= bounds.x &&
+                 viewTop <= bounds.y &&
+                 viewRight >= bounds.x + bounds.width &&
+                 viewBottom >= bounds.y + bounds.height;
+
+    setShowMiniMap(!fits);
+  }, [reactFlowInstance]);
+
+  useOnViewportChange({ onChange: checkNodesFit });
+
+  useEffect(() => {
+    checkNodesFit();
+
+    const container = document.querySelector('.react-flow') as HTMLElement | null;
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => checkNodesFit());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [checkNodesFit]);
+
+  if (!showMiniMap) return null;
+
+  return (
+    <MiniMap
+      className="!rounded-lg !shadow-sm"
+      nodeColor="#d0d0d0"
+      maskColor="rgba(0,0,0,0.3)"
+    />
+  );
 }
 
 export function NodeGraph() {
@@ -168,11 +225,7 @@ export function NodeGraph() {
     >
       <Background variant={BackgroundVariant.Cross} color="#c0c0c0" gap={20} size={1.5} bgColor="#e0e0e0" />
       <Controls className="!bg-white !border !border-[#d2d2d7] !rounded-lg !shadow-sm !text-[#1d1d1f]" />
-      <MiniMap
-        className="!bg-[#00000066] !border !border-[#ffffff33] !rounded-lg !shadow-sm"
-        nodeColor="#d0d0d0"
-        maskColor="rgba(0,0,0,0.3)"
-      />
+      <MiniMapController />
     </ReactFlow>
   );
 }

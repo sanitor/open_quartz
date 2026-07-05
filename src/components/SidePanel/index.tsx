@@ -76,7 +76,7 @@ export function SidePanel() {
             Shader Editor
           </div>
           <div className="flex-1 overflow-hidden">
-            <ShaderEditor code={data.shaderCode} onChange={handleShaderChange} />
+            <ShaderEditor key={selectedNodeId} code={data.shaderCode} onChange={handleShaderChange} />
           </div>
         </div>
       )}
