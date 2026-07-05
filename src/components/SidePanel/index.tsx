@@ -10,8 +10,6 @@ export function SidePanel() {
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
 
-  if (!selectedNode || !data) return null;
-
   const handleLabelChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       if (selectedNodeId) {
@@ -40,13 +38,7 @@ export function SidePanel() {
     [selectedNodeId, data, updateNodeData],
   );
 
-  if (!selectedNode || !data) {
-    return (
-      <aside className="w-72 bg-white border-l border-[#d2d2d7] flex-shrink-0 flex items-center justify-center">
-        <p className="text-[12px] text-[#aeaeb2] select-none">Select a node to edit</p>
-      </aside>
-    );
-  }
+  if (!selectedNode || !data) return null;
 
   return (
     <aside className="w-80 bg-white border-l border-[#d2d2d7] flex-shrink-0 flex flex-col overflow-hidden">

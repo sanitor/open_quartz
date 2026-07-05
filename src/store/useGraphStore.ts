@@ -20,6 +20,7 @@ interface GraphState {
   selectedNodeId: string | null;
   isRunning: boolean;
   projectName: string;
+  savedFilePath: string | null;
   outputPreviews: Record<string, string>;
   nodeErrors: Record<string, string>;
 
@@ -42,6 +43,7 @@ interface GraphState {
   setSelectedNode: (id: string | null) => void;
   setRunning: (running: boolean) => void;
   setProjectName: (name: string) => void;
+  setSavedFilePath: (path: string | null) => void;
   setOutputPreview: (nodeId: string, dataUrl: string) => void;
   clearOutputPreviews: () => void;
   setNodeError: (nodeId: string, error: string | null) => void;
@@ -157,6 +159,7 @@ export const useGraphStore = create<GraphState>()(
       selectedNodeId: null,
       isRunning: false,
       projectName: 'Untitled',
+      savedFilePath: null,
       outputPreviews: {},
       nodeErrors: {},
       undoStack: [],
@@ -294,6 +297,10 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.projectName = name; });
       },
 
+      setSavedFilePath: (path) => {
+        set((state) => { state.savedFilePath = path; });
+      },
+
       setOutputPreview: (nodeId, dataUrl) => {
         set((state) => { state.outputPreviews[nodeId] = dataUrl; });
       },
@@ -333,6 +340,7 @@ export const useGraphStore = create<GraphState>()(
           state.edges = [];
           state.selectedNodeId = null;
           state.outputPreviews = {};
+          state.savedFilePath = null;
         });
         nodeCounter = 0;
         nodeCascade = 0;

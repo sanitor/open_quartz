@@ -6,7 +6,7 @@ import type { DataType } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
 
 export function Header() {
-  const { nodes, edges, projectName, setProjectName, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -29,8 +29,17 @@ export function Header() {
   }, [undo, redo]);
 
   const handleSave = () => {
+    if (!savedFilePath) return;
     const project = serializeProject(nodes, edges, projectName);
-    downloadProject(project);
+    downloadProject(project, savedFilePath);
+  };
+
+  const handleSaveAs = () => {
+    const project = serializeProject(nodes, edges, projectName);
+    const fileName = downloadProject(project);
+    const baseName = fileName.replace(/\.quartz\.json$/i, '');
+    setSavedFilePath(fileName);
+    setProjectName(baseName);
   };
 
   const handleLoad = () => {
@@ -46,6 +55,7 @@ export function Header() {
         const result = deserializeProject(ev.target?.result as string);
         loadGraph(result.nodes, result.edges);
         setProjectName(result.project.name);
+        setSavedFilePath(file.name);
       } catch (err) {
         console.error('Failed to load project:', err);
         alert('Failed to load project file.');
@@ -56,6 +66,7 @@ export function Header() {
   };
 
   const btnClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] transition-colors cursor-default';
+  const btnDisabledClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#aeaeb2] cursor-default';
   const iconClass = 'text-[14px] leading-none font-normal';
   const svgClass = 'w-[14px] h-[14px]';
 
@@ -86,22 +97,26 @@ export function Header() {
         <span className="text-[11px] text-[#aeaeb2]">v{VERSION}</span>
       </span>
 
-      <input
-        type="text"
-        value={projectName}
-        onChange={(e) => setProjectName(e.target.value)}
-        className="border border-[#d2d2d7] rounded px-2 py-0.5 text-[12px] text-[#1d1d1f] bg-white outline-none focus:border-[#007aff] w-32"
-      />
+      <span className="text-[12px] text-[#1d1d1f] font-medium px-1">{projectName}</span>
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
-      <button onClick={handleSave} className={btnClass}>
+      <button onClick={handleSave} disabled={!savedFilePath} className={savedFilePath ? btnClass : btnDisabledClass}>
         <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414a1 1 0 0 0-.293-.707l-2.414-2.414A1 1 0 0 0 11.586 1H2z" />
           <path d="M3 1v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V1" />
           <path d="M5 9a2 2 0 1 1 4 0 2 2 0 0 1-4 0z" />
         </svg>
         <span>SAVE</span>
+      </button>
+      <button onClick={handleSaveAs} disabled={nodes.length === 0} className={nodes.length > 0 ? btnClass : btnDisabledClass}>
+        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414a1 1 0 0 0-.293-.707l-2.414-2.414A1 1 0 0 0 11.586 1H2z" />
+          <path d="M3 1v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V1" />
+          <path d="M5 9a2 2 0 1 1 4 0 2 2 0 0 1-4 0z" />
+          <text x="8" y="11" textAnchor="middle" fontSize="7" fill="currentColor" stroke="none" fontWeight="bold">AS</text>
+        </svg>
+        <span>SAVE AS</span>
       </button>
       <button onClick={handleLoad} className={btnClass}>
         <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">

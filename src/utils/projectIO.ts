@@ -32,18 +32,19 @@ export function serializeProject(
   };
 }
 
-export function downloadProject(project: ProjectFile) {
+export function downloadProject(project: ProjectFile, filename?: string) {
   const blob = new Blob([JSON.stringify(project, null, 2)], {
     type: 'application/json',
   });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${project.name}.quartz.json`;
+  a.download = filename ?? `${project.name}.quartz.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  return a.download;
 }
 
 export function deserializeProject(json: string): {
