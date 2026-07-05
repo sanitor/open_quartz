@@ -16,7 +16,14 @@ function mapType(raw: string): DataType {
   return 'float';
 }
 
-export function parseShader(code: string): ParsedShader {
+export function parseShader(
+  code: string,
+  existingInputs?: Port[],
+  existingOutputs?: Port[],
+): ParsedShader {
+  const existingInputMap = new Map(existingInputs?.map((p) => [p.label, p]));
+  const existingOutputMap = new Map(existingOutputs?.map((p) => [p.label, p]));
+
   const inputs: Port[] = [];
   const outputs: Port[] = [];
 
@@ -26,8 +33,9 @@ export function parseShader(code: string): ParsedShader {
     const dataType = mapType(m[1]);
     const label = m[2];
     const defaultValue = m[3]?.trim();
+    const existing = existingInputMap.get(label);
     inputs.push({
-      id: nextPortId(),
+      id: existing?.id ?? nextPortId(),
       label,
       dataType,
       direction: 'input',
@@ -39,8 +47,9 @@ export function parseShader(code: string): ParsedShader {
   while ((m = OUTPUT_RE.exec(code)) !== null) {
     const dataType = mapType(m[1]);
     const label = m[2];
+    const existing = existingOutputMap.get(label);
     outputs.push({
-      id: nextPortId(),
+      id: existing?.id ?? nextPortId(),
       label,
       dataType,
       direction: 'output',

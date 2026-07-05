@@ -43,11 +43,13 @@ export class ExecutionEngine {
     let h = 512;
     for (const node of nodes) {
       if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-        const img = await new Promise<HTMLImageElement>((resolve) => {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
           const i = new Image();
           i.onload = () => resolve(i);
+          i.onerror = () => reject(new Error(`Failed to load image for node ${node.id}`));
           i.src = node.data.imageDataUrl!;
-        });
+        }).catch(() => null);
+        if (!img) break;
         w = img.naturalWidth;
         h = img.naturalHeight;
         break;
