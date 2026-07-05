@@ -21,15 +21,15 @@ export class ExecutionEngine {
     }
   }
 
-  get canvas(): HTMLCanvasElement | null {
-    return this.renderer?.canvas ?? null;
-  }
-
   isRunning(): boolean {
     return this.running;
   }
 
-  async run(nodes: Node<ShaderNodeData>[], edges: Edge[]) {
+  async run(
+    nodes: Node<ShaderNodeData>[],
+    edges: Edge[],
+    onOutput?: (nodeId: string, dataUrl: string) => void,
+  ) {
     if (!this.renderer) return;
     this.running = true;
 
@@ -37,10 +37,8 @@ export class ExecutionEngine {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textures = new Map<string, TextureSource>();
 
-    // Match output canvas size
-    const parent = this.renderer.canvas.parentElement;
-    const w = parent?.clientWidth ?? 640;
-    const h = parent?.clientHeight ?? 180;
+    const w = 512;
+    const h = 512;
     this.renderer.setSize(w, h);
 
     try {
@@ -128,9 +126,8 @@ export class ExecutionEngine {
           if (upstreamEdge) {
             const src = textures.get(upstreamEdge.source);
             if (src?.kind === 'fbo') {
-              this.renderer.renderToScreen(src.target.texture);
-            } else if (src?.kind === 'image') {
-              this.renderer.renderToScreen(src.texture);
+              const dataUrl = this.renderer.readTargetToDataURL(src.target);
+              onOutput?.(nodeId, dataUrl);
             }
           }
         }

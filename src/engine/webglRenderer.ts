@@ -86,6 +86,33 @@ export class WebGLRenderer {
     this.renderer.render(this.scene, this.camera);
   }
 
+  readTargetToDataURL(target: THREE.WebGLRenderTarget): string {
+    const w = target.width;
+    const h = target.height;
+    const pixels = new Uint8Array(w * h * 4);
+    this.renderer.readRenderTargetPixels(target, 0, 0, w, h, pixels);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+    const imageData = ctx.createImageData(w, h);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const srcIdx = (y * w + x) * 4;
+        const dstIdx = ((h - 1 - y) * w + x) * 4;
+        imageData.data[dstIdx] = pixels[srcIdx];
+        imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
+        imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
+        imageData.data[dstIdx + 3] = pixels[srcIdx + 3];
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+
   clear() {
     this.renderer.setRenderTarget(null);
     this.renderer.clear();

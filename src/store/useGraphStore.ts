@@ -15,6 +15,7 @@ interface GraphState {
   selectedNodeId: string | null;
   isRunning: boolean;
   projectName: string;
+  outputPreviews: Record<string, string>;
 
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
@@ -27,6 +28,8 @@ interface GraphState {
   setSelectedNode: (id: string | null) => void;
   setRunning: (running: boolean) => void;
   setProjectName: (name: string) => void;
+  setOutputPreview: (nodeId: string, dataUrl: string) => void;
+  clearOutputPreviews: () => void;
   loadGraph: (nodes: Node<ShaderNodeData>[], edges: Edge[]) => void;
   clearGraph: () => void;
 }
@@ -103,6 +106,7 @@ export const useGraphStore = create<GraphState>()(
     selectedNodeId: null,
     isRunning: false,
     projectName: 'Untitled',
+    outputPreviews: {},
 
     onNodesChange: (changes) => {
       set((state) => {
@@ -179,6 +183,14 @@ export const useGraphStore = create<GraphState>()(
       set((state) => { state.projectName = name; });
     },
 
+    setOutputPreview: (nodeId, dataUrl) => {
+      set((state) => { state.outputPreviews[nodeId] = dataUrl; });
+    },
+
+    clearOutputPreviews: () => {
+      set((state) => { state.outputPreviews = {}; });
+    },
+
     loadGraph: (nodes, edges) => {
       set((state) => {
         state.nodes = nodes;
@@ -192,6 +204,7 @@ export const useGraphStore = create<GraphState>()(
         state.nodes = [];
         state.edges = [];
         state.selectedNodeId = null;
+        state.outputPreviews = {};
       });
     },
   })),

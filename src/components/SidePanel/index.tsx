@@ -5,9 +5,18 @@ import { useCallback } from 'react';
 
 
 export function SidePanel() {
-  const { nodes, selectedNodeId, updateNodeData, removeNode } = useGraphStore();
+  const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews } = useGraphStore();
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
+
+  const handleLabelChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (selectedNodeId) {
+        updateNodeData(selectedNodeId, { label: e.target.value });
+      }
+    },
+    [selectedNodeId, updateNodeData],
+  );
 
   const handleShaderChange = useCallback(
     (code: string) => {
@@ -41,8 +50,13 @@ export function SidePanel() {
       {/* Node header */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-[#e8e8ed]">
         <div>
-          <span className="text-[10px] text-[#86868b] font-medium">{data.type}</span>
-          <h3 className="text-[13px] font-semibold text-[#1d1d1f]">{data.label}</h3>
+          <label className="text-[10px] text-[#86868b] font-medium">{data.type.toUpperCase()}</label>
+          <input
+            type="text"
+            value={data.label}
+            onChange={handleLabelChange}
+            className="block w-full text-[13px] font-semibold text-[#1d1d1f] bg-transparent outline-none border-b border-transparent focus:border-[#007aff]"
+          />
         </div>
         <button
           onClick={() => { if (selectedNodeId) removeNode(selectedNodeId); }}
@@ -60,6 +74,26 @@ export function SidePanel() {
           </div>
           <div className="flex-1 overflow-hidden">
             <ShaderEditor code={data.shaderCode} onChange={handleShaderChange} />
+          </div>
+        </div>
+      )}
+
+      {/* Output preview (only for output type) */}
+      {data.type === 'output' && (
+        <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
+          <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium">
+            Output Preview
+          </div>
+          <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
+            {outputPreviews[selectedNodeId!] ? (
+              <img
+                src={outputPreviews[selectedNodeId!]}
+                alt="output"
+                className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7]"
+              />
+            ) : (
+              <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
+            )}
           </div>
         </div>
       )}
