@@ -47,47 +47,12 @@ export function downloadProject(project: ProjectFile, filename?: string): string
   return a.download;
 }
 
-export async function saveFileAs(
-  project: ProjectFile,
-): Promise<{ name: string; handle: FileSystemFileHandle | null } | null> {
-  if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
-    try {
-      const handle = await (window as any).showSaveFilePicker({
-        suggestedName: `${project.name}.quartz.json`,
-        types: [{
-          description: 'Open Quartz Project',
-          accept: { 'application/json': ['.quartz.json'] },
-        }],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(JSON.stringify(project, null, 2));
-      await writable.close();
-      return { name: (handle as FileSystemFileHandle).name, handle: handle as FileSystemFileHandle };
-    } catch (err) {
-      if ((err as DOMException)?.name === 'AbortError') return null;
-      throw err;
-    }
-  }
-
-  const fallbackName = downloadProject(project);
-  return { name: fallbackName, handle: null };
+export function saveFileAs(project: ProjectFile, filename: string): void {
+  downloadProject(project, filename);
 }
 
-export async function saveFile(
-  project: ProjectFile,
-  handle: FileSystemFileHandle | null,
-  fallbackName?: string,
-): Promise<void> {
-  if (handle) {
-    const writable = await handle.createWritable();
-    await writable.write(JSON.stringify(project, null, 2));
-    await writable.close();
-    return;
-  }
-
-  if (fallbackName) {
-    downloadProject(project, fallbackName);
-  }
+export function saveFile(project: ProjectFile, filename: string): void {
+  downloadProject(project, filename);
 }
 
 export function deserializeProject(json: string): {

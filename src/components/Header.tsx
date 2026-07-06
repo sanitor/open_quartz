@@ -10,7 +10,6 @@ export function Header() {
   const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
 
   const fitAfterLoad = useCallback(() => {
     requestAnimationFrame(() => fitView({ duration: 200 }));
@@ -35,20 +34,42 @@ export function Header() {
     return () => document.removeEventListener('keydown', handler);
   }, [undo, redo]);
 
-  const handleSave = async () => {
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const saveAsInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (saveAsOpen) {
+      requestAnimationFrame(() => {
+        const el = saveAsInputRef.current;
+        if (el) {
+          el.focus();
+          const dot = el.value.indexOf('.');
+          el.setSelectionRange(0, dot > 0 ? dot : el.value.length);
+        }
+      });
+    }
+  }, [saveAsOpen]);
+
+  const handleSave = () => {
     if (!savedFilePath) return;
     const project = serializeProject(nodes, edges, projectName);
-    await saveFile(project, fileHandleRef.current, savedFilePath);
+    saveFile(project, savedFilePath);
   };
 
-  const handleSaveAs = async () => {
+  const handleSaveAs = () => {
+    setSaveAsOpen(true);
+  };
+
+  const confirmSaveAs = () => {
+    const raw = saveAsInputRef.current?.value.trim();
+    if (!raw) { setSaveAsOpen(false); return; }
+    const filename = raw.endsWith('.quartz.json') ? raw : `${raw}.quartz.json`;
     const project = serializeProject(nodes, edges, projectName);
-    const result = await saveFileAs(project);
-    if (!result) return;
-    fileHandleRef.current = result.handle;
-    const baseName = result.name.replace(/\.quartz\.json$/i, '');
-    setSavedFilePath(result.name);
+    saveFileAs(project, filename);
+    const baseName = filename.replace(/\.quartz\.json$/i, '');
+    setSavedFilePath(filename);
     setProjectName(baseName);
+    setSaveAsOpen(false);
   };
 
   const handleLoad = () => {
@@ -63,7 +84,6 @@ export function Header() {
       try {
         const result = deserializeProject(ev.target?.result as string);
         const baseName = file.name.replace(/\.quartz\.json$/i, '');
-        fileHandleRef.current = null;
         loadGraph(result.nodes, result.edges);
         setProjectName(baseName);
         setSavedFilePath(file.name);
@@ -81,6 +101,22 @@ export function Header() {
   const btnDisabledClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#aeaeb2] cursor-default';
   const iconClass = 'text-[14px] leading-none font-normal';
   const svgClass = 'w-[14px] h-[14px]';
+
+  const [editingName, setEditingName] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.select();
+  }, [editingName]);
+
+  const commitName = () => {
+    const val = nameInputRef.current?.value.trim();
+    if (val) {
+      setProjectName(val);
+      if (savedFilePath) setSavedFilePath(`${val}.quartz.json`);
+    }
+    setEditingName(false);
+  };
 
   const [inputOpen, setInputOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
@@ -109,7 +145,21 @@ export function Header() {
         <span className="text-[11px] text-[#aeaeb2]">v{VERSION}</span>
       </span>
 
-      <span className="text-[12px] text-[#1d1d1f] font-medium px-1">{projectName}</span>
+      {editingName ? (
+        <input
+          ref={nameInputRef}
+          defaultValue={projectName}
+          onBlur={commitName}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') setEditingName(false); }}
+          className="text-[12px] text-[#1d1d1f] font-medium px-1 border border-[#007aff] rounded outline-none w-[120px]"
+        />
+      ) : (
+        <span
+          onDoubleClick={() => setEditingName(true)}
+          className="text-[12px] text-[#1d1d1f] font-medium px-1 cursor-pointer hover:text-[#007aff]"
+          title="Double-click to rename"
+        >{projectName}</span>
+      )}
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
@@ -137,7 +187,7 @@ export function Header() {
         </svg>
         <span>LOAD</span>
       </button>
-      <input ref={fileInputRef} type="file" accept=".quartz.json" onChange={handleFileChange} className="hidden" />
+      <input ref={fileInputRef} type="file" accept=".quartz.json,.json" onChange={handleFileChange} className="hidden" />
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
@@ -251,7 +301,7 @@ export function Header() {
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
-      <button onClick={() => { fileHandleRef.current = null; clearGraph(); }} className={btnClass}>
+      <button onClick={() => { clearGraph(); }} className={btnClass}>
         <span className={iconClass}>✕</span>
         <span>CLEAR</span>
       </button>
@@ -267,6 +317,25 @@ export function Header() {
           <span>{isRunning ? 'STOP' : 'RUN'}</span>
         </button>
       </div>
+
+      {saveAsOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/20 z-50" onClick={() => setSaveAsOpen(false)} />
+          <div className="fixed top-1/3 left-1/2 -translate-x-1/2 bg-white rounded-lg shadow-xl border border-[#d2d2d7] p-4 z-50 w-[320px]">
+            <div className="text-[11px] font-bold text-[#1d1d1f] mb-2">SAVE AS</div>
+            <input
+              ref={saveAsInputRef}
+              defaultValue={`${projectName}.quartz.json`}
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmSaveAs(); if (e.key === 'Escape') setSaveAsOpen(false); }}
+              className="w-full text-[12px] px-2 py-1.5 border border-[#d2d2d7] rounded outline-none focus:border-[#007aff]"
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <button onClick={() => setSaveAsOpen(false)} className="text-[10px] font-bold text-[#86868b] hover:text-[#1d1d1f] px-3 py-1">CANCEL</button>
+              <button onClick={confirmSaveAs} className="text-[10px] font-bold text-white bg-[#007aff] hover:bg-[#0066d6] px-3 py-1 rounded">SAVE</button>
+            </div>
+          </div>
+        </>
+      )}
     </header>
   );
 }
