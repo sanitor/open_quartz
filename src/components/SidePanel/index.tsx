@@ -1,7 +1,8 @@
 import { useGraphStore } from '../../store/useGraphStore';
 import { ShaderEditor } from './ShaderEditor';
 import { PortInspector } from './PortInspector';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
+import { ImageLightbox } from '../ImageLightbox';
 
 
 export function SidePanel() {
@@ -9,6 +10,7 @@ export function SidePanel() {
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   const handleLabelChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -129,7 +131,8 @@ export function SidePanel() {
                 <img
                   src={outputPreviews[selectedNodeId!]}
                   alt="output"
-                  className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7]"
+                  onClick={() => setLightboxSrc(outputPreviews[selectedNodeId!])}
+                  className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7] cursor-pointer hover:opacity-90 transition-opacity"
                 />
               ) : (
                 <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
@@ -150,6 +153,8 @@ export function SidePanel() {
           </div>
         </>
       )}
+
+      {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
     </aside>
   );
 }
