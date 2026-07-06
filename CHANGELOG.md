@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0b] — 2026-07-06
+
+### Features
+
+- **Custom titlebar** — hide system title bar, use app Header as drag region; macOS traffic lights overlay, Windows custom minimize/maximize/close buttons; browser mode unaffected
+- **App logo in header** — favicon displayed before OPENQUARTZ title
+- **Lightbox toolbar** — semi-transparent centered toolbar in the preview lightbox with:
+  - **Save as PNG** — native save dialog (File System Access API) with fallback download
+  - **Color Picker** — toggle crosshair mode to inspect pixel coordinates (x, y) and RGBA color values with floating tooltip and color swatch
+- **Nearest-neighbor rendering** — lightbox uses pixelated image rendering for accurate color picking at zoom
+
 ## [0.3.0b] — 2026-07-06
 
 ### Features
