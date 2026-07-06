@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0b] — 2026-07-06
+
+### Features
+
+- **Grouped INPUT menu** — INPUT dropdown restructured into SCALAR / VECTOR / SAMPLER2D groups with hover-expand nested sub-menus
+- **Framebuffer input** — new input type under SAMPLER2D for loading raw binary dump files as textures, with configurable format (RGBA8 / RGBA32F / RG8 / RG32F / R8 / R32F / NV12), width, height, and stride
+- **Texture sampling config** — all sampler2D inputs (Image & Framebuffer) now have Filter (LINEAR / NEAREST) and Wrap (CLAMP / REPEAT / MIRROR) controls in the side panel
+- **Immediate preview** — IMAGE and FRAMEBUFFER inputs show preview as soon as data is loaded, without pressing RUN
+- **Output Auto Size** — output node has an Auto Size checkbox (default on); when off, width/height are editable with a default of 512
+
+### Improvements
+
+- IMAGE input node header now shows "IMAGE" instead of "SAMPLER2D"
+- IMAGE input side panel shows read-only image dimensions
+- Use HalfFloat FBOs for input/shader intermediates to preserve float precision through the pipeline
+- Support float render target readback for preview generation
+
 ## [0.2.0b] — 2026-07-06
 
 ### Features
