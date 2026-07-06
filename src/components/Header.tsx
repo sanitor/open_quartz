@@ -3,7 +3,7 @@ import { serializeProject, deserializeProject, saveFileAs, saveFile } from '../u
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
-import type { DataType } from '../types';
+import type { DataType, InputMode } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
 
 export function Header() {
@@ -128,15 +128,24 @@ export function Header() {
     ...predefinedShaders.map((s) => ({ label: s.label, code: s.code, custom: false })),
   ];
 
-  const inputTypes: { label: string; type: DataType }[] = [
-    { label: 'FLOAT', type: 'float' },
-    { label: 'INT', type: 'int' },
-    { label: 'BOOL', type: 'bool' },
-    { label: 'VEC2', type: 'vec2' },
-    { label: 'VEC3', type: 'vec3' },
-    { label: 'VEC4', type: 'vec4' },
-    { label: 'IMAGE', type: 'sampler2D' },
+  const inputGroups: { label: string; items: { label: string; type: DataType; mode?: InputMode }[] }[] = [
+    { label: 'SCALAR', items: [
+      { label: 'FLOAT', type: 'float' },
+      { label: 'INT', type: 'int' },
+      { label: 'BOOL', type: 'bool' },
+    ]},
+    { label: 'VECTOR', items: [
+      { label: 'VEC2', type: 'vec2' },
+      { label: 'VEC3', type: 'vec3' },
+      { label: 'VEC4', type: 'vec4' },
+    ]},
+    { label: 'SAMPLER2D', items: [
+      { label: 'IMAGE', type: 'sampler2D', mode: 'image' },
+      { label: 'FRAMEBUFFER', type: 'sampler2D', mode: 'framebuffer' },
+    ]},
   ];
+
+  const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
 
   return (
     <header className="flex items-center gap-1 px-4 py-1 bg-white border-b border-[#d2d2d7] select-none text-[11px]">
@@ -252,16 +261,37 @@ export function Header() {
         </button>
         {inputOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setInputOpen(false)} />
-            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[100px]">
-              {inputTypes.map(({ label, type }) => (
-                <button
-                  key={type}
-                  onClick={() => { useGraphStore.getState().addInputNode(type); setInputOpen(false); }}
-                  className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+            <div className="fixed inset-0 z-10" onClick={() => { setInputOpen(false); setHoveredGroup(null); }} />
+            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]">
+              {inputGroups.map((group) => (
+                <div
+                  key={group.label}
+                  className="relative"
+                  onMouseEnter={() => setHoveredGroup(group.label)}
+                  onMouseLeave={() => setHoveredGroup(null)}
                 >
-                  {label}
-                </button>
+                  <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
+                    <span>{group.label}</span>
+                    <span className="text-[8px] ml-2">▸</span>
+                  </div>
+                  {hoveredGroup === group.label && (
+                    <div className="absolute left-full top-0 ml-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
+                      {group.items.map((item) => (
+                        <button
+                          key={item.label}
+                          onClick={() => {
+                            useGraphStore.getState().addInputNode(item.type, undefined, item.mode);
+                            setInputOpen(false);
+                            setHoveredGroup(null);
+                          }}
+                          className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </>

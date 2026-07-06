@@ -5,6 +5,13 @@ export type DataType =
   | 'mat2' | 'mat3' | 'mat4'
   | 'sampler2D' | 'samplerCube';
 
+export type InputMode = 'image' | 'framebuffer';
+
+export type FramebufferFormat = 'rgba8' | 'rgba32f' | 'rg8' | 'rg32f' | 'r8' | 'r32f' | 'nv12';
+
+export type TextureFilter = 'linear' | 'nearest';
+export type TextureWrap = 'clamp' | 'repeat' | 'mirror';
+
 export interface Port {
   id: string;
   label: string;
@@ -24,8 +31,19 @@ export interface ShaderNodeData {
   uniforms: Record<string, unknown>;
   collapsed?: boolean;
   inputDataType?: DataType;
+  inputMode?: InputMode;
   imageDataUrl?: string;
   imageFileName?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  fbFormat?: FramebufferFormat;
+  fbWidth?: number;
+  fbHeight?: number;
+  fbStride?: number;
+  rawDataUrl?: string;
+  rawFileName?: string;
+  texFilter?: TextureFilter;
+  texWrap?: TextureWrap;
   [key: string]: unknown;
 }
 

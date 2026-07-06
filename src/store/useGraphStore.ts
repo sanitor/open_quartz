@@ -6,7 +6,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType } from '../types';
+import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseShader } from '../engine/shaderParser';
 
 interface HistoryEntry {
@@ -34,7 +34,7 @@ interface GraphState {
   onEdgesChange: OnEdgesChange;
   onConnect: OnConnect;
   addNode: (type: ShaderNodeData['type'], position?: { x: number; y: number }) => void;
-  addInputNode: (dataType: DataType, position?: { x: number; y: number }) => void;
+  addInputNode: (dataType: DataType, position?: { x: number; y: number }, inputMode?: InputMode) => void;
   addShaderNode: (code: string, label: string, position?: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   removeSelectedElements: () => void;
@@ -116,7 +116,7 @@ function syncCounters(nodes: Node<ShaderNodeData>[]) {
   nodeCascade = maxCascade + 1;
 }
 
-function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: number }, inputDataType?: DataType, shaderCodeOverride?: string, labelOverride?: string): Node<ShaderNodeData> {
+function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: number }, inputDataType?: DataType, shaderCodeOverride?: string, labelOverride?: string, inputMode?: InputMode): Node<ShaderNodeData> {
   nodeCounter++;
   const id = `${type}_${nodeCounter}`;
   const shaderCode = shaderCodeOverride ?? createDefaultShaderCode(type, inputDataType);
@@ -137,6 +137,7 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
       outputs: parsed.outputs,
       uniforms: {},
       inputDataType: type === 'input' ? (inputDataType ?? 'float') : undefined,
+      inputMode: type === 'input' && inputDataType === 'sampler2D' ? (inputMode ?? 'image') : undefined,
     },
   };
 }
@@ -218,9 +219,9 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.nodes.push(node); });
       },
 
-      addInputNode: (dataType, position) => {
+      addInputNode: (dataType, position, inputMode) => {
         saveSnapshot();
-        const node = makeNode('input', position, dataType);
+        const node = makeNode('input', position, dataType, undefined, undefined, inputMode);
         set((state) => { state.nodes.push(node); });
       },
 

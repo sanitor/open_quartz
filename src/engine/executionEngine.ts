@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Node, Edge } from '@xyflow/react';
-import type { ShaderNodeData } from '../types';
+import type { ShaderNodeData, FramebufferFormat, TextureFilter, TextureWrap } from '../types';
 import { WebGLRenderer } from './webglRenderer';
 import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
@@ -30,6 +30,7 @@ export class ExecutionEngine {
     edges: Edge[],
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onNodeError?: (nodeId: string, error: string) => void,
+    onOutputSize?: (nodeId: string, width: number, height: number) => void,
   ) {
     if (!this.renderer) return;
     this.running = true;
@@ -38,7 +39,7 @@ export class ExecutionEngine {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textures = new Map<string, TextureSource>();
 
-    // Determine resolution from the first sampler2D input with an image
+    // Determine resolution from the first sampler2D input with an image or raw data
     let w = 512;
     let h = 512;
     for (const node of nodes) {
@@ -54,6 +55,11 @@ export class ExecutionEngine {
         h = img.naturalHeight;
         break;
       }
+      if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
+        w = node.data.fbWidth;
+        h = node.data.fbHeight;
+        break;
+      }
     }
     this.renderer.setSize(w, h);
 
@@ -65,14 +71,40 @@ export class ExecutionEngine {
       const upstreamEdges = edges.filter((e) => e.target === nodeId);
 
       if (node.data.type === 'input') {
-        if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
+        if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
           try {
-            const tex = await this.renderer.loadImageTexture(nodeId, node.data.imageDataUrl);
-            textures.set(nodeId, { kind: 'image', texture: tex });
+            const b64 = node.data.rawDataUrl.split(',')[1];
+            const binary = atob(b64);
+            const buf = new ArrayBuffer(binary.length);
+            const view = new Uint8Array(buf);
+            for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
 
-            const target = this.renderer.createTarget(`img_${nodeId}`, w, h);
+            const tex = this.renderer.loadRawTexture(
+              nodeId, buf,
+              (node.data.fbFormat ?? 'rgba8') as FramebufferFormat,
+              node.data.fbWidth, node.data.fbHeight,
+              node.data.fbStride,
+            );
+            this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
+            const target = this.renderer.createTarget(`raw_${nodeId}`, w, h, true);
             this.renderer.renderSampler2DInput(tex, target);
             textures.set(nodeId, { kind: 'fbo', target });
+            onOutput?.(nodeId, this.renderer.readTargetToDataURL(target));
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`Raw texture error for node ${nodeId}:`, msg);
+            onNodeError?.(nodeId, msg);
+          }
+        } else if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
+          try {
+            const tex = await this.renderer.loadImageTexture(nodeId, node.data.imageDataUrl);
+            this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
+            textures.set(nodeId, { kind: 'image', texture: tex });
+
+            const target = this.renderer.createTarget(`img_${nodeId}`, w, h, true);
+            this.renderer.renderSampler2DInput(tex, target);
+            textures.set(nodeId, { kind: 'fbo', target });
+            onOutput?.(nodeId, this.renderer.readTargetToDataURL(target));
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.warn(`Image load error for node ${nodeId}:`, msg);
@@ -142,7 +174,7 @@ export class ExecutionEngine {
             }
           }
 
-          const target = this.renderer.createTarget(nodeId, w, h);
+          const target = this.renderer.createTarget(nodeId, w, h, true);
           this.renderer.renderWithMaterial(material, target);
           textures.set(nodeId, { kind: 'fbo', target });
         } catch (e) {
@@ -201,6 +233,7 @@ export class ExecutionEngine {
 
           const dataUrl = this.renderer.readTargetToDataURL(target);
           onOutput?.(nodeId, dataUrl);
+          onOutputSize?.(nodeId, outW, outH);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           const formatted = formatShaderError(msg, node.data.shaderCode);
