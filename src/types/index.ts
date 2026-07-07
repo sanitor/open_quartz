@@ -44,6 +44,12 @@ export interface ShaderNodeData {
   rawFileName?: string;
   texFilter?: TextureFilter;
   texWrap?: TextureWrap;
+  width?: number;
+  height?: number;
+  autoSize?: boolean;
+  resolvedWidth?: number;
+  resolvedHeight?: number;
+  outFormat?: FramebufferFormat;
   [key: string]: unknown;
 }
 

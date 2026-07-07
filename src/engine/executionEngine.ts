@@ -227,7 +227,14 @@ export class ExecutionEngine {
 
           const outW = (node.data.width as number) || w;
           const outH = (node.data.height as number) || h;
-          const target = this.renderer.createTarget(nodeId, outW, outH);
+          const outFormat = node.data.outFormat;
+          const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
+          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
+
+          if (node.data.texFilter || node.data.texWrap) {
+            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
+          }
+
           this.renderer.renderWithMaterial(material, target);
           textures.set(nodeId, { kind: 'fbo', target });
 

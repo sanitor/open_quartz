@@ -54,12 +54,26 @@ export class WebGLRenderer {
     this.renderer.setSize(width, height);
   }
 
-  createTarget(id: string, width: number, height: number, float = false) {
+  createTarget(id: string, width: number, height: number, float = false, fbFormat?: FramebufferFormat) {
+    let format: THREE.PixelFormat = THREE.RGBAFormat;
+    let type: THREE.TextureDataType = float ? THREE.HalfFloatType : THREE.UnsignedByteType;
+
+    if (fbFormat) {
+      switch (fbFormat) {
+        case 'rgba8': format = THREE.RGBAFormat; type = THREE.UnsignedByteType; break;
+        case 'rgba32f': format = THREE.RGBAFormat; type = THREE.FloatType; break;
+        case 'rg8': format = THREE.RGFormat; type = THREE.UnsignedByteType; break;
+        case 'rg32f': format = THREE.RGFormat; type = THREE.FloatType; break;
+        case 'r8': format = THREE.RedFormat; type = THREE.UnsignedByteType; break;
+        case 'r32f': format = THREE.RedFormat; type = THREE.FloatType; break;
+      }
+    }
+
     const target = new THREE.WebGLRenderTarget(width, height, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: float ? THREE.HalfFloatType : THREE.UnsignedByteType,
+      format,
+      type,
     });
     this.targets.set(id, target);
     return target;

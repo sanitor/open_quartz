@@ -17,6 +17,15 @@ const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
 ];
 
 
+const OUT_FORMATS: { label: string; value: FramebufferFormat }[] = [
+  { label: 'RGBA8', value: 'rgba8' },
+  { label: 'RGBA32F', value: 'rgba32f' },
+  { label: 'RG8', value: 'rg8' },
+  { label: 'RG32F', value: 'rg32f' },
+  { label: 'R8', value: 'r8' },
+  { label: 'R32F', value: 'r32f' },
+];
+
 export function SidePanel() {
   const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors } = useGraphStore();
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
@@ -107,19 +116,26 @@ export function SidePanel() {
         </div>
       )}
 
-      {/* Output node: inputs, size controls, then preview */}
+      {/* Output node: format, size, sampling, preview */}
       {data.type === 'output' ? (
         <>
           <div className="px-4 py-3 border-b border-[#e8e8ed] overflow-y-auto flex-shrink-0">
-            <PortInspector
-              inputs={data.inputs}
-              outputs={data.outputs}
-              uniforms={data.uniforms}
-              onUniformChange={handleUniformChange}
-            />
+            {/* Format */}
+            <div className="mb-3">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Format</label>
+              <select
+                value={data.outFormat ?? 'rgba8'}
+                onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              >
+                {OUT_FORMATS.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+            </div>
 
             {/* Width / Height controls */}
-            <div className="mt-3">
+            <div className="mb-3">
               <label className="flex items-center gap-1.5 text-[10px] text-[#86868b] font-medium mb-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -184,6 +200,36 @@ export function SidePanel() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Sampling */}
+            <div>
+              <div className="text-[10px] text-[#86868b] font-medium mb-2">SAMPLING</div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Filter</label>
+                  <select
+                    value={data.texFilter ?? 'linear'}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
+                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+                  >
+                    <option value="linear">LINEAR</option>
+                    <option value="nearest">NEAREST</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Wrap</label>
+                  <select
+                    value={data.texWrap ?? 'clamp'}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
+                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+                  >
+                    <option value="clamp">CLAMP</option>
+                    <option value="repeat">REPEAT</option>
+                    <option value="mirror">MIRROR</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
           <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
