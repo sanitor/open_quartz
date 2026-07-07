@@ -201,7 +201,7 @@ export const useGraphStore = create<GraphState>()(
       },
 
       onConnect: (connection) => {
-        const { nodes } = get();
+        const { nodes, edges } = get();
         const sourceNode = nodes.find((n) => n.id === connection.source);
         const targetNode = nodes.find((n) => n.id === connection.target);
         if (sourceNode && targetNode) {
@@ -219,6 +219,15 @@ export const useGraphStore = create<GraphState>()(
             } else if (sourcePort.dataType !== targetPort.dataType) {
               return;
             }
+          }
+
+          // A node can only feed into one output node at a time.
+          // Reject the connection if the source already connects to a different output.
+          if (targetNode.data.type === 'output') {
+            const alreadyConnectsToOutput = edges.some(
+              (e) => e.source === connection.source && nodes.find((n) => n.id === e.target)?.data.type === 'output',
+            );
+            if (alreadyConnectsToOutput) return;
           }
         }
         saveSnapshot();

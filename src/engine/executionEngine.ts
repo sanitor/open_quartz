@@ -39,9 +39,9 @@ export class ExecutionEngine {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textures = new Map<string, TextureSource>();
 
-    // Determine resolution from the first sampler2D input with an image or raw data
-    let w = 512;
-    let h = 512;
+    // Determine default resolution from the first sampler2D input with an image or raw data
+    let defaultW = 512;
+    let defaultH = 512;
     for (const node of nodes) {
       if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
         const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -51,17 +51,58 @@ export class ExecutionEngine {
           i.src = node.data.imageDataUrl!;
         }).catch(() => null);
         if (!img) break;
-        w = img.naturalWidth;
-        h = img.naturalHeight;
+        defaultW = img.naturalWidth;
+        defaultH = img.naturalHeight;
         break;
       }
       if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
-        w = node.data.fbWidth;
-        h = node.data.fbHeight;
+        defaultW = node.data.fbWidth;
+        defaultH = node.data.fbHeight;
         break;
       }
     }
-    this.renderer.setSize(w, h);
+
+    // Propagate output resolution backwards: each node uses the resolution
+    // of the downstream output it feeds into (max if multiple outputs).
+    // This ensures shader FBOs match the output dimensions.
+    const nodeSize = new Map<string, { w: number; h: number }>();
+    for (const node of nodes) {
+      if (node.data.type === 'output') {
+        const ow = (node.data.width as number) || defaultW;
+        const oh = (node.data.height as number) || defaultH;
+        nodeSize.set(node.id, { w: ow, h: oh });
+      }
+    }
+    // Walk topo order in reverse (outputs first) to propagate sizes upstream
+    for (let i = order.length - 1; i >= 0; i--) {
+      const nid = order[i];
+      const size = nodeSize.get(nid);
+      if (!size) continue;
+      // Propagate to all upstream nodes
+      for (const edge of edges) {
+        if (edge.target === nid) {
+          const existing = nodeSize.get(edge.source);
+          if (!existing) {
+            nodeSize.set(edge.source, { w: size.w, h: size.h });
+          } else {
+            // Multiple downstream outputs: use the max dimensions
+            nodeSize.set(edge.source, {
+              w: Math.max(existing.w, size.w),
+              h: Math.max(existing.h, size.h),
+            });
+          }
+        }
+      }
+    }
+
+    // Renderer canvas sized to the largest output
+    let maxW = defaultW;
+    let maxH = defaultH;
+    for (const { w, h } of nodeSize.values()) {
+      if (w > maxW) maxW = w;
+      if (h > maxH) maxH = h;
+    }
+    this.renderer.setSize(maxW, maxH);
 
     for (const nodeId of order) {
       if (!this.running) break;
@@ -86,7 +127,8 @@ export class ExecutionEngine {
               node.data.fbStride,
             );
             this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
-            const target = this.renderer.createTarget(`raw_${nodeId}`, w, h, true);
+            const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
+            const target = this.renderer.createTarget(`raw_${nodeId}`, tw, th, true);
             this.renderer.renderSampler2DInput(tex, target);
             textures.set(nodeId, { kind: 'fbo', target });
             onOutput?.(nodeId, this.renderer.readTargetToDataURL(target));
@@ -101,7 +143,8 @@ export class ExecutionEngine {
             this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
             textures.set(nodeId, { kind: 'image', texture: tex });
 
-            const target = this.renderer.createTarget(`img_${nodeId}`, w, h, true);
+            const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
+            const target = this.renderer.createTarget(`img_${nodeId}`, tw, th, true);
             this.renderer.renderSampler2DInput(tex, target);
             textures.set(nodeId, { kind: 'fbo', target });
             onOutput?.(nodeId, this.renderer.readTargetToDataURL(target));
@@ -176,7 +219,8 @@ export class ExecutionEngine {
             }
           }
 
-          const target = this.renderer.createTarget(nodeId, w, h, true);
+          const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
+          const target = this.renderer.createTarget(nodeId, tw, th, true);
           this.renderer.renderWithMaterial(material, target);
           textures.set(nodeId, { kind: 'fbo', target });
         } catch (e) {
@@ -229,12 +273,11 @@ export class ExecutionEngine {
             }
           }
 
-          const outW = (node.data.width as number) || w;
-          const outH = (node.data.height as number) || h;
+          const outW = (node.data.width as number) || defaultW;
+          const outH = (node.data.height as number) || defaultH;
           const outFormat = node.data.outFormat;
           const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
           const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-
           if (node.data.texFilter || node.data.texWrap) {
             this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
           }

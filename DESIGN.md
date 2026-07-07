@@ -236,3 +236,17 @@ open-quartz/
 | Handle 定位 | position:relative 父容器 | 确保多端口各占一行，不重叠 |
 | 边类型 | bezier | 视觉效果流畅 |
 | UI 框架 | 纯 Tailwind，无组件库 | 轻量，macOS 风格自由定制 |
+| FBO 管线 | 零冗余 FBO，分辨率跟随 output | 业务性能最优（见下文） |
+| 连接约束 | 每个节点只允许连一个 output | 消除分辨率歧义，简化管线 |
+| PixelRatio | 离屏管线固定 pixelRatio=1 | FBO 渲染不需要 DPI 缩放 |
+
+---
+
+## 12. 渲染管线设计原则
+
+**核心原则：零冗余 FBO，业务性能最优。**
+
+- 管线中不创建任何不必要的中间 FBO。每个 FBO 的存在必须有明确的业务语义（输入纹理缓存、或多级 shader 链的中间结果）。
+- 所有 FBO 的分辨率由最终 output 节点的配置决定，从 output 反向传播到上游 shader 和 input 节点。shader 在目标分辨率下逐像素执行，不做事后缩放。
+- 每个 shader/input 节点只允许连接到一个 output 节点，消除分辨率歧义。交互层在连线时强制这一约束。
+- 离屏渲染管线使用 `pixelRatio=1`，不受屏幕 DPI 影响。FBO 尺寸即像素尺寸，所见即所得。
