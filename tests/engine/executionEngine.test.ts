@@ -235,23 +235,26 @@ describe('ExecutionEngine', () => {
     expect(mockRendererInstance.renderWithMaterial).toHaveBeenCalled();
   });
 
-  it('run() processes output nodes', async () => {
+  it('run() processes leaf shader nodes with output config', async () => {
     const engine = new ExecutionEngine(document.createElement('canvas'));
-    const outputNode = makeNode('output_1', {
-      type: 'output',
+    const shaderNode = makeNode('shader_1', {
+      type: 'shader',
       inputs: [{ id: 'port_1', label: 'inputImage', dataType: 'sampler2D', direction: 'input' }],
+      outputs: [],
       shaderCode: 'void main() { fragColor = texture(inputImage, v_uv); }',
+      width: 1024,
+      height: 768,
     });
 
     const onOutput = vi.fn();
     const onOutputSize = vi.fn();
-    vi.mocked(topologicalSort).mockReturnValueOnce(['output_1']);
+    vi.mocked(topologicalSort).mockReturnValueOnce(['shader_1']);
 
-    await engine.run([outputNode], [], onOutput, undefined, onOutputSize);
+    await engine.run([shaderNode], [], onOutput, undefined, onOutputSize);
 
     expect(compileNodeShader).toHaveBeenCalled();
     expect(mockRendererInstance.renderWithMaterial).toHaveBeenCalled();
-    expect(onOutput).toHaveBeenCalledWith('output_1', 'data:image/png;base64,mock');
+    expect(onOutput).toHaveBeenCalledWith('shader_1', 'data:image/png;base64,mock');
     expect(onOutputSize).toHaveBeenCalled();
   });
 

@@ -60,7 +60,7 @@ interface Port {
   defaultValue?: any;
 }
 
-type NodeType = 'shader' | 'input' | 'output' | 'constant';
+type NodeType = 'shader' | 'input' | 'constant';
 
 interface ShaderNodeData {
   type: NodeType;
@@ -93,14 +93,13 @@ interface ProjectFile {
   <Header />
     ├── OPENQUARTZ v0.0.1b
     ├── 工程名输入框
-    ├── 添加节点：+SHADER / +INPUT / +IMAGE / +OUTPUT
+    ├── 添加节点：+SHADER / +INPUT / +IMAGE
     ├── 文件：SAVE / LOAD
     └── 运行：▶ RUN / ■ STOP / CLEAR
   <main className="flex">
     <NodeGraph />                  ← React Flow 画布 (bg #e0e0e0 + cross grid)
-      ├── <ShaderNode />           ← 紫 header，input/output 端口
+      ├── <ShaderNode />           ← 紫 header，input/output 端口，叶子节点显示输出预览
       ├── <InputNode />            ← 蓝 header，类型选择 + 值输入/图片加载
-      ├── <OutputNode />           ← 红 header，input 端口
       └── 贝塞尔曲线连线
     <SidePanel />                  ← 白底右侧面板
       ├── 节点信息（类型 + label + Delete）
@@ -183,7 +182,6 @@ open-quartz/
 │   │   │   └── nodes/
 │   │   │       ├── ShaderNode.tsx
 │   │   │       ├── InputNode.tsx
-│   │   │       └── OutputNode.tsx
 │   │   ├── SidePanel/
 │   │   │   ├── index.tsx
 │   │   │   ├── ShaderEditor.tsx      ← CodeMirror 6
@@ -212,7 +210,7 @@ open-quartz/
 |---|---|
 | Vite + React + TS + Tailwind 脚手架 | ✅ |
 | React Flow 节点图 + 自定义节点 | ✅ |
-| 三种节点：Shader / Input / Output | ✅ |
+| 两种节点：Shader / Input（无独立 Output 节点） | ✅ |
 | GLSL 正则解析（uniform / out） | ✅ |
 | Shader 编译（RawShaderMaterial + GLSL3） | ✅ |
 | WebGL FBO 渲染管线 | ✅ |
@@ -236,8 +234,8 @@ open-quartz/
 | Handle 定位 | position:relative 父容器 | 确保多端口各占一行，不重叠 |
 | 边类型 | bezier | 视觉效果流畅 |
 | UI 框架 | 纯 Tailwind，无组件库 | 轻量，macOS 风格自由定制 |
-| FBO 管线 | 零冗余 FBO，分辨率跟随 output | 业务性能最优（见下文） |
-| 连接约束 | 每个节点只允许连一个 output | 消除分辨率歧义，简化管线 |
+| FBO 管线 | 零冗余 FBO，叶子 shader 即输出点 | 业务性能最优（见下文） |
+| 节点架构 | 无独立 Output 节点，shader 直接输出 | 消除 passthrough FBO 拷贝 |
 | PixelRatio | 离屏管线固定 pixelRatio=1 | FBO 渲染不需要 DPI 缩放 |
 
 ---
@@ -246,7 +244,8 @@ open-quartz/
 
 **核心原则：零冗余 FBO，业务性能最优。**
 
+- 无独立 Output 节点。DAG 中的叶子 shader 节点（无下游 shader/constant 消费其输出）即为输出点，负责 FBO readback 和预览生成。
 - 管线中不创建任何不必要的中间 FBO。每个 FBO 的存在必须有明确的业务语义（输入纹理缓存、或多级 shader 链的中间结果）。
-- 所有 FBO 的分辨率由最终 output 节点的配置决定，从 output 反向传播到上游 shader 和 input 节点。shader 在目标分辨率下逐像素执行，不做事后缩放。
-- 每个 shader/input 节点只允许连接到一个 output 节点，消除分辨率歧义。交互层在连线时强制这一约束。
+- 所有 FBO 的分辨率由叶子 shader 的输出配置决定（width/height/autoSize），从叶子反向传播到上游节点。shader 在目标分辨率下逐像素执行，不做事后缩放。
 - 离屏渲染管线使用 `pixelRatio=1`，不受屏幕 DPI 影响。FBO 尺寸即像素尺寸，所见即所得。
+- 工程文件版本号（当前 `0.2.0`）随数据模型变更递增，LOAD 时严格校验版本，不兼容则报错拒绝加载。

@@ -378,14 +378,6 @@ export function Header() {
         )}
       </div>
 
-      <button onClick={() => useGraphStore.getState().addNode('output')} className={btnClass}>
-        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-          <line x1="2" y1="8" x2="8.5" y2="8" />
-          <circle cx="11.5" cy="8" r="3" />
-        </svg>
-        <span>OUTPUT</span>
-      </button>
-
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
       <button

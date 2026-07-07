@@ -22,13 +22,11 @@ import { useGraphStore } from '../../store/useGraphStore';
 import type { ShaderNodeData } from '../../types';
 import { ShaderNode } from './nodes/ShaderNode';
 import { InputNode } from './nodes/InputNode';
-import { OutputNode } from './nodes/OutputNode';
 import { CustomEdge } from './edges/CustomEdge';
 
 const nodeTypes: NodeTypes = {
   shader: ShaderNode,
   input: InputNode,
-  output: OutputNode,
   constant: ShaderNode,
 };
 
@@ -111,7 +109,7 @@ function isConnectionValid(connection: Connection | Edge): boolean {
   if (targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube') {
     if (sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube') return true;
     const srcType = sourceNode.data.type;
-    if (srcType === 'shader' || srcType === 'output' || srcType === 'constant') return true;
+    if (srcType === 'shader' || srcType === 'constant') return true;
     if (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D') return true;
     return false;
   }

@@ -11,6 +11,8 @@ type ShaderNodeType = Node<ShaderNodeData>;
 export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
   const edges = useGraphStore((s) => s.edges);
   const nodeErrors = useGraphStore((s) => s.nodeErrors);
+  const outputPreviews = useGraphStore((s) => s.outputPreviews);
+  const nodes = useGraphStore((s) => s.nodes);
   const error = nodeErrors[id];
   const hasUnconnectedInput = data.inputs.some(
     (port) => !edges.some((e) => e.targetHandle === port.id)
@@ -85,6 +87,23 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
           </div>
         ))}
       </div>
+
+      {/* Preview thumbnail for leaf shader nodes */}
+      {(() => {
+        const isLeaf = (data.type === 'shader' || data.type === 'constant') && !edges.some((e) => e.source === id && nodes.find((n) => n.id === e.target)?.data.type !== 'input');
+        const preview = outputPreviews[id];
+        if (!isLeaf || !preview) return null;
+        return (
+          <div className="px-2 pb-2">
+            <img src={preview} alt="preview" className="w-full h-16 object-contain rounded border border-[#e8e8ed]" style={{ imageRendering: 'pixelated' }} />
+            {data.resolvedWidth && data.resolvedHeight && (
+              <div className="text-[9px] text-[#aeaeb2] text-center mt-0.5">
+                {(data.outFormat ?? 'rgba8').toUpperCase()} {data.resolvedWidth}×{data.resolvedHeight}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -93,7 +112,6 @@ function getAccent(type: string): string {
   switch (type) {
     case 'shader': return '#af52de';
     case 'input': return '#007aff';
-    case 'output': return '#ff3b30';
     default: return '#8e8e93';
   }
 }

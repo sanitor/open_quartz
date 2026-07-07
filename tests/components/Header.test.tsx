@@ -173,18 +173,6 @@ describe('Header', () => {
     expect(screen.getByText('INPUT')).toBeInTheDocument();
   });
 
-  it('renders OUTPUT button', () => {
-    renderHeader();
-    expect(screen.getByText('OUTPUT')).toBeInTheDocument();
-  });
-
-  it('OUTPUT button click calls addNode', () => {
-    renderHeader();
-    const outputBtn = screen.getByText('OUTPUT').closest('button')!;
-    fireEvent.click(outputBtn);
-    expect(mockAddNode).toHaveBeenCalledWith('output');
-  });
-
   it('renders SAVE button', () => {
     renderHeader();
     expect(screen.getByText('SAVE')).toBeInTheDocument();

@@ -2,7 +2,7 @@ import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 
-const CURRENT_VERSION = '0.1.0';
+const CURRENT_VERSION = '0.2.0';
 
 export function serializeProject(
   nodes: Node<ShaderNodeData>[],
@@ -62,6 +62,9 @@ export function deserializeProject(json: string): {
 } {
   const project: ProjectFile = JSON.parse(json);
   if (!project.version) throw new Error('Invalid project file');
+  if (project.version !== CURRENT_VERSION) {
+    throw new Error(`Incompatible project version: expected ${CURRENT_VERSION}, got ${project.version}`);
+  }
 
   const nodes: Node<ShaderNodeData>[] = project.graph.nodes.map((n) => ({
     id: n.id,

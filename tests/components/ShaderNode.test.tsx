@@ -11,6 +11,8 @@ vi.mock('@xyflow/react', () => ({
 const defaultStoreState = {
   edges: [] as Array<{ targetHandle: string }>,
   nodeErrors: {} as Record<string, string>,
+  outputPreviews: {} as Record<string, string>,
+  nodes: [] as Array<{ id: string; data: { type: string } }>,
 };
 
 vi.mock('../../src/store/useGraphStore', () => ({
@@ -39,6 +41,8 @@ function makeShaderProps(dataOverrides: Partial<ShaderNodeData> = {}, storeOverr
   Object.assign(defaultStoreState, {
     edges: [],
     nodeErrors: {},
+    outputPreviews: {},
+    nodes: [],
     ...storeOverrides,
   });
 

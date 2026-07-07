@@ -62,16 +62,28 @@ export class ExecutionEngine {
       }
     }
 
-    // Propagate output resolution backwards: each node uses the resolution
-    // of the downstream output it feeds into (max if multiple outputs).
-    // This ensures shader FBOs match the output dimensions.
-    const nodeSize = new Map<string, { w: number; h: number }>();
+    // Detect leaf shader nodes: a shader whose id does not appear as edge.source
+    // for any edge targeting another shader or constant node.
+    const shaderOrConstantIds = new Set(
+      nodes.filter((n) => n.data.type === 'shader' || n.data.type === 'constant').map((n) => n.id),
+    );
+    const leafShaderIds = new Set<string>();
     for (const node of nodes) {
-      if (node.data.type === 'output') {
-        const ow = (node.data.width as number) || defaultW;
-        const oh = (node.data.height as number) || defaultH;
-        nodeSize.set(node.id, { w: ow, h: oh });
-      }
+      if (node.data.type !== 'shader') continue;
+      const feedsDownstream = edges.some(
+        (e) => e.source === node.id && shaderOrConstantIds.has(e.target) && e.target !== node.id,
+      );
+      if (!feedsDownstream) leafShaderIds.add(node.id);
+    }
+
+    // Propagate output resolution backwards: leaf shader nodes define
+    // the output resolution, which propagates upstream.
+    const nodeSize = new Map<string, { w: number; h: number }>();
+    for (const nid of leafShaderIds) {
+      const node = nodeMap.get(nid)!;
+      const ow = (node.data.width as number) || defaultW;
+      const oh = (node.data.height as number) || defaultH;
+      nodeSize.set(nid, { w: ow, h: oh });
     }
     // Walk topo order in reverse (outputs first) to propagate sizes upstream
     for (let i = order.length - 1; i >= 0; i--) {
@@ -219,10 +231,28 @@ export class ExecutionEngine {
             }
           }
 
-          const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
-          const target = this.renderer.createTarget(nodeId, tw, th, true);
-          this.renderer.renderWithMaterial(material, target);
-          textures.set(nodeId, { kind: 'fbo', target });
+          const isLeaf = leafShaderIds.has(nodeId);
+          if (isLeaf) {
+            const outW = (node.data.width as number) || defaultW;
+            const outH = (node.data.height as number) || defaultH;
+            const outFormat = node.data.outFormat;
+            const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
+            const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
+            if (node.data.texFilter || node.data.texWrap) {
+              this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
+            }
+            this.renderer.renderWithMaterial(material, target);
+            textures.set(nodeId, { kind: 'fbo', target });
+
+            const dataUrl = this.renderer.readTargetToDataURL(target);
+            onOutput?.(nodeId, dataUrl);
+            onOutputSize?.(nodeId, outW, outH);
+          } else {
+            const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
+            const target = this.renderer.createTarget(nodeId, tw, th, true);
+            this.renderer.renderWithMaterial(material, target);
+            textures.set(nodeId, { kind: 'fbo', target });
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           const formatted = formatShaderError(msg, preambleLines);
@@ -241,60 +271,6 @@ export class ExecutionEngine {
         }
       }
 
-      if (node.data.type === 'output') {
-        const upstreamMap = new Map<string, string>();
-        for (const edge of upstreamEdges) {
-          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-          if (port) {
-            upstreamMap.set(port.label, edge.source);
-          }
-        }
-
-        let material: THREE.ShaderMaterial;
-        let upstreamSamplers: Map<string, string>;
-        let preambleLines = 0;
-        try {
-          const compiled = compileNodeShader(
-            node.data.shaderCode,
-            node.data.inputs,
-            upstreamMap,
-          );
-          material = compiled.material;
-          upstreamSamplers = compiled.upstreamSamplers;
-          preambleLines = compiled.preambleLines;
-
-          for (const [uniformName, sourceNodeId] of upstreamSamplers) {
-            const src = textures.get(sourceNodeId);
-            let tex: THREE.Texture | undefined;
-            if (src?.kind === 'fbo') tex = src.target.texture;
-            else if (src?.kind === 'image') tex = src.texture;
-            if (tex) {
-              material.uniforms[uniformName] = { value: tex };
-            }
-          }
-
-          const outW = (node.data.width as number) || defaultW;
-          const outH = (node.data.height as number) || defaultH;
-          const outFormat = node.data.outFormat;
-          const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
-          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-          if (node.data.texFilter || node.data.texWrap) {
-            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
-          }
-
-          this.renderer.renderWithMaterial(material, target);
-          textures.set(nodeId, { kind: 'fbo', target });
-
-          const dataUrl = this.renderer.readTargetToDataURL(target);
-          onOutput?.(nodeId, dataUrl);
-          onOutputSize?.(nodeId, outW, outH);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          const formatted = formatShaderError(msg, preambleLines);
-          console.warn(`Shader error for node ${nodeId}:`, formatted);
-          onNodeError?.(nodeId, formatted);
-        }
-      }
     }
   }
 

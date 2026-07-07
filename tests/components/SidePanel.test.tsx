@@ -59,6 +59,7 @@ const defaultStoreState = {
   removeNode: mockRemoveNode,
   outputPreviews: {} as Record<string, string>,
   nodeErrors: {} as Record<string, string>,
+  edges: [] as Array<{ id: string; source: string; target: string }>,
 };
 
 const mockUseGraphStore = vi.fn(() => defaultStoreState);
@@ -198,20 +199,22 @@ describe('SidePanel', () => {
     expect(inspector.getAttribute('data-outputs')).toBe('1');
   });
 
-  // --- Output node selected ---
+  // --- Leaf shader node output config ---
 
-  it('renders OUTPUT type badge for output node', () => {
+  it('renders OUTPUT CONFIG for leaf shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
-    expect(screen.getByText('OUTPUT')).toBeInTheDocument();
+    expect(screen.getByText('OUTPUT CONFIG')).toBeInTheDocument();
   });
 
-  it('renders PREVIEW label for output node', () => {
+  it('renders PREVIEW label for leaf shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('PREVIEW')).toBeInTheDocument();
   });
@@ -219,8 +222,9 @@ describe('SidePanel', () => {
   it('shows "Press Run to preview" when no output preview', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       outputPreviews: {},
+      edges: [],
     });
     expect(screen.getByText('Press Run to preview')).toBeInTheDocument();
   });
@@ -228,57 +232,75 @@ describe('SidePanel', () => {
   it('renders preview image when outputPreview exists', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       outputPreviews: { n1: 'data:image/png;base64,abc123' },
+      edges: [],
     });
     const img = screen.getByAltText('output');
     expect(img).toBeInTheDocument();
     expect(img.getAttribute('src')).toBe('data:image/png;base64,abc123');
   });
 
-  it('renders format select for output node', () => {
+  it('renders format select for leaf shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('Format')).toBeInTheDocument();
   });
 
-  it('renders Auto Size checkbox for output node', () => {
+  it('renders Auto Size checkbox for leaf shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('Auto Size')).toBeInTheDocument();
   });
 
-  it('renders sampling config for output node', () => {
+  it('renders sampling config for leaf shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('SAMPLING')).toBeInTheDocument();
     expect(screen.getByText('Filter')).toBeInTheDocument();
     expect(screen.getByText('Wrap')).toBeInTheDocument();
   });
 
-  it('renders Width/Height inputs for output node when autoSize is false', () => {
+  it('renders Width/Height inputs for leaf shader node when autoSize is false', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output', autoSize: false, width: 1024, height: 768 }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader', autoSize: false, width: 1024, height: 768 }) }],
+      edges: [],
     });
     expect(screen.getByDisplayValue('1024')).toBeInTheDocument();
     expect(screen.getByDisplayValue('768')).toBeInTheDocument();
   });
 
-  it('renders disabled Width/Height for output node when autoSize is true', () => {
+  it('renders disabled Width/Height for leaf shader node when autoSize is true', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output', autoSize: true, resolvedWidth: 512, resolvedHeight: 512 }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader', autoSize: true, resolvedWidth: 512, resolvedHeight: 512 }) }],
+      edges: [],
     });
     const widthInputs = screen.getAllByDisplayValue('512');
     expect(widthInputs.length).toBeGreaterThanOrEqual(2);
     expect(widthInputs[0]).toBeDisabled();
+  });
+
+  it('does NOT render OUTPUT CONFIG for non-leaf shader node', () => {
+    renderSidePanel({
+      selectedNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) },
+        { id: 'n2', type: 'shader', position: { x: 200, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+    });
+    expect(screen.queryByText('OUTPUT CONFIG')).not.toBeInTheDocument();
   });
 
   // --- Error display ---
@@ -414,8 +436,9 @@ describe('SidePanel', () => {
   it('clicking output preview image opens lightbox', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       outputPreviews: { n1: 'data:image/png;base64,preview123' },
+      edges: [],
     });
     const img = screen.getByAltText('output');
     fireEvent.click(img);
@@ -425,8 +448,9 @@ describe('SidePanel', () => {
   it('closing lightbox removes it', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       outputPreviews: { n1: 'data:image/png;base64,preview123' },
+      edges: [],
     });
     const img = screen.getByAltText('output');
     fireEvent.click(img);
@@ -435,12 +459,13 @@ describe('SidePanel', () => {
     expect(screen.queryByTestId('lightbox')).not.toBeInTheDocument();
   });
 
-  // --- Format/filter/wrap selects for output node ---
+  // --- Format/filter/wrap selects for leaf shader node ---
 
   it('format select defaults to rgba8', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     const selects = document.querySelectorAll('select');
     const formatSelect = selects[0] as HTMLSelectElement;
@@ -450,7 +475,8 @@ describe('SidePanel', () => {
   it('format select contains expected options', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('RGBA8')).toBeInTheDocument();
     expect(screen.getByText('RGBA32F')).toBeInTheDocument();
@@ -459,7 +485,8 @@ describe('SidePanel', () => {
   it('filter select defaults to linear', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('LINEAR')).toBeInTheDocument();
     expect(screen.getByText('NEAREST')).toBeInTheDocument();
@@ -468,7 +495,8 @@ describe('SidePanel', () => {
   it('wrap select defaults to clamp', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'output', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'output' }) }],
+      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
+      edges: [],
     });
     expect(screen.getByText('CLAMP')).toBeInTheDocument();
     expect(screen.getByText('REPEAT')).toBeInTheDocument();

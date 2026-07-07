@@ -22,7 +22,7 @@ export interface Port {
   defaultValue?: unknown;
 }
 
-export type NodeType = 'shader' | 'input' | 'output' | 'constant';
+export type NodeType = 'shader' | 'input' | 'constant';
 
 export interface ShaderNodeData {
   type: NodeType;

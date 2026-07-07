@@ -63,9 +63,6 @@ vi.mock('../../src/components/NodeGraph/nodes/ShaderNode', () => ({
 vi.mock('../../src/components/NodeGraph/nodes/InputNode', () => ({
   InputNode: () => <div data-testid="input-node" />,
 }));
-vi.mock('../../src/components/NodeGraph/nodes/OutputNode', () => ({
-  OutputNode: () => <div data-testid="output-node" />,
-}));
 vi.mock('../../src/components/NodeGraph/edges/CustomEdge', () => ({
   CustomEdge: () => <div data-testid="custom-edge" />,
 }));

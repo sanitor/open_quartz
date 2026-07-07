@@ -116,13 +116,6 @@ describe('useGraphStore', () => {
       expect(nodes[0].data.type).toBe('input');
     });
 
-    it('adds an output node', () => {
-      useGraphStore.getState().addNode('output');
-      const { nodes } = useGraphStore.getState();
-      expect(nodes).toHaveLength(1);
-      expect(nodes[0].type).toBe('output');
-      expect(nodes[0].data.type).toBe('output');
-    });
 
     it('pushes history when adding a node', () => {
       useGraphStore.getState().addNode('shader');
@@ -196,7 +189,7 @@ describe('useGraphStore', () => {
   describe('removeNode', () => {
     it('removes a node and associated edges', () => {
       useGraphStore.getState().addNode('shader');
-      useGraphStore.getState().addNode('output');
+      useGraphStore.getState().addNode('constant');
       const [shader, output] = useGraphStore.getState().nodes;
 
       // Manually add an edge
@@ -225,7 +218,7 @@ describe('useGraphStore', () => {
 
     it('does not affect selectedNodeId if a different node is removed', () => {
       useGraphStore.getState().addNode('shader');
-      useGraphStore.getState().addNode('output');
+      useGraphStore.getState().addNode('constant');
       const [n1, n2] = useGraphStore.getState().nodes;
       useGraphStore.getState().setSelectedNode(n1.id);
 
@@ -237,7 +230,7 @@ describe('useGraphStore', () => {
   describe('removeSelectedElements', () => {
     it('removes selected nodes and their edges', () => {
       useGraphStore.getState().addNode('shader');
-      useGraphStore.getState().addNode('output');
+      useGraphStore.getState().addNode('constant');
       const nodes = useGraphStore.getState().nodes;
 
       // Select the first node
@@ -489,7 +482,7 @@ describe('useGraphStore', () => {
       useGraphStore.getState().undo();
       expect(useGraphStore.getState().redoStack.length).toBeGreaterThanOrEqual(1);
 
-      useGraphStore.getState().addNode('output');
+      useGraphStore.getState().addNode('constant');
       expect(useGraphStore.getState().redoStack).toHaveLength(0);
     });
   });
@@ -602,11 +595,6 @@ describe('useGraphStore', () => {
       expect(useGraphStore.getState().edges).toHaveLength(1);
     });
 
-    it('allows sampler2D target from an output source', () => {
-      const { connection } = setupConnectionTest('output', 'vec4', 'shader', 'sampler2D');
-      useGraphStore.getState().onConnect(connection);
-      expect(useGraphStore.getState().edges).toHaveLength(1);
-    });
 
     it('allows sampler2D target from an input-sampler2D source', () => {
       const { connection } = setupConnectionTest('input', 'sampler2D', 'shader', 'sampler2D', 'sampler2D');

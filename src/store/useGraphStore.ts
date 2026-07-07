@@ -78,12 +78,6 @@ function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: D
       ].join('\n');
     case 'input':
       return createInputShader(inputDataType ?? 'float');
-    case 'output':
-      return [
-        'uniform sampler2D inputImage;',
-        'out vec4 fragColor;',
-        'void main() { fragColor = texture(inputImage, v_uv); }',
-      ].join('\n');
     case 'constant':
       return 'uniform vec4 color;\nout vec4 fragColor;\nvoid main() { fragColor = color; }';
   }
@@ -201,7 +195,7 @@ export const useGraphStore = create<GraphState>()(
       },
 
       onConnect: (connection) => {
-        const { nodes, edges } = get();
+        const { nodes } = get();
         const sourceNode = nodes.find((n) => n.id === connection.source);
         const targetNode = nodes.find((n) => n.id === connection.target);
         if (sourceNode && targetNode) {
@@ -213,7 +207,7 @@ export const useGraphStore = create<GraphState>()(
               const srcIsSampler = sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube';
               const srcType = sourceNode.data.type;
               const srcIsTextureProducer = srcIsSampler
-                || srcType === 'shader' || srcType === 'output' || srcType === 'constant'
+                || srcType === 'shader' || srcType === 'constant'
                 || (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D');
               if (!srcIsTextureProducer) return;
             } else if (sourcePort.dataType !== targetPort.dataType) {
@@ -221,14 +215,6 @@ export const useGraphStore = create<GraphState>()(
             }
           }
 
-          // A node can only feed into one output node at a time.
-          // Reject the connection if the source already connects to a different output.
-          if (targetNode.data.type === 'output') {
-            const alreadyConnectsToOutput = edges.some(
-              (e) => e.source === connection.source && nodes.find((n) => n.id === e.target)?.data.type === 'output',
-            );
-            if (alreadyConnectsToOutput) return;
-          }
         }
         saveSnapshot();
         set((state) => {
