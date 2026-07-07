@@ -62,28 +62,14 @@ export class ExecutionEngine {
       }
     }
 
-    // Detect leaf shader nodes: a shader whose id does not appear as edge.source
-    // for any edge targeting another shader or constant node.
-    const shaderOrConstantIds = new Set(
-      nodes.filter((n) => n.data.type === 'shader' || n.data.type === 'constant').map((n) => n.id),
-    );
-    const leafShaderIds = new Set<string>();
-    for (const node of nodes) {
-      if (node.data.type !== 'shader') continue;
-      const feedsDownstream = edges.some(
-        (e) => e.source === node.id && shaderOrConstantIds.has(e.target) && e.target !== node.id,
-      );
-      if (!feedsDownstream) leafShaderIds.add(node.id);
-    }
-
-    // Propagate output resolution backwards: leaf shader nodes define
-    // the output resolution, which propagates upstream.
+    // Seed resolution from all shader/constant nodes that have explicit width/height configured
     const nodeSize = new Map<string, { w: number; h: number }>();
-    for (const nid of leafShaderIds) {
-      const node = nodeMap.get(nid)!;
-      const ow = (node.data.width as number) || defaultW;
-      const oh = (node.data.height as number) || defaultH;
-      nodeSize.set(nid, { w: ow, h: oh });
+    for (const node of nodes) {
+      if (node.data.type === 'shader' || node.data.type === 'constant') {
+        const ow = (node.data.width as number) || defaultW;
+        const oh = (node.data.height as number) || defaultH;
+        nodeSize.set(node.id, { w: ow, h: oh });
+      }
     }
     // Walk topo order in reverse (outputs first) to propagate sizes upstream
     for (let i = order.length - 1; i >= 0; i--) {
@@ -231,28 +217,21 @@ export class ExecutionEngine {
             }
           }
 
-          const isLeaf = leafShaderIds.has(nodeId);
-          if (isLeaf) {
-            const outW = (node.data.width as number) || defaultW;
-            const outH = (node.data.height as number) || defaultH;
-            const outFormat = node.data.outFormat;
-            const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
-            const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-            if (node.data.texFilter || node.data.texWrap) {
-              this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
-            }
-            this.renderer.renderWithMaterial(material, target);
-            textures.set(nodeId, { kind: 'fbo', target });
-
-            const dataUrl = this.renderer.readTargetToDataURL(target);
-            onOutput?.(nodeId, dataUrl);
-            onOutputSize?.(nodeId, outW, outH);
-          } else {
-            const { w: tw, h: th } = nodeSize.get(nodeId) ?? { w: defaultW, h: defaultH };
-            const target = this.renderer.createTarget(nodeId, tw, th, true);
-            this.renderer.renderWithMaterial(material, target);
-            textures.set(nodeId, { kind: 'fbo', target });
+          // Use node's configured size, or propagated size from downstream, or defaults
+          const outW = (node.data.width as number) || nodeSize.get(nodeId)?.w || defaultW;
+          const outH = (node.data.height as number) || nodeSize.get(nodeId)?.h || defaultH;
+          const outFormat = node.data.outFormat;
+          const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
+          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
+          if (node.data.texFilter || node.data.texWrap) {
+            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
           }
+          this.renderer.renderWithMaterial(material, target);
+          textures.set(nodeId, { kind: 'fbo', target });
+
+          const dataUrl = this.renderer.readTargetToDataURL(target);
+          onOutput?.(nodeId, dataUrl);
+          onOutputSize?.(nodeId, outW, outH);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           const formatted = formatShaderError(msg, preambleLines);

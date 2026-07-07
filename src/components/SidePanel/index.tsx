@@ -27,7 +27,7 @@ const OUT_FORMATS: { label: string; value: FramebufferFormat }[] = [
 ];
 
 export function SidePanel() {
-  const { nodes, edges, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors } = useGraphStore();
+  const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors } = useGraphStore();
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
@@ -126,152 +126,144 @@ export function SidePanel() {
         />
       </div>
 
-      {/* Output config for leaf shader nodes */}
-      {(() => {
-        const isLeaf = (data.type === 'shader' || data.type === 'constant') && !edges.some((e) => {
-          if (e.source !== selectedNodeId) return false;
-          const targetNode = nodes.find((n) => n.id === e.target);
-          return targetNode?.data.type === 'shader' || targetNode?.data.type === 'constant';
-        });
-        if (!isLeaf) return null;
-        return (
-          <>
-            <div className="px-4 py-3 border-t border-[#e8e8ed] overflow-y-auto flex-shrink-0">
-              <div className="text-[10px] text-[#86868b] font-medium mb-2">OUTPUT CONFIG</div>
-              {/* Format */}
-              <div className="mb-3">
-                <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Format</label>
-                <select
-                  value={data.outFormat ?? 'rgba8'}
-                  onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
-                  className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-                >
-                  {OUT_FORMATS.map((f) => (
-                    <option key={f.value} value={f.value}>{f.label}</option>
-                  ))}
-                </select>
-              </div>
+      {/* Output config for shader nodes */}
+      {(data.type === 'shader' || data.type === 'constant') && (
+        <>
+          <div className="px-4 py-3 border-t border-[#e8e8ed] overflow-y-auto flex-shrink-0">
+            <div className="text-[10px] text-[#86868b] font-medium mb-2">OUTPUT CONFIG</div>
+            {/* Format */}
+            <div className="mb-3">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Format</label>
+              <select
+                value={data.outFormat ?? 'rgba8'}
+                onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              >
+                {OUT_FORMATS.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+            </div>
 
-              {/* Width / Height controls */}
-              <div className="mb-3">
-                <label className="flex items-center gap-1.5 text-[10px] text-[#86868b] font-medium mb-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={data.autoSize !== false}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
-                      } else {
-                        updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
-                      }
-                    }}
-                    className="accent-[#007aff]"
-                  />
-                  Auto Size
-                </label>
-                {data.autoSize === false ? (
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={8192}
-                        value={String(data.width ?? 512)}
-                        onChange={(e) => updateNodeData(selectedNodeId!, { width: parseInt(e.target.value) || 512 })}
-                        className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={8192}
-                        value={String(data.height ?? 512)}
-                        onChange={(e) => updateNodeData(selectedNodeId!, { height: parseInt(e.target.value) || 512 })}
-                        className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
-                      <input
-                        type="number"
-                        disabled
-                        value={String(data.resolvedWidth ?? '')}
-                        className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default"
-                        placeholder="—"
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
-                      <input
-                        type="number"
-                        disabled
-                        value={String(data.resolvedHeight ?? '')}
-                        className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default"
-                        placeholder="—"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Sampling */}
-              <div>
-                <div className="text-[10px] text-[#86868b] font-medium mb-2">SAMPLING</div>
+            {/* Width / Height controls */}
+            <div className="mb-3">
+              <label className="flex items-center gap-1.5 text-[10px] text-[#86868b] font-medium mb-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={data.autoSize !== false}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
+                    } else {
+                      updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
+                    }
+                  }}
+                  className="accent-[#007aff]"
+                />
+                Auto Size
+              </label>
+              {data.autoSize === false ? (
                 <div className="flex items-center gap-3">
                   <div className="flex-1">
-                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Filter</label>
-                    <select
-                      value={data.texFilter ?? 'linear'}
-                      onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
+                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8192}
+                      value={String(data.width ?? 512)}
+                      onChange={(e) => updateNodeData(selectedNodeId!, { width: parseInt(e.target.value) || 512 })}
                       className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-                    >
-                      <option value="linear">LINEAR</option>
-                      <option value="nearest">NEAREST</option>
-                    </select>
+                    />
                   </div>
                   <div className="flex-1">
-                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Wrap</label>
-                    <select
-                      value={data.texWrap ?? 'clamp'}
-                      onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
+                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8192}
+                      value={String(data.height ?? 512)}
+                      onChange={(e) => updateNodeData(selectedNodeId!, { height: parseInt(e.target.value) || 512 })}
                       className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-                    >
-                      <option value="clamp">CLAMP</option>
-                      <option value="repeat">REPEAT</option>
-                      <option value="mirror">MIRROR</option>
-                    </select>
+                    />
                   </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
+                    <input
+                      type="number"
+                      disabled
+                      value={String(data.resolvedWidth ?? '')}
+                      className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default"
+                      placeholder="—"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
+                    <input
+                      type="number"
+                      disabled
+                      value={String(data.resolvedHeight ?? '')}
+                      className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default"
+                      placeholder="—"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Sampling */}
+            <div>
+              <div className="text-[10px] text-[#86868b] font-medium mb-2">SAMPLING</div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Filter</label>
+                  <select
+                    value={data.texFilter ?? 'linear'}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
+                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+                  >
+                    <option value="linear">LINEAR</option>
+                    <option value="nearest">NEAREST</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Wrap</label>
+                  <select
+                    value={data.texWrap ?? 'clamp'}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
+                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+                  >
+                    <option value="clamp">CLAMP</option>
+                    <option value="repeat">REPEAT</option>
+                    <option value="mirror">MIRROR</option>
+                  </select>
                 </div>
               </div>
             </div>
+          </div>
 
-            {/* Preview for leaf shader */}
-            <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
-              <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium">
-                PREVIEW
-              </div>
-              <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
-                {outputPreviews[selectedNodeId!] ? (
-                  <img
-                    src={outputPreviews[selectedNodeId!]}
-                    alt="output"
-                    onClick={() => setLightboxSrc(outputPreviews[selectedNodeId!])}
-                    className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7] cursor-pointer hover:opacity-90 transition-opacity"
-                  />
-                ) : (
-                  <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
-                )}
-              </div>
+          {/* Preview */}
+          <div className="flex-1 flex flex-col min-h-0 border-t border-[#e8e8ed]">
+            <div className="px-4 py-1.5 text-[11px] text-[#86868b] font-medium">
+              PREVIEW
             </div>
-          </>
-        );
-      })()}
+            <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
+              {outputPreviews[selectedNodeId!] ? (
+                <img
+                  src={outputPreviews[selectedNodeId!]}
+                  alt="output"
+                  onClick={() => setLightboxSrc(outputPreviews[selectedNodeId!])}
+                  className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7] cursor-pointer hover:opacity-90 transition-opacity"
+                />
+              ) : (
+                <span className="text-[12px] text-[#aeaeb2]">Press Run to preview</span>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Image dimensions (read-only) */}
       {data.type === 'input' && data.inputDataType === 'sampler2D' && data.inputMode !== 'framebuffer' && data.imageWidth && data.imageHeight && (

@@ -291,7 +291,7 @@ describe('SidePanel', () => {
     expect(widthInputs[0]).toBeDisabled();
   });
 
-  it('does NOT render OUTPUT CONFIG for non-leaf shader node', () => {
+  it('renders OUTPUT CONFIG for non-leaf shader node too', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
       nodes: [
@@ -300,7 +300,7 @@ describe('SidePanel', () => {
       ],
       edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
     });
-    expect(screen.queryByText('OUTPUT CONFIG')).not.toBeInTheDocument();
+    expect(screen.queryByText('OUTPUT CONFIG')).toBeInTheDocument();
   });
 
   // --- Error display ---
