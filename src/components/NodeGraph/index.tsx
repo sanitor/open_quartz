@@ -7,9 +7,14 @@ import {
   MiniMap,
   useReactFlow,
   useOnViewportChange,
+  useConnection,
+  getBezierPath,
   type Node,
   type NodeTypes,
   type EdgeTypes,
+  type ConnectionLineComponentProps,
+  type Connection,
+  type Edge,
   SelectionMode,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -91,6 +96,51 @@ function MiniMapController() {
       maskColor="rgba(0,0,0,0.3)"
     />
   );
+}
+
+function isConnectionValid(connection: Connection | Edge): boolean {
+  const { nodes } = useGraphStore.getState();
+  const sourceNode = nodes.find((n) => n.id === connection.source);
+  const targetNode = nodes.find((n) => n.id === connection.target);
+  if (!sourceNode || !targetNode) return false;
+
+  const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
+  const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
+  if (!sourcePort || !targetPort) return false;
+
+  if (targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube') {
+    if (sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube') return true;
+    const srcType = sourceNode.data.type;
+    if (srcType === 'shader' || srcType === 'output' || srcType === 'constant') return true;
+    if (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D') return true;
+    return false;
+  }
+  return sourcePort.dataType === targetPort.dataType;
+}
+
+function ConnectionLine({ fromX, fromY, toX, toY, fromPosition, toPosition }: ConnectionLineComponentProps) {
+  const { isValid } = useConnection();
+
+  const [path] = getBezierPath({
+    sourceX: fromX,
+    sourceY: fromY,
+    sourcePosition: fromPosition,
+    targetX: toX,
+    targetY: toY,
+    targetPosition: toPosition,
+  });
+
+  let stroke = '#8e8e93';
+  let strokeWidth = 1.5;
+  if (isValid === true) {
+    stroke = '#007aff';
+    strokeWidth = 2;
+  } else if (isValid === false) {
+    stroke = '#ff3b30';
+    strokeWidth = 3;
+  }
+
+  return <path d={path} fill="none" stroke={stroke} strokeWidth={strokeWidth} />;
 }
 
 export function NodeGraph() {
@@ -214,6 +264,8 @@ export function NodeGraph() {
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
+      isValidConnection={isConnectionValid}
+      connectionLineComponent={ConnectionLine}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       defaultEdgeOptions={defaultEdgeOptions}

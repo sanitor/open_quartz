@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.2b] — 2026-07-07
+
+### Features
+
+- **Connection type validation** — dragging a wire between incompatible port types now shows a red line and rejects the connection on drop; compatible connections highlight in blue
+  - sampler2D inputs accept: IMAGE/FRAMEBUFFER input nodes, shader/output/constant nodes (FBO texture)
+  - Non-sampler inputs require exact dataType match (e.g. float↔float, vec3↔vec3)
+- **Complete GLES 300 input types** — INPUT menu expanded with all GLSL ES 3.0 types: uint, uvec2-4, bvec2-4, ivec2-4, mat2-4
+
+### Fixes
+
+- **Shader editor selection highlight** — fixed invisible text selection caused by opaque `.cm-activeLine` background covering the selection layer
+- **Linter error line numbers** — fixed off-by-one mapping and stripped-line compensation when user code contains `#version`/`precision` directives
+- **Execution engine error line numbers** — shader compile errors now subtract the injected preamble (Three.js #version + precision + uniforms) to show correct user-code line numbers
+
 ## [0.4.1b] — 2026-07-07
 
 ### Features

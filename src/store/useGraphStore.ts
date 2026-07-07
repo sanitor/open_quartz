@@ -201,6 +201,26 @@ export const useGraphStore = create<GraphState>()(
       },
 
       onConnect: (connection) => {
+        const { nodes } = get();
+        const sourceNode = nodes.find((n) => n.id === connection.source);
+        const targetNode = nodes.find((n) => n.id === connection.target);
+        if (sourceNode && targetNode) {
+          const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
+          const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
+          if (sourcePort && targetPort) {
+            const targetIsSampler = targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube';
+            if (targetIsSampler) {
+              const srcIsSampler = sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube';
+              const srcType = sourceNode.data.type;
+              const srcIsTextureProducer = srcIsSampler
+                || srcType === 'shader' || srcType === 'output' || srcType === 'constant'
+                || (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D');
+              if (!srcIsTextureProducer) return;
+            } else if (sourcePort.dataType !== targetPort.dataType) {
+              return;
+            }
+          }
+        }
         saveSnapshot();
         set((state) => {
           state.edges = addEdge({ ...connection, type: 'bezier' }, state.edges);
