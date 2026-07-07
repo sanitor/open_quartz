@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0b] — 2026-07-08
+
+### Breaking Changes
+
+- **Output node removed** — the standalone Output node type is eliminated. All shader nodes now serve as output points with built-in output configuration (format, resolution, sampling) and preview. This removes the redundant passthrough FBO copy that the Output node imposed.
+- **Project file version 0.2.0** — project files are now versioned internally. Loading a file with an incompatible version (e.g. 0.1.0) will show an error. Re-save existing projects to upgrade.
+
+### Features
+
+- **Unit test suite** — 453 tests across 23 test files covering all modules (engine, utils, store, types, components). Coverage: 83% lines, 82% statements, 74% branches, 79% functions.
+- **GitHub Actions CI** — push/PR to master triggers lint, type check, test + coverage. Coverage thresholds enforced (80% lines/statements, 70% branches, 75% functions).
+- **Shader output config** — every shader node (not just leaves) has OUTPUT CONFIG in the side panel: format (RGBA8/RGBA32F/RG8/RG32F/R8/R32F), resolution (auto-size or manual 1–8192), and texture sampling (filter/wrap).
+- **Shader preview thumbnails** — shader nodes show inline preview thumbnails with format and resolution badge after execution.
+- **Zero-redundant-FBO pipeline** — FBO resolution propagates from shader output config upstream through the graph. No unnecessary intermediate FBOs; shaders execute at target resolution.
+
+### Fixes
+
+- **FBO resolution mismatch** — fixed pixelRatio=2 on Retina screens inflating the offscreen canvas to 2x the intended size, causing black regions when output dimensions exceeded the canvas. Offscreen pipeline now uses pixelRatio=1.
+- **FBO size propagation** — shader/input FBOs now use the downstream output resolution instead of being hardcoded to input image dimensions.
+
 ## [0.4.2b] — 2026-07-07
 
 ### Features
