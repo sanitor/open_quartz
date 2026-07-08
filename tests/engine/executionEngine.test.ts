@@ -20,6 +20,7 @@ const { mockRendererInstance } = vi.hoisted(() => {
     renderWithMaterial: vi.fn(),
     readTargetToDataURL: vi.fn(() => 'data:image/png;base64,mock'),
     dispose: vi.fn(),
+    clearResources: vi.fn(),
   };
   return { mockRendererInstance: inst };
 });
@@ -299,11 +300,11 @@ describe('ExecutionEngine', () => {
     expect(onNodeError).toHaveBeenCalledWith('shader_1', expect.stringContaining('Compilation error'));
   });
 
-  it('stop() sets running=false and disposes renderer', () => {
+  it('stop() sets running=false and clears renderer resources', () => {
     const engine = new ExecutionEngine(document.createElement('canvas'));
     engine.stop();
     expect(engine.isRunning()).toBe(false);
-    expect(mockRendererInstance.dispose).toHaveBeenCalled();
+    expect(mockRendererInstance.clearResources).toHaveBeenCalled();
   });
 
   it('stop() handles renderer already null', () => {

@@ -28,6 +28,7 @@ vi.mock('three', () => {
     render = vi.fn();
     clear = vi.fn();
     dispose = vi.fn();
+    setViewport = vi.fn();
     readRenderTargetPixels = mockReadPixels;
     getContext = vi.fn(() => mockRendererContext);
   }

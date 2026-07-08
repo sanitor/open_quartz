@@ -43,24 +43,36 @@ const mockAddInputNode = vi.fn();
 const mockAddShaderNode = vi.fn();
 const mockSetProjectName = vi.fn();
 const mockSetSavedFilePath = vi.fn();
-const mockSetRunning = vi.fn();
 const mockLoadGraph = vi.fn();
 const mockClearGraph = vi.fn();
 const mockUndo = vi.fn();
 const mockRedo = vi.fn();
 const mockPushHistory = vi.fn();
+const mockPlay = vi.fn();
+const mockPause = vi.fn();
+const mockResume = vi.fn();
+const mockStop = vi.fn();
+const mockSetFps = vi.fn();
+const mockSetCurrentTime = vi.fn();
+const mockSetCurrentFrame = vi.fn();
+const mockSetActiveRenderer = vi.fn();
+const mockAddRendererNode = vi.fn();
+const mockSetCaptureScreenshot = vi.fn();
 
 const defaultStoreState = {
   nodes: [],
   edges: [],
   projectName: 'Untitled',
   savedFilePath: null as string | null,
-  isRunning: false,
+  loopState: 'stopped' as string,
+  fps: 0,
+  currentTime: 0,
+  currentFrame: 0,
+  activeRendererId: null as string | null,
   undoStack: [] as unknown[],
   redoStack: [] as unknown[],
   setProjectName: mockSetProjectName,
   setSavedFilePath: mockSetSavedFilePath,
-  setRunning: mockSetRunning,
   loadGraph: mockLoadGraph,
   clearGraph: mockClearGraph,
   undo: mockUndo,
@@ -69,7 +81,18 @@ const defaultStoreState = {
   addNode: mockAddNode,
   addInputNode: mockAddInputNode,
   addShaderNode: mockAddShaderNode,
+  addRendererNode: mockAddRendererNode,
   fitView: vi.fn(),
+  play: mockPlay,
+  pause: mockPause,
+  resume: mockResume,
+  stop: mockStop,
+  setFps: mockSetFps,
+  setCurrentTime: mockSetCurrentTime,
+  setCurrentFrame: mockSetCurrentFrame,
+  setActiveRenderer: mockSetActiveRenderer,
+  captureScreenshot: null as string | null,
+  setCaptureScreenshot: mockSetCaptureScreenshot,
 };
 
 const mockUseGraphStore = vi.fn(() => defaultStoreState);
@@ -212,31 +235,55 @@ describe('Header', () => {
     expect(saveAsBtn).not.toBeDisabled();
   });
 
-  // --- RUN/STOP button ---
+  // --- PLAY/PAUSE/STOP transport ---
 
-  it('renders RUN button when not running', () => {
-    renderHeader({ isRunning: false });
-    expect(screen.getByText('RUN')).toBeInTheDocument();
+  it('renders PLAY button when stopped', () => {
+    renderHeader({ loopState: 'stopped' });
+    expect(screen.getByText('PLAY')).toBeInTheDocument();
   });
 
-  it('RUN button click calls setRunning', () => {
-    renderHeader({ isRunning: false });
-    const runBtn = screen.getByText('RUN').closest('button')!;
-    fireEvent.click(runBtn);
-    expect(mockSetRunning).toHaveBeenCalledWith(true);
+  it('PLAY button click calls play', () => {
+    renderHeader({ loopState: 'stopped' });
+    const playBtn = screen.getByText('PLAY').closest('button')!;
+    fireEvent.click(playBtn);
+    expect(mockPlay).toHaveBeenCalled();
   });
 
-  it('renders STOP when running', () => {
-    renderHeader({ isRunning: true });
+  it('renders PAUSE when playing', () => {
+    renderHeader({ loopState: 'playing' });
+    expect(screen.getByText('PAUSE')).toBeInTheDocument();
+    expect(screen.queryByText('PLAY')).not.toBeInTheDocument();
+  });
+
+  it('PAUSE button click calls pause', () => {
+    renderHeader({ loopState: 'playing' });
+    const pauseBtn = screen.getByText('PAUSE').closest('button')!;
+    fireEvent.click(pauseBtn);
+    expect(mockPause).toHaveBeenCalled();
+  });
+
+  it('renders STOP when playing', () => {
+    renderHeader({ loopState: 'playing' });
     expect(screen.getByText('STOP')).toBeInTheDocument();
-    expect(screen.queryByText('RUN')).not.toBeInTheDocument();
   });
 
-  it('STOP button click calls setRunning(false)', () => {
-    renderHeader({ isRunning: true });
+  it('STOP button click calls stop', () => {
+    renderHeader({ loopState: 'playing' });
     const stopBtn = screen.getByText('STOP').closest('button')!;
     fireEvent.click(stopBtn);
-    expect(mockSetRunning).toHaveBeenCalledWith(false);
+    expect(mockStop).toHaveBeenCalled();
+  });
+
+  it('renders RESUME when paused', () => {
+    renderHeader({ loopState: 'paused' });
+    expect(screen.getByText('RESUME')).toBeInTheDocument();
+  });
+
+  it('RESUME button click calls resume', () => {
+    renderHeader({ loopState: 'paused' });
+    const resumeBtn = screen.getByText('RESUME').closest('button')!;
+    fireEvent.click(resumeBtn);
+    expect(mockResume).toHaveBeenCalled();
   });
 
   // --- CLEAR ---
@@ -420,14 +467,19 @@ describe('Header', () => {
     expect(header).toBeInTheDocument();
   });
 
-  it('renders run icon as ▷ when not running', () => {
-    renderHeader({ isRunning: false });
-    expect(screen.getByText('▷')).toBeInTheDocument();
+  it('renders play icon as ▶ when stopped', () => {
+    renderHeader({ loopState: 'stopped' });
+    expect(screen.getByText('▶')).toBeInTheDocument();
   });
 
-  it('renders stop icon as □ when running', () => {
-    renderHeader({ isRunning: true });
-    expect(screen.getByText('□')).toBeInTheDocument();
+  it('renders pause icon as ⏸ when playing', () => {
+    renderHeader({ loopState: 'playing' });
+    expect(screen.getByText('⏸')).toBeInTheDocument();
+  });
+
+  it('renders stop icon as ■ when playing', () => {
+    renderHeader({ loopState: 'playing' });
+    expect(screen.getByText('■')).toBeInTheDocument();
   });
 
   it('renders ↩ icon for undo', () => {

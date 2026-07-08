@@ -39,7 +39,7 @@ function resetStore() {
     nodes: [],
     edges: [],
     selectedNodeId: null,
-    isRunning: false,
+    loopState: 'stopped' as const,
     projectName: 'Untitled',
     savedFilePath: null,
     outputPreviews: {},
@@ -69,8 +69,8 @@ describe('useGraphStore', () => {
       expect(useGraphStore.getState().projectName).toBe('Untitled');
     });
 
-    it('has isRunning false', () => {
-      expect(useGraphStore.getState().isRunning).toBe(false);
+    it('has loopState "stopped"', () => {
+      expect(useGraphStore.getState().loopState).toBe('stopped');
     });
 
     it('has null savedFilePath', () => {
@@ -353,12 +353,12 @@ describe('useGraphStore', () => {
       expect(useGraphStore.getState().selectedNodeId).toBeNull();
     });
 
-    it('setRunning', () => {
-      useGraphStore.getState().setRunning(true);
-      expect(useGraphStore.getState().isRunning).toBe(true);
+    it('play / stop loopState transitions', () => {
+      useGraphStore.getState().play();
+      expect(useGraphStore.getState().loopState).toBe('playing');
 
-      useGraphStore.getState().setRunning(false);
-      expect(useGraphStore.getState().isRunning).toBe(false);
+      useGraphStore.getState().stop();
+      expect(useGraphStore.getState().loopState).toBe('stopped');
     });
 
     it('setProjectName', () => {

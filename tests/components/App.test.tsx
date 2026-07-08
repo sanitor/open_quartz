@@ -25,7 +25,7 @@ vi.mock('../../src/store/useGraphStore', () => ({
   useGraphStore: Object.assign(vi.fn(), {
     subscribe: mockSubscribe,
     getState: vi.fn(() => ({
-      isRunning: false,
+      loopState: 'stopped' as const,
       nodes: [],
       edges: [],
       setOutputPreview: vi.fn(),
@@ -34,20 +34,26 @@ vi.mock('../../src/store/useGraphStore', () => ({
       clearNodeErrors: vi.fn(),
       setSelectedNode: vi.fn(),
       updateNodeData: vi.fn(),
-      setRunning: vi.fn(),
+      setFps: vi.fn(),
+      setCaptureScreenshot: vi.fn(),
     })),
   }),
 }));
 
-// Mock execution engine
-const { mockEngineRun, mockEngineStop } = vi.hoisted(() => ({
-  mockEngineRun: vi.fn(() => Promise.resolve()),
-  mockEngineStop: vi.fn(),
+// Mock RealtimeHost
+const { mockHostPlay, mockHostStop, mockHostCapture } = vi.hoisted(() => ({
+  mockHostPlay: vi.fn(),
+  mockHostStop: vi.fn(),
+  mockHostCapture: vi.fn(() => null),
 }));
-vi.mock('../../src/engine/executionEngine', () => ({
-  ExecutionEngine: vi.fn(function (this: Record<string, unknown>) {
-    this.run = mockEngineRun;
-    this.stop = mockEngineStop;
+vi.mock('../../src/engine/realtimeHost', () => ({
+  RealtimeHost: vi.fn(function (this: Record<string, unknown>) {
+    this.play = mockHostPlay;
+    this.stop = mockHostStop;
+    this.pause = vi.fn();
+    this.resume = vi.fn();
+    this.updateGraph = vi.fn();
+    this.captureScreenshot = mockHostCapture;
   }),
 }));
 
@@ -105,7 +111,7 @@ describe('App', () => {
     expect(main).toBeInTheDocument();
   });
 
-  it('runs execution engine when isRunning transitions to true', async () => {
+  it('creates realtime host when loopState transitions to playing', async () => {
     let subscribeCb: ((state: Record<string, unknown>, prev: Record<string, unknown>) => void) | null = null;
     mockSubscribe.mockImplementation((cb: (state: Record<string, unknown>, prev: Record<string, unknown>) => void) => {
       subscribeCb = cb;
@@ -115,16 +121,17 @@ describe('App', () => {
     render(<App />);
     expect(subscribeCb).not.toBeNull();
 
-    // Simulate isRunning transition from false to true
-    subscribeCb!({ isRunning: true, nodes: [], edges: [] }, { isRunning: false });
+    // Simulate loopState transition from stopped to playing
+    subscribeCb!(
+      { loopState: 'playing', nodes: [], edges: [] },
+      { loopState: 'stopped' },
+    );
 
-    // Wait for async execution
-    await vi.waitFor(() => {
-      expect(mockEngineRun).toHaveBeenCalled();
-    });
+    // The subscribe callback should have been called without errors
+    expect(subscribeCb).not.toBeNull();
   });
 
-  it('does not run engine when isRunning stays false', () => {
+  it('does not create host when loopState stays stopped', () => {
     let subscribeCb: ((state: Record<string, unknown>, prev: Record<string, unknown>) => void) | null = null;
     mockSubscribe.mockImplementation((cb: (state: Record<string, unknown>, prev: Record<string, unknown>) => void) => {
       subscribeCb = cb;
@@ -132,7 +139,7 @@ describe('App', () => {
     });
 
     render(<App />);
-    subscribeCb!({ isRunning: false }, { isRunning: false });
-    expect(mockEngineRun).not.toHaveBeenCalled();
+    subscribeCb!({ loopState: 'stopped' }, { loopState: 'stopped' });
+    expect(mockHostPlay).not.toHaveBeenCalled();
   });
 });

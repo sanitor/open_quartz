@@ -43,6 +43,7 @@ const {
     readTargetToDataURL: vi.fn(() => 'data:image/png;base64,mock'),
     readTargetToCanvas: vi.fn(() => document.createElement('canvas')),
     dispose: vi.fn(),
+    clearResources: vi.fn(),
   };
 
   const sessionState: OnnxSessionState = {
@@ -284,6 +285,7 @@ describe('ExecutionEngine ONNX branch', () => {
       shaderCode: 'void main() {}',
       width: 800,
       height: 600,
+      autoSize: false,
     });
     const onnx = onnxNode('onnx_1');
 

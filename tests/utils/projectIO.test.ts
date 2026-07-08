@@ -139,9 +139,9 @@ describe('deserializeProject', () => {
     return JSON.stringify(project);
   }
 
-  it('restores nodes with correct fields', () => {
+  it('restores nodes with correct fields', async () => {
     const json = makeProjectJson();
-    const { nodes } = deserializeProject(json);
+    const { nodes } = await deserializeProject(json);
     expect(nodes).toHaveLength(1);
     expect(nodes[0].id).toBe('n1');
     expect(nodes[0].type).toBe('shader');
@@ -150,9 +150,9 @@ describe('deserializeProject', () => {
     expect(nodes[0].dragging).toBe(false);
   });
 
-  it('restores edges with correct fields', () => {
+  it('restores edges with correct fields', async () => {
     const json = makeProjectJson();
-    const { edges } = deserializeProject(json);
+    const { edges } = await deserializeProject(json);
     expect(edges).toHaveLength(1);
     expect(edges[0].id).toBe('e1');
     expect(edges[0].source).toBe('n1');
@@ -161,32 +161,32 @@ describe('deserializeProject', () => {
     expect(edges[0].targetHandle).toBe('in1');
   });
 
-  it('returns the parsed project object', () => {
+  it('returns the parsed project object', async () => {
     const json = makeProjectJson();
-    const { project } = deserializeProject(json);
+    const { project } = await deserializeProject(json);
     expect(project.version).toBe('0.3.0');
     expect(project.name).toBe('Test');
   });
 
-  it('throws on missing version', () => {
+  it('throws on missing version', async () => {
     const obj = {
       name: 'Bad',
       createdAt: '',
       updatedAt: '',
       graph: { nodes: [], edges: [] },
     };
-    expect(() => deserializeProject(JSON.stringify(obj))).toThrow('Invalid project file');
+    await expect(deserializeProject(JSON.stringify(obj))).rejects.toThrow('Invalid project file');
   });
 
-  it('throws on invalid JSON', () => {
-    expect(() => deserializeProject('not json {')).toThrow();
+  it('throws on invalid JSON', async () => {
+    await expect(deserializeProject('not json {')).rejects.toThrow();
   });
 
-  it('throws on empty string', () => {
-    expect(() => deserializeProject('')).toThrow();
+  it('throws on empty string', async () => {
+    await expect(deserializeProject('')).rejects.toThrow();
   });
 
-  it('throws on incompatible version', () => {
+  it('throws on incompatible version', async () => {
     const obj: ProjectFile = {
       version: '0.1.0',
       name: 'Old',
@@ -194,12 +194,12 @@ describe('deserializeProject', () => {
       updatedAt: '',
       graph: { nodes: [], edges: [] },
     };
-    expect(() => deserializeProject(JSON.stringify(obj))).toThrow('Incompatible project version');
+    await expect(deserializeProject(JSON.stringify(obj))).rejects.toThrow('Incompatible project version');
   });
 });
 
 describe('round-trip serialize → deserialize', () => {
-  it('preserves nodes and edges through a round-trip', () => {
+  it('preserves nodes and edges through a round-trip', async () => {
     const nodes = [
       makeNode('s1', 'shader', { x: 100, y: 200 }, {
         label: 'Blur',
@@ -214,7 +214,7 @@ describe('round-trip serialize → deserialize', () => {
     const project = serializeProject(nodes, edges, 'RoundTrip');
     const json = JSON.stringify(project);
     const { nodes: restoredNodes, edges: restoredEdges, project: restoredProject } =
-      deserializeProject(json);
+      await deserializeProject(json);
 
     expect(restoredProject.name).toBe('RoundTrip');
     expect(restoredNodes).toHaveLength(2);
