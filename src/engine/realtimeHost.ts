@@ -61,12 +61,14 @@ export class RealtimeHost {
 
   pause(): void {
     this.clock.pause();
+    for (const source of this.videoSources.values()) source.pause();
     this.state = 'paused';
     this.callbacks.onStateChange?.('paused');
   }
 
   resume(): void {
     this.clock.resume();
+    for (const source of this.videoSources.values()) source.play();
     this.state = 'playing';
     this.callbacks.onStateChange?.('playing');
   }
@@ -138,6 +140,7 @@ export class RealtimeHost {
     for (const nodeId of Array.from(this.videoSources.keys())) {
       if (!wanted.has(nodeId)) this.removeVideoSource(nodeId);
     }
+    if (wanted.size > 0) this.needsRecompile = true;
   }
 
   getState(): HostState {

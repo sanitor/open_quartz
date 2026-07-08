@@ -219,6 +219,12 @@ export class ExecutionEngine {
   runFrame(plan: ExecutionPlan, builtins: FrameInputs): void {
     if (!this.renderer) return;
 
+    if (builtins.videoTextures) {
+      for (const [nodeId, texture] of builtins.videoTextures) {
+        plan.textureSources.set(nodeId, { kind: 'image', texture });
+      }
+    }
+
     for (const nodeId of plan.sortedIds) {
       const node = plan.nodeMap.get(nodeId);
       if (!node || !isRenderableNode(node)) continue;
@@ -641,8 +647,7 @@ export class ExecutionEngine {
       try { s.dispose(); } catch { /* ignore */ }
     }
     this.onnxSessions.clear();
-    try { this.renderer?.dispose(); } catch { /* ignore */ }
-    this.renderer = null;
+    this.renderer?.clearResources();
   }
 
   private prepareInputTexture(

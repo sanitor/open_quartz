@@ -1,6 +1,6 @@
 # OpenQuartz vs Quartz Composer — 功能差距分析
 
-> 基于 Apple Quartz Composer 全功能集与 OpenQuartz v0.5.0b 的对比
+> 基于 Apple Quartz Composer 全功能集与 OpenQuartz v0.6.0b 的对比
 
 ---
 
@@ -23,18 +23,30 @@
 
 ## 核心差距
 
-### 1. 实时渲染循环（最大差距）
+### 1. 执行模型与时间系统（最大架构差距）
 
-QC 的核心体验是**实时 60fps 渲染循环**：composition 一直在跑，改参数立即看到效果，动画和交互自然产生。
+**QC 的 Pull 模式：**
 
-OpenQuartz 当前是**手动点 RUN 单次执行**，没有实时反馈。
+QC 的执行是 **pull（拉）模型** — renderer（宿主）从最终输出节点发起求值请求，沿连线向上游递归，每个 patch 被 pull 到时才计算，计算前先 pull 自己的输入依赖。没有连到输出链路上的 patch 根本不执行。
+
+时间不是内部时钟，而是宿主每帧传入的 `NSTimeInterval` 参数（`renderAtTime:arguments:`）：
+- **实时预览**：`CVDisplayLink` 回调时间戳，跟显示器刷新走
+- **离线渲染**：宿主按固定步长递增（如 +1/30s），不跟墙上时钟走
+- **交互 scrub**：直接传拖动位置，不需要渲染循环
+
+Composition 本身是**无状态纯函数** — 给一个 time，出一帧图。时间只是一个 float 输入，不是特殊机制。Movie Importer 的 `Movie Time`、`Rate`、`Start Time` 都是普通端口，可以外接任意数学 patch 做变速/跳转/乒乓循环。
+
+**OpenQuartz 当前的 Push 模式：**
+
+OpenQuartz 是 **push（推）模型** — 拓扑排序后从上游到下游逐个执行，全图都会跑。手动点 RUN 单次执行，没有实时反馈。
 
 缺少：
 
 - `requestAnimationFrame` 渲染循环
+- 宿主驱动的时间注入（`iTime`、`iFrame`、`iTimeDelta`）
 - 参数拖拽时实时更新画面
-- 时间 uniform（`iTime`、`iFrame`、`iTimeDelta`）
 - 帧率显示
+- Pull 模式的按需求值（当前 push 模式对全图执行可接受，但 pull 在节点数量大时更高效）
 
 ### 2. 内置 Patch 库
 
@@ -135,7 +147,7 @@ QC 有完整的 3D 场景能力：
 
 | 优先级 | 功能 | 价值 | 工作量 |
 |---|---|---|---|
-| **P0** | 实时渲染循环 + `iTime`/`iMouse` | QC 核心体验，解锁动画/交互 | 中 |
+| **P0** | 实时渲染循环 + 时间系统 | QC 核心体验；宿主驱动 rAF 循环 + `iTime`/`iMouse` 注入，解锁动画/交互 | 中 |
 | **P1** | 更多内置 shader（Generator + Blend + Distortion） | 用户不用从零写 GLSL | 中 |
 | **P1** | 参数 Slider + Color Picker UI | 拖拽调参比输入数字直觉得多 | 小 |
 | **P1** | 鼠标/键盘交互输入节点 | 最基本的实时交互驱动 | 小 |
@@ -228,4 +240,4 @@ QC 的真正价值不是"导出"，是**实时可视化**。OpenQuartz 作为跨
 
 ### 关键转折点
 
-加上**实时渲染循环** + `iTime` + `iMouse`，OpenQuartz 就从"静态 shader 图编辑器"变成"实时视觉合成器"。后续所有交互、动画、视频功能才有意义。这是当前最高优先级的架构变更。
+加上**实时渲染循环** + 时间系统（`iTime`/`iMouse`），OpenQuartz 就从"静态 shader 图编辑器"变成"实时视觉合成器"。当前 push 模式可以保留（全图执行在节点数合理时足够快），但需要增加 `requestAnimationFrame` 驱动的渲染循环和宿主时间注入。后续所有交互、动画、视频功能才有意义。这是当前最高优先级的架构变更。

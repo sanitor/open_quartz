@@ -221,10 +221,12 @@ export class WebGLRenderer {
 
   renderToScreen(texture: THREE.Texture) {
     const canvas = this.renderer.domElement;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w;
-    canvas.height = h;
+    const w = canvas.clientWidth || canvas.width || 1;
+    const h = canvas.clientHeight || canvas.height || 1;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.setRenderTarget(null);
     this.blitMaterial.map = texture;
@@ -350,14 +352,18 @@ export class WebGLRenderer {
     this.renderer.clear();
   }
 
-  dispose() {
+  clearResources() {
     for (const t of this.targets.values()) t.dispose();
     for (const t of this.previewTargets.values()) t.dispose();
     for (const t of this.imageTextures.values()) t.dispose();
-    this.blitMaterial.dispose();
     this.targets.clear();
     this.previewTargets.clear();
     this.imageTextures.clear();
+  }
+
+  dispose() {
+    this.clearResources();
+    this.blitMaterial.dispose();
     this.renderer.dispose();
   }
 }
