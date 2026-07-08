@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType, FramebufferFormat } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 import { generateRawPreview } from '../../../utils/rawPreview';
+import { checkIsTauri, tauriOpenVideoFile, tauriConvertFileSrc } from '../../../utils/tauri';
 
 const VEC_COMPONENTS: Record<string, string[]> = {
   vec2: ['x', 'y'],
@@ -61,10 +62,6 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
     fileInputRef.current?.click();
   }, []);
 
-  const handleVideoClick = useCallback(() => {
-    videoFileInputRef.current?.click();
-  }, []);
-
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -87,37 +84,58 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
     [id, updateNodeData],
   );
 
+  const loadVideoFromUrl = useCallback((url: string, fileName: string) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      updateNodeData(id, {
+        videoSourceType: 'file',
+        videoUrl: url,
+        videoFileName: fileName,
+        imageWidth: video.videoWidth,
+        imageHeight: video.videoHeight,
+        videoLoop: data.videoLoop ?? true,
+        videoPlaybackRate: data.videoPlaybackRate ?? 1,
+      });
+    };
+    video.onerror = () => {
+      updateNodeData(id, {
+        videoSourceType: 'file',
+        videoUrl: url,
+        videoFileName: fileName,
+        videoLoop: data.videoLoop ?? true,
+        videoPlaybackRate: data.videoPlaybackRate ?? 1,
+      });
+    };
+    video.src = url;
+  }, [id, data.videoLoop, data.videoPlaybackRate, updateNodeData]);
+
+  const handleVideoClick = useCallback(() => {
+    checkIsTauri().then((tauri) => {
+      if (!tauri) {
+        videoFileInputRef.current?.click();
+        return;
+      }
+      tauriOpenVideoFile().then((filePath) => {
+        if (!filePath) return;
+        tauriConvertFileSrc(filePath).then((assetUrl) => {
+          const fileName = filePath.split('/').pop() ?? filePath.split('\\').pop() ?? filePath;
+          updateNodeData(id, { videoFilePath: filePath });
+          loadVideoFromUrl(assetUrl, fileName);
+        });
+      });
+    });
+  }, [id, updateNodeData, loadVideoFromUrl]);
+
   const handleVideoFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       const url = URL.createObjectURL(file);
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-      video.onloadedmetadata = () => {
-        updateNodeData(id, {
-          videoSourceType: 'file',
-          videoUrl: url,
-          videoFileName: file.name,
-          imageWidth: video.videoWidth,
-          imageHeight: video.videoHeight,
-          videoLoop: true,
-          videoPlaybackRate: 1,
-        });
-      };
-      video.onerror = () => {
-        updateNodeData(id, {
-          videoSourceType: 'file',
-          videoUrl: url,
-          videoFileName: file.name,
-          videoLoop: true,
-          videoPlaybackRate: 1,
-        });
-      };
-      video.src = url;
+      loadVideoFromUrl(url, file.name);
       e.target.value = '';
     },
-    [id, updateNodeData],
+    [loadVideoFromUrl],
   );
 
   const handleRawFileChange = useCallback(
@@ -202,6 +220,11 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                 <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                   {data.videoFileName ?? 'loaded'}
                 </div>
+              </div>
+            ) : data.videoFileName ? (
+              <div onClick={handleVideoClick} className="flex flex-col items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#ff9500] rounded cursor-pointer" style={{ height: 80 }}>
+                <span className="text-[10px] truncate px-2">{data.videoFileName}</span>
+                <span className="text-[9px] mt-1">Click to reload</span>
               </div>
             ) : (
               <div className="flex items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#d2d2d7] rounded" style={{ height: 80 }}>

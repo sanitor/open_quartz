@@ -135,9 +135,9 @@ export function Header() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
-        const result = deserializeProject(ev.target?.result as string);
+        const result = await deserializeProject(ev.target?.result as string);
         const baseName = file.name.replace(/\.quartz\.json$/i, '');
         loadGraph(result.nodes, result.edges);
         setProjectName(baseName);

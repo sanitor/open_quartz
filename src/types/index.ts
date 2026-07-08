@@ -67,6 +67,7 @@ export interface ShaderNodeData {
   videoSourceType?: 'camera' | 'file';
   videoUrl?: string;
   videoFileName?: string;
+  videoFilePath?: string;
   videoDeviceId?: string;
   videoLoop?: boolean;
   videoPlaybackRate?: number;
