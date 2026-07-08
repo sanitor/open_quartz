@@ -20,7 +20,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -219,6 +219,7 @@ export function Header() {
     { label: 'SAMPLER2D', items: [
       { label: 'IMAGE', type: 'sampler2D', mode: 'image' },
       { label: 'FRAMEBUFFER', type: 'sampler2D', mode: 'framebuffer' },
+      { label: 'VIDEO', type: 'sampler2D', mode: 'video' },
     ]},
   ];
 
@@ -413,6 +414,11 @@ export function Header() {
         )}
       </div>
 
+      <button onClick={() => addRendererNode()} className={btnClass}>
+        <span className={iconClass}>🖥</span>
+        <span>RENDERER</span>
+      </button>
+
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
       <button
@@ -443,16 +449,57 @@ export function Header() {
         <span>CLEAR</span>
       </button>
 
-      <div className="ml-auto">
-        <button
-          onClick={() => setRunning(!isRunning)}
-          className={`flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold transition-colors cursor-default ${
-            isRunning ? 'text-[#ff3b30] hover:text-[#ff3b30]' : 'text-[#1d1d1f] hover:text-[#007aff]'
-          }`}
-        >
-          <span className={iconClass}>{isRunning ? '□' : '▷'}</span>
-          <span>{isRunning ? 'STOP' : 'RUN'}</span>
-        </button>
+      <div className="ml-auto flex items-center gap-1">
+        {/* FPS display */}
+        {loopState !== 'stopped' && (
+          <span className="text-[9px] font-mono text-[#86868b] mr-2">
+            {fps > 0 ? `${Math.round(fps)} FPS` : '-- FPS'}
+          </span>
+        )}
+
+        {/* Time display */}
+        {loopState !== 'stopped' && (
+          <span className="text-[9px] font-mono text-[#86868b] mr-2">
+            {currentTime.toFixed(1)}s
+          </span>
+        )}
+
+        {/* Single-shot RUN (keep existing) */}
+        {loopState === 'stopped' && (
+          <button
+            onClick={() => setRunning(!isRunning)}
+            className={isRunning ? btnClass.replace('text-[#1d1d1f]', 'text-[#ff3b30]') : btnClass}
+          >
+            <span className={iconClass}>{isRunning ? '□' : '▷'}</span>
+            <span>{isRunning ? 'STOP' : 'RUN'}</span>
+          </button>
+        )}
+
+        {/* PLAY / PAUSE / RESUME */}
+        {loopState === 'stopped' ? (
+          <button onClick={play} className={btnClass}>
+            <span className={iconClass}>▶</span>
+            <span>PLAY</span>
+          </button>
+        ) : loopState === 'playing' ? (
+          <button onClick={pause} className={btnClass}>
+            <span className={iconClass}>⏸</span>
+            <span>PAUSE</span>
+          </button>
+        ) : (
+          <button onClick={resume} className={btnClass}>
+            <span className={iconClass}>▶</span>
+            <span>RESUME</span>
+          </button>
+        )}
+
+        {/* STOP (only when playing/paused) */}
+        {loopState !== 'stopped' && (
+          <button onClick={() => { stop(); }} className={`${btnClass} !text-[#ff3b30]`}>
+            <span className={iconClass}>■</span>
+            <span>STOP</span>
+          </button>
+        )}
       </div>
 
       {tauriApp && !isMac && (

@@ -13,7 +13,7 @@ export type LogicalDataType = 'roi' | 'mesh' | 'json';
 
 export type DataType = GlslDataType | LogicalDataType;
 
-export type InputMode = 'image' | 'framebuffer';
+export type InputMode = 'image' | 'framebuffer' | 'video';
 
 export type FramebufferFormat = 'rgba8' | 'rgba32f' | 'rg8' | 'rg32f' | 'r8' | 'r32f' | 'nv12';
 
@@ -28,7 +28,7 @@ export interface Port {
   defaultValue?: unknown;
 }
 
-export type NodeType = 'shader' | 'input' | 'constant' | 'onnx';
+export type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer';
 
 export interface ShaderNodeData {
   type: NodeType;
@@ -63,6 +63,15 @@ export interface ShaderNodeData {
   onnxScoreThreshold?: number;
   onnxIouThreshold?: number;
   onnxTargetSize?: number;
+  rendererWidth?: number;
+  rendererHeight?: number;
+  expanded?: boolean;
+  videoSourceType?: 'camera' | 'file';
+  videoUrl?: string;
+  videoFileName?: string;
+  videoDeviceId?: string;
+  videoLoop?: boolean;
+  videoPlaybackRate?: number;
   [key: string]: unknown;
 }
 

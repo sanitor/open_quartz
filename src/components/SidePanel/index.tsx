@@ -275,8 +275,47 @@ export function SidePanel() {
         </>
       )}
 
+      {/* Renderer config */}
+      {data.type === 'renderer' && (
+        <div className="px-4 py-3 border-t border-[#e8e8ed] flex-shrink-0">
+          <div className="text-[10px] text-[#86868b] font-medium mb-2">RENDERER CONFIG</div>
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex-1">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
+              <input
+                type="number"
+                min={1}
+                max={8192}
+                value={String(data.rendererWidth ?? 512)}
+                onChange={(e) => updateNodeData(selectedNodeId!, { rendererWidth: parseInt(e.target.value) || 512 })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
+              <input
+                type="number"
+                min={1}
+                max={8192}
+                value={String(data.rendererHeight ?? 512)}
+                onChange={(e) => updateNodeData(selectedNodeId!, { rendererHeight: parseInt(e.target.value) || 512 })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">
+            <input
+              type="checkbox"
+              checked={data.expanded !== false}
+              onChange={(e) => updateNodeData(selectedNodeId!, { expanded: e.target.checked })}
+            />
+            Expanded preview
+          </label>
+        </div>
+      )}
+
       {/* Image dimensions (read-only) */}
-      {data.type === 'input' && data.inputDataType === 'sampler2D' && data.inputMode !== 'framebuffer' && data.imageWidth && data.imageHeight && (
+      {data.type === 'input' && data.inputDataType === 'sampler2D' && data.inputMode !== 'framebuffer' && data.inputMode !== 'video' && data.imageWidth && data.imageHeight && (
         <div className="px-4 py-2 border-t border-[#e8e8ed] flex-shrink-0">
           <span className="text-[11px] text-[#86868b]">{data.imageWidth} × {data.imageHeight}</span>
         </div>
@@ -334,6 +373,50 @@ export function SidePanel() {
               className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
               placeholder="auto"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Video config */}
+      {data.type === 'input' && data.inputMode === 'video' && (
+        <div className="px-4 py-3 border-t border-[#e8e8ed] flex-shrink-0">
+          <div className="text-[10px] text-[#86868b] font-medium mb-2">VIDEO CONFIG</div>
+          <div className="mb-2">
+            <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Source</label>
+            <select
+              value={data.videoSourceType ?? 'file'}
+              onChange={(e) => updateNodeData(selectedNodeId!, { videoSourceType: e.target.value as 'camera' | 'file' })}
+              className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+            >
+              <option value="file">FILE</option>
+              <option value="camera">CAMERA</option>
+            </select>
+          </div>
+          {(data.imageWidth || data.resolvedWidth) && (data.imageHeight || data.resolvedHeight) && (
+            <div className="text-[11px] text-[#86868b] mb-2">
+              {(data.imageWidth ?? data.resolvedWidth)} × {(data.imageHeight ?? data.resolvedHeight)}
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">
+              <input
+                type="checkbox"
+                checked={data.videoLoop ?? true}
+                onChange={(e) => updateNodeData(selectedNodeId!, { videoLoop: e.target.checked })}
+              />
+              Loop
+            </label>
+            <div className="flex-1">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Rate</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                value={String(data.videoPlaybackRate ?? 1)}
+                onChange={(e) => updateNodeData(selectedNodeId!, { videoPlaybackRate: parseFloat(e.target.value) || 1 })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              />
+            </div>
           </div>
         </div>
       )}

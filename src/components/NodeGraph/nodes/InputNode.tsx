@@ -43,11 +43,13 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const nodeErrors = useGraphStore((s) => s.nodeErrors);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rawFileInputRef = useRef<HTMLInputElement>(null);
+  const videoFileInputRef = useRef<HTMLInputElement>(null);
 
   const currentType = (data.inputDataType ?? 'float') as DataType;
   const isFramebuffer = data.inputMode === 'framebuffer';
+  const isVideo = data.inputMode === 'video';
   const error = nodeErrors[id];
-  const hasNoValue = currentType === 'sampler2D' && !data.imageDataUrl && !data.rawDataUrl;
+  const hasNoValue = currentType === 'sampler2D' && !data.imageDataUrl && !data.rawDataUrl && !data.videoUrl;
   const accent = error ? '#ff3b30' : hasNoValue ? '#8e8e93' : '#007aff';
 
   const fbPreview = useMemo(() => {
@@ -57,6 +59,10 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
 
   const handleImageClick = useCallback(() => {
     fileInputRef.current?.click();
+  }, []);
+
+  const handleVideoClick = useCallback(() => {
+    videoFileInputRef.current?.click();
   }, []);
 
   const handleFileChange = useCallback(
@@ -76,6 +82,39 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
         img.src = dataUrl;
       };
       reader.readAsDataURL(file);
+      e.target.value = '';
+    },
+    [id, updateNodeData],
+  );
+
+  const handleVideoFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.onloadedmetadata = () => {
+        updateNodeData(id, {
+          videoSourceType: 'file',
+          videoUrl: url,
+          videoFileName: file.name,
+          imageWidth: video.videoWidth,
+          imageHeight: video.videoHeight,
+          videoLoop: true,
+          videoPlaybackRate: 1,
+        });
+      };
+      video.onerror = () => {
+        updateNodeData(id, {
+          videoSourceType: 'file',
+          videoUrl: url,
+          videoFileName: file.name,
+          videoLoop: true,
+          videoPlaybackRate: 1,
+        });
+      };
+      video.src = url;
       e.target.value = '';
     },
     [id, updateNodeData],
@@ -108,7 +147,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
         style={{ height: HEADER_H, backgroundColor: accent }}
       >
         <span className="text-xs font-semibold text-white">
-          {isFramebuffer ? 'FRAMEBUFFER' : currentType === 'sampler2D' ? 'IMAGE' : currentType.toUpperCase()}
+          {isVideo ? 'VIDEO' : isFramebuffer ? 'FRAMEBUFFER' : currentType === 'sampler2D' ? 'IMAGE' : currentType.toUpperCase()}
         </span>
         <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>
       </div>
@@ -138,6 +177,35 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
             ) : (
               <div className="flex items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#d2d2d7] rounded" style={{ height: 80 }}>
                 Click to load raw file
+              </div>
+            )}
+          </div>
+          {data.outputs[0] && (
+            <div className="relative w-3 flex items-center">
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={data.outputs[0].id}
+                className="!w-2.5 !h-2.5 !border-2 !border-white"
+                style={{ backgroundColor: PORT_COLOR }}
+              />
+            </div>
+          )}
+        </div>
+      ) : currentType === 'sampler2D' && isVideo ? (
+        <div className="flex items-stretch">
+          <div onClick={handleVideoClick} className="cursor-pointer flex-1 min-w-0">
+            <input ref={videoFileInputRef} type="file" accept="video/*" onChange={handleVideoFileChange} className="hidden" />
+            {data.videoUrl ? (
+              <div className="p-2">
+                <video src={data.videoUrl} muted loop playsInline className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+                <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
+                  {data.videoFileName ?? 'loaded'}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#d2d2d7] rounded" style={{ height: 80 }}>
+                Click to load video
               </div>
             )}
           </div>

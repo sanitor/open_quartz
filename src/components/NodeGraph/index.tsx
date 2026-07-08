@@ -25,12 +25,14 @@ import { ShaderNode } from './nodes/ShaderNode';
 import { OnnxNode } from './nodes/OnnxNode';
 import { InputNode } from './nodes/InputNode';
 import { CustomEdge } from './edges/CustomEdge';
+import { RendererNode } from './nodes/RendererNode';
 
 const nodeTypes: NodeTypes = {
   shader: ShaderNode,
   input: InputNode,
   constant: ShaderNode,
   onnx: OnnxNode,
+  renderer: RendererNode,
 };
 
 const edgeTypes: EdgeTypes = {

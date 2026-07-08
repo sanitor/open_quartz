@@ -24,6 +24,11 @@ interface GraphState {
   outputPreviews: Record<string, string>;
   outputData: Record<string, unknown>;
   nodeErrors: Record<string, string>;
+  loopState: 'stopped' | 'playing' | 'paused';
+  fps: number;
+  currentTime: number;
+  currentFrame: number;
+  activeRendererId: string | null;
 
   undoStack: HistoryEntry[];
   redoStack: HistoryEntry[];
@@ -49,6 +54,15 @@ interface GraphState {
   setOutputPreview: (nodeId: string, dataUrl: string) => void;
   setOutputData: (nodeId: string, data: unknown) => void;
   clearOutputPreviews: () => void;
+  play: () => void;
+  pause: () => void;
+  resume: () => void;
+  setFps: (fps: number) => void;
+  setCurrentTime: (t: number) => void;
+  setCurrentFrame: (frame: number) => void;
+  setActiveRenderer: (id: string | null) => void;
+  addRendererNode: (position?: { x: number; y: number }) => void;
+  stop: () => void;
   setNodeError: (nodeId: string, error: string | null) => void;
   clearNodeErrors: () => void;
   loadGraph: (nodes: Node<ShaderNodeData>[], edges: Edge[]) => void;
@@ -84,6 +98,7 @@ function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: D
     case 'constant':
       return 'uniform vec4 color;\nout vec4 fragColor;\nvoid main() { fragColor = color; }';
     case 'onnx':
+    case 'renderer':
       return '';
   }
 }
@@ -159,6 +174,11 @@ export const useGraphStore = create<GraphState>()(
       nodeErrors: {},
       undoStack: [],
       redoStack: [],
+      loopState: 'stopped',
+      fps: 0,
+      currentTime: 0,
+      currentFrame: 0,
+      activeRendererId: null,
 
       pushHistory: saveSnapshot,
 
@@ -390,6 +410,45 @@ export const useGraphStore = create<GraphState>()(
         nodeCounter = 0;
         nodeCascade = 0;
       },
+
+      play: () => set((state) => { state.loopState = 'playing'; }),
+      pause: () => set((state) => { state.loopState = 'paused'; }),
+      resume: () => set((state) => { state.loopState = 'playing'; }),
+      setFps: (fps) => set((state) => { state.fps = fps; }),
+      setCurrentTime: (t) => set((state) => { state.currentTime = t; }),
+      setCurrentFrame: (f) => set((state) => { state.currentFrame = f; }),
+      setActiveRenderer: (id) => set((state) => { state.activeRendererId = id; }),
+      addRendererNode: (position) => {
+        saveSnapshot();
+        nodeCounter++;
+        const id = `renderer_${nodeCounter}`;
+        const cascade = nodeCascade++ * 28;
+        const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
+        const node: Node<ShaderNodeData> = {
+          id,
+          type: 'renderer',
+          position: pos,
+          data: {
+            type: 'renderer',
+            label: `Renderer ${nodeCounter}`,
+            shaderCode: '',
+            inputs: [{ id: 'input_inputTexture', label: 'inputTexture', dataType: 'sampler2D', direction: 'input' }],
+            outputs: [],
+            uniforms: {},
+            rendererWidth: 512,
+            rendererHeight: 512,
+            expanded: true,
+          },
+        };
+        set((state) => { state.nodes.push(node); });
+      },
+
+      stop: () => set((state) => {
+        state.loopState = 'stopped';
+        state.fps = 0;
+        state.currentTime = 0;
+        state.currentFrame = 0;
+      }),
     };
   }),
 );

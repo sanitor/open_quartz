@@ -13,6 +13,7 @@ function stripInjected(code: string): string {
   return code
     .replace(/#version\s+\d+\s*\w*\s*/g, '')
     .replace(/precision\s+\w+\s+\w+\s*;/g, '')
+    .replace(/in\s+vec2\s+v_uv\s*;?/g, '')
     .replace(/out\s+vec[234]\s+\w+\s*;/g, '');
 }
 

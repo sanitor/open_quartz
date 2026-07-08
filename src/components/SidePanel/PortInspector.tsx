@@ -1,6 +1,15 @@
 import type { Port } from '../../types';
 import { DATA_TYPE_COLORS } from '../../types';
 
+const BUILTIN_UNIFORMS: Record<string, true> = {
+  iTime: true,
+  iTimeDelta: true,
+  iFrame: true,
+  iDate: true,
+  iMouse: true,
+  iResolution: true,
+};
+
 interface PortInspectorProps {
   inputs: Port[];
   outputs: Port[];
@@ -64,6 +73,7 @@ function PortRow({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const isBuiltin = BUILTIN_UNIFORMS[port.label] === true;
   if (port.dataType === 'sampler2D') {
     return (
       <div className="flex items-center gap-2 text-[11px]">
@@ -73,6 +83,7 @@ function PortRow({
         />
         <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
         <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
+        {isBuiltin && <span className="text-[8px] text-[#007aff] bg-[#e8f2ff] rounded px-1">AUTO</span>}
         <span className="flex-1 text-[10px] text-[#aeaeb2] italic text-right">
           ← connect upstream
         </span>
@@ -87,6 +98,7 @@ function PortRow({
         style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
       />
       <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
+      {isBuiltin && <span className="text-[8px] text-[#007aff] bg-[#e8f2ff] rounded px-1">AUTO</span>}
       <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
       <VectorInput dataType={port.dataType} value={value} onChange={onChange} />
     </div>
