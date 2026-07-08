@@ -68,6 +68,20 @@ Build and connect GLSL shaders visually using a node graph. Each node is a shade
 - Emboss
 - Pixelate (with configurable block size)
 
+### ONNX Nodes (experimental)
+- **`onnx` node type** — self-contained inference nodes that bundle an ONNX model, run it in-browser, and emit both structured outputs (`roi`, `mesh`, `json`) and a `sampler2D` overlay for downstream shaders.
+- **Bundled model: YOLOv8n** (80 COCO classes, ~6MB). Input port `image: sampler2D`, output ports `detections: roi` and `overlay: sampler2D`.
+- **Runtime**: `onnxruntime-web` (auto-loaded from `public/ort/ort.min.js` by the wasm bridge) driven by a Rust `wasm-pack` bundle (`rust/crates/yolo-detector`, git-dep on [`caozisheng/rimeflow-yolov8n`](https://github.com/caozisheng/rimeflow-yolov8n)) via `wasm_bindgen(inline_js)`. Prefers WebGPU EP with automatic fallback to WASM EP.
+- **Score/IoU thresholds** editable in the side panel; live detection list with class name, confidence, and normalized bbox.
+- **Setup** (once per checkout):
+  ```
+  npm i -D onnxruntime-web
+  npm run copy:ort       # populates public/ort/
+  npm run build:wasm     # rebuilds rust/crates/yolo-detector/pkg
+  ```
+- See `docs/ONNX_NODE_DESIGN.md` for architecture and forward-compatibility notes.
+
+
 ### Project Management
 - **Save / Save As** — export your graph as a `.quartz.json` file with native save dialog
 - **Load** — import a previously saved project with auto-fit view

@@ -1,0 +1,34 @@
+[package]
+name = "yolo-detector"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "OpenQuartz onnx node: YOLOv8n detector — wasm-bindgen wrapper over upstream rimeflow-yolov8n"
+
+[lib]
+name = "yolo_detector"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Upstream: pure Rust postprocess + inline_js onnxruntime-web bridge.
+# Kept as a git dep so we track the source of truth without vendoring.
+rimeflow-yolov8n = { git = "https://github.com/caozisheng/rimeflow-yolov8n", branch = "main" }
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "HtmlCanvasElement",
+  "OffscreenCanvas",
+  "console",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

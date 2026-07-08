@@ -1,6 +1,7 @@
 import { useGraphStore } from '../../store/useGraphStore';
 import { ShaderEditor } from './ShaderEditor';
 import { PortInspector } from './PortInspector';
+import { OnnxPanel } from './OnnxPanel';
 import { useCallback, useMemo, useState } from 'react';
 import { ImageLightbox } from '../ImageLightbox';
 import type { FramebufferFormat, TextureFilter, TextureWrap } from '../../types';
@@ -125,6 +126,15 @@ export function SidePanel() {
           onUniformChange={handleUniformChange}
         />
       </div>
+
+      {data.type === 'onnx' && data.onnxModelId && (
+        <OnnxPanel
+          nodeId={selectedNodeId!}
+          modelId={data.onnxModelId}
+          score={data.onnxScoreThreshold}
+          iou={data.onnxIouThreshold}
+        />
+      )}
 
       {/* Output config for shader nodes */}
       {(data.type === 'shader' || data.type === 'constant') && (

@@ -12,7 +12,7 @@ function nextPortId(): string {
 
 function mapType(raw: string): DataType {
   const t = raw.trim();
-  if (GLSL_VALID_TYPES.includes(t as DataType)) return t as DataType;
+  if ((GLSL_VALID_TYPES as string[]).includes(t)) return t as DataType;
   return 'float';
 }
 

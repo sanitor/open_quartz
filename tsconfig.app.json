@@ -5,6 +5,9 @@
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
     "types": ["vite/client"],
+    "paths": {
+      "@nodes/yolo-detector": ["./rust/crates/yolo-detector/pkg/yolo_detector"]
+    },
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

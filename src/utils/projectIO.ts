@@ -2,7 +2,7 @@ import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 
-const CURRENT_VERSION = '0.2.0';
+const CURRENT_VERSION = '0.3.0';
 
 export function serializeProject(
   nodes: Node<ShaderNodeData>[],

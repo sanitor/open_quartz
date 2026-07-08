@@ -20,7 +20,9 @@ import {
 import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../../store/useGraphStore';
 import type { ShaderNodeData } from '../../types';
+import { isLogicalType } from '../../types';
 import { ShaderNode } from './nodes/ShaderNode';
+import { OnnxNode } from './nodes/OnnxNode';
 import { InputNode } from './nodes/InputNode';
 import { CustomEdge } from './edges/CustomEdge';
 
@@ -28,6 +30,7 @@ const nodeTypes: NodeTypes = {
   shader: ShaderNode,
   input: InputNode,
   constant: ShaderNode,
+  onnx: OnnxNode,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -106,10 +109,15 @@ function isConnectionValid(connection: Connection | Edge): boolean {
   const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
   if (!sourcePort || !targetPort) return false;
 
+  if (isLogicalType(targetPort.dataType) || isLogicalType(sourcePort.dataType)) {
+    return sourcePort.dataType === targetPort.dataType;
+  }
+
   if (targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube') {
     if (sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube') return true;
     const srcType = sourceNode.data.type;
     if (srcType === 'shader' || srcType === 'constant') return true;
+    if (srcType === 'onnx') return true;
     if (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D') return true;
     return false;
   }

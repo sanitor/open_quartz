@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# Room to grow: any future OpenQuartz Rust crate (segmenter, mesher, etc.)
+# lands in `rust/crates/<name>/` and is picked up automatically.

@@ -4,6 +4,9 @@ import type { ShaderNodeData, FramebufferFormat, TextureFilter, TextureWrap } fr
 import { WebGLRenderer } from './webglRenderer';
 import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
+import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './onnxRegistry';
+import { OnnxSession, type OnnxDetection } from './onnxSession';
+import { drawDetectionOverlay } from './onnxOverlay';
 
 type TextureSource =
   | { kind: 'fbo'; target: THREE.WebGLRenderTarget }
@@ -31,6 +34,7 @@ export class ExecutionEngine {
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onNodeError?: (nodeId: string, error: string) => void,
     onOutputSize?: (nodeId: string, width: number, height: number) => void,
+    onOutputData?: (nodeId: string, data: unknown) => void,
   ) {
     if (!this.renderer) return;
     this.running = true;
@@ -217,13 +221,95 @@ export class ExecutionEngine {
           continue;
         }
       }
+      if (node.data.type === 'onnx') {
+        try {
+          const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
+          const descriptor = ONNX_MODELS[modelId];
+          if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
+
+          const imagePort = node.data.inputs.find((p) => p.dataType === 'sampler2D');
+          if (!imagePort) throw new Error(`ONNX node missing sampler2D input`);
+          const upstreamEdge = upstreamEdges.find((e) => e.targetHandle === imagePort.id);
+          if (!upstreamEdge) throw new Error(`ONNX input '${imagePort.label}' not connected`);
+
+          const source = textures.get(upstreamEdge.source);
+          if (!source) throw new Error(`ONNX upstream '${upstreamEdge.source}' produced no texture`);
+
+          // Source dimensions: FBO knows its own size; image texture reads the underlying HTMLImageElement.
+          let srcW: number;
+          let srcH: number;
+          if (source.kind === 'fbo') {
+            srcW = source.target.width;
+            srcH = source.target.height;
+          } else {
+            const img: unknown = source.texture.image;
+            if (img instanceof HTMLImageElement) {
+              srcW = img.naturalWidth || defaultW;
+              srcH = img.naturalHeight || defaultH;
+            } else {
+              srcW = defaultW;
+              srcH = defaultH;
+            }
+          }
+          // Render the upstream source into a scratch RGBA8 FBO we can read back.
+          const scratchId = `onnx_src_${nodeId}`;
+          const scratchTarget = this.renderer.createTarget(scratchId, srcW, srcH, false, 'rgba8');
+          if (source.kind === 'fbo') {
+            this.renderer.renderSampler2DInput(source.target.texture, scratchTarget);
+          } else {
+            this.renderer.renderSampler2DInput(source.texture, scratchTarget);
+          }
+          const sourceCanvas = this.renderer.readTargetToCanvas(scratchTarget);
+
+          // Lazy session cache on the engine instance.
+          const session = await this.getOnnxSession(descriptor);
+          if (node.data.onnxScoreThreshold !== undefined && node.data.onnxIouThreshold !== undefined) {
+            session.setThresholds(node.data.onnxScoreThreshold, node.data.onnxIouThreshold);
+          }
+
+          const result = await session.run(sourceCanvas, srcW, srcH);
+          const detections: OnnxDetection[] = result.detections;
+
+          // Overlay canvas → CanvasTexture registered for downstream sampler2D consumers.
+          const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
+          textures.set(nodeId, { kind: 'image', texture: overlay.texture });
+
+          onOutput?.(nodeId, overlay.dataUrl);
+          onOutputSize?.(nodeId, srcW, srcH);
+          onOutputData?.(nodeId, { detections });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(`ONNX error for node ${nodeId}:`, msg);
+          onNodeError?.(nodeId, msg);
+        }
+        continue;
+      }
+
 
     }
   }
 
+  private onnxSessions = new Map<string, OnnxSession>();
+
+  private async getOnnxSession(descriptor: OnnxModelDescriptor): Promise<OnnxSession> {
+    const existing = this.onnxSessions.get(descriptor.id);
+    if (existing) {
+      if (existing.status !== 'ready') await existing.init();
+      return existing;
+    }
+    const session = new OnnxSession(descriptor);
+    this.onnxSessions.set(descriptor.id, session);
+    await session.init();
+    return session;
+  }
+
   stop() {
     this.running = false;
-    try { this.renderer?.dispose(); } catch {}
+    for (const s of this.onnxSessions.values()) {
+      try { s.dispose(); } catch { /* ignore */ }
+    }
+    this.onnxSessions.clear();
+    try { this.renderer?.dispose(); } catch { /* ignore */ }
     this.renderer = null;
   }
 }

@@ -47,7 +47,7 @@ describe('serializeProject', () => {
     const edges = [makeEdge('e1', 'n1', 'n2', 'out1', 'in1')];
     const result = serializeProject(nodes, edges, 'TestProject');
 
-    expect(result.version).toBe('0.2.0');
+    expect(result.version).toBe('0.3.0');
     expect(result.name).toBe('TestProject');
     expect(result.createdAt).toBeTruthy();
     expect(result.updatedAt).toBeTruthy();
@@ -104,7 +104,7 @@ describe('serializeProject', () => {
 describe('deserializeProject', () => {
   function makeProjectJson(overrides?: Partial<ProjectFile>): string {
     const project: ProjectFile = {
-      version: '0.2.0',
+      version: '0.3.0',
       name: 'Test',
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
@@ -164,7 +164,7 @@ describe('deserializeProject', () => {
   it('returns the parsed project object', () => {
     const json = makeProjectJson();
     const { project } = deserializeProject(json);
-    expect(project.version).toBe('0.2.0');
+    expect(project.version).toBe('0.3.0');
     expect(project.name).toBe('Test');
   });
 

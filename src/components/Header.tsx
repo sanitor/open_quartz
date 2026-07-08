@@ -5,6 +5,7 @@ import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
 import type { DataType, InputMode } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
+import { ONNX_MODELS } from '../engine/onnxRegistry';
 
 const isMac = navigator.platform.startsWith('Mac');
 
@@ -174,6 +175,7 @@ export function Header() {
 
   const [inputOpen, setInputOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
+  const [onnxOpen, setOnnxOpen] = useState(false);
 
   const shaderItems = [
     { label: 'CUSTOM SHADER', code: CUSTOM_SHADER_CODE, custom: true },
@@ -372,6 +374,39 @@ export function Header() {
                     </div>
                   )}
                 </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="relative">
+        <button onClick={() => setOnnxOpen(!onnxOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="6" />
+            <path d="M5 8 L8 5 L11 8 L8 11 Z" />
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>ONNX</span>
+            <span className="text-[8px] leading-none font-normal">▾</span>
+          </span>
+        </button>
+        {onnxOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setOnnxOpen(false)} />
+            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[180px]">
+              {Object.values(ONNX_MODELS).map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => {
+                    useGraphStore.getState().addOnnxNode(m.id, { inputs: m.inputs, outputs: m.outputs });
+                    setOnnxOpen(false);
+                  }}
+                  className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                  title={m.description}
+                >
+                  {m.label.toUpperCase()}
+                </button>
               ))}
             </div>
           </>

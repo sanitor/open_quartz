@@ -19,7 +19,7 @@ export default function App() {
         const nodes = state.nodes;
         const edges = state.edges;
 
-        const { setOutputPreview, clearOutputPreviews, setNodeError, clearNodeErrors, setSelectedNode, updateNodeData } = useGraphStore.getState();
+        const { setOutputPreview, clearOutputPreviews, setNodeError, clearNodeErrors, setSelectedNode, updateNodeData, setOutputData } = useGraphStore.getState();
         clearOutputPreviews();
         clearNodeErrors();
 
@@ -28,7 +28,7 @@ export default function App() {
           setSelectedNode(nodeId);
         }, (nodeId, w, h) => {
           updateNodeData(nodeId, { resolvedWidth: w, resolvedHeight: h });
-        })
+        }, setOutputData)
           .catch((err) => console.error('Execution error:', err))
           .finally(() => {
             engine.stop();

@@ -6,6 +6,11 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/src-tauri/icons/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Open Quartz</title>
+    <!--
+      onnxruntime-web is auto-loaded by the yolo-detector wasm bridge from
+      /ort/ort.min.js when the first ONNX node runs (see docs/ONNX_NODE_DESIGN.md).
+      Populate `public/ort/` with `npm run copy:ort` before dev.
+    -->
   </head>
   <body>
     <div id="root"></div>

@@ -1,4 +1,4 @@
-export type DataType =
+export type GlslDataType =
   | 'float' | 'int' | 'uint' | 'bool'
   | 'vec2' | 'vec3' | 'vec4'
   | 'ivec2' | 'ivec3' | 'ivec4'
@@ -6,6 +6,12 @@ export type DataType =
   | 'bvec2' | 'bvec3' | 'bvec4'
   | 'mat2' | 'mat3' | 'mat4'
   | 'sampler2D' | 'samplerCube';
+
+// Logical (non-GLSL) types produced by non-shader nodes such as `onnx`.
+// They can flow between nodes on the DAG but cannot be sampled by GLSL.
+export type LogicalDataType = 'roi' | 'mesh' | 'json';
+
+export type DataType = GlslDataType | LogicalDataType;
 
 export type InputMode = 'image' | 'framebuffer';
 
@@ -22,7 +28,7 @@ export interface Port {
   defaultValue?: unknown;
 }
 
-export type NodeType = 'shader' | 'input' | 'constant';
+export type NodeType = 'shader' | 'input' | 'constant' | 'onnx';
 
 export interface ShaderNodeData {
   type: NodeType;
@@ -52,6 +58,11 @@ export interface ShaderNodeData {
   resolvedWidth?: number;
   resolvedHeight?: number;
   outFormat?: FramebufferFormat;
+  // ONNX node fields
+  onnxModelId?: string;
+  onnxScoreThreshold?: number;
+  onnxIouThreshold?: number;
+  onnxTargetSize?: number;
   [key: string]: unknown;
 }
 
@@ -99,9 +110,13 @@ export const DATA_TYPE_COLORS: Record<DataType, string> = {
   mat4: '#4fc3f7',
   sampler2D: '#aed581',
   samplerCube: '#dce775',
+  // logical types
+  roi: '#ff8a65',
+  mesh: '#7986cb',
+  json: '#ffb74d',
 };
 
-export const GLSL_VALID_TYPES: DataType[] = [
+export const GLSL_VALID_TYPES: GlslDataType[] = [
   'float', 'int', 'uint', 'bool',
   'vec2', 'vec3', 'vec4',
   'ivec2', 'ivec3', 'ivec4',
@@ -110,3 +125,9 @@ export const GLSL_VALID_TYPES: DataType[] = [
   'mat2', 'mat3', 'mat4',
   'sampler2D', 'samplerCube',
 ];
+
+export const LOGICAL_TYPES: LogicalDataType[] = ['roi', 'mesh', 'json'];
+
+export function isLogicalType(t: DataType): t is LogicalDataType {
+  return (LOGICAL_TYPES as string[]).includes(t as string);
+}

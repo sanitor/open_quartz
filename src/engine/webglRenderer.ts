@@ -261,6 +261,55 @@ export class WebGLRenderer {
     return canvas.toDataURL('image/png');
   }
 
+  /**
+   * Read a render target into a fresh HTMLCanvasElement (RGBA, y-flipped
+   * to top-left origin). Used to hand a texture to non-Three consumers
+   * like the ONNX inference bridge.
+   */
+  readTargetToCanvas(target: THREE.WebGLRenderTarget): HTMLCanvasElement {
+    const w = target.width;
+    const h = target.height;
+    const isFloat = target.texture.type !== THREE.UnsignedByteType;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('readTargetToCanvas: 2d context unavailable');
+    const imageData = ctx.createImageData(w, h);
+
+    if (isFloat) {
+      const floats = new Float32Array(w * h * 4);
+      this.renderer.readRenderTargetPixels(target, 0, 0, w, h, floats);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const srcIdx = (y * w + x) * 4;
+          const dstIdx = ((h - 1 - y) * w + x) * 4;
+          imageData.data[dstIdx]     = Math.max(0, Math.min(255, Math.round(floats[srcIdx] * 255)));
+          imageData.data[dstIdx + 1] = Math.max(0, Math.min(255, Math.round(floats[srcIdx + 1] * 255)));
+          imageData.data[dstIdx + 2] = Math.max(0, Math.min(255, Math.round(floats[srcIdx + 2] * 255)));
+          imageData.data[dstIdx + 3] = Math.max(0, Math.min(255, Math.round(floats[srcIdx + 3] * 255)));
+        }
+      }
+    } else {
+      const pixels = new Uint8Array(w * h * 4);
+      this.renderer.readRenderTargetPixels(target, 0, 0, w, h, pixels);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const srcIdx = (y * w + x) * 4;
+          const dstIdx = ((h - 1 - y) * w + x) * 4;
+          imageData.data[dstIdx]     = pixels[srcIdx];
+          imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
+          imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
+          imageData.data[dstIdx + 3] = pixels[srcIdx + 3];
+        }
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+
   clear() {
     this.renderer.setRenderTarget(null);
     this.renderer.clear();

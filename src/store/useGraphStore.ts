@@ -6,7 +6,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode } from '../types';
+import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
 import { parseShader } from '../engine/shaderParser';
 
 interface HistoryEntry {
@@ -22,6 +22,7 @@ interface GraphState {
   projectName: string;
   savedFilePath: string | null;
   outputPreviews: Record<string, string>;
+  outputData: Record<string, unknown>;
   nodeErrors: Record<string, string>;
 
   undoStack: HistoryEntry[];
@@ -36,6 +37,7 @@ interface GraphState {
   addNode: (type: ShaderNodeData['type'], position?: { x: number; y: number }) => void;
   addInputNode: (dataType: DataType, position?: { x: number; y: number }, inputMode?: InputMode) => void;
   addShaderNode: (code: string, label: string, position?: { x: number; y: number }) => void;
+  addOnnxNode: (modelId: string, ports: { inputs: Port[]; outputs: Port[] }, position?: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   removeSelectedElements: () => void;
   updateNodeData: (id: string, data: Partial<ShaderNodeData>) => void;
@@ -45,6 +47,7 @@ interface GraphState {
   setProjectName: (name: string) => void;
   setSavedFilePath: (path: string | null) => void;
   setOutputPreview: (nodeId: string, dataUrl: string) => void;
+  setOutputData: (nodeId: string, data: unknown) => void;
   clearOutputPreviews: () => void;
   setNodeError: (nodeId: string, error: string | null) => void;
   clearNodeErrors: () => void;
@@ -80,6 +83,8 @@ function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: D
       return createInputShader(inputDataType ?? 'float');
     case 'constant':
       return 'uniform vec4 color;\nout vec4 fragColor;\nvoid main() { fragColor = color; }';
+    case 'onnx':
+      return '';
   }
 }
 
@@ -150,6 +155,7 @@ export const useGraphStore = create<GraphState>()(
       projectName: 'Untitled',
       savedFilePath: null,
       outputPreviews: {},
+      outputData: {},
       nodeErrors: {},
       undoStack: [],
       redoStack: [],
@@ -240,6 +246,29 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.nodes.push(node); });
       },
 
+      addOnnxNode: (modelId, ports, position) => {
+        saveSnapshot();
+        nodeCounter++;
+        const id = `onnx_${nodeCounter}`;
+        const cascade = nodeCascade++ * 28;
+        const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
+        const node: Node<ShaderNodeData> = {
+          id,
+          type: 'onnx',
+          position: pos,
+          data: {
+            type: 'onnx',
+            label: modelId,
+            shaderCode: '',
+            inputs: ports.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
+            outputs: ports.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
+            uniforms: {},
+            onnxModelId: modelId,
+          },
+        };
+        set((state) => { state.nodes.push(node); });
+      },
+
       removeNode: (id) => {
         saveSnapshot();
         set((state) => {
@@ -315,8 +344,12 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.outputPreviews[nodeId] = dataUrl; });
       },
 
+      setOutputData: (nodeId, data) => {
+        set((state) => { state.outputData[nodeId] = data; });
+      },
+
       clearOutputPreviews: () => {
-        set((state) => { state.outputPreviews = {}; });
+        set((state) => { state.outputPreviews = {}; state.outputData = {}; });
       },
 
       setNodeError: (nodeId, error) => {
@@ -350,6 +383,7 @@ export const useGraphStore = create<GraphState>()(
           state.edges = [];
           state.selectedNodeId = null;
           state.outputPreviews = {};
+          state.outputData = {};
           state.savedFilePath = null;
           state.projectName = 'Untitled';
         });

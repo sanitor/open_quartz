@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DATA_TYPE_COLORS, GLSL_VALID_TYPES } from '../../src/types';
+import { DATA_TYPE_COLORS, GLSL_VALID_TYPES, LOGICAL_TYPES } from '../../src/types';
 import type { DataType } from '../../src/types';
 
 describe('DATA_TYPE_COLORS', () => {
@@ -33,7 +33,7 @@ describe('DATA_TYPE_COLORS', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(Object.keys(DATA_TYPE_COLORS)).toHaveLength(allDataTypes.length);
+    expect(Object.keys(DATA_TYPE_COLORS)).toHaveLength(allDataTypes.length + LOGICAL_TYPES.length);
   });
 });
 
@@ -89,8 +89,8 @@ describe('cross-validation: GLSL_VALID_TYPES ↔ DATA_TYPE_COLORS', () => {
     }
   });
 
-  it('every DATA_TYPE_COLORS key is in GLSL_VALID_TYPES', () => {
-    const validSet = new Set<string>(GLSL_VALID_TYPES);
+  it('every DATA_TYPE_COLORS key is either a GLSL type or a logical type', () => {
+    const validSet = new Set<string>([...GLSL_VALID_TYPES, ...LOGICAL_TYPES]);
     for (const key of Object.keys(DATA_TYPE_COLORS)) {
       expect(validSet.has(key)).toBe(true);
     }
