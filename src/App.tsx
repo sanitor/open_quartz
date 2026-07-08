@@ -4,44 +4,13 @@ import { Header } from './components/Header';
 import { NodeGraph } from './components/NodeGraph';
 import { SidePanel } from './components/SidePanel';
 import { useGraphStore } from './store/useGraphStore';
-import { ExecutionEngine } from './engine/executionEngine';
 import { RealtimeHost } from './engine/realtimeHost';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<RealtimeHost | null>(null);
 
-  // Single-shot execution (existing)
-  useEffect(() => {
-    const unsub = useGraphStore.subscribe((state, prev) => {
-      if (state.isRunning && !prev.isRunning) {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
 
-        const engine = new ExecutionEngine(canvas);
-        const nodes = state.nodes;
-        const edges = state.edges;
-
-        const { setOutputPreview, clearOutputPreviews, setNodeError, clearNodeErrors, setSelectedNode, updateNodeData, setOutputData } = useGraphStore.getState();
-        clearOutputPreviews();
-        clearNodeErrors();
-
-        engine.run(nodes, edges, setOutputPreview, (nodeId, error) => {
-          setNodeError(nodeId, error);
-          setSelectedNode(nodeId);
-        }, (nodeId, w, h) => {
-          updateNodeData(nodeId, { resolvedWidth: w, resolvedHeight: h });
-        }, setOutputData)
-          .catch((err) => console.error('Execution error:', err))
-          .finally(() => {
-            engine.stop();
-            useGraphStore.getState().setRunning(false);
-          });
-      }
-    });
-
-    return () => unsub();
-  }, []);
 
   // Real-time loop
   useEffect(() => {

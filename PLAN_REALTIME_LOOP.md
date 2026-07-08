@@ -1,6 +1,6 @@
 # 实时渲染循环 + 时间系统 + Video 输入 — 实现方案
 
-> OpenQuartz P0 架构升级：从"手动 RUN 单次执行"进化为"rAF 驱动实时合成器"
+> OpenQuartz P0 架构升级：从旧的手动单帧执行入口进化为统一的宿主驱动实时合成器
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 维度 | 当前状态 | 目标状态 |
 |---|---|---|
-| 执行模型 | Push，手动点 RUN 单次全图执行 | rAF 驱动连续渲染循环 |
+| 执行模型 | Push，旧 UI 暴露单帧 RUN 与实时 PLAY 双入口 | 统一由 Host 驱动 `PLAY / PAUSE / STOP` |
 | 时间 | 无时间概念 | 宿主注入 `iTime` / `iTimeDelta` / `iFrame` / `iDate` |
 | 交互 | 静态参数输入 | `iMouse` 实时跟踪 |
 | 帧率 | 无 | FPS 显示 + 可选帧率限制 |
@@ -25,7 +25,7 @@
 2. **时间是普通 uniform** — 不是特殊机制，shader 通过 `uniform float iTime;` 声明即可使用，与其他 uniform 一样走端口解析
 3. **时间由宿主注入** — Composition 不持有时钟。宿主每帧传入 `time` 参数（QC 的 `renderAtTime:` 模式），不同宿主可以用不同时间策略
 4. **无结束时间** — 与 QC / Shadertoy 一致，Composition 没有"总时长"概念，永远跑到宿主停止。未来离线导出时，导出器（另一种宿主）自行指定起止时间
-5. **现有 push 模型保留** — rAF 驱动的本质仍是每帧 push 全图，只是从"单次"变"连续"
+5. **现有 push 模型保留** — rAF 驱动每帧 push 全图；不再暴露旧的单帧 RUN UI，避免双执行路径分叉
 6. **零分配热路径** — 渲染循环内不创建对象、不触发 GC，uniform 值直接写入已有 buffer
 
 ### QC 架构参考
@@ -632,9 +632,9 @@ interface GraphState {
 
 ### 10. Header UI 改造
 
-现有按钮：`▶ RUN` / `■ STOP` / `CLEAR`
+旧按钮：`▶ RUN` / `■ STOP` / `CLEAR`
 
-改为三态控制：
+改为统一实时 transport：
 
 ```
 停止状态:   [▶ PLAY]  [CLEAR]
@@ -642,11 +642,11 @@ interface GraphState {
 暂停状态:   [▶ RESUME] [■ STOP]  [CLEAR]    FPS: --
 ```
 
-- **PLAY** — 启动 rAF 循环，连续渲染
-- **PAUSE** — 冻结时间，保持循环（视频输入仍刷新但不推进逻辑时间）
-- **STOP** — 停止循环，释放资源，回到 t=0
+- **PLAY** — 启动 Host/rAF 循环，连续渲染；也是唯一的用户执行入口
+- **PAUSE** — 冻结逻辑时间，保持宿主状态
+- **STOP** — 停止循环，释放输入源和 GPU 资源，回到 t=0
 - **CLEAR** — 清除预览（仅停止状态可用）
-- **RUN** — 保留为 `Shift+Enter` 快捷键，单次执行模式（不启动循环）
+- **不保留 RUN** — 单帧执行必须走同一套 `Compositor.render(frameInputs)`。未来需要时新增 `STEP` 或 `ScrubHost.renderAt(t)`，不能恢复旧 `ExecutionEngine.run()` UI
 
 FPS 显示：右上角小字，播放时实时更新。
 

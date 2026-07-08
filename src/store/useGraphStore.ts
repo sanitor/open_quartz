@@ -18,7 +18,6 @@ interface GraphState {
   nodes: Node<ShaderNodeData>[];
   edges: Edge[];
   selectedNodeId: string | null;
-  isRunning: boolean;
   projectName: string;
   savedFilePath: string | null;
   outputPreviews: Record<string, string>;
@@ -48,7 +47,6 @@ interface GraphState {
   updateNodeData: (id: string, data: Partial<ShaderNodeData>) => void;
   updateNodeInputType: (id: string, dataType: DataType) => void;
   setSelectedNode: (id: string | null) => void;
-  setRunning: (running: boolean) => void;
   setProjectName: (name: string) => void;
   setSavedFilePath: (path: string | null) => void;
   setOutputPreview: (nodeId: string, dataUrl: string) => void;
@@ -166,7 +164,6 @@ export const useGraphStore = create<GraphState>()(
       nodes: [],
       edges: [],
       selectedNodeId: null,
-      isRunning: false,
       projectName: 'Untitled',
       savedFilePath: null,
       outputPreviews: {},
@@ -348,9 +345,6 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.selectedNodeId = id; });
       },
 
-      setRunning: (running) => {
-        set((state) => { state.isRunning = running; });
-      },
 
       setProjectName: (name) => {
         set((state) => { state.projectName = name; });

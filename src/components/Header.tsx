@@ -20,7 +20,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, isRunning, setRunning, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -464,16 +464,6 @@ export function Header() {
           </span>
         )}
 
-        {/* Single-shot RUN (keep existing) */}
-        {loopState === 'stopped' && (
-          <button
-            onClick={() => setRunning(!isRunning)}
-            className={isRunning ? btnClass.replace('text-[#1d1d1f]', 'text-[#ff3b30]') : btnClass}
-          >
-            <span className={iconClass}>{isRunning ? '□' : '▷'}</span>
-            <span>{isRunning ? 'STOP' : 'RUN'}</span>
-          </button>
-        )}
 
         {/* PLAY / PAUSE / RESUME */}
         {loopState === 'stopped' ? (
