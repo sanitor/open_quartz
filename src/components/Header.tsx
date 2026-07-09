@@ -348,7 +348,7 @@ export function Header() {
                             }}
                             className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
                           >
-                            {item.label}
+                            {item.label.toUpperCase()}
                           </button>
                         ))}
                       </div>
