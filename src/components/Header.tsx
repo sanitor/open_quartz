@@ -4,7 +4,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
 import type { DataType, InputMode } from '../types';
-import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, predefinedShaders } from '../engine/predefinedShaders';
+import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../engine/shaders';
 import { ONNX_MODELS } from '../engine/onnxRegistry';
 
 const isMac = navigator.platform.startsWith('Mac');
@@ -177,12 +177,12 @@ export function Header() {
   const [shaderOpen, setShaderOpen] = useState(false);
   const [onnxOpen, setOnnxOpen] = useState(false);
 
-  const shaderItems = [
-    { label: 'CUSTOM SHADER', code: CUSTOM_SHADER_CODE, custom: true },
-    { label: 'CUSTOM 2IN-1OUT', code: CUSTOM_2IN1_SHADER, custom: true },
-    { separator: true },
-    ...predefinedShaders.map((s) => ({ label: s.label, code: s.code, custom: false })),
+  const templateItems = [
+    { label: 'CUSTOM SHADER', code: CUSTOM_SHADER_CODE },
+    { label: 'CUSTOM 2IN-1', code: CUSTOM_2IN1_SHADER },
   ];
+
+  const [shaderHoveredGroup, setShaderHoveredGroup] = useState<string | null>(null);
 
   const inputGroups: { label: string; items: { label: string; type: DataType; mode?: InputMode }[] }[] = [
     { label: 'SCALAR', items: [
@@ -307,25 +307,55 @@ export function Header() {
         </button>
         {shaderOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setShaderOpen(false)} />
-            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[160px]">
-              {shaderItems.map((item, i) => {
-                if ('separator' in item) {
-                  return <div key={`sep_${i}`} className="mx-2 my-1 border-t border-[#e8e8ed]" />;
-                }
-                return (
-                  <button
-                    key={item.label}
-                    onClick={() => {
-                      useGraphStore.getState().addShaderNode(item.code, item.label);
-                      setShaderOpen(false);
-                    }}
-                    className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
-                  >
-                    {item.label}
-                  </button>
-                );
-              })}
+            <div className="fixed inset-0 z-10" onClick={() => { setShaderOpen(false); setShaderHoveredGroup(null); }} />
+            <div
+              className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[160px]"
+              onMouseLeave={() => setShaderHoveredGroup(null)}
+            >
+              {templateItems.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => {
+                    useGraphStore.getState().addShaderNode(item.code, item.label);
+                    setShaderOpen(false);
+                  }}
+                  className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                >
+                  {item.label}
+                </button>
+              ))}
+              <div className="mx-2 my-1 border-t border-[#e8e8ed]" />
+              {shaderGroups.map((group) => (
+                <div
+                  key={group.category}
+                  className="relative"
+                  onMouseEnter={() => setShaderHoveredGroup(group.category)}
+                >
+                  <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
+                    <span>{group.category}</span>
+                    <span className="text-[8px] ml-2">▸</span>
+                  </div>
+                  {shaderHoveredGroup === group.category && (
+                    <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
+                      <div className="bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
+                        {group.items.map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={() => {
+                              useGraphStore.getState().addShaderNode(item.code, item.label);
+                              setShaderOpen(false);
+                              setShaderHoveredGroup(null);
+                            }}
+                            className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </>
         )}

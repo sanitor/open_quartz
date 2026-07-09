@@ -390,15 +390,18 @@ describe('Header', () => {
     const shaderBtn = screen.getByText('SHADER').closest('button')!;
     fireEvent.click(shaderBtn);
     expect(screen.getByText('CUSTOM SHADER')).toBeInTheDocument();
-    expect(screen.getByText('CUSTOM 2IN-1OUT')).toBeInTheDocument();
+    expect(screen.getByText('CUSTOM 2IN-1')).toBeInTheDocument();
   });
 
-  it('shader dropdown shows predefined shaders', () => {
+  it('shader dropdown shows category groups', () => {
     renderHeader();
     const shaderBtn = screen.getByText('SHADER').closest('button')!;
     fireEvent.click(shaderBtn);
-    expect(screen.getByText('Sobel Edge Detection')).toBeInTheDocument();
-    expect(screen.getByText('Gaussian Blur')).toBeInTheDocument();
+    expect(screen.getByText('FILTER')).toBeInTheDocument();
+    expect(screen.getByText('COLOR')).toBeInTheDocument();
+    expect(screen.getByText('GENERATOR')).toBeInTheDocument();
+    expect(screen.getByText('BLEND')).toBeInTheDocument();
+    expect(screen.getByText('DISTORTION')).toBeInTheDocument();
   });
 
   it('clicking a shader item calls addShaderNode and closes dropdown', () => {
@@ -408,7 +411,7 @@ describe('Header', () => {
     const customShader = screen.getByText('CUSTOM SHADER');
     fireEvent.click(customShader);
     expect(mockAddShaderNode).toHaveBeenCalled();
-    expect(screen.queryByText('CUSTOM 2IN-1OUT')).not.toBeInTheDocument();
+    expect(screen.queryByText('CUSTOM 2IN-1')).not.toBeInTheDocument();
   });
 
   // --- INPUT dropdown ---

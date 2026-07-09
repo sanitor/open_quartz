@@ -4,6 +4,7 @@ import {
   CUSTOM_SHADER_CODE,
   CUSTOM_2IN1_SHADER,
 } from '../../src/engine/predefinedShaders';
+import { generatorShaders } from '../../src/engine/shaders/generator';
 import { parseShader } from '../../src/engine/shaderParser';
 
 describe('predefinedShaders', () => {
@@ -37,11 +38,21 @@ describe('predefinedShaders', () => {
     }
   });
 
-  it('each shader template has at least one sampler2D input', () => {
+  it('each non-generator shader has at least one sampler2D input', () => {
+    const generatorLabels = new Set(generatorShaders.map((s) => s.label));
     for (const shader of predefinedShaders) {
+      if (generatorLabels.has(shader.label)) continue;
       const result = parseShader(shader.code);
       const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
       expect(hasSampler).toBe(true);
+    }
+  });
+
+  it('generator shaders have no sampler2D input', () => {
+    for (const shader of generatorShaders) {
+      const result = parseShader(shader.code);
+      const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
+      expect(hasSampler).toBe(false);
     }
   });
 });
