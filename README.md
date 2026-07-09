@@ -108,22 +108,15 @@ Build and connect GLSL shaders visually using a node graph. Each node is a shade
 
 ```bash
 npm install
+npm run build:wasm     # builds ONNX wasm bridge (requires wasm-pack)
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+> **Note:** `build:wasm` is required before first run. The wasm bridge JS/TS bindings are checked into git, but the wasm binary is not. Skipping this step will cause build errors.
+>
+> `wasm-pack` install: `cargo install wasm-pack`
 
-### ONNX Support (optional)
-
-To use ONNX inference nodes (e.g. YOLOv8n object detection), run these once after checkout:
-
-```bash
-npm i -D onnxruntime-web
-npm run copy:ort       # populates public/ort/
-npm run build:wasm     # builds rust/crates/yolo-detector/pkg (requires wasm-pack)
-```
-
-See `docs/ONNX_NODE_DESIGN.md` for details.
+Open http://localhost:5173 in your browser. See `docs/ONNX_NODE_DESIGN.md` for ONNX architecture details.
 
 ## Usage
 
