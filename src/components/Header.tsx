@@ -345,33 +345,37 @@ export function Header() {
         {inputOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => { setInputOpen(false); setHoveredGroup(null); }} />
-            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]">
+            <div
+              className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]"
+              onMouseLeave={() => setHoveredGroup(null)}
+            >
               {inputGroups.map((group) => (
                 <div
                   key={group.label}
                   className="relative"
                   onMouseEnter={() => setHoveredGroup(group.label)}
-                  onMouseLeave={() => setHoveredGroup(null)}
                 >
                   <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
                     <span>{group.label}</span>
                     <span className="text-[8px] ml-2">▸</span>
                   </div>
                   {hoveredGroup === group.label && (
-                    <div className="absolute left-full top-0 ml-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
-                      {group.items.map((item) => (
-                        <button
-                          key={item.label}
-                          onClick={() => {
-                            useGraphStore.getState().addInputNode(item.type, undefined, item.mode);
-                            setInputOpen(false);
-                            setHoveredGroup(null);
-                          }}
-                          className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
-                        >
-                          {item.label}
-                        </button>
-                      ))}
+                    <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
+                      <div className="bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
+                        {group.items.map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={() => {
+                              useGraphStore.getState().addInputNode(item.type, undefined, item.mode);
+                              setInputOpen(false);
+                              setHoveredGroup(null);
+                            }}
+                            className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -415,7 +419,11 @@ export function Header() {
       </div>
 
       <button onClick={() => addRendererNode()} className={btnClass}>
-        <span className={iconClass}>🖥</span>
+        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="1.5" y="2.5" width="13" height="9" rx="1" />
+          <line x1="5" y1="14" x2="11" y2="14" />
+          <line x1="8" y1="11.5" x2="8" y2="14" />
+        </svg>
         <span>RENDERER</span>
       </button>
 
