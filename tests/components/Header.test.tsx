@@ -204,9 +204,9 @@ describe('Header', () => {
     expect(screen.getByText('SHADER')).toBeInTheDocument();
   });
 
-  it('renders INPUT button', () => {
+  it('renders SOURCE button', () => {
     renderHeader();
-    expect(screen.getByText('INPUT')).toBeInTheDocument();
+    expect(screen.getByText('SOURCE')).toBeInTheDocument();
   });
 
   it('renders SAVE button', () => {
@@ -414,34 +414,33 @@ describe('Header', () => {
     expect(screen.queryByText('CUSTOM 2IN-1')).not.toBeInTheDocument();
   });
 
-  // --- INPUT dropdown ---
+  // --- SOURCE dropdown ---
 
-  it('clicking INPUT button opens input dropdown', () => {
+  it('clicking SOURCE button opens source dropdown', () => {
     renderHeader();
-    const inputBtn = screen.getByText('INPUT').closest('button')!;
-    fireEvent.click(inputBtn);
-    expect(screen.getByText('SCALAR')).toBeInTheDocument();
-    expect(screen.getByText('VECTOR')).toBeInTheDocument();
-    expect(screen.getByText('SAMPLER2D')).toBeInTheDocument();
+    const sourceBtn = screen.getByText('SOURCE').closest('button')!;
+    fireEvent.click(sourceBtn);
+    expect(screen.getByText('SYSTEM')).toBeInTheDocument();
+    expect(screen.getByText('CONSTANTS')).toBeInTheDocument();
+    expect(screen.getByText('EXTERNAL')).toBeInTheDocument();
   });
 
-  it('hovering over input group shows sub-items', () => {
+  it('hovering over source group shows sub-items', () => {
     renderHeader();
-    const inputBtn = screen.getByText('INPUT').closest('button')!;
-    fireEvent.click(inputBtn);
-    const scalarGroup = screen.getByText('SCALAR');
-    fireEvent.mouseEnter(scalarGroup.closest('.relative')!);
+    const sourceBtn = screen.getByText('SOURCE').closest('button')!;
+    fireEvent.click(sourceBtn);
+    const constantsGroup = screen.getByText('CONSTANTS');
+    fireEvent.mouseEnter(constantsGroup.closest('.relative')!);
     expect(screen.getByText('FLOAT')).toBeInTheDocument();
     expect(screen.getByText('INT')).toBeInTheDocument();
-    expect(screen.getByText('BOOL')).toBeInTheDocument();
   });
 
-  it('clicking input sub-item calls addInputNode', () => {
+  it('clicking source sub-item calls addInputNode', () => {
     renderHeader();
-    const inputBtn = screen.getByText('INPUT').closest('button')!;
-    fireEvent.click(inputBtn);
-    const scalarGroup = screen.getByText('SCALAR');
-    fireEvent.mouseEnter(scalarGroup.closest('.relative')!);
+    const sourceBtn = screen.getByText('SOURCE').closest('button')!;
+    fireEvent.click(sourceBtn);
+    const constantsGroup = screen.getByText('CONSTANTS');
+    fireEvent.mouseEnter(constantsGroup.closest('.relative')!);
     const floatBtn = screen.getByText('FLOAT');
     fireEvent.click(floatBtn);
     expect(mockAddInputNode).toHaveBeenCalledWith('float', undefined, undefined);

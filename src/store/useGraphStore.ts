@@ -40,6 +40,7 @@ interface GraphState {
   onConnect: OnConnect;
   addNode: (type: ShaderNodeData['type'], position?: { x: number; y: number }) => void;
   addInputNode: (dataType: DataType, position?: { x: number; y: number }, inputMode?: InputMode) => void;
+  addSystemNode: (source: NonNullable<ShaderNodeData['systemSource']>, position?: { x: number; y: number }) => void;
   addShaderNode: (code: string, label: string, position?: { x: number; y: number }) => void;
   addOnnxNode: (modelId: string, ports: { inputs: Port[]; outputs: Port[] }, position?: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
@@ -68,6 +69,13 @@ interface GraphState {
   captureScreenshot: ((rendererId: string) => string | null) | null;
   setCaptureScreenshot: (fn: ((rendererId: string) => string | null) | null) => void;
 }
+const SYSTEM_SOURCES: Record<NonNullable<ShaderNodeData['systemSource']>, { label: string; dataType: DataType; code: string }> = {
+  time: { label: 'Time', dataType: 'float', code: 'uniform float value;\nout float outputValue;\nvoid main() { outputValue = value; }' },
+  timeDelta: { label: 'Time Delta', dataType: 'float', code: 'uniform float value;\nout float outputValue;\nvoid main() { outputValue = value; }' },
+  frame: { label: 'Frame', dataType: 'int', code: 'uniform int value;\nout int outputValue;\nvoid main() { outputValue = value; }' },
+  mouse: { label: 'Mouse', dataType: 'vec4', code: 'uniform vec4 value;\nout vec4 outputValue;\nvoid main() { outputValue = value; }' },
+  resolution: { label: 'Resolution', dataType: 'vec3', code: 'uniform vec3 value;\nout vec3 outputValue;\nvoid main() { outputValue = value; }' },
+};
 
 let nodeCounter = 0;
 
@@ -266,6 +274,14 @@ export const useGraphStore = create<GraphState>()(
         set((state) => { state.nodes.push(node); });
       },
 
+
+      addSystemNode: (source, position) => {
+        saveSnapshot();
+        const def = SYSTEM_SOURCES[source];
+        const node = makeNode('input', position, def.dataType, def.code, def.label, 'system');
+        node.data.systemSource = source;
+        set((state) => { state.nodes.push(node); });
+      },
       addOnnxNode: (modelId, ports, position) => {
         saveSnapshot();
         nodeCounter++;

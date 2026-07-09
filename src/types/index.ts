@@ -13,7 +13,7 @@ export type LogicalDataType = 'roi' | 'mesh' | 'json';
 
 export type DataType = GlslDataType | LogicalDataType;
 
-export type InputMode = 'image' | 'framebuffer' | 'video';
+export type InputMode = 'image' | 'framebuffer' | 'video' | 'system';
 
 export type FramebufferFormat = 'rgba8' | 'rgba32f' | 'rg8' | 'rg32f' | 'r8' | 'r32f' | 'nv12';
 
@@ -71,6 +71,7 @@ export interface ShaderNodeData {
   videoDeviceId?: string;
   videoLoop?: boolean;
   videoPlaybackRate?: number;
+  systemSource?: 'time' | 'timeDelta' | 'frame' | 'mouse' | 'resolution';
   [key: string]: unknown;
 }
 

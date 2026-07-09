@@ -3,7 +3,7 @@ import { serializeProject, deserializeProject, saveFileAs, saveFile } from '../u
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
-import type { DataType, InputMode } from '../types';
+import type { DataType, InputMode, ShaderNodeData } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../engine/shaders';
 import { ONNX_MODELS } from '../engine/onnxRegistry';
 
@@ -20,7 +20,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -173,7 +173,7 @@ export function Header() {
     setEditingName(false);
   };
 
-  const [inputOpen, setInputOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
   const [onnxOpen, setOnnxOpen] = useState(false);
 
@@ -184,39 +184,31 @@ export function Header() {
 
   const [shaderHoveredGroup, setShaderHoveredGroup] = useState<string | null>(null);
 
-  const inputGroups: { label: string; items: { label: string; type: DataType; mode?: InputMode }[] }[] = [
-    { label: 'SCALAR', items: [
+  type SourceItem = { label: string; type?: DataType; mode?: InputMode; system?: NonNullable<ShaderNodeData['systemSource']> };
+  const sourceGroups: { label: string; items: SourceItem[] }[] = [
+    { label: 'SYSTEM', items: [
+      { label: 'TIME', system: 'time' },
+      { label: 'TIME DELTA', system: 'timeDelta' },
+      { label: 'FRAME', system: 'frame' },
+      { label: 'MOUSE', system: 'mouse' },
+      { label: 'RESOLUTION', system: 'resolution' },
+    ]},
+    { label: 'CONSTANTS', items: [
       { label: 'FLOAT', type: 'float' },
       { label: 'INT', type: 'int' },
       { label: 'UINT', type: 'uint' },
       { label: 'BOOL', type: 'bool' },
-    ]},
-    { label: 'VECTOR', items: [
       { label: 'VEC2', type: 'vec2' },
       { label: 'VEC3', type: 'vec3' },
       { label: 'VEC4', type: 'vec4' },
-    ]},
-    { label: 'INT VECTOR', items: [
       { label: 'IVEC2', type: 'ivec2' },
       { label: 'IVEC3', type: 'ivec3' },
       { label: 'IVEC4', type: 'ivec4' },
-    ]},
-    { label: 'UINT VECTOR', items: [
-      { label: 'UVEC2', type: 'uvec2' },
-      { label: 'UVEC3', type: 'uvec3' },
-      { label: 'UVEC4', type: 'uvec4' },
-    ]},
-    { label: 'BOOL VECTOR', items: [
-      { label: 'BVEC2', type: 'bvec2' },
-      { label: 'BVEC3', type: 'bvec3' },
-      { label: 'BVEC4', type: 'bvec4' },
-    ]},
-    { label: 'MATRIX', items: [
       { label: 'MAT2', type: 'mat2' },
       { label: 'MAT3', type: 'mat3' },
       { label: 'MAT4', type: 'mat4' },
     ]},
-    { label: 'SAMPLER2D', items: [
+    { label: 'EXTERNAL', items: [
       { label: 'IMAGE', type: 'sampler2D', mode: 'image' },
       { label: 'FRAMEBUFFER', type: 'sampler2D', mode: 'framebuffer' },
       { label: 'VIDEO', type: 'sampler2D', mode: 'video' },
@@ -284,6 +276,64 @@ export function Header() {
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
       <div className="relative">
+        <button onClick={() => setSourceOpen(!sourceOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+            <circle cx="4.5" cy="8" r="3" />
+            <line x1="7.5" y1="8" x2="14" y2="8" />
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>SOURCE</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
+          </span>
+        </button>
+        {sourceOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => { setSourceOpen(false); setHoveredGroup(null); }} />
+            <div
+              className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]"
+              onMouseLeave={() => setHoveredGroup(null)}
+            >
+              {sourceGroups.map((group) => (
+                <div
+                  key={group.label}
+                  className="relative"
+                  onMouseEnter={() => setHoveredGroup(group.label)}
+                >
+                  <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
+                    <span>{group.label}</span>
+                    <span className="text-[16px] ml-2">▸</span>
+                  </div>
+                  {hoveredGroup === group.label && (
+                    <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
+                      <div className="bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
+                        {group.items.map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={() => {
+                              if (item.system) {
+                                addSystemNode(item.system);
+                              } else if (item.type) {
+                                useGraphStore.getState().addInputNode(item.type, undefined, item.mode);
+                              }
+                              setSourceOpen(false);
+                              setHoveredGroup(null);
+                            }}
+                            className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="relative">
         <button onClick={() => setShaderOpen(!shaderOpen)} className={btnClass}>
           <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
             <rect x="3.5" y="3.5" width="9" height="9" rx="1" />
@@ -349,60 +399,6 @@ export function Header() {
                             className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
                           >
                             {item.label.toUpperCase()}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="relative">
-        <button onClick={() => setInputOpen(!inputOpen)} className={btnClass}>
-          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-            <circle cx="4.5" cy="8" r="3" />
-            <line x1="7.5" y1="8" x2="14" y2="8" />
-          </svg>
-          <span className="flex items-center gap-px">
-            <span>INPUT</span>
-            <span className="text-[16px] leading-none font-normal">▾</span>
-          </span>
-        </button>
-        {inputOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => { setInputOpen(false); setHoveredGroup(null); }} />
-            <div
-              className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]"
-              onMouseLeave={() => setHoveredGroup(null)}
-            >
-              {inputGroups.map((group) => (
-                <div
-                  key={group.label}
-                  className="relative"
-                  onMouseEnter={() => setHoveredGroup(group.label)}
-                >
-                  <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
-                    <span>{group.label}</span>
-                    <span className="text-[16px] ml-2">▸</span>
-                  </div>
-                  {hoveredGroup === group.label && (
-                    <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
-                      <div className="bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
-                        {group.items.map((item) => (
-                          <button
-                            key={item.label}
-                            onClick={() => {
-                              useGraphStore.getState().addInputNode(item.type, undefined, item.mode);
-                              setInputOpen(false);
-                              setHoveredGroup(null);
-                            }}
-                            className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
-                          >
-                            {item.label}
                           </button>
                         ))}
                       </div>
