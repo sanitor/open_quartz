@@ -302,7 +302,7 @@ export function Header() {
           </svg>
           <span className="flex items-center gap-px">
             <span>SHADER</span>
-            <span className="text-[8px] leading-none font-normal">▾</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
           </span>
         </button>
         {shaderOpen && (
@@ -333,7 +333,7 @@ export function Header() {
                 >
                   <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
                     <span>{group.category}</span>
-                    <span className="text-[8px] ml-2">▸</span>
+                    <span className="text-[16px] ml-2">▸</span>
                   </div>
                   {shaderHoveredGroup === group.category && (
                     <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
@@ -369,7 +369,7 @@ export function Header() {
           </svg>
           <span className="flex items-center gap-px">
             <span>INPUT</span>
-            <span className="text-[8px] leading-none font-normal">▾</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
           </span>
         </button>
         {inputOpen && (
@@ -387,7 +387,7 @@ export function Header() {
                 >
                   <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
                     <span>{group.label}</span>
-                    <span className="text-[8px] ml-2">▸</span>
+                    <span className="text-[16px] ml-2">▸</span>
                   </div>
                   {hoveredGroup === group.label && (
                     <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
@@ -423,7 +423,7 @@ export function Header() {
           </svg>
           <span className="flex items-center gap-px">
             <span>ONNX</span>
-            <span className="text-[8px] leading-none font-normal">▾</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
           </span>
         </button>
         {onnxOpen && (

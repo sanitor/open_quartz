@@ -34,7 +34,7 @@ function SectionHeader({ title, expanded, onClick, extra }: { title: string; exp
       className="flex items-center justify-between px-4 py-1.5 border-t border-[#e8e8ed] cursor-pointer hover:bg-[#f5f5f7] select-none"
     >
       <span className="flex items-center gap-1.5 text-[11px] text-[#86868b] font-medium">
-        <span className="text-[8px]">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[16px]">{expanded ? '▾' : '▸'}</span>
         {title}
       </span>
       {extra}
