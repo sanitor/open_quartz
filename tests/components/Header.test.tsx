@@ -1,3 +1,16 @@
+// Mock onnxRegistry
+vi.mock('../../src/engine/onnxRegistry', () => ({
+  ONNX_MODELS: {
+    yolov8n: {
+      id: 'yolov8n',
+      label: 'YOLOv8n Detector',
+      description: 'Test ONNX model',
+      inputs: [{ id: 'in', label: 'image', dataType: 'sampler2D', direction: 'input' }],
+      outputs: [{ id: 'out', label: 'detections', dataType: 'roi', direction: 'output' }],
+    },
+  },
+}));
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
@@ -495,5 +508,81 @@ describe('Header', () => {
   it('renders ✕ icon for clear', () => {
     renderHeader();
     expect(screen.getByText('✕')).toBeInTheDocument();
+  });
+
+  // --- RENDERER button ---
+
+  it('renders RENDERER button', () => {
+    renderHeader();
+    expect(screen.getByText('RENDERER')).toBeInTheDocument();
+  });
+
+  it('RENDERER button click calls addRendererNode', () => {
+    renderHeader();
+    const btn = screen.getByText('RENDERER').closest('button')!;
+    fireEvent.click(btn);
+    expect(mockAddRendererNode).toHaveBeenCalled();
+  });
+
+  // --- ONNX button ---
+
+  it('renders ONNX button', () => {
+    renderHeader();
+    expect(screen.getByText('ONNX')).toBeInTheDocument();
+  });
+
+  it('clicking ONNX button opens onnx dropdown', () => {
+    renderHeader();
+    const btn = screen.getByText('ONNX').closest('button')!;
+    fireEvent.click(btn);
+    expect(screen.getByText('YOLOV8N DETECTOR')).toBeInTheDocument();
+  });
+
+  // --- FPS display ---
+
+  it('FPS display hidden when stopped', () => {
+    renderHeader({ loopState: 'stopped' });
+    expect(screen.queryByText(/FPS/)).not.toBeInTheDocument();
+  });
+
+  it('FPS display shown when playing', () => {
+    renderHeader({ loopState: 'playing', fps: 60 });
+    expect(screen.getByText('60 FPS')).toBeInTheDocument();
+  });
+
+  it('FPS display shows placeholder when fps=0 and playing', () => {
+    renderHeader({ loopState: 'playing', fps: 0 });
+    expect(screen.getByText('-- FPS')).toBeInTheDocument();
+  });
+
+  // --- Time display ---
+
+  it('time display hidden when stopped', () => {
+    renderHeader({ loopState: 'stopped' });
+    expect(screen.queryByText(/\ds$/)).not.toBeInTheDocument();
+  });
+
+  it('time display shown when playing', () => {
+    renderHeader({ loopState: 'playing', currentTime: 3.7 });
+    expect(screen.getByText('3.7s')).toBeInTheDocument();
+  });
+
+  it('time display shown when paused', () => {
+    renderHeader({ loopState: 'paused', currentTime: 1.5 });
+    expect(screen.getByText('1.5s')).toBeInTheDocument();
+  });
+
+  // --- STOP shown when paused ---
+
+  it('STOP button shown when paused', () => {
+    renderHeader({ loopState: 'paused' });
+    expect(screen.getByText('STOP')).toBeInTheDocument();
+  });
+
+  it('STOP button click when paused calls stop', () => {
+    renderHeader({ loopState: 'paused' });
+    const stopBtn = screen.getByText('STOP').closest('button')!;
+    fireEvent.click(stopBtn);
+    expect(mockStop).toHaveBeenCalled();
   });
 });

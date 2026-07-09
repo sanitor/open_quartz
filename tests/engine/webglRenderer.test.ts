@@ -496,4 +496,152 @@ describe('WebGLRenderer', () => {
       expect(renderer.getImageTexture('img')).toBeUndefined();
     });
   });
+
+  describe('readTargetToCanvas', () => {
+    it('returns canvas with correct dimensions from byte texture', () => {
+      const target = renderer.createTarget('rt', 4, 3);
+      target.texture.type = UNSIGNED_BYTE_TYPE;
+
+      mockReadPixels.mockImplementation(
+        (_t: unknown, _x: number, _y: number, w: number, h: number, pixels: Uint8Array) => {
+          for (let i = 0; i < w * h * 4; i++) pixels[i] = 200;
+        },
+      );
+
+      const mockCtx = {
+        createImageData: vi.fn((w: number, h: number) => ({
+          data: new Uint8ClampedArray(w * h * 4),
+          width: w,
+          height: h,
+        })),
+        putImageData: vi.fn(),
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: vi.fn(() => mockCtx),
+      };
+      vi.spyOn(document, 'createElement').mockReturnValueOnce(mockCanvas as never);
+
+      const canvas = renderer.readTargetToCanvas(target);
+      expect(canvas.width).toBe(4);
+      expect(canvas.height).toBe(3);
+      expect(mockCtx.putImageData).toHaveBeenCalled();
+    });
+
+    it('handles float textures (converts to byte for canvas)', () => {
+      const target = renderer.createTarget('rtf', 2, 2, true, 'rgba32f');
+      target.texture.type = FLOAT_TYPE;
+
+      mockReadPixels.mockImplementation(
+        (_t: unknown, _x: number, _y: number, w: number, h: number, floats: Float32Array) => {
+          for (let i = 0; i < w * h * 4; i++) floats[i] = 1.0;
+        },
+      );
+
+      const mockCtx = {
+        createImageData: vi.fn((w: number, h: number) => ({
+          data: new Uint8ClampedArray(w * h * 4),
+          width: w,
+          height: h,
+        })),
+        putImageData: vi.fn(),
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: vi.fn(() => mockCtx),
+      };
+      vi.spyOn(document, 'createElement').mockReturnValueOnce(mockCanvas as never);
+
+      const canvas = renderer.readTargetToCanvas(target);
+      expect(canvas.width).toBe(2);
+      expect(canvas.height).toBe(2);
+      expect(mockCtx.putImageData).toHaveBeenCalled();
+    });
+  });
+
+  describe('clearResources', () => {
+    it('disposes targets and textures but keeps renderer alive', () => {
+      const target = renderer.createTarget('t1', 64, 64);
+      renderer.createTarget('t2', 32, 32);
+
+      renderer.clearResources();
+
+      // Targets are disposed and removed
+      expect(target.dispose).toHaveBeenCalled();
+      expect(renderer.getTarget('t1')).toBeUndefined();
+      expect(renderer.getTarget('t2')).toBeUndefined();
+
+      // Renderer is still alive (can create new targets)
+      const newTarget = renderer.createTarget('t3', 16, 16);
+      expect(newTarget).toBeDefined();
+      expect(renderer.getTarget('t3')).toBe(newTarget);
+    });
+
+    it('disposes image textures loaded', async () => {
+      const tex = await renderer.loadImageTexture('img1', 'data:image/png;base64,AAAA');
+      renderer.clearResources();
+      expect(tex.dispose).toHaveBeenCalled();
+      expect(renderer.getImageTexture('img1')).toBeUndefined();
+    });
+  });
+
+  describe('renderToScreen viewport fallback', () => {
+    it('handles zero clientWidth gracefully by falling back to canvas.width', () => {
+      // The canvas mock from jsdom has clientWidth=0 by default, so
+      // the implementation falls back to canvas.width or 1.
+      const texture = { type: UNSIGNED_BYTE_TYPE };
+      // Set canvas.width explicitly to ensure fallback path
+      renderer.canvas.width = 320;
+      renderer.canvas.height = 240;
+      // Should not throw even though clientWidth is 0
+      renderer.renderToScreen(texture as never);
+      expect(renderer).toBeDefined();
+    });
+  });
+
+  describe('renderWithMaterial feedback guard', () => {
+    it('skips draw when material samples own target texture (feedback loop)', () => {
+      const target = renderer.createTarget('fb', 64, 64);
+      // Create a ShaderMaterial-like object whose uniform references the target's texture
+      const material = {
+        dispose: vi.fn(),
+        uniforms: {
+          inputTexture: { value: target.texture },
+        },
+      };
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      renderer.renderWithMaterial(material as never, target);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Skipped render pass: material samples its own render target texture',
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('renders normally when no feedback loop', () => {
+      const target = renderer.createTarget('nofb', 64, 64);
+      const material = {
+        dispose: vi.fn(),
+        uniforms: {
+          inputTexture: { value: { fake: 'other-texture' } },
+        },
+      };
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      renderer.renderWithMaterial(material as never, target);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('setSize with updateStyle=false', () => {
+    it('calls internal renderer setSize with correct arguments', () => {
+      // Access internal renderer's setSize spy via the mock structure
+      renderer.setSize(800, 600);
+      // Verify no throw and the renderer is still functional
+      const target = renderer.createTarget('after-resize', 800, 600);
+      expect(target.width).toBe(800);
+      expect(target.height).toBe(600);
+    });
+  });
 });

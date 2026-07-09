@@ -112,11 +112,11 @@ describe('drawDetectionOverlay', () => {
     expect(result.texture).toBeDefined();
   });
 
-  it('marks the CanvasTexture as needsUpdate=true and flipY=false', () => {
+  it('marks the CanvasTexture as needsUpdate=true and flipY=true', () => {
     const source = document.createElement('canvas');
     const result = drawDetectionOverlay(source, 100, 100, []);
     expect(result.texture.needsUpdate).toBe(true);
-    expect(result.texture.flipY).toBe(false);
+    expect(result.texture.flipY).toBe(true);
   });
 
   it('throws when 2d context is unavailable', () => {

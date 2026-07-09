@@ -673,4 +673,123 @@ describe('useGraphStore', () => {
       expect(useGraphStore.getState().nodes).toHaveLength(nodeCount);
     });
   });
+
+  describe('addRendererNode', () => {
+    it('creates renderer node with correct type and label', () => {
+      useGraphStore.getState().addRendererNode();
+      const state = useGraphStore.getState();
+      expect(state.nodes).toHaveLength(1);
+      const node = state.nodes[0];
+      expect(node.type).toBe('renderer');
+      expect(node.data.type).toBe('renderer');
+      expect(node.data.label).toMatch(/^Renderer \d+$/);
+    });
+
+    it('creates renderer node with sampler2D input port', () => {
+      useGraphStore.getState().addRendererNode();
+      const node = useGraphStore.getState().nodes[0];
+      expect(node.data.inputs).toHaveLength(1);
+      expect(node.data.inputs[0].dataType).toBe('sampler2D');
+      expect(node.data.inputs[0].label).toBe('inputTexture');
+      expect(node.data.inputs[0].direction).toBe('input');
+    });
+
+    it('creates renderer node with no outputs', () => {
+      useGraphStore.getState().addRendererNode();
+      const node = useGraphStore.getState().nodes[0];
+      expect(node.data.outputs).toEqual([]);
+    });
+
+    it('creates renderer node with expanded=true', () => {
+      useGraphStore.getState().addRendererNode();
+      const node = useGraphStore.getState().nodes[0];
+      expect(node.data.expanded).toBe(true);
+    });
+
+    it('uses provided position', () => {
+      useGraphStore.getState().addRendererNode({ x: 500, y: 300 });
+      const node = useGraphStore.getState().nodes[0];
+      expect(node.position).toEqual({ x: 500, y: 300 });
+    });
+
+    it('pushes history', () => {
+      useGraphStore.getState().addRendererNode();
+      expect(useGraphStore.getState().undoStack.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('setActiveRenderer', () => {
+    it('sets and clears activeRendererId', () => {
+      useGraphStore.getState().setActiveRenderer('renderer_1');
+      expect(useGraphStore.getState().activeRendererId).toBe('renderer_1');
+
+      useGraphStore.getState().setActiveRenderer(null);
+      expect(useGraphStore.getState().activeRendererId).toBeNull();
+    });
+  });
+
+  describe('setCaptureScreenshot', () => {
+    it('stores and retrieves screenshot function', () => {
+      const fn = (rendererId: string) => `screenshot_${rendererId}`;
+      useGraphStore.getState().setCaptureScreenshot(fn);
+      const stored = useGraphStore.getState().captureScreenshot;
+      expect(stored).not.toBeNull();
+      expect(stored!('r1')).toBe('screenshot_r1');
+    });
+
+    it('clears screenshot function with null', () => {
+      const fn = () => null;
+      useGraphStore.getState().setCaptureScreenshot(fn);
+      useGraphStore.getState().setCaptureScreenshot(null);
+      expect(useGraphStore.getState().captureScreenshot).toBeNull();
+    });
+  });
+
+  describe('play/stop/pause/resume cycle', () => {
+    it('play sets playing, stop resets to stopped with fps=0, currentTime=0, currentFrame=0', () => {
+      useGraphStore.getState().play();
+      useGraphStore.getState().setFps(60);
+      useGraphStore.getState().setCurrentTime(5.2);
+      useGraphStore.getState().setCurrentFrame(312);
+      expect(useGraphStore.getState().loopState).toBe('playing');
+
+      useGraphStore.getState().stop();
+      const state = useGraphStore.getState();
+      expect(state.loopState).toBe('stopped');
+      expect(state.fps).toBe(0);
+      expect(state.currentTime).toBe(0);
+      expect(state.currentFrame).toBe(0);
+    });
+
+    it('pause sets paused, resume sets playing', () => {
+      useGraphStore.getState().play();
+      expect(useGraphStore.getState().loopState).toBe('playing');
+
+      useGraphStore.getState().pause();
+      expect(useGraphStore.getState().loopState).toBe('paused');
+
+      useGraphStore.getState().resume();
+      expect(useGraphStore.getState().loopState).toBe('playing');
+    });
+  });
+
+  describe('setFps / setCurrentTime / setCurrentFrame', () => {
+    it('setFps updates fps', () => {
+      useGraphStore.getState().setFps(30);
+      expect(useGraphStore.getState().fps).toBe(30);
+
+      useGraphStore.getState().setFps(120);
+      expect(useGraphStore.getState().fps).toBe(120);
+    });
+
+    it('setCurrentTime updates currentTime', () => {
+      useGraphStore.getState().setCurrentTime(2.5);
+      expect(useGraphStore.getState().currentTime).toBe(2.5);
+    });
+
+    it('setCurrentFrame updates currentFrame', () => {
+      useGraphStore.getState().setCurrentFrame(150);
+      expect(useGraphStore.getState().currentFrame).toBe(150);
+    });
+  });
 });
