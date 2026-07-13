@@ -6,6 +6,7 @@ import { VERSION } from '../version';
 import type { DataType, InputMode, ShaderNodeData } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../engine/shaders';
 import { ONNX_MODELS } from '../engine/onnxRegistry';
+import { MATH_CATEGORIES, MATH_OPS } from '../engine/mathOps';
 
 const isMac = navigator.platform.startsWith('Mac');
 
@@ -20,7 +21,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode, addMathNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -176,6 +177,7 @@ export function Header() {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
   const [onnxOpen, setOnnxOpen] = useState(false);
+  const [mathOpen, setMathOpen] = useState(false);
 
   const templateItems = [
     { label: 'CUSTOM SHADER', code: CUSTOM_SHADER_CODE },
@@ -183,6 +185,7 @@ export function Header() {
   ];
 
   const [shaderHoveredGroup, setShaderHoveredGroup] = useState<string | null>(null);
+  const [mathHoveredGroup, setMathHoveredGroup] = useState<string | null>(null);
 
   type SourceItem = { label: string; type?: DataType; mode?: InputMode; system?: NonNullable<ShaderNodeData['systemSource']> };
   const sourceGroups: { label: string; items: SourceItem[] }[] = [
@@ -323,6 +326,63 @@ export function Header() {
                             {item.label}
                           </button>
                         ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="relative">
+        <button onClick={() => setMathOpen(!mathOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+            <text x="8" y="12" textAnchor="middle" fontSize="12" fill="currentColor" stroke="none" fontWeight="bold">±</text>
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>MATH</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
+          </span>
+        </button>
+        {mathOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => { setMathOpen(false); setMathHoveredGroup(null); }} />
+            <div
+              className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[140px]"
+              onMouseLeave={() => setMathHoveredGroup(null)}
+            >
+              {MATH_CATEGORIES.map((group) => (
+                <div
+                  key={group.category}
+                  className="relative"
+                  onMouseEnter={() => setMathHoveredGroup(group.category)}
+                >
+                  <div className="flex items-center justify-between px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default">
+                    <span>{group.category.toUpperCase()}</span>
+                    <span className="text-[16px] ml-2">▸</span>
+                  </div>
+                  {mathHoveredGroup === group.category && (
+                    <div className="absolute left-full top-0 -ml-1 pl-1 z-30">
+                      <div className="bg-white border border-[#d2d2d7] rounded-lg shadow-lg py-1 min-w-[120px]">
+                        {group.ops.map((opId) => {
+                          const op = MATH_OPS[opId];
+                          if (!op) return null;
+                          return (
+                            <button
+                              key={opId}
+                              onClick={() => {
+                                addMathNode(opId);
+                                setMathOpen(false);
+                                setMathHoveredGroup(null);
+                              }}
+                              className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                            >
+                              {op.label.toUpperCase()}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

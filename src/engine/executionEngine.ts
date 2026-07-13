@@ -8,6 +8,7 @@ import { topologicalSort } from './graphExecutor';
 import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './onnxRegistry';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
 import { drawDetectionOverlay } from './onnxOverlay';
+import { MATH_OPS } from './mathOps';
 
 type TextureSource =
   | { kind: 'fbo'; target: THREE.WebGLRenderTarget }
@@ -30,6 +31,7 @@ export interface ExecutionPlan {
   resolutionUniforms: Map<string, Float32Array>;
   preambleLines: Map<string, number>;
   defaultW: number;
+  mathValues: Map<string, unknown>;
   defaultH: number;
 }
 
@@ -118,6 +120,17 @@ export class ExecutionEngine {
         continue;
       }
 
+      if (node.data.type === 'math') {
+        const upstreamEdges = edges.filter((e) => e.target === nodeId);
+        const mathUpstream = new Map<string, string>();
+        for (const edge of upstreamEdges) {
+          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
+          if (port) mathUpstream.set(port.label, edge.source);
+        }
+        upstreamSamplerBindings.set(nodeId, mathUpstream);
+        continue;
+      }
+
       if (!isRenderableNode(node)) continue;
 
       const upstreamEdges = edges.filter((e) => e.target === nodeId);
@@ -136,6 +149,8 @@ export class ExecutionEngine {
             const srcLabel = srcNode.data.inputs[0]?.label;
             const v = srcNode.data.uniforms?.[srcLabel ?? ''] ?? port.defaultValue;
             upstreamScalarValues.set(port.label, v);
+          } else if (srcNode?.data.type === 'math') {
+            upstreamScalarValues.set(port.label, 0); // placeholder; real value from mathValues at runtime
           }
         }
       }
@@ -231,6 +246,7 @@ export class ExecutionEngine {
       preambleLines,
       defaultW,
       defaultH,
+      mathValues: new Map<string, unknown>(),
     };
   }
 
@@ -245,7 +261,46 @@ export class ExecutionEngine {
 
     for (const nodeId of plan.sortedIds) {
       const node = plan.nodeMap.get(nodeId);
-      if (!node || !isRenderableNode(node)) continue;
+      if (!node) continue;
+
+      // Math nodes: CPU-only evaluation
+      if (node.data.type === 'math') {
+        const op = MATH_OPS[node.data.mathOp ?? 'add'];
+        if (!op) continue;
+        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
+        const inputs: number[] = [];
+        const portLabels = ['a', 'b', 'c'];
+        for (let i = 0; i < op.inputCount; i++) {
+          const label = portLabels[i];
+          const sourceId = upstreamMap?.get(label);
+          if (sourceId) {
+            const mathVal = plan.mathValues.get(sourceId);
+            if (mathVal !== undefined) { inputs.push(Number(mathVal)); continue; }
+            const srcNode = plan.nodeMap.get(sourceId);
+            if (srcNode?.data.type === 'input') {
+              if (srcNode.data.inputMode === 'system' && srcNode.data.systemSource) {
+                switch (srcNode.data.systemSource) {
+                  case 'time': inputs.push(builtins.time); continue;
+                  case 'timeDelta': inputs.push(builtins.delta); continue;
+                  case 'frame': inputs.push(builtins.frame); continue;
+                  default: break;
+                }
+              }
+              const srcLabel = srcNode.data.inputs[0]?.label;
+              const val = srcNode.data.uniforms?.[srcLabel ?? ''];
+              inputs.push(Number(val) || 0);
+              continue;
+            }
+          }
+          const selfVal = node.data.uniforms?.[label];
+          inputs.push(Number(selfVal) || 0);
+        }
+        const result = op.compute(inputs);
+        plan.mathValues.set(nodeId, result);
+        continue;
+      }
+
+      if (!isRenderableNode(node)) continue;
 
       if (node.data.type === 'renderer') continue;
 
@@ -287,7 +342,15 @@ export class ExecutionEngine {
 
       const scalars = plan.scalarBindings.get(nodeId);
       if (scalars) {
-        for (const [key, val] of scalars) setUniform(material, key, normalizeUniformValue(val));
+        for (const [key, val] of scalars) {
+          // For math upstream, inject live value from mathValues
+          const upstreamId = plan.upstreamSamplerBindings.get(nodeId)?.get(key);
+          if (upstreamId && plan.mathValues.has(upstreamId)) {
+            setUniform(material, key, normalizeUniformValue(plan.mathValues.get(upstreamId)));
+          } else {
+            setUniform(material, key, normalizeUniformValue(val));
+          }
+        }
       }
 
       const self = plan.selfUniforms.get(nodeId);

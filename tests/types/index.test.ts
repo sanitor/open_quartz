@@ -33,7 +33,7 @@ describe('DATA_TYPE_COLORS', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(Object.keys(DATA_TYPE_COLORS)).toHaveLength(allDataTypes.length + LOGICAL_TYPES.length);
+    expect(Object.keys(DATA_TYPE_COLORS)).toHaveLength(allDataTypes.length + LOGICAL_TYPES.length + 1); // +1 for 'auto'
   });
 });
 
@@ -90,7 +90,7 @@ describe('cross-validation: GLSL_VALID_TYPES ↔ DATA_TYPE_COLORS', () => {
   });
 
   it('every DATA_TYPE_COLORS key is either a GLSL type or a logical type', () => {
-    const validSet = new Set<string>([...GLSL_VALID_TYPES, ...LOGICAL_TYPES]);
+    const validSet = new Set<string>([...GLSL_VALID_TYPES, ...LOGICAL_TYPES, 'auto']);
     for (const key of Object.keys(DATA_TYPE_COLORS)) {
       expect(validSet.has(key)).toBe(true);
     }

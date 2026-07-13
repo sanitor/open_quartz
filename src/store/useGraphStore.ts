@@ -8,6 +8,7 @@ import {
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
 import { parseShader } from '../engine/shaderParser';
+import { MATH_OPS, getMathPorts } from '../engine/mathOps';
 
 interface HistoryEntry {
   nodes: Node<ShaderNodeData>[];
@@ -43,6 +44,7 @@ interface GraphState {
   addSystemNode: (source: NonNullable<ShaderNodeData['systemSource']>, position?: { x: number; y: number }) => void;
   addShaderNode: (code: string, label: string, position?: { x: number; y: number }) => void;
   addOnnxNode: (modelId: string, ports: { inputs: Port[]; outputs: Port[] }, position?: { x: number; y: number }) => void;
+  addMathNode: (mathOp: string, position?: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   removeSelectedElements: () => void;
   updateNodeData: (id: string, data: Partial<ShaderNodeData>) => void;
@@ -107,6 +109,7 @@ function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: D
       return 'uniform vec4 color;\nout vec4 fragColor;\nvoid main() { fragColor = color; }';
     case 'onnx':
     case 'renderer':
+    case 'math':
       return '';
   }
 }
@@ -236,14 +239,23 @@ export const useGraphStore = create<GraphState>()(
           const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
           const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
           if (sourcePort && targetPort) {
+            const sourceIsAuto = sourcePort.dataType === 'auto';
+            const targetIsAuto = targetPort.dataType === 'auto';
             const targetIsSampler = targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube';
+            const sourceIsSampler = sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube';
             if (targetIsSampler) {
-              const srcIsSampler = sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube';
+              // Reject auto→sampler and sampler→auto
+              if (sourceIsAuto) return;
               const srcType = sourceNode.data.type;
-              const srcIsTextureProducer = srcIsSampler
+              const srcIsTextureProducer = sourceIsSampler
                 || srcType === 'shader' || srcType === 'constant'
                 || (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D');
               if (!srcIsTextureProducer) return;
+            } else if (sourceIsSampler && targetIsAuto) {
+              // Reject sampler→auto
+              return;
+            } else if (sourceIsAuto || targetIsAuto) {
+              // Allow any scalar/vector ↔ auto connection
             } else if (sourcePort.dataType !== targetPort.dataType) {
               return;
             }
@@ -300,6 +312,31 @@ export const useGraphStore = create<GraphState>()(
             outputs: ports.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
             uniforms: {},
             onnxModelId: modelId,
+          },
+        };
+        set((state) => { state.nodes.push(node); });
+      },
+      addMathNode: (mathOp, position) => {
+        saveSnapshot();
+        nodeCounter++;
+        const id = `math_${nodeCounter}`;
+        const cascade = nodeCascade++ * 28;
+        const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
+        const op = MATH_OPS[mathOp];
+        if (!op) return;
+        const ports = getMathPorts(op);
+        const node: Node<ShaderNodeData> = {
+          id,
+          type: 'math',
+          position: pos,
+          data: {
+            type: 'math',
+            label: op.label,
+            shaderCode: '',
+            inputs: ports.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
+            outputs: ports.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
+            uniforms: {},
+            mathOp: mathOp,
           },
         };
         set((state) => { state.nodes.push(node); });

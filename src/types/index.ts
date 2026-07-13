@@ -11,7 +11,7 @@ export type GlslDataType =
 // They can flow between nodes on the DAG but cannot be sampled by GLSL.
 export type LogicalDataType = 'roi' | 'mesh' | 'json';
 
-export type DataType = GlslDataType | LogicalDataType;
+export type DataType = GlslDataType | LogicalDataType | 'auto';
 
 export type InputMode = 'image' | 'framebuffer' | 'video' | 'system';
 
@@ -28,7 +28,7 @@ export interface Port {
   defaultValue?: unknown;
 }
 
-export type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer';
+export type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | 'math';
 
 export interface ShaderNodeData {
   type: NodeType;
@@ -72,6 +72,7 @@ export interface ShaderNodeData {
   videoLoop?: boolean;
   videoPlaybackRate?: number;
   systemSource?: 'time' | 'timeDelta' | 'frame' | 'mouse' | 'resolution';
+  mathOp?: string;
   [key: string]: unknown;
 }
 
@@ -123,6 +124,8 @@ export const DATA_TYPE_COLORS: Record<DataType, string> = {
   roi: '#ff8a65',
   mesh: '#7986cb',
   json: '#ffb74d',
+  // auto type for math ports
+  auto: '#f59e0b',
 };
 
 export const GLSL_VALID_TYPES: GlslDataType[] = [
