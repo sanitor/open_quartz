@@ -4,8 +4,9 @@ import { PortInspector } from './PortInspector';
 import { OnnxPanel } from './OnnxPanel';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ImageLightbox } from '../ImageLightbox';
-import type { FramebufferFormat, TextureFilter, TextureWrap } from '../../types';
+import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '../../types';
 import { generateRawPreview } from '../../utils/rawPreview';
+import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../engine/mathOps';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },
@@ -158,6 +159,120 @@ export function SidePanel() {
       </div>
     ),
   });
+
+  // --- MATH CONFIG (math nodes only) ---
+  if (data.type === 'math') {
+    const edges = useGraphStore.getState().edges;
+    const allNodes = useGraphStore.getState().nodes;
+
+    // Infer port types from connected peers
+    function inferPortType(portId: string, isInput: boolean): DataType {
+      if (isInput) {
+        const edge = edges.find((e) => e.target === selectedNodeId && e.targetHandle === portId);
+        if (edge) {
+          const srcNode = allNodes.find((n) => n.id === edge.source);
+          if (srcNode) {
+            const srcPort = srcNode.data.outputs.find((p) => p.id === edge.sourceHandle);
+            if (srcPort && srcPort.dataType !== 'auto') return srcPort.dataType;
+          }
+        }
+      } else {
+        // Output type = widest input type
+        const inputTypes = data!.inputs.map((p) => inferPortType(p.id, true));
+        const resolved = inputTypes.filter((t) => t !== 'auto');
+        if (resolved.length > 0) {
+          const widthOrder: DataType[] = ['bool', 'int', 'uint', 'float', 'vec2', 'vec3', 'vec4'];
+          let widest = resolved[0];
+          for (const t of resolved) {
+            if (widthOrder.indexOf(t) > widthOrder.indexOf(widest)) widest = t;
+          }
+          return widest;
+        }
+      }
+      return 'auto';
+    }
+
+    sections.push({
+      id: 'mathconfig',
+      title: 'MATH CONFIG',
+      content: (
+        <div className="px-4 py-3 space-y-3">
+          {/* Operation selector */}
+          <div>
+            <label className="text-[10px] text-[#86868b] font-medium block mb-1">OPERATION</label>
+            <select
+              value={data.mathOp ?? 'add'}
+              onChange={(e) => {
+                if (!selectedNodeId) return;
+                const newOp = MATH_OPS[e.target.value];
+                if (!newOp) return;
+                const ports = getMathPorts(newOp);
+                updateNodeData(selectedNodeId, {
+                  mathOp: e.target.value,
+                  label: newOp.label,
+                  inputs: ports.inputs.map((p) => ({ ...p, id: `${selectedNodeId}_${p.label}` })),
+                  outputs: ports.outputs.map((p) => ({ ...p, id: `${selectedNodeId}_${p.label}` })),
+                });
+              }}
+              className="w-full rounded border border-[#d2d2d7] bg-white px-2 py-1 text-[11px] text-[#1d1d1f]"
+            >
+              {MATH_CATEGORIES.map((cat) => (
+                <optgroup key={cat.category} label={cat.category}>
+                  {cat.ops.map((opId) => {
+                    const op = MATH_OPS[opId];
+                    return op ? (
+                      <option key={opId} value={opId}>{op.label}</option>
+                    ) : null;
+                  })}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          {/* Ports with inferred types */}
+          <div>
+            <label className="text-[10px] text-[#86868b] font-medium block mb-1">INPUTS</label>
+            {data.inputs.map((port) => {
+              const inferred = inferPortType(port.id, true);
+              const isConnected = edges.some((e) => e.target === selectedNodeId && e.targetHandle === port.id);
+              return (
+                <div key={port.id} className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[11px] text-[#1d1d1f] font-medium w-4">{port.label}</span>
+                  <span className="text-[9px] text-[#86868b] w-10">{inferred}</span>
+                  {!isConnected && (
+                    <input
+                      type="number"
+                      step="any"
+                      value={Number(data.uniforms?.[port.label] ?? 0)}
+                      onChange={(e) => handleUniformChange(port.label, parseFloat(e.target.value) || 0)}
+                      className="flex-1 rounded border border-[#d2d2d7] bg-white px-2 py-0.5 text-[11px] text-[#1d1d1f] tabular-nums"
+                    />
+                  )}
+                  {isConnected && (
+                    <span className="text-[10px] text-[#86868b] italic">connected</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Output */}
+          <div>
+            <label className="text-[10px] text-[#86868b] font-medium block mb-1">OUTPUT</label>
+            {data.outputs.map((port) => {
+              const inferred = inferPortType(port.id, false);
+              return (
+                <div key={port.id} className="flex items-center gap-2">
+                  <span className="text-[11px] text-[#1d1d1f] font-medium">{port.label}</span>
+                  <span className="text-[9px] text-[#86868b]">{inferred}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ),
+    });
+  }
 
   // --- ONNX CONFIG ---
   if (data.type === 'onnx' && data.onnxModelId) {
