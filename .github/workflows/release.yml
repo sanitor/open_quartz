@@ -40,32 +40,22 @@ jobs:
           releaseBody: |
             ## Features
 
-            - **Realtime rendering loop** — rAF-driven Host/Compositor architecture inspired by QC's `QCRenderer`. `PLAY / PAUSE / STOP` transport replaces legacy single-shot `RUN`.
-            - **Time system** — Shadertoy-compatible builtin uniforms (`iTime`, `iTimeDelta`, `iFrame`, `iDate`, `iMouse`, `iResolution`) auto-injected when declared in shader. Per-node `iResolution` matches each shader's FBO dimensions.
-            - **Renderer node** — explicit output viewer (QC's `QCView` equivalent). Green header, in-place or panel preview. No extra render pass — reads upstream FBO directly.
-            - **Multi-renderer support** — each renderer has its own mirror canvas; GPU→GPU `drawImage` blit. Multiple renderers display simultaneously.
-            - **Fullscreen live preview** — live canvas overlay with SAVE button for frame capture as PNG.
-            - **Video input** — camera (`getUserMedia`) and file upload as `sampler2D` texture. Video dimensions propagate to downstream shader default size.
-            - **Video file persistence** — Tauri: absolute file path via `convertFileSrc`. Web: blob URL with reload prompt.
-            - **GPU-only output path** — no `readPixels` / `toDataURL` in realtime loop. All output stays on GPU via mirror canvas blit.
-            - **ONNX realtime support** — async non-blocking inference in the realtime path (1–N frame latency).
-            - **Builtin uniform badges** — `AUTO` badge on `iTime`, `iMouse`, etc. in PortInspector.
-            - **Clock** — pause/resume/seek support with sliding window FPS.
-            - **MouseState** — Shadertoy `iMouse` convention (origin bottom-left, z/w click state).
-
-            ## Breaking Changes
-
-            - **RUN button removed** — all rendering goes through `PLAY`.
-            - **`isRunning` / `setRunning` removed from store** — replaced by `loopState` with `play()` / `pause()` / `resume()` / `stop()`.
+            - **Math nodes** — 29 CPU-based math operations across 6 categories. Pure JS computation, no GPU shader compilation. Compact amber nodes with operation symbols.
+            - **Auto type system** — `auto` DataType for Math ports, inferred from connected peers. Widest-type promotion.
+            - **System source nodes** — TIME, TIME DELTA, FRAME, MOUSE, RESOLUTION as dedicated nodes. Green header, read-only live values.
+            - **SOURCE menu** — renamed from INPUT, reorganized into SYSTEM / CONSTANTS / EXTERNAL groups.
+            - **MATH menu** — new toolbar dropdown with 6 category sub-menus.
+            - **Math SidePanel** — switchable operation, type inference display, editable defaults.
+            - **Engine math pipeline** — `scalarUpstream` map for math→shader propagation. Math→Math chaining.
+            - **113 new tests** — 756 total tests, mathOps.ts 100% coverage.
 
             ## Fixes
 
-            - Stop/play lifecycle: WebGL context preserved across cycles
-            - Video pause/resume syncs `<video>` elements
-            - Async video init triggers plan recompile
-            - Shader `v_uv` redefinition stripped by compiler
-            - WebGL feedback loop guard
-            - Per-node `iResolution` fixes UV scaling on mixed-resolution graphs
-            - `autoSize` respected for upstream-derived default size
+            - System source nodes no longer compile shader (eliminates dual-output GLSL error)
+            - Video thumbnail shows first frame instead of blank
+            - Video preview no longer auto-plays in non-play state
+            - Math→shader value propagation via scalarUpstream map
+            - System source inputMode correctly set
+            - isConnectionValid handles auto type connections
           releaseDraft: false
           prerelease: true

@@ -18,19 +18,27 @@ Open Quartz is a node-based visual programming environment for real-time image a
 
 ### Node Graph Editor
 - **Drag, connect, and arrange** shader nodes on an infinite canvas (React Flow)
-- **4 node types**: Shader (custom GLSL), Input (data sources), Renderer (output viewer), ONNX (ML inference)
+- **6 node types**: Shader (custom GLSL), Input (data sources), Math (CPU operations), Renderer (output viewer), ONNX (ML inference), Constant
 - **Bezier curve edges** with type-safe connections — ports carry GLSL type metadata
 - **MiniMap** for graph overview navigation
 - **Box selection** for multi-node operations
 - **Fit-to-view** on load
 
-### Input System
-- **Grouped INPUT menu** — inputs organized into SCALAR (float/int/bool), VECTOR (vec2/vec3/vec4), and SAMPLER2D (Image/Framebuffer/Video) groups with hover-expand nested sub-menus
+### Source System
+- **Grouped SOURCE menu** — inputs organized into SYSTEM (Time/Mouse/Resolution), CONSTANTS (float/int/vec/mat), and EXTERNAL (Image/Framebuffer/Video) groups
 - **Image input** — load images as sampler2D textures, with read-only width/height display
 - **Framebuffer input** — load raw binary dump files as textures with configurable format (RGBA8 / RGBA32F / RG8 / RG32F / R8 / R32F / NV12), width, height, and stride
 - **Video input** — camera and file video as sampler2D textures via HTMLVideoElement / THREE.VideoTexture; video dimensions propagate to downstream shader default size
 - **Texture sampling config** — all sampler2D inputs support Filter (LINEAR / NEAREST) and Wrap (CLAMP / REPEAT / MIRROR) settings
 - **Immediate preview** — Image, Framebuffer, and Video inputs show preview thumbnails as soon as data is loaded
+
+### Math Nodes
+- **29 CPU-based operations** across 6 categories: Arithmetic (add/subtract/multiply/divide/negate/modulo), Range (min/max/clamp/saturate/step/smoothstep/abs/sign), Trigonometry (sin/cos/tan/asin/acos/atan), Exponential (pow/sqrt/exp/log), Interpolation (mix), Rounding (floor/ceil/round/fract)
+- **Auto type inference** — Math ports use `auto` type, resolved from connected peers. Output type promotes to widest input type
+- **CPU-only evaluation** — no GPU shader compilation, pure JS computation in `runFrame()`. Results propagate to downstream shader uniforms
+- **Compact visual nodes** — amber header with operation symbol (+ × sin √ etc.), 3-column layout
+- **MATH dropdown menu** — 6 category sub-menus between SOURCE and SHADER in toolbar
+- **Switchable operation** — change operation type from SidePanel dropdown without recreating the node
 
 ### Node Inspector & Editor (Side Panel)
 - **Editable node label** and type badge
@@ -140,15 +148,16 @@ Open http://localhost:5173 in your browser. See `docs/ONNX_NODE_DESIGN.md` for O
 ## Usage
 
 1. Click **SHADER** dropdown to pick from predefined templates or create a custom shader
-2. Click **INPUT** dropdown and hover a group (SCALAR / VECTOR / SAMPLER2D) to add input nodes
-3. Add a **RENDERER** node to view shader output — each renderer provides an independent preview
-4. Select a shader node to edit its GLSL code in the right panel
-5. Drag between port handles to connect nodes
-6. Edit uniform values inline in the port inspector
-7. Click **PLAY** to start the realtime rendering loop; **PAUSE** to freeze, **STOP** to reset
-8. Use `uniform float iTime;` / `uniform vec4 iMouse;` / `uniform vec3 iResolution;` in shaders for time, mouse, and resolution — declared uniforms are auto-injected
-9. Click the renderer preview or **FULLSCREEN** to open a live fullscreen view; **SAVE** to export a frame as PNG
-10. Click **SAVE** to download a `.quartz.json` project file, or **LOAD** to restore one
+2. Click **SOURCE** dropdown and hover a group (SYSTEM / CONSTANTS / EXTERNAL) to add source nodes
+3. Click **MATH** dropdown to add CPU-based math operation nodes for signal processing
+4. Add a **RENDERER** node to view shader output — each renderer provides an independent preview
+5. Select a shader node to edit its GLSL code in the right panel
+6. Drag between port handles to connect nodes
+7. Edit uniform values inline in the port inspector
+8. Click **PLAY** to start the realtime rendering loop; **PAUSE** to freeze, **STOP** to reset
+9. Use `uniform float iTime;` / `uniform vec4 iMouse;` / `uniform vec3 iResolution;` in shaders for time, mouse, and resolution — declared uniforms are auto-injected
+10. Click the renderer preview or **FULLSCREEN** to open a live fullscreen view; **SAVE** to export a frame as PNG
+11. Click **SAVE** to download a `.quartz.json` project file, or **LOAD** to restore one
 
 ## Desktop app (Tauri)
 

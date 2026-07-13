@@ -1,6 +1,6 @@
 # OpenQuartz — 硬件加速图像视频处理图编辑器
 
-> Version 0.7.0b — 受 Apple Quartz Composer 启发的可视化节点图编辑与运行环境
+> Version 0.8.0b — 受 Apple Quartz Composer 启发的可视化节点图编辑与运行环境
 
 ---
 
@@ -60,9 +60,9 @@ type GlslDataType =
 // 非 GLSL 逻辑类型，可在 DAG 中流动但不能被 GLSL 采样
 type LogicalDataType = 'roi' | 'mesh' | 'json';
 
-type DataType = GlslDataType | LogicalDataType;
+type DataType = GlslDataType | LogicalDataType | 'auto';
 
-type InputMode = 'image' | 'framebuffer' | 'video';
+type InputMode = 'image' | 'framebuffer' | 'video' | 'system';
 
 interface Port {
   id: string;
@@ -72,7 +72,7 @@ interface Port {
   defaultValue?: unknown;
 }
 
-type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer';
+type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | 'math';
 
 interface ShaderNodeData {
   type: NodeType;
@@ -107,6 +107,9 @@ interface ShaderNodeData {
   autoSize?: boolean;
   resolvedWidth?: number;
   resolvedHeight?: number;
+  // Math 节点字段
+  mathOp?: string;                // 运算标识：'add' | 'sin' | 'clamp' | ...
+  systemSource?: string;          // system 源：'time' | 'timeDelta' | 'frame' | 'mouse' | 'resolution'
 }
 
 interface ProjectFile {
@@ -128,9 +131,9 @@ interface ProjectFile {
 ```
 <App>
   <Header />
-    ├── OPENQUARTZ v0.7.0b
+    ├── OPENQUARTZ v0.8.0b
     ├── 工程名输入框
-    ├── 添加节点：+SHADER / +INPUT / +IMAGE / +ONNX / +RENDERER
+    ├── 添加节点：SOURCE / MATH / +SHADER / +ONNX / +RENDERER
     ├── 文件：SAVE / LOAD
     ├── 运行：▶ PLAY / ⏸ PAUSE / ■ STOP / CLEAR
     └── FPS / TIME / FRAME 实时显示
@@ -140,6 +143,7 @@ interface ProjectFile {
       ├── <InputNode />            ← 蓝 header，类型选择 + 值输入/图片加载/视频输入
       ├── <OnnxNode />             ← 黄 header，模型选择 + 参数配置
       ├── <RendererNode />         ← 绿 header，显示上游 FBO 预览（mirror canvas blit）
+      ├── <MathNode />             ← 橙 header，CPU 运算节点，auto 类型端口
       └── 贝塞尔曲线连线
     <SidePanel />                  ← 白底右侧面板
       ├── 节点信息（类型 + label + Delete）
@@ -242,7 +246,8 @@ open-quartz/
 │   │   │       ├── ShaderNode.tsx
 │   │   │       ├── InputNode.tsx
 │   │   │       ├── OnnxNode.tsx      ← ONNX 推理节点
-│   │   │       └── RendererNode.tsx  ← 输出查看器（mirror canvas blit）
+│   │   │       ├── RendererNode.tsx  ← 输出查看器（mirror canvas blit）
+│   │   │       └── MathNode.tsx      ← CPU 运算节点（auto 类型推定）
 │   │   ├── SidePanel/
 │   │   │   ├── index.tsx
 │   │   │   ├── ShaderEditor.tsx      ← CodeMirror 6
@@ -260,6 +265,7 @@ open-quartz/
 │   │   ├── shaderCompiler.ts         ← RawShaderMaterial 编译
 │   │   ├── graphExecutor.ts          ← 拓扑排序
 │   │   ├── webglRenderer.ts          ← Three.js FBO 管线
+│   │   ├── mathOps.ts                ← 29 个数学运算注册表
 │   │   ├── onnxRegistry.ts           ← ONNX 模型注册表
 │   │   ├── onnxSession.ts            ← ONNX Runtime 会话管理
 │   │   ├── onnxOverlay.ts            ← ONNX 检测结果叠加渲染
@@ -285,7 +291,7 @@ open-quartz/
 |---|---|
 | Vite + React + TS + Tailwind 脚手架 | ✅ |
 | React Flow 节点图 + 自定义节点 | ✅ |
-| 五种节点：Shader / Input / Constant / ONNX / Renderer | ✅ |
+| 六种节点：Shader / Input / Constant / ONNX / Renderer / Math | ✅ |
 | GLSL 正则解析（uniform / out） | ✅ |
 | Shader 编译（RawShaderMaterial + GLSL3） | ✅ |
 | WebGL FBO 渲染管线 | ✅ |
@@ -308,6 +314,10 @@ open-quartz/
 | 每节点 iResolution（各 shader 独立 FBO 尺寸） | ✅ |
 | 视频尺寸向下游传播 | ✅ |
 | Tauri 桌面端支持（可选） | ✅ |
+| Math 节点（29 个 CPU 运算） | ✅ |
+| System 源节点（Time/Mouse/Resolution） | ✅ |
+| Auto 类型推定 + 宽类型连线 | ✅ |
+| SOURCE 菜单（重组 INPUT 为 SYSTEM/CONSTANTS/EXTERNAL） | ✅ |
 
 ---
 
@@ -346,7 +356,7 @@ open-quartz/
 
 ---
 
-## 13. Math 节点设计方案（计划中）
+## 13. Math 节点设计方案（已实现）
 
 ### 背景
 
@@ -456,6 +466,6 @@ Mouse.xy → Math(Divide, b=resolution) → Shader.uv # 归一化鼠标坐标
 
 ### 实施阶段
 
-1. **Phase 1**：新增 `'math'` 节点类型 + `'auto'` DataType + 连线放宽 + `runFrame` CPU 执行分支 + 基础算术运算（Add/Subtract/Multiply/Divide）
-2. **Phase 2**：完整运算库（三角/指数/向量/范围/插值）+ MathNode UI 组件
-3. **Phase 3**：端口类型推定 + 类型提升 + broadcast 逻辑
+1. **Phase 1**：✅ 新增 `'math'` 节点类型 + `'auto'` DataType + 连线放宽 + `runFrame` CPU 执行分支 + 基础算术运算（Add/Subtract/Multiply/Divide）
+2. **Phase 2**：✅ 完整运算库（29 个运算：三角/指数/范围/插值/取整）+ MathNode UI 组件 + MathSidePanel
+3. **Phase 3**：✅ 端口类型推定 + 类型提升 + broadcast 逻辑 + System 源节点（TIME/MOUSE/RESOLUTION）

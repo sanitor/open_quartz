@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.8.0b] — 2026-07-08
+
+### Features
+
+- **Math nodes** — 29 CPU-based math operations across 6 categories (Arithmetic, Range, Trigonometry, Exponential, Interpolation, Rounding). Pure JS computation in `runFrame()`, no GPU shader compilation. Amber-colored compact nodes with operation symbol display (+, ×, sin, √, etc.).
+- **Auto type system** — new `'auto'` DataType for Math node ports. Actual type inferred from connected peers. Output type promotes to widest input type (`int → float`, `float < vec2 < vec3 < vec4`). Port colors update in real-time to reflect inferred type.
+- **Relaxed connection rules for Math** — `auto` ports accept any scalar/vector type connection. `sampler2D`/`samplerCube` connections to auto ports are rejected. Both `isConnectionValid` (drag preview) and `onConnect` (commit) enforce the rule.
+- **System source nodes** — TIME, TIME DELTA, FRAME, MOUSE, RESOLUTION as dedicated input nodes under SOURCE → SYSTEM menu. Green header, read-only live value display during playback (e.g. `2.345s`, `42`). Pure CPU value providers — no shader compilation.
+- **SOURCE menu** — INPUT menu renamed to SOURCE and reorganized into three groups: SYSTEM (time/mouse/resolution), CONSTANTS (float/int/vec/mat), EXTERNAL (image/framebuffer/video). Moved before SHADER in toolbar order.
+- **MATH menu** — new toolbar dropdown between SOURCE and SHADER with 6 category sub-menus matching QC-style Math/Logic patch organization.
+- **Math SidePanel** — operation selector dropdown (switchable at any time), port type inference display, editable default values for unconnected inputs.
+- **Engine math pipeline** — `scalarUpstream` map tracks all upstream connections (not just sampler2D). Math results propagate to downstream shader uniforms via `mathValues` map. Math→Math chaining supported.
+- **113 new tests** — mathOps (76 tests, 100% coverage), store math/system (24 tests), engine math pipeline (13 tests). Total: 756 tests across 33 files.
+
+### Fixes
+
+- **System source shader error** — system source nodes (Time, etc.) no longer compile shader, eliminating `EXT_blend_func_extended` dual-output GLSL error.
+- **Video thumbnail blank** — video preview shows first frame via `#t=0.1` URL fragment instead of blank `preload="metadata"`.
+- **Video auto-play** — video thumbnails no longer auto-play/loop in non-play state on node and SidePanel previews.
+- **Math→shader propagation** — fixed `upstreamSamplerBindings` only tracking sampler2D connections; added `scalarUpstream` map for scalar/math value injection into downstream shaders.
+- **System source inputMode** — `makeNode` now correctly passes `inputMode` parameter; system nodes properly set `inputMode='system'`.
+- **isConnectionValid for auto** — React Flow drag-preview validation now allows `auto` ↔ scalar/vector connections instead of rejecting on type mismatch.
+
 ## [0.7.1b] — 2026-07-09
 
 ### Features
