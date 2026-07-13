@@ -251,7 +251,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
             <input ref={videoFileInputRef} type="file" accept="video/*" onChange={handleVideoFileChange} className="hidden" />
             {data.videoUrl ? (
               <div className="p-2">
-                <video src={data.videoUrl} muted loop playsInline className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+                <video src={data.videoUrl} muted playsInline preload="metadata" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
                 <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                   {data.videoFileName ?? 'loaded'}
                 </div>
