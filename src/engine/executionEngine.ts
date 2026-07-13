@@ -122,6 +122,11 @@ export class ExecutionEngine {
         continue;
       }
 
+      // System source nodes: pure value providers, skip shader compilation
+      if (node.data.type === 'input' && node.data.inputMode === 'system') {
+        continue;
+      }
+
       if (node.data.type === 'math') {
         const upstreamEdges = edges.filter((e) => e.target === nodeId);
         const mathUpstream = new Map<string, string>();
@@ -362,17 +367,6 @@ export class ExecutionEngine {
         const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
         for (const [key, val] of Object.entries(self)) {
           if (!upstreamMap?.has(key)) setUniform(material, key, normalizeUniformValue(val));
-        }
-      }
-
-      // System source nodes: inject value from FrameInputs
-      if (node.data.type === 'input' && node.data.inputMode === 'system' && node.data.systemSource) {
-        switch (node.data.systemSource) {
-          case 'time': setUniform(material, 'value', builtins.time); break;
-          case 'timeDelta': setUniform(material, 'value', builtins.delta); break;
-          case 'frame': setUniform(material, 'value', builtins.frame); break;
-          case 'mouse': setUniform(material, 'value', builtins.mouse); break;
-          case 'resolution': setUniform(material, 'value', builtins.resolution); break;
         }
       }
 
@@ -875,7 +869,6 @@ export class ExecutionEngine {
 }
 
 function isRenderableNode(node: Node<ShaderNodeData>): boolean {
-  if (node.data.type === 'input' && node.data.inputMode === 'system') return true;
   return node.data.type === 'shader' || node.data.type === 'constant' || node.data.type === 'renderer' || node.data.type === 'onnx';
 }
 
