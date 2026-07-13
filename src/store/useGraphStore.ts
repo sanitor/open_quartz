@@ -156,7 +156,7 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
       outputs: parsed.outputs,
       uniforms: {},
       inputDataType: type === 'input' ? (inputDataType ?? 'float') : undefined,
-      inputMode: type === 'input' && inputDataType === 'sampler2D' ? (inputMode ?? 'image') : undefined,
+      inputMode: type === 'input' ? (inputMode ?? (inputDataType === 'sampler2D' ? 'image' : undefined)) : undefined,
     },
   };
 }
@@ -291,6 +291,7 @@ export const useGraphStore = create<GraphState>()(
         saveSnapshot();
         const def = SYSTEM_SOURCES[source];
         const node = makeNode('input', position, def.dataType, def.code, def.label, 'system');
+        node.data.inputMode = 'system';
         node.data.systemSource = source;
         set((state) => { state.nodes.push(node); });
       },

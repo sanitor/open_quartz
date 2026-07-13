@@ -19,7 +19,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../../store/useGraphStore';
-import type { ShaderNodeData } from '../../types';
+import type { ShaderNodeData, DataType } from '../../types';
 import { isLogicalType } from '../../types';
 import { ShaderNode } from './nodes/ShaderNode';
 import { OnnxNode } from './nodes/OnnxNode';
@@ -112,6 +112,17 @@ function isConnectionValid(connection: Connection | Edge): boolean {
   const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
   const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
   if (!sourcePort || !targetPort) return false;
+
+  const sourceIsAuto = sourcePort.dataType === 'auto';
+  const targetIsAuto = targetPort.dataType === 'auto';
+
+  // Auto ports accept any scalar/vector type, reject sampler
+  if (sourceIsAuto || targetIsAuto) {
+    const otherType = sourceIsAuto ? targetPort.dataType : sourcePort.dataType;
+    if (otherType === 'sampler2D' || otherType === 'samplerCube') return false;
+    if (isLogicalType(otherType as DataType)) return false;
+    return true;
+  }
 
   if (isLogicalType(targetPort.dataType) || isLogicalType(sourcePort.dataType)) {
     return sourcePort.dataType === targetPort.dataType;
