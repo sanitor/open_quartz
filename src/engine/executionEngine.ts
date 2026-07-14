@@ -9,6 +9,7 @@ import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './
 import { ONNX_CATALOG } from './onnxCatalog';
 import { modelManager } from '../store/useGraphStore';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
+import { OnnxInferenceSession, runSuperResolution } from './onnxInference';
 import { drawDetectionOverlay } from './onnxOverlay';
 import { MATH_OPS } from './mathOps';
 
@@ -397,6 +398,15 @@ export class ExecutionEngine {
   ): Promise<void> {
     try {
       const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
+      const catalogEntry = ONNX_CATALOG[modelId];
+
+      // Route by task: SR uses the generic TS ORT path; detection uses the Rust wasm path.
+      if (catalogEntry && catalogEntry.task === 'super-resolution') {
+        await this.runSuperResolutionInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId);
+        return;
+      }
+
+      // Default: detection via Rust wasm path
       const descriptor = ONNX_MODELS[modelId];
       if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
 
@@ -421,6 +431,59 @@ export class ExecutionEngine {
     } finally {
       this.onnxInFlight.delete(nodeId);
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Super-Resolution via generic TS ORT path
+  // -----------------------------------------------------------------------
+
+  private tsOrtSessions = new Map<string, OnnxInferenceSession>();
+
+  private async runSuperResolutionInference(
+    plan: ExecutionPlan,
+    nodeId: string,
+    sourceCanvas: HTMLCanvasElement,
+    srcW: number,
+    srcH: number,
+    modelId: string,
+  ): Promise<void> {
+    // Get or create TS ORT session
+    let session = this.tsOrtSessions.get(modelId);
+    if (!session) {
+      session = new OnnxInferenceSession();
+      const buffer = await modelManager.loadCachedModel(modelId);
+      if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
+      await session.loadFromBuffer(buffer);
+      this.tsOrtSessions.set(modelId, session);
+    }
+
+    // Read pixels from source canvas
+    const ctx = sourceCanvas.getContext('2d');
+    if (!ctx) throw new Error('Cannot get 2d context from source canvas');
+    const imageData = ctx.getImageData(0, 0, srcW, srcH);
+
+    // Determine scale and model type from catalog entry id
+    const isRgbModel = modelId === 'realesrgan-x4';
+    const scale = modelId === 'realesrgan-x4' ? 4 : 3;
+    const modelType = isRgbModel ? 'rgb' as const : 'ycbcr' as const;
+    const result = await runSuperResolution(session, imageData.data, srcW, srcH, scale, modelType);
+
+    // Create output canvas → Three.js texture
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = result.width;
+    outCanvas.height = result.height;
+    const outCtx = outCanvas.getContext('2d')!;
+    const outImageData = new ImageData(result.rgba, result.width, result.height);
+    outCtx.putImageData(outImageData, 0, 0);
+
+    const texture = new THREE.CanvasTexture(outCanvas);
+    texture.needsUpdate = true;
+    texture.flipY = true;
+    plan.textureSources.set(nodeId, { kind: 'image', texture });
+
+    // Preview + output size callback
+    this.onnxCallbacks.onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
+    this.onnxCallbacks.onOutputSize?.(nodeId, result.width, result.height);
   }
 
   readOutputs(plan: ExecutionPlan, onOutput: (nodeId: string, dataUrl: string) => void): void {
@@ -731,8 +794,7 @@ export class ExecutionEngine {
       if (node.data.type === 'onnx') {
         try {
           const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
-          const descriptor = ONNX_MODELS[modelId];
-          if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
+          const catalogEntry = ONNX_CATALOG[modelId];
 
           const imagePort = node.data.inputs.find((p) => p.dataType === 'sampler2D');
           if (!imagePort) throw new Error(`ONNX node missing sampler2D input`);
@@ -742,7 +804,6 @@ export class ExecutionEngine {
           const source = textures.get(upstreamEdge.source);
           if (!source) throw new Error(`ONNX upstream '${upstreamEdge.source}' produced no texture`);
 
-          // Source dimensions: FBO knows its own size; image texture reads the underlying HTMLImageElement.
           let srcW: number;
           let srcH: number;
           if (source.kind === 'fbo') {
@@ -758,7 +819,6 @@ export class ExecutionEngine {
               srcH = defaultH;
             }
           }
-          // Render the upstream source into a scratch RGBA8 FBO we can read back.
           const scratchId = `onnx_src_${nodeId}`;
           const scratchTarget = this.renderer.createTarget(scratchId, srcW, srcH, false, 'rgba8');
           if (source.kind === 'fbo') {
@@ -768,22 +828,50 @@ export class ExecutionEngine {
           }
           const sourceCanvas = this.renderer.readTargetToCanvas(scratchTarget);
 
-          // Lazy session cache on the engine instance.
-          const session = await this.getOnnxSession(descriptor);
-          if (node.data.onnxScoreThreshold !== undefined && node.data.onnxIouThreshold !== undefined) {
-            session.setThresholds(node.data.onnxScoreThreshold, node.data.onnxIouThreshold);
+          if (catalogEntry && catalogEntry.task === 'super-resolution') {
+            // SR via generic TS ORT path
+            let session = this.tsOrtSessions.get(modelId);
+            if (!session) {
+              session = new OnnxInferenceSession();
+              const buffer = await modelManager.loadCachedModel(modelId);
+              if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
+              await session.loadFromBuffer(buffer);
+              this.tsOrtSessions.set(modelId, session);
+            }
+            const ctx = sourceCanvas.getContext('2d');
+            if (!ctx) throw new Error('Cannot get 2d context');
+            const imageData = ctx.getImageData(0, 0, srcW, srcH);
+            const isRgbModel = modelId === 'realesrgan-x4';
+            const scale = isRgbModel ? 4 : 3;
+            const modelType = isRgbModel ? 'rgb' as const : 'ycbcr' as const;
+            const result = await runSuperResolution(session, imageData.data, srcW, srcH, scale, modelType);
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = result.width;
+            outCanvas.height = result.height;
+            const outCtx = outCanvas.getContext('2d')!;
+            outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
+            const texture = new THREE.CanvasTexture(outCanvas);
+            texture.needsUpdate = true;
+            texture.flipY = true;
+            textures.set(nodeId, { kind: 'image', texture });
+            onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
+            onOutputSize?.(nodeId, result.width, result.height);
+          } else {
+            // Detection via Rust wasm path
+            const descriptor = ONNX_MODELS[modelId];
+            if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
+            const session = await this.getOnnxSession(descriptor);
+            if (node.data.onnxScoreThreshold !== undefined && node.data.onnxIouThreshold !== undefined) {
+              session.setThresholds(node.data.onnxScoreThreshold, node.data.onnxIouThreshold);
+            }
+            const result = await session.run(sourceCanvas, srcW, srcH);
+            const detections: OnnxDetection[] = result.detections;
+            const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
+            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
+            onOutput?.(nodeId, overlay.dataUrl);
+            onOutputSize?.(nodeId, srcW, srcH);
+            onOutputData?.(nodeId, { detections });
           }
-
-          const result = await session.run(sourceCanvas, srcW, srcH);
-          const detections: OnnxDetection[] = result.detections;
-
-          // Overlay canvas → CanvasTexture registered for downstream sampler2D consumers.
-          const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
-          textures.set(nodeId, { kind: 'image', texture: overlay.texture });
-
-          onOutput?.(nodeId, overlay.dataUrl);
-          onOutputSize?.(nodeId, srcW, srcH);
-          onOutputData?.(nodeId, { detections });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.warn(`ONNX error for node ${nodeId}:`, msg);
@@ -832,6 +920,10 @@ export class ExecutionEngine {
       try { s.dispose(); } catch { /* ignore */ }
     }
     this.onnxSessions.clear();
+    for (const s of this.tsOrtSessions.values()) {
+      try { s.dispose(); } catch { /* ignore */ }
+    }
+    this.tsOrtSessions.clear();
     for (const url of this.onnxBlobUrls.values()) {
       URL.revokeObjectURL(url);
     }

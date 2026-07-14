@@ -73,8 +73,41 @@ export const ONNX_CATALOG: Record<string, CatalogEntry> = {
       iouThreshold: { type: 'float', default: 0.45, min: 0, max: 1, step: 0.05, label: 'IoU Threshold' },
     },
   },
+  'super-resolution-3x': {
+    id: 'super-resolution-3x',
+    label: 'Super Resolution 3×',
+    task: 'super-resolution',
+    category: 'Super-Resolution',
+    downloadUrl: 'https://media.githubusercontent.com/media/onnx/models/main/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx',
+    fileSize: 240_078,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_upscaled', label: 'upscaled', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
+  'realesrgan-x4': {
+    id: 'realesrgan-x4',
+    label: 'Real-ESRGAN 4×',
+    task: 'super-resolution',
+    category: 'Super-Resolution',
+    downloadUrl: 'https://huggingface.co/Samo629/real-esrgan-onnx/resolve/main/realesr-general-x4v3.onnx',
+    fileSize: 4_866_421,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_upscaled', label: 'upscaled', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
 };
-
 // ---------------------------------------------------------------------------
 // Derived helpers
 // ---------------------------------------------------------------------------
