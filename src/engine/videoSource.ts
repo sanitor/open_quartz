@@ -21,6 +21,7 @@ export class VideoSource {
   constructor(config: VideoSourceConfig) {
     this.config = config;
     this.video = document.createElement('video');
+    this.video.crossOrigin = 'anonymous';
     this.video.muted = true;
     this.video.playsInline = true;
     this.video.autoplay = true;
