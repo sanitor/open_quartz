@@ -1,6 +1,6 @@
 # chaiNNer 设计分析与 OpenQuartz NN 支持路线图
 
-> Version: 1.0 (2026-07-14)
+> Version: 2.0 (2026-07-15)
 > 目的：分析 chaiNNer 的设计与实现，对比 OpenQuartz 现状，规划 NN/ONNX 支持的扩展路径。
 
 ---
@@ -165,22 +165,23 @@ chaiNNer 的非 NN 节点全部基于 numpy/OpenCV，CPU 执行：
 ### 3.1 当前架构
 
 ```
-┌──────────── OpenQuartz ONNX 架构 ────────────┐
-│                                                │
-│  onnxRegistry.ts   — 模型描述符（硬编码 yolov8n） │
-│  onnxSession.ts    — ORT 会话管理（wasm-pack）     │
-│  onnxOverlay.ts    — 检测结果可视化               │
-│  executionEngine   — ONNX 节点执行分支            │
-│                                                │
-│  rust/crates/yolo-detector/                    │
-│    └── YoloDetectorWasm                        │
-│        ├── ort_bridge (inline_js → ORT web)    │
-│        └── postprocess (decode + NMS)          │
-│                                                │
-│  类型系统:                                       │
-│    LogicalDataType = 'roi' | 'mesh' | 'json'   │
-│    NodeType includes 'onnx'                    │
-└────────────────────────────────────────────────┘
+┌──────────── OpenQuartz ONNX 架构 (v0.9) ─────────────┐
+│                                                        │
+│  onnxCatalog.ts    — 模型目录（3 个内置模型 + 分类）       │
+│  onnxModelManager  — 下载管理 + 缓冲缓存 + 进度通知       │
+│  onnxInference.ts  — 通用 TS ORT 推理 + 分块引擎          │
+│    ├── TileCodec: rgbCodec (ESRGAN), ycbcrCodec (SPCNN) │
+│    ├── 自适应 tile sizing (64→32→16→WASM fallback)       │
+│    └── runSuperResolution → runTiledInference            │
+│  onnxIntrospect.ts — 模型自省 + 任务推断 + 端口生成        │
+│  onnxSession.ts    — YOLO 检测（wasm-pack + Rust NMS）    │
+│  onnxOverlay.ts    — 检测结果可视化                       │
+│  executionEngine   — ONNX 分支 + 输出缓存 + 静态管线优化   │
+│  realtimeHost      — 静态管线检测 + ONNX 完成后补帧        │
+│                                                        │
+│  rust/crates/yolo-detector/                             │
+│    └── YoloDetectorWasm (保留用于检测后处理)               │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### 3.2 当前能力
@@ -191,26 +192,37 @@ chaiNNer 的非 NN 节点全部基于 numpy/OpenCV，CPU 执行：
 | 异步推理 | ✅ | 非阻塞，使用上一帧结果 |
 | roi 输出 | ✅ | 结构化 Detection[] |
 | overlay 输出 | ✅ | bbox 可视化 → sampler2D |
-| 模型自省 | ❌ | 硬编码描述符 |
-| 超分辨率 | ❌ | 无 |
-| 背景移除 | ❌ | 无 |
-| 分块推理 | ❌ | 无 |
-| 多模型 | ❌ | 仅 yolov8n |
-| 模型文件拖入 | ❌ | 无 |
-| 模型预置 | ⚠️ 待废除 | yolov8n.onnx 通过 `scripts/copy-model.mjs` 构建时复制到 `public/models/`，应迁移到 Catalog 自动下载 |
-
-> **迁移计划**：Phase 1 完成后，yolov8n 同其他模型一样走 Catalog 自动下载，届时删除 `scripts/copy-model.mjs`、移除 `public/models/` 构建产物、将 `onnxRegistry.ts` 的 `modelUrl: '/models/yolov8n.onnx'` 改为 `downloadUrl` 指向上游发布地址。`scripts/copy-ort.mjs`（ORT runtime 本身）保留不变。
+| **模型目录（Catalog）** | ✅ Phase 1 | 3 个内置模型，按类别分组菜单，自动下载 |
+| **自定义模型节点** | ✅ Phase 1 | Custom ONNX 节点框架（文件选择待 UI 接入） |
+| **模型下载管理** | ✅ Phase 1 | 后台下载 + 进度通知 + 缓冲缓存 |
+| **模型自省** | ✅ Phase 1 | inferTaskFromMeta + metaToDefaultPorts |
+| **超分辨率** | ✅ Phase 2 | Sub-pixel CNN 3× + Real-ESRGAN 4× |
+| **分块推理（Tiling）** | ✅ Phase 2 | 通用 TileCodec + 自适应 tile size |
+| **WebGPU→WASM 降级** | ✅ Phase 2 | GPU 不兼容时自动切 WASM EP + UI 标记 |
+| **静态管线优化** | ✅ Phase 2 | 无动画管线只跑一帧，ONNX 完成后补帧 |
+| **多模型** | ✅ | 3 个 catalog 模型 + 自定义 |
+| 背景移除 | ❌ Phase 3 | 待实现 |
+| 模型文件拖入 | ❌ Phase 5 | 待实现 |
 
 ### 3.3 执行流程
 
 ```
-sampler2D input
-    → readRenderTargetPixels (GPU→CPU readback)
-    → OffscreenCanvas
+检测管线 (YOLO):
+  sampler2D input
+    → readTargetToCanvas (GPU→CPU)
     → ort_detect (wasm-pack → ORT web, WebGPU/WASM EP)
     → Float32Array → Rust decode + NMS → Detection[]
     → overlay canvas (CPU drawBox) → THREE.CanvasTexture
     → 下游 shader 消费
+
+超分管线 (Phase 2, 通用 TS ORT):
+  sampler2D input
+    → readTargetToCanvas (GPU→CPU)
+    → TileCodec.encode → Float32Array [1,C,tH,tW]
+    → OnnxInferenceSession.run (WebGPU EP / WASM fallback)
+    → TileCodec.decode → 拼接 RGBA 输出
+    → THREE.CanvasTexture → 下游 shader/renderer 消费
+  自适应策略: tile=64 → OOM → tile=32 → OOM → tile=16 → WASM fallback
 ```
 
 ---
@@ -254,7 +266,7 @@ sampler2D input
 
 ### 5.2 分阶段路线
 
-#### Phase 1: 通用 ONNX 推理引擎（基础层重构）
+#### Phase 1: 通用 ONNX 推理引擎（基础层重构） ✅ 已完成 (v0.8.0b)
 
 **目标**：将当前 YOLO 专用的 ONNX 管线泛化为通用推理引擎。
 
@@ -419,9 +431,9 @@ class OnnxInferenceSession {
 - YOLO 后处理（decode_yolo_output + NMS 的 Rust 实现性能远优于 JS）
 - 未来可能的复杂后处理（ByteTrack、SAM 解码等）
 
-#### Phase 2: 超分辨率（Super-Resolution）节点
+#### Phase 2: 超分辨率（Super-Resolution）节点 ✅ 已完成 (v0.9.0b)
 
-**优先级最高**——这是 chaiNNer 最受欢迎的功能，也是 ONNX 最成熟的应用场景。
+**已实现** — 通用分块推理引擎 + 两个超分模型 + 自适应 tile sizing + WebGPU→WASM 自动降级。
 
 ##### 支持的模型
 

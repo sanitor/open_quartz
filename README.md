@@ -5,14 +5,14 @@
 <h1 align="center">Open Quartz</h1>
 
 <p align="center">
-  A hardware-accelerated visual graph editor for image and video processing.
+  A hardware-accelerated visual graph editor for image, video, and neural network processing.
 </p>
 
 <p align="center">
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based visual programming environment for real-time image and video processing. Build GPU-accelerated pipelines by connecting shader nodes, video/image inputs, ML inference nodes (ONNX), and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer and Shadertoy.
+Open Quartz is a node-based visual programming environment for real-time image, video, and ML inference processing. Build GPU-accelerated pipelines by connecting shader nodes, video/image inputs, ONNX neural network nodes, math operations, and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer and Shadertoy, with chaiNNer-style ML inference capabilities running entirely in the browser.
 
 ## Features
 
@@ -93,19 +93,19 @@ Open Quartz is a node-based visual programming environment for real-time image a
 - Emboss
 - Pixelate (with configurable block size)
 
-### ONNX Nodes (experimental)
-- **`onnx` node type** — self-contained inference nodes that bundle an ONNX model, run it in-browser, and emit both structured outputs (`roi`, `mesh`, `json`) and a `sampler2D` overlay for downstream shaders.
-- **Bundled model: YOLOv8n** (80 COCO classes, ~6MB). Input port `image: sampler2D`, output ports `detections: roi` and `overlay: sampler2D`.
-- **Runtime**: `onnxruntime-web` (auto-loaded from `public/ort/ort.min.js` by the wasm bridge) driven by a Rust `wasm-pack` bundle (`rust/crates/yolo-detector`, git-dep on [`caozisheng/rimeflow-yolov8n`](https://github.com/caozisheng/rimeflow-yolov8n)) via `wasm_bindgen(inline_js)`. Prefers WebGPU EP with automatic fallback to WASM EP.
-- **Score/IoU thresholds** editable in the side panel; live detection list with class name, confidence, and normalized bbox.
-- **Realtime path** — ONNX nodes work in the realtime rendering loop with async non-blocking inference (1–N frame latency).
-- **Setup** (once per checkout):
-  ```
-  npm i -D onnxruntime-web
-  npm run copy:ort       # populates public/ort/
-  npm run build:wasm     # rebuilds rust/crates/yolo-detector/pkg
-  ```
-- See `docs/ONNX_NODE_DESIGN.md` for architecture and forward-compatibility notes.
+### ONNX Neural Network Nodes
+- **Catalog model system** — ONNX dropdown menu organized by category (Detection, Super-Resolution). Select a model to auto-download and add to the graph. No pre-bundled model files required.
+- **3 built-in models**: YOLOv8n (object detection, 80 COCO classes), Sub-pixel CNN 3x (super-resolution), Real-ESRGAN 4x (super-resolution)
+- **Custom ONNX nodes** — load any `.onnx` model file for inference with auto-introspected ports
+- **Tiled inference** — generic `TileCodec` engine splits large images into overlapping tiles, runs inference per-tile, and stitches results. No input size restrictions.
+- **Adaptive tile sizing** — starts at 64px tiles, automatically halves on WebGPU allocation failure. Proven tile size cached for subsequent frames.
+- **WebGPU to WASM auto-fallback** — when WebGPU kernels are incompatible (e.g. AMD iGPU), session automatically rebuilds with WASM-only backend. Orange "CPU fallback" badge shown in the side panel.
+- **Static pipeline optimization** — pipelines without time-varying inputs (no `iTime`/`iMouse`/video) render a single frame, avoiding unnecessary GPU work. ONNX completion triggers a follow-up re-render for downstream nodes.
+- **Model download manager** — background download with progress tracking, in-memory buffer cache, Tauri disk persistence
+- **Task-specific codecs**: RGB codec (ESRGAN, 3-channel), YCbCr codec (Sub-pixel CNN, 1-channel Y with nearest-neighbor Cb/Cr)
+- **Score/IoU thresholds** editable in the side panel for detection models; live detection list with class name, confidence, and normalized bbox
+- **Realtime path** — ONNX nodes work in the realtime rendering loop with async non-blocking inference. ONNX output cache survives graph recompiles.
+- See `docs/NN_SUPPORT_DESIGN.md` for the NN roadmap and `docs/ONNX_NODE_DESIGN.md` for architecture details.
 
 
 ### Project Management
@@ -143,7 +143,7 @@ npm run dev
 >
 > `wasm-pack` install: `cargo install wasm-pack`
 
-Open http://localhost:5173 in your browser. See `docs/ONNX_NODE_DESIGN.md` for ONNX architecture details.
+Open http://localhost:5173 in your browser. See `docs/` for architecture and design documents.
 
 ## Usage
 

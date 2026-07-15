@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.0b] -- 2026-07-15
+
+### Features
+
+- **ONNX Catalog system** -- model dropdown organized by category (Detection, Super-Resolution). Three built-in models: YOLOv8n, Sub-pixel CNN 3x, Real-ESRGAN 4x. Models auto-download on first use, no pre-bundled files required. "Custom ONNX Model..." option for user-supplied `.onnx` files.
+- **Tiled super-resolution inference** -- generic `TileCodec` engine splits images into overlapping tiles (64px + 8px padding), runs per-tile inference, stitches results with padding cropping. No input size restrictions -- full-resolution output at any scale.
+- **Adaptive tile sizing** -- starts at 64px, automatically halves on WebGPU buffer allocation failure, caches proven size for subsequent frames. Zero retry cost after first convergence.
+- **WebGPU to WASM auto-fallback** -- when WebGPU kernels are incompatible (e.g. AMD Radeon iGPU), session automatically rebuilds with WASM-only backend. Orange "CPU fallback" badge in side panel.
+- **Static pipeline detection** -- pipelines without time-varying inputs (`iTime`/`iMouse`/`iTimeDelta`/`iFrame`/video) render a single frame then stop the rAF loop. ONNX completion triggers a follow-up re-render with frozen inputs (no clock advance). Cascaded ONNX nodes naturally converge.
+- **ONNX output cache** -- inference results survive plan rebuilds (graph recompile), preventing redundant re-inference after unrelated node data changes.
+- **Model download manager** -- `OnnxModelManager` with background download, progress events, in-memory buffer cache, Tauri disk persistence.
+- **Model introspection** -- `inferTaskFromMeta` and `metaToDefaultPorts` auto-detect model task (detection/SR/generic) from I/O shape and generate appropriate port signatures.
+- **198 new tests** -- onnxInference (34), onnxCatalog (56), onnxIntrospect (40), onnxModelManager (13), realtimeHost/isStaticPipeline (25), onnxStore (10), MathNode (20). Total: 954 tests across 40 files.
+
+### Fixes
+
+- **Dropdown menus not dismissible in Tauri** -- `startDragging()` consumed click events on dismiss overlays. Fixed by using `onMouseDown` instead of `onClick`.
+- **Video cross-origin error** -- `crossOrigin='anonymous'` added to all video elements, fixing WebGL `texImage2D` SecurityError with Tauri asset protocol URLs.
+- **ONNX re-inference loop** -- `updateNodeData` for backend status triggered graph recompile, clearing ONNX output and restarting inference. Fixed with output cache + conditional backend writes.
+- **Renderer black after ONNX** -- async ONNX inference completed after static pipeline's single frame. Fixed with `scheduleRerender` callback + `renderer-remount` event listener for fullscreen.
+- **Fullscreen renderer blank** -- fullscreen canvas mounted after the render pass in static mode. `renderer-remount` event triggers `renderToScreen()` repaint.
+
 ## [0.8.0b] — 2026-07-08
 
 ### Features
