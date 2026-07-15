@@ -291,7 +291,7 @@ export function Header() {
         </button>
         {sourceOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => { setSourceOpen(false); setHoveredGroup(null); }} />
+            <div className="fixed inset-0 z-10" onMouseDown={() => { setSourceOpen(false); setHoveredGroup(null); }} />
             <div
               className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[120px]"
               onMouseLeave={() => setHoveredGroup(null)}
@@ -348,7 +348,7 @@ export function Header() {
         </button>
         {mathOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => { setMathOpen(false); setMathHoveredGroup(null); }} />
+            <div className="fixed inset-0 z-10" onMouseDown={() => { setMathOpen(false); setMathHoveredGroup(null); }} />
             <div
               className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[140px]"
               onMouseLeave={() => setMathHoveredGroup(null)}
@@ -417,7 +417,7 @@ export function Header() {
         </button>
         {shaderOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => { setShaderOpen(false); setShaderHoveredGroup(null); }} />
+            <div className="fixed inset-0 z-10" onMouseDown={() => { setShaderOpen(false); setShaderHoveredGroup(null); }} />
             <div
               className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[160px]"
               onMouseLeave={() => setShaderHoveredGroup(null)}
@@ -484,7 +484,7 @@ export function Header() {
         </button>
         {onnxOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setOnnxOpen(false)} />
+            <div className="fixed inset-0 z-10" onMouseDown={() => setOnnxOpen(false)} />
             <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[220px] max-h-[400px] overflow-y-auto">
               {CATALOG_CATEGORIES.map((cat) => (
                 <div key={cat}>
