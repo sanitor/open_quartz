@@ -5,9 +5,15 @@
 // Used for non-YOLO tasks: super-resolution, background removal, depth, etc.
 
 import type * as OrtModule from 'onnxruntime-web';
-import type { OnnxTask } from './onnxCatalog';
 
+// onnxruntime-web is loaded at runtime via a <script> tag as `globalThis.ort`.
+// Module-local `ort` is guaranteed non-undefined after `ensureOrtLoaded()`;
+// the global augmentation types the existence checks in that function.
 declare const ort: typeof OrtModule;
+declare global {
+  // eslint-disable-next-line no-var
+  var ort: typeof OrtModule | undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Session wrapper
@@ -113,11 +119,12 @@ function ensureOrtLoaded(): Promise<void> {
     const s = document.createElement('script');
     s.src = '/ort/ort.min.js';
     s.onload = () => {
-      if (typeof globalThis.ort === 'undefined') {
+      const loaded = globalThis.ort;
+      if (typeof loaded === 'undefined') {
         reject(new Error('onnxruntime-web loaded but globalThis.ort is undefined'));
       } else {
-        (globalThis.ort as typeof OrtModule).env.wasm.wasmPaths = '/ort/';
-        (globalThis.ort as typeof OrtModule).env.wasm.numThreads = 1;
+        loaded.env.wasm.wasmPaths = '/ort/';
+        loaded.env.wasm.numThreads = 1;
         resolve();
       }
     };
@@ -188,7 +195,7 @@ async function runTiledInference(
   height: number,
   scale: number,
   codec: TileCodec,
-): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> {
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   if (codec.fixedSize) {
     return runTilesAtSize(session, rgba, width, height, scale, codec, codec.fixedSize - 2 * TILE_PAD);
   }
@@ -234,7 +241,7 @@ async function runTilesAtSize(
   scale: number,
   codec: TileCodec,
   tileStep: number,
-): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> {
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   const outW = width * scale;
   const outH = height * scale;
   const outRgba = new Uint8ClampedArray(outW * outH * 4);
@@ -389,6 +396,6 @@ export async function runSuperResolution(
   height: number,
   scale: number,
   modelType: 'rgb' | 'ycbcr' = 'rgb',
-): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> {
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   return runTiledInference(session, rgba, width, height, scale, modelType === 'ycbcr' ? ycbcrCodec : rgbCodec);
 }

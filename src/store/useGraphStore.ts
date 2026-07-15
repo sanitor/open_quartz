@@ -6,7 +6,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
+import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseShader } from '../engine/shaderParser';
 import { MATH_OPS, getMathPorts } from '../engine/mathOps';
 import { ONNX_CATALOG } from '../engine/onnxCatalog';
@@ -175,7 +175,6 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
 async function downloadCatalogModel(
   nodeId: string,
   entry: CatalogEntry,
-  get: () => GraphState,
   set: (fn: (state: GraphState) => void) => void,
 ): Promise<void> {
   // Check if already cached.
@@ -410,7 +409,7 @@ export const useGraphStore = create<GraphState>()(
         };
         set((state) => { state.nodes.push(node); });
         // Fire-and-forget: download model, update node status/progress.
-        void downloadCatalogModel(id, entry, get, set);
+        void downloadCatalogModel(id, entry, set);
       },
       addCustomOnnxNode: (position) => {
         saveSnapshot();
