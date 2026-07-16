@@ -14,7 +14,7 @@ vi.mock('three', () => ({
   },
 }));
 
-import { drawDetectionOverlay } from '../../src/engine/onnxOverlay';
+import { drawDetectionOverlay, drawSegmentationOverlay } from '../../src/engine/onnxOverlay';
 
 interface MeasureTextResult { width: number }
 
@@ -238,3 +238,53 @@ describe('drawDetectionOverlay', () => {
     expect(fillRectArgs[1]).toBe(0);
   });
 });
+
+describe('drawSegmentationOverlay', () => {
+  it('returns { dataUrl, texture, canvas } at the requested size', () => {
+    const source = document.createElement('canvas');
+    source.width = 640;
+    source.height = 480;
+    const mask = new Uint8Array(4 * 2 * 2); // 2×2 RGBA
+
+    const result = drawSegmentationOverlay(source, 320, 240, mask, 2, 2);
+
+    expect(result.canvas.width).toBe(320);
+    expect(result.canvas.height).toBe(240);
+    expect(result.dataUrl).toBe('data:image/png;base64,MOCK');
+    expect(result.texture).toBeDefined();
+  });
+
+  it('marks CanvasTexture as needsUpdate=true and flipY=true', () => {
+    const source = document.createElement('canvas');
+    const mask = new Uint8Array(4);
+    const result = drawSegmentationOverlay(source, 100, 100, mask, 1, 1);
+    expect(result.texture.needsUpdate).toBe(true);
+    expect(result.texture.flipY).toBe(true);
+  });
+
+  it('throws when 2d context is unavailable', () => {
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as typeof HTMLCanvasElement.prototype.getContext;
+    const source = document.createElement('canvas');
+    expect(() => drawSegmentationOverlay(source, 100, 100, new Uint8Array(4), 1, 1)).toThrow(
+      '2d context unavailable',
+    );
+  });
+
+  it('draws the source image onto the output canvas', () => {
+    const source = document.createElement('canvas');
+    const mask = new Uint8Array(4);
+    drawSegmentationOverlay(source, 200, 150, mask, 1, 1);
+
+    expect(contexts).toHaveLength(2); // output ctx + mask ctx
+    const [outCtx] = contexts;
+    expect(outCtx.drawImage).toHaveBeenCalled();
+  });
+
+  it('handles a zero-size mask without error', () => {
+    const source = document.createElement('canvas');
+    expect(() =>
+      drawSegmentationOverlay(source, 100, 100, new Uint8Array(0), 0, 0),
+    ).not.toThrow();
+  });
+});
+

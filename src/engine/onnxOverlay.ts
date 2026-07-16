@@ -83,7 +83,7 @@ export function drawSegmentationOverlay(
   maskCanvas.width = maskW;
   maskCanvas.height = maskH;
   const maskCtx = maskCanvas.getContext('2d');
-  if (maskCtx) {
+  if (maskCtx && maskW > 0 && maskH > 0 && typeof ImageData !== 'undefined') {
     const clamped = new Uint8ClampedArray(maskRgba.length);
     clamped.set(maskRgba);
     const imgData = new ImageData(clamped, maskW, maskH);
