@@ -9,8 +9,9 @@ import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './
 import { ONNX_CATALOG } from './onnxCatalog';
 import { modelManager, useGraphStore } from '../store/useGraphStore';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
+import { SemSegSession } from './onnxSegSession';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation } from './onnxInference';
-import { drawDetectionOverlay } from './onnxOverlay';
+import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
 import { MATH_OPS } from './mathOps';
 
 type TextureSource =
@@ -431,6 +432,21 @@ export class ExecutionEngine {
       if (catalogEntry && catalogEntry.task === 'depth-estimation') {
         await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
           (s, d, w, h) => runDepthEstimation(s, d, w, h));
+        return;
+      }
+
+      if (catalogEntry && catalogEntry.task === 'segmentation') {
+        const descriptor = ONNX_MODELS[modelId];
+        if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
+        const session = await this.getSemSegSession(descriptor);
+        const result = await session.run(sourceCanvas, srcW, srcH);
+        const seg = result.segmentation;
+        const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
+        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
+        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
+        this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
         return;
       }
 
@@ -972,6 +988,33 @@ export class ExecutionEngine {
     return session;
   }
 
+  private semSegSessions = new Map<string, SemSegSession>();
+
+  private async getSemSegSession(descriptor: OnnxModelDescriptor): Promise<SemSegSession> {
+    const existing = this.semSegSessions.get(descriptor.id);
+    if (existing) {
+      if (existing.status !== 'ready') await existing.init();
+      return existing;
+    }
+
+    let modelUrl = descriptor.modelUrl;
+    const catalogEntry = ONNX_CATALOG[descriptor.id];
+    if (catalogEntry) {
+      const buffer = await modelManager.loadCachedModel(descriptor.id);
+      if (buffer) {
+        const blob = new Blob([buffer], { type: 'application/octet-stream' });
+        const blobUrl = URL.createObjectURL(blob);
+        this.onnxBlobUrls.set(descriptor.id, blobUrl);
+        modelUrl = blobUrl;
+      }
+    }
+
+    const session = new SemSegSession(modelUrl, descriptor.targetSize);
+    this.semSegSessions.set(descriptor.id, session);
+    await session.init();
+    return session;
+  }
+
   stop() {
     this.running = false;
     for (const s of this.onnxSessions.values()) {
@@ -982,6 +1025,10 @@ export class ExecutionEngine {
       try { s.dispose(); } catch { /* ignore */ }
     }
     this.tsOrtSessions.clear();
+    for (const s of this.semSegSessions.values()) {
+      try { s.dispose(); } catch { /* ignore */ }
+    }
+    this.semSegSessions.clear();
     for (const url of this.onnxBlobUrls.values()) {
       URL.revokeObjectURL(url);
     }

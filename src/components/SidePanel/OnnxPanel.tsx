@@ -10,11 +10,42 @@ interface OnnxDetectionsPayload {
   detections: OnnxDetection[];
 }
 
+interface SegmentationPayload {
+  segmentation: {
+    classCounts: number[];
+    numClasses: number;
+    maskW: number;
+    maskH: number;
+  };
+}
+
 function isDetectionsPayload(v: unknown): v is OnnxDetectionsPayload {
   if (!v || typeof v !== 'object') return false;
   if (!('detections' in v)) return false;
   return Array.isArray(v.detections);
 }
+
+function isSegmentationPayload(v: unknown): v is SegmentationPayload {
+  if (!v || typeof v !== 'object') return false;
+  if (!('segmentation' in v)) return false;
+  const seg = v.segmentation;
+  if (!seg || typeof seg !== 'object') return false;
+  return 'classCounts' in seg && Array.isArray(seg.classCounts);
+}
+
+const CITYSCAPES_CLASSES = [
+  'road', 'sidewalk', 'building', 'wall', 'fence',
+  'pole', 'traffic light', 'traffic sign', 'vegetation', 'terrain',
+  'sky', 'person', 'rider', 'car', 'truck',
+  'bus', 'train', 'motorcycle', 'bicycle',
+];
+
+const CITYSCAPES_COLORS = [
+  '#804080', '#f423e8', '#464646', '#666e96', '#be9999',
+  '#999999', '#faaa1e', '#dcdc00', '#6b8e23', '#98fb98',
+  '#4682b4', '#dc143c', '#ff0000', '#00008e', '#000046',
+  '#003c64', '#005064', '#0000e6', '#770b20',
+];
 
 const STATUS_COLORS: Record<string, string> = {
   'not-downloaded': '#86868b',
@@ -81,6 +112,12 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
   const detections = useMemo<OnnxDetection[]>(() => {
     return isDetectionsPayload(outputData) ? outputData.detections : [];
   }, [outputData]);
+
+  const segData = useMemo(() => {
+    return isSegmentationPayload(outputData) ? outputData.segmentation : null;
+  }, [outputData]);
+
+  const isSegmentation = catalogEntry?.task === 'segmentation';
 
   const commitScore = (raw: string) => {
     const n = parseFloat(raw);
@@ -169,8 +206,8 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
           </div>
         )}
 
-        {/* Catalog params (score/iou thresholds) */}
-        {(catalogEntry?.defaultParams || legacyDescriptor) && (
+        {/* Catalog params (score/iou thresholds) — detection only */}
+        {!isSegmentation && (catalogEntry?.defaultParams || legacyDescriptor) && (
           <div className="flex items-center gap-3 mb-2">
             <div className="flex-1">
               <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Score ≥</label>
@@ -202,7 +239,51 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
         )}
       </div>
 
-      {/* Detections list (backward compat) */}
+      {/* Segmentation class distribution */}
+      {isSegmentation && (
+        <div className="px-4 pb-3 flex-shrink-0">
+          <div className="text-[10px] text-[#86868b] font-medium mb-1">
+            CLASS DISTRIBUTION
+          </div>
+          <div className="max-h-40 overflow-y-auto rounded border border-[#e8e8ed] bg-[#fafafa]">
+            {!segData ? (
+              <div className="px-3 py-2 text-[11px] text-[#aeaeb2] italic">Press Run to segment</div>
+            ) : (
+              <table className="w-full text-[10px] text-[#1d1d1f]">
+                <thead>
+                  <tr className="text-[9px] text-[#86868b] border-b border-[#e8e8ed]">
+                    <th className="text-left px-2 py-1">Class</th>
+                    <th className="text-right px-2 py-1">%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {segData.classCounts.map((count, i) => {
+                    if (count === 0) return null;
+                    const total = segData.maskW * segData.maskH;
+                    return (
+                      <tr key={i} className="odd:bg-white">
+                        <td className="px-2 py-1 flex items-center gap-1.5">
+                          <span
+                            className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                            style={{ backgroundColor: CITYSCAPES_COLORS[i] ?? '#888' }}
+                          />
+                          {CITYSCAPES_CLASSES[i] ?? `class_${i}`}
+                        </td>
+                        <td className="text-right px-2 py-1 font-mono">
+                          {(count / total * 100).toFixed(1)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Detections list — detection only */}
+      {!isSegmentation && (
       <div className="px-4 pb-3 flex-shrink-0">
         <div className="text-[10px] text-[#86868b] font-medium mb-1">
           DETECTIONS ({detections.length})
@@ -236,6 +317,7 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

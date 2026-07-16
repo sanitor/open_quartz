@@ -13,6 +13,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@nodes/yolo-detector': resolve(__dirname, 'rust/crates/yolo-detector/pkg/yolo_detector.js'),
+      '@nodes/yolo-sem': resolve(__dirname, 'rust/crates/yolo-sem/pkg/yolo_sem.js'),
     },
   },
   assetsInclude: ['**/*.wasm'],

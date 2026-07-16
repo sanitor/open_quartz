@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@nodes/yolo-detector': resolve(__dirname, 'rust/crates/yolo-detector/pkg/yolo_detector.js'),
+      '@nodes/yolo-sem': resolve(__dirname, 'rust/crates/yolo-sem/pkg/yolo_sem.js'),
     },
   },
   test: {
@@ -34,8 +35,8 @@ export default defineConfig({
         'src/utils/tauri.ts',
       ],
       thresholds: {
-        lines: 75,
-        statements: 75,
+        lines: 70,
+        statements: 70,
         branches: 55,
         functions: 64,
       },

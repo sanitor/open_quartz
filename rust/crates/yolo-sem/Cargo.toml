@@ -1,0 +1,32 @@
+[package]
+name = "yolo-sem"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "OpenQuartz onnx node: YOLO26n semantic segmentation — wasm-bindgen wrapper over upstream rimeflow-yolo26n-sem"
+
+[lib]
+name = "yolo_sem"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rimeflow-yolo26n-sem = { path = "C:/Users/zisheng/Documents/cao/00_code/github/rimeflow-yolo26n-sem" }
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "HtmlCanvasElement",
+  "OffscreenCanvas",
+  "console",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

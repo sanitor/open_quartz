@@ -62,3 +62,37 @@ export function drawDetectionOverlay(
   texture.flipY = true;
   return { dataUrl: out.toDataURL('image/png'), texture, canvas: out };
 }
+
+export function drawSegmentationOverlay(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
+  width: number,
+  height: number,
+  maskRgba: Uint8Array,
+  maskW: number,
+  maskH: number,
+): { dataUrl: string; texture: THREE.CanvasTexture; canvas: HTMLCanvasElement } {
+  const out = document.createElement('canvas');
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext('2d');
+  if (!ctx) throw new Error('drawSegmentationOverlay: 2d context unavailable');
+
+  ctx.drawImage(sourceCanvas, 0, 0, width, height);
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = maskW;
+  maskCanvas.height = maskH;
+  const maskCtx = maskCanvas.getContext('2d');
+  if (maskCtx && maskW > 0 && maskH > 0 && typeof ImageData !== 'undefined') {
+    const clamped = new Uint8ClampedArray(maskRgba.length);
+    clamped.set(maskRgba);
+    const imgData = new ImageData(clamped, maskW, maskH);
+    maskCtx.putImageData(imgData, 0, 0);
+    ctx.drawImage(maskCanvas, 0, 0, width, height);
+  }
+
+  const texture = new THREE.CanvasTexture(out);
+  texture.needsUpdate = true;
+  texture.flipY = true;
+  return { dataUrl: out.toDataURL('image/png'), texture, canvas: out };
+}

@@ -158,6 +158,23 @@ export const ONNX_CATALOG: Record<string, CatalogEntry> = {
       ],
     },
   },
+  'yolo26n-sem': {
+    id: 'yolo26n-sem',
+    label: 'YOLO26n Semantic Seg',
+    task: 'segmentation',
+    category: 'Segmentation',
+    downloadUrl: 'https://github.com/caozisheng/rimeflow-yolo26n-sem/raw/refs/heads/master/models/yolo26n-sem.onnx',
+    fileSize: 6_284_385,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_overlay', label: 'overlay', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
 };
 // ---------------------------------------------------------------------------
 // Derived helpers

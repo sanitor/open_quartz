@@ -47,6 +47,31 @@ export const ONNX_MODELS: Record<string, OnnxModelDescriptor> = {
       },
     ],
   },
+  'yolo26n-sem': {
+    id: 'yolo26n-sem',
+    label: 'YOLO26n Semantic Seg',
+    modelUrl: '/models/yolo26n-sem.onnx',
+    targetSize: 640,
+    scoreThreshold: 0,
+    iouThreshold: 0,
+    description: 'YOLO26n semantic segmentation, 19 Cityscapes classes, ~6MB',
+    inputs: [
+      {
+        id: 'onnx_in_image',
+        label: 'image',
+        dataType: 'sampler2D',
+        direction: 'input',
+      },
+    ],
+    outputs: [
+      {
+        id: 'onnx_out_overlay',
+        label: 'overlay',
+        dataType: 'sampler2D',
+        direction: 'output',
+      },
+    ],
+  },
 };
 
 export const DEFAULT_ONNX_MODEL_ID = 'yolov8n';
