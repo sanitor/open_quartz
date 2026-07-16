@@ -141,6 +141,23 @@ export const ONNX_CATALOG: Record<string, CatalogEntry> = {
       ],
     },
   },
+  'midas-small': {
+    id: 'midas-small',
+    label: 'MiDaS v2.1 Small (Depth)',
+    task: 'depth-estimation',
+    category: 'Depth Estimation',
+    downloadUrl: 'https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx',
+    fileSize: 66_389_153,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_depth', label: 'depth', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
 };
 // ---------------------------------------------------------------------------
 // Derived helpers

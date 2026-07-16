@@ -9,7 +9,7 @@ import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './
 import { ONNX_CATALOG } from './onnxCatalog';
 import { modelManager, useGraphStore } from '../store/useGraphStore';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
-import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval } from './onnxInference';
+import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation } from './onnxInference';
 import { drawDetectionOverlay } from './onnxOverlay';
 import { MATH_OPS } from './mathOps';
 
@@ -414,13 +414,23 @@ export class ExecutionEngine {
       const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
       const catalogEntry = ONNX_CATALOG[modelId];
 
-      // Route by task
+      // Route by task — all image→image tasks share runTsOrtInference.
       if (catalogEntry && catalogEntry.task === 'super-resolution') {
-        await this.runSuperResolutionInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId);
+        const isRgb = modelId === 'realesrgan-x4';
+        const scale = isRgb ? 4 : 3;
+        const modelType = isRgb ? 'rgb' as const : 'ycbcr' as const;
+        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
+          (s, d, w, h) => runSuperResolution(s, d, w, h, scale, modelType));
         return;
       }
       if (catalogEntry && catalogEntry.task === 'background-removal') {
-        await this.runBackgroundRemovalInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId);
+        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
+          (s, d, w, h) => runBackgroundRemoval(s, d, w, h, modelId));
+        return;
+      }
+      if (catalogEntry && catalogEntry.task === 'depth-estimation') {
+        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
+          (s, d, w, h) => runDepthEstimation(s, d, w, h));
         return;
       }
 
@@ -459,68 +469,18 @@ export class ExecutionEngine {
 
   private tsOrtSessions = new Map<string, OnnxInferenceSession>();
 
-  private async runSuperResolutionInference(
+  /**
+   * Generic image→image inference via TypeScript ORT.
+   * Handles session lifecycle, pixel readback, result→texture, backend reporting, and callbacks.
+   */
+  private async runTsOrtInference(
     plan: ExecutionPlan,
     nodeId: string,
     sourceCanvas: HTMLCanvasElement,
     srcW: number,
     srcH: number,
     modelId: string,
-  ): Promise<void> {
-    // Get or create TS ORT session
-    let session = this.tsOrtSessions.get(modelId);
-    if (!session) {
-      session = new OnnxInferenceSession();
-      const buffer = await modelManager.loadCachedModel(modelId);
-      if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-      await session.loadFromBuffer(buffer);
-      this.tsOrtSessions.set(modelId, session);
-    }
-
-    // Read pixels from source canvas
-    const ctx = sourceCanvas.getContext('2d');
-    if (!ctx) throw new Error('Cannot get 2d context from source canvas');
-    const imageData = ctx.getImageData(0, 0, srcW, srcH);
-
-    // Determine scale and model type from catalog entry id
-    const isRgbModel = modelId === 'realesrgan-x4';
-    const scale = modelId === 'realesrgan-x4' ? 4 : 3;
-    const modelType = isRgbModel ? 'rgb' as const : 'ycbcr' as const;
-    const result = await runSuperResolution(session, imageData.data, srcW, srcH, scale, modelType);
-
-    // Report backend (webgpu or wasm fallback) — only if changed to avoid triggering graph updates.
-    const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
-    const currentNode = useGraphStore.getState().nodes.find((n) => n.id === nodeId);
-    if (currentNode && currentNode.data.onnxBackend !== backend) {
-      useGraphStore.getState().updateNodeData(nodeId, { onnxBackend: backend });
-    }
-
-    // Create output canvas → Three.js texture
-    const outCanvas = document.createElement('canvas');
-    outCanvas.width = result.width;
-    outCanvas.height = result.height;
-    const outCtx = outCanvas.getContext('2d')!;
-    const outImageData = new ImageData(result.rgba, result.width, result.height);
-    outCtx.putImageData(outImageData, 0, 0);
-
-    const texture = new THREE.CanvasTexture(outCanvas);
-    texture.needsUpdate = true;
-    texture.flipY = true;
-    plan.textureSources.set(nodeId, { kind: 'image', texture });
-    this.onnxOutputCache.set(nodeId, { kind: 'image', texture });
-
-    // Preview + output size callback
-    this.onnxCallbacks.onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
-    this.onnxCallbacks.onOutputSize?.(nodeId, result.width, result.height);
-  }
-
-  private async runBackgroundRemovalInference(
-    plan: ExecutionPlan,
-    nodeId: string,
-    sourceCanvas: HTMLCanvasElement,
-    srcW: number,
-    srcH: number,
-    modelId: string,
+    infer: (session: OnnxInferenceSession, rgba: Uint8ClampedArray, w: number, h: number) => Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }>,
   ): Promise<void> {
     let session = this.tsOrtSessions.get(modelId);
     if (!session) {
@@ -535,7 +495,7 @@ export class ExecutionEngine {
     if (!ctx) throw new Error('Cannot get 2d context from source canvas');
     const imageData = ctx.getImageData(0, 0, srcW, srcH);
 
-    const result = await runBackgroundRemoval(session, imageData.data, srcW, srcH, modelId);
+    const result = await infer(session, imageData.data, srcW, srcH);
 
     const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
     const currentNode = useGraphStore.getState().nodes.find((n) => n.id === nodeId);
@@ -908,59 +868,42 @@ export class ExecutionEngine {
           }
           const sourceCanvas = this.renderer.readTargetToCanvas(scratchTarget);
 
+          // Shared helper for image→image TS ORT tasks in the execute path
+          const runTsOrt = async (inferFn: (s: OnnxInferenceSession, d: Uint8ClampedArray, w: number, h: number) => Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }>) => {
+            let session = this.tsOrtSessions.get(modelId);
+            if (!session) {
+              session = new OnnxInferenceSession();
+              const buffer = await modelManager.loadCachedModel(modelId);
+              if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
+              await session.loadFromBuffer(buffer);
+              this.tsOrtSessions.set(modelId, session);
+            }
+            const ctx = sourceCanvas.getContext('2d');
+            if (!ctx) throw new Error('Cannot get 2d context');
+            const imageData = ctx.getImageData(0, 0, srcW, srcH);
+            const result = await inferFn(session, imageData.data, srcW, srcH);
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = result.width;
+            outCanvas.height = result.height;
+            const outCtx = outCanvas.getContext('2d')!;
+            outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
+            const texture = new THREE.CanvasTexture(outCanvas);
+            texture.needsUpdate = true;
+            texture.flipY = true;
+            textures.set(nodeId, { kind: 'image', texture });
+            onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
+            onOutputSize?.(nodeId, result.width, result.height);
+          };
+
           if (catalogEntry && catalogEntry.task === 'super-resolution') {
-            // SR via generic TS ORT path
-            let session = this.tsOrtSessions.get(modelId);
-            if (!session) {
-              session = new OnnxInferenceSession();
-              const buffer = await modelManager.loadCachedModel(modelId);
-              if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-              await session.loadFromBuffer(buffer);
-              this.tsOrtSessions.set(modelId, session);
-            }
-            const ctx = sourceCanvas.getContext('2d');
-            if (!ctx) throw new Error('Cannot get 2d context');
-            const imageData = ctx.getImageData(0, 0, srcW, srcH);
-            const isRgbModel = modelId === 'realesrgan-x4';
-            const scale = isRgbModel ? 4 : 3;
-            const modelType = isRgbModel ? 'rgb' as const : 'ycbcr' as const;
-            const result = await runSuperResolution(session, imageData.data, srcW, srcH, scale, modelType);
-            const outCanvas = document.createElement('canvas');
-            outCanvas.width = result.width;
-            outCanvas.height = result.height;
-            const outCtx = outCanvas.getContext('2d')!;
-            outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
-            const texture = new THREE.CanvasTexture(outCanvas);
-            texture.needsUpdate = true;
-            texture.flipY = true;
-            textures.set(nodeId, { kind: 'image', texture });
-            onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
-            onOutputSize?.(nodeId, result.width, result.height);
+            const isRgb = modelId === 'realesrgan-x4';
+            const scale = isRgb ? 4 : 3;
+            const modelType = isRgb ? 'rgb' as const : 'ycbcr' as const;
+            await runTsOrt((s, d, w, h) => runSuperResolution(s, d, w, h, scale, modelType));
           } else if (catalogEntry && catalogEntry.task === 'background-removal') {
-            // Background removal via generic TS ORT path
-            let session = this.tsOrtSessions.get(modelId);
-            if (!session) {
-              session = new OnnxInferenceSession();
-              const buffer = await modelManager.loadCachedModel(modelId);
-              if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-              await session.loadFromBuffer(buffer);
-              this.tsOrtSessions.set(modelId, session);
-            }
-            const ctx = sourceCanvas.getContext('2d');
-            if (!ctx) throw new Error('Cannot get 2d context');
-            const imageData = ctx.getImageData(0, 0, srcW, srcH);
-            const result = await runBackgroundRemoval(session, imageData.data, srcW, srcH, modelId);
-            const outCanvas = document.createElement('canvas');
-            outCanvas.width = result.width;
-            outCanvas.height = result.height;
-            const outCtx = outCanvas.getContext('2d')!;
-            outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
-            const texture = new THREE.CanvasTexture(outCanvas);
-            texture.needsUpdate = true;
-            texture.flipY = true;
-            textures.set(nodeId, { kind: 'image', texture });
-            onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
-            onOutputSize?.(nodeId, result.width, result.height);
+            await runTsOrt((s, d, w, h) => runBackgroundRemoval(s, d, w, h, modelId));
+          } else if (catalogEntry && catalogEntry.task === 'depth-estimation') {
+            await runTsOrt((s, d, w, h) => runDepthEstimation(s, d, w, h));
           } else {
             // Detection via Rust wasm path
             const descriptor = ONNX_MODELS[modelId];

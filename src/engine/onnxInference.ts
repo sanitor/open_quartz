@@ -482,6 +482,69 @@ const u2netpCodec = makeBgRemovalCodec(320);
 const modnetCodec = makeBgRemovalCodec(512);
 
 // ---------------------------------------------------------------------------
+// Depth-estimation codec (MiDaS v2.1 small)
+// ---------------------------------------------------------------------------
+
+// ImageNet normalization constants
+const IMAGENET_MEAN = [0.485, 0.456, 0.406] as const;
+const IMAGENET_STD  = [0.229, 0.224, 0.225] as const;
+
+/**
+ * MiDaS v2.1 small: [1,3,256,256] BGR ImageNet-normalized → [1,256,256] relative depth.
+ * Output is min/max-normalized to 0-1 per tile, rendered as grayscale RGBA.
+ */
+const midasCodec: TileCodec = {
+  channels: 3,
+  fixedSize: 256,
+
+  encode(rgba, width, patchX, patchY, patchW, patchH) {
+    const F = 256;
+    const px = F * F;
+    const input = new Float32Array(3 * px);
+    for (let row = 0; row < patchH; row++) {
+      for (let col = 0; col < patchW; col++) {
+        const srcIdx = ((patchY + row) * width + (patchX + col)) * 4;
+        const r = rgba[srcIdx]     / 255;
+        const g = rgba[srcIdx + 1] / 255;
+        const b = rgba[srcIdx + 2] / 255;
+        const dstIdx = row * F + col;
+        // BGR order + ImageNet normalize
+        input[dstIdx]          = (b - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
+        input[px + dstIdx]     = (g - IMAGENET_MEAN[1]) / IMAGENET_STD[1];
+        input[2 * px + dstIdx] = (r - IMAGENET_MEAN[2]) / IMAGENET_STD[2];
+      }
+    }
+    return input;
+  },
+
+  decode(patchOut, outPatchW, _outPatchPixels, cropX, cropY, cropW, cropH, outRgba, outW, dstBaseX, dstBaseY) {
+    // Find min/max for normalization within the cropped region
+    let dMin = Infinity, dMax = -Infinity;
+    for (let row = 0; row < cropH; row++) {
+      for (let col = 0; col < cropW; col++) {
+        const v = patchOut[(cropY + row) * outPatchW + (cropX + col)];
+        if (v < dMin) dMin = v;
+        if (v > dMax) dMax = v;
+      }
+    }
+    const range = dMax - dMin || 1;
+
+    for (let row = 0; row < cropH; row++) {
+      for (let col = 0; col < cropW; col++) {
+        const depth = patchOut[(cropY + row) * outPatchW + (cropX + col)];
+        const normalized = (depth - dMin) / range;
+        const gray = Math.max(0, Math.min(255, Math.round(normalized * 255)));
+        const dstIdx = ((dstBaseY + row) * outW + (dstBaseX + col)) * 4;
+        outRgba[dstIdx]     = gray;
+        outRgba[dstIdx + 1] = gray;
+        outRgba[dstIdx + 2] = gray;
+        outRgba[dstIdx + 3] = 255;
+      }
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -503,7 +566,6 @@ export async function runSuperResolution(
 /**
  * Run background removal on an RGBA pixel buffer.
  * Returns RGBA where alpha = predicted foreground mask.
- * The model is identified by `modelId` to pick the right codec (fixed vs dynamic input).
  */
 export async function runBackgroundRemoval(
   session: OnnxInferenceSession,
@@ -514,4 +576,17 @@ export async function runBackgroundRemoval(
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   const codec = modelId === 'u2netp' ? u2netpCodec : modnetCodec;
   return runTiledInference(session, rgba, width, height, 1, codec);
+}
+
+/**
+ * Run monocular depth estimation on an RGBA pixel buffer.
+ * Returns grayscale RGBA depth map (brighter = closer).
+ */
+export async function runDepthEstimation(
+  session: OnnxInferenceSession,
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
+  return runTiledInference(session, rgba, width, height, 1, midasCodec);
 }
