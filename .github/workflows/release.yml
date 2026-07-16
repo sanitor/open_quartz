@@ -38,24 +38,6 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Open Quartz ${{ github.ref_name }}'
           releaseBody: |
-            ## Features
-
-            - **Math nodes** — 29 CPU-based math operations across 6 categories. Pure JS computation, no GPU shader compilation. Compact amber nodes with operation symbols.
-            - **Auto type system** — `auto` DataType for Math ports, inferred from connected peers. Widest-type promotion.
-            - **System source nodes** — TIME, TIME DELTA, FRAME, MOUSE, RESOLUTION as dedicated nodes. Green header, read-only live values.
-            - **SOURCE menu** — renamed from INPUT, reorganized into SYSTEM / CONSTANTS / EXTERNAL groups.
-            - **MATH menu** — new toolbar dropdown with 6 category sub-menus.
-            - **Math SidePanel** — switchable operation, type inference display, editable defaults.
-            - **Engine math pipeline** — `scalarUpstream` map for math→shader propagation. Math→Math chaining.
-            - **113 new tests** — 756 total tests, mathOps.ts 100% coverage.
-
-            ## Fixes
-
-            - System source nodes no longer compile shader (eliminates dual-output GLSL error)
-            - Video thumbnail shows first frame instead of blank
-            - Video preview no longer auto-plays in non-play state
-            - Math→shader value propagation via scalarUpstream map
-            - System source inputMode correctly set
-            - isConnectionValid handles auto type connections
+            See [CHANGELOG.md](https://github.com/sanitor/open_quartz/blob/master/CHANGELOG.md) for full release notes.
           releaseDraft: false
           prerelease: true

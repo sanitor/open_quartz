@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.10.0b] -- 2026-07-16
+
+### Features
+
+- **Background Removal nodes** (Phase 3) -- U²Net-P (4.4MB, 320×320 fixed) and MODNet (24.7MB, 512×512 fixed). Output is RGBA with alpha = foreground mask, directly compositable by downstream shaders.
+- **Depth Estimation node** (Phase 4) -- MiDaS v2.1 Small (63MB, 256×256 fixed, BGR + ImageNet normalization). Outputs grayscale depth map for DOF/parallax/fog shader effects.
+- **Custom ONNX model loading** (Phase 5) -- "Select Model File..." button loads any `.onnx` file. Auto-introspects model I/O → generates ports. Generic image→image execution via rgbCodec passthrough.
+- **WebGPU probe at model load time** -- after download, runs a tiny dummy inference to detect GPU compatibility. User sees "CPU fallback" badge on the node immediately, before pressing Play. Results cached in localStorage by model + GPU vendor.
+- **Execution engine refactor** -- `runTsOrtInference` generic method replaces per-task duplicated methods. New tasks require one routing line + one codec. Net -92 lines for the same functionality.
+- **ONNX catalog expanded** -- 4 categories, 7 built-in models: Detection (YOLOv8n), Super-Resolution (Sub-pixel CNN 3×, Real-ESRGAN 4×), Background Removal (U²Net-P, MODNet), Depth Estimation (MiDaS v2.1 Small). Plus Custom ONNX.
+- **Functional test suite** (`npm run test:models`) -- 15 tests with real model download, real `onnxruntime-node` inference, output verification for all 6 catalog models + custom. Weekly CI workflow + manual trigger.
+- **Shader bit-true tests** (`npm run test:shaders`) -- 6 WebGL2 pixel-exact tests (identity, invert, grayscale, constant, alpha, channel swap) via vitest browser mode with system browser.
+- **NN roadmap refocused on real-time** -- design principle: only models <30MB, <100ms on WebGPU. Large models (u2net 176MB, RIFE, LaMa) explicitly excluded. Phase 4b (JSON output tasks) split for later.
+
+### Fixes
+
+- **Fixed-size models missing WASM fallback** -- u2netp and sub-pixel CNN's `fixedSize` path bypassed the adaptive retry, causing hangs on incompatible GPUs.
+- **MODNet Concat dimension mismatch** -- encoder needs input divisible by 32; set `fixedSize: 512` instead of dynamic tiling.
+- **9 tsc build errors** -- TS 6 `Uint8ClampedArray<ArrayBufferLike>` vs DOM `ImageData` constructor; unused imports; `globalThis.ort` typing via global augmentation.
+- **Wasm-pack snippet not in git** -- `yolo_detector.js` regenerated with new hash but `inline0.js` was gitignored. Force-added for CI.
+
 ## [0.9.0b] -- 2026-07-15
 
 ### Features
