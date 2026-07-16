@@ -107,6 +107,40 @@ export const ONNX_CATALOG: Record<string, CatalogEntry> = {
       ],
     },
   },
+  u2netp: {
+    id: 'u2netp',
+    label: 'U²Net-P (Background)',
+    task: 'background-removal',
+    category: 'Background Removal',
+    downloadUrl: 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+    fileSize: 4_574_861,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_foreground', label: 'foreground', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
+  modnet: {
+    id: 'modnet',
+    label: 'MODNet (Portrait)',
+    task: 'background-removal',
+    category: 'Background Removal',
+    downloadUrl: 'https://huggingface.co/onnx-community/modnet-webnn/resolve/main/onnx/model.onnx',
+    fileSize: 25_888_640,
+    sha256: '',
+    expectedIO: {
+      inputs: [
+        { id: 'onnx_in_image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+      ],
+      outputs: [
+        { id: 'onnx_out_foreground', label: 'foreground', dataType: 'sampler2D', direction: 'output' },
+      ],
+    },
+  },
 };
 // ---------------------------------------------------------------------------
 // Derived helpers

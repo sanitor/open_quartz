@@ -382,6 +382,73 @@ const ycbcrCodec: TileCodec = {
 };
 
 // ---------------------------------------------------------------------------
+// Background-removal codecs
+// ---------------------------------------------------------------------------
+
+/**
+ * Background-removal models output a single-channel [1,1,H,W] alpha mask.
+ * The codec encodes RGBA→RGB [1,3,H,W] (identical to rgbCodec) and decodes
+ * by multiplying the original RGB with the predicted alpha.
+ *
+ * For fixed-input models (u2netp, 320×320) the encode zero-pads; decode crops.
+ * For dynamic models (MODNet) tiles run at the natural patch size.
+ */
+interface BgRemovalPrepared { srcRgba: Uint8ClampedArray; srcW: number }
+
+function makeBgRemovalCodec(fixedInputSize?: number): TileCodec {
+  return {
+    channels: 3,
+    fixedSize: fixedInputSize,
+
+    prepare(rgba, width): BgRemovalPrepared {
+      return { srcRgba: rgba, srcW: width };
+    },
+
+    encode(rgba, width, patchX, patchY, patchW, patchH) {
+      const F = fixedInputSize ?? patchW;
+      const FH = fixedInputSize ?? patchH;
+      const px = F * FH;
+      const input = new Float32Array(3 * px);  // zero-initialized (padding)
+      for (let row = 0; row < patchH; row++) {
+        for (let col = 0; col < patchW; col++) {
+          const srcIdx = ((patchY + row) * width + (patchX + col)) * 4;
+          const dstIdx = row * F + col;
+          input[dstIdx]          = rgba[srcIdx]     / 255;
+          input[px + dstIdx]     = rgba[srcIdx + 1] / 255;
+          input[2 * px + dstIdx] = rgba[srcIdx + 2] / 255;
+        }
+      }
+      return input;
+    },
+
+    decode(patchOut, outPatchW, _outPatchPixels, cropX, cropY, cropW, cropH, outRgba, outW, dstBaseX, dstBaseY, tileX, tileY, _scale, prepared) {
+      const { srcRgba, srcW } = prepared as BgRemovalPrepared;
+      for (let row = 0; row < cropH; row++) {
+        for (let col = 0; col < cropW; col++) {
+          // Alpha from mask output (single channel)
+          const alpha = patchOut[(cropY + row) * outPatchW + (cropX + col)];
+          const a = Math.max(0, Math.min(255, Math.round(alpha * 255)));
+
+          // Original pixel
+          const origX = tileX + col;
+          const origY = tileY + row;
+          const srcIdx = (origY * srcW + origX) * 4;
+
+          const dstIdx = ((dstBaseY + row) * outW + (dstBaseX + col)) * 4;
+          outRgba[dstIdx]     = srcRgba[srcIdx];
+          outRgba[dstIdx + 1] = srcRgba[srcIdx + 1];
+          outRgba[dstIdx + 2] = srcRgba[srcIdx + 2];
+          outRgba[dstIdx + 3] = a;
+        }
+      }
+    },
+  };
+}
+
+const u2netpCodec = makeBgRemovalCodec(320);
+const modnetCodec = makeBgRemovalCodec();  // dynamic input
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -398,4 +465,20 @@ export async function runSuperResolution(
   modelType: 'rgb' | 'ycbcr' = 'rgb',
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   return runTiledInference(session, rgba, width, height, scale, modelType === 'ycbcr' ? ycbcrCodec : rgbCodec);
+}
+
+/**
+ * Run background removal on an RGBA pixel buffer.
+ * Returns RGBA where alpha = predicted foreground mask.
+ * The model is identified by `modelId` to pick the right codec (fixed vs dynamic input).
+ */
+export async function runBackgroundRemoval(
+  session: OnnxInferenceSession,
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  modelId: string,
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
+  const codec = modelId === 'u2netp' ? u2netpCodec : modnetCodec;
+  return runTiledInference(session, rgba, width, height, 1, codec);
 }
