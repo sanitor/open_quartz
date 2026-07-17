@@ -67,7 +67,7 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
     >
       {/* Header */}
       <div
-        className="flex items-center px-2 rounded-t-xl"
+        className="flex items-center px-2 rounded-t-[11px]"
         style={{ height: HEADER_H, backgroundColor: MATH_ACCENT }}
       >
         <span className="text-[9px] font-semibold text-white">MATH</span>

@@ -26,7 +26,7 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
     >
       {/* Header */}
       <div
-        className="flex items-center px-3 rounded-t-xl"
+        className="flex items-center px-3 rounded-t-[11px]"
         style={{ height: HEADER_H, backgroundColor: accent }}
       >
         <span className="text-xs font-semibold text-white">{data.type.toUpperCase()}</span>
