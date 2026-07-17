@@ -5,6 +5,16 @@ export interface ShaderEntry {
 
 export const filterShaders: ShaderEntry[] = [
   {
+    label: 'Resample',
+    code: `uniform sampler2D inputImage;
+
+out vec4 fragColor;
+
+void main() {
+  fragColor = texture(inputImage, v_uv);
+}`,
+  },
+  {
     label: 'Sobel Edge Detection',
     code: `uniform sampler2D inputImage;
 uniform float intensity;
