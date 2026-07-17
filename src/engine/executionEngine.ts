@@ -10,7 +10,7 @@ import { ONNX_CATALOG } from './onnxCatalog';
 import { modelManager, useGraphStore } from '../store/useGraphStore';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
 import { SemSegSession } from './onnxSegSession';
-import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation } from './onnxInference';
+import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
 import { MATH_OPS } from './mathOps';
 
@@ -453,10 +453,10 @@ export class ExecutionEngine {
         return;
       }
 
-      // Custom or generic models: image→image passthrough via rgbCodec (scale=1)
+      // Custom or generic models: full-image inference, output dims from tensor
       if (node.data.onnxSource === 'custom' || !catalogEntry) {
         await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          (s, d, w, h) => runSuperResolution(s, d, w, h, 1, 'rgb'));
+          (s, d, w, h) => runGenericImageToImage(s, d, w, h));
         return;
       }
 
@@ -932,8 +932,8 @@ export class ExecutionEngine {
           } else if (catalogEntry && catalogEntry.task === 'depth-estimation') {
             await runTsOrt((s, d, w, h) => runDepthEstimation(s, d, w, h));
           } else if (node.data.onnxSource === 'custom' || !catalogEntry) {
-            // Custom or generic: image→image passthrough
-            await runTsOrt((s, d, w, h) => runSuperResolution(s, d, w, h, 1, 'rgb'));
+            // Custom or generic: full-image inference, output dims from tensor
+            await runTsOrt((s, d, w, h) => runGenericImageToImage(s, d, w, h));
           } else {
             // Catalog detection models: Rust wasm path
             const descriptor = ONNX_MODELS[modelId];

@@ -590,3 +590,70 @@ export async function runDepthEstimation(
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   return runTiledInference(session, rgba, width, height, 1, midasCodec);
 }
+
+/**
+ * Generic image→image inference for custom models.
+ * Sends the full image as RGB [1,3,H,W], reads the output tensor dimensions
+ * from the actual result, and reconstructs RGBA. Works for any model whose
+ * input is a normalized RGB image and output is an RGB or single-channel tensor.
+ */
+export async function runGenericImageToImage(
+  session: OnnxInferenceSession,
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
+  const px = width * height;
+  const input = new Float32Array(3 * px);
+  for (let i = 0; i < px; i++) {
+    input[i]          = rgba[i * 4]     / 255;
+    input[px + i]     = rgba[i * 4 + 1] / 255;
+    input[2 * px + i] = rgba[i * 4 + 2] / 255;
+  }
+
+  const feeds: Record<string, { data: Float32Array; shape: number[] }> = {
+    [session.inputNames[0]]: { data: input, shape: [1, 3, height, width] },
+  };
+
+  let outData: Float32Array;
+  let outDims: readonly number[];
+  try {
+    const results = await session.runFull(feeds);
+    const firstOutput = results[session.outputNames[0]];
+    outData = firstOutput.data;
+    outDims = firstOutput.dims;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isGpuAllocError(msg) || session.isWasmFallback) throw e;
+    await session.fallbackToWasm();
+    const results = await session.runFull(feeds);
+    const firstOutput = results[session.outputNames[0]];
+    outData = firstOutput.data;
+    outDims = firstOutput.dims;
+  }
+
+  const outC = outDims.length >= 4 ? outDims[1] : (outDims.length === 3 ? outDims[0] : 1);
+  const outH = outDims.length >= 4 ? outDims[2] : (outDims.length === 3 ? outDims[1] : height);
+  const outW = outDims.length >= 4 ? outDims[3] : (outDims.length === 3 ? outDims[2] : width);
+  const outPx = outW * outH;
+  const outRgba = new Uint8ClampedArray(outPx * 4);
+
+  if (outC >= 3) {
+    for (let i = 0; i < outPx; i++) {
+      outRgba[i * 4]     = Math.max(0, Math.min(255, Math.round(outData[i] * 255)));
+      outRgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(outData[outPx + i] * 255)));
+      outRgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(outData[2 * outPx + i] * 255)));
+      outRgba[i * 4 + 3] = 255;
+    }
+  } else {
+    for (let i = 0; i < outPx; i++) {
+      const v = Math.max(0, Math.min(255, Math.round(outData[i] * 255)));
+      outRgba[i * 4] = v;
+      outRgba[i * 4 + 1] = v;
+      outRgba[i * 4 + 2] = v;
+      outRgba[i * 4 + 3] = 255;
+    }
+  }
+
+  return { rgba: outRgba, width: outW, height: outH };
+}
