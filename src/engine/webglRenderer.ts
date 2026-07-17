@@ -34,6 +34,11 @@ export class WebGLRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: false });
+    // Disable Three.js sRGB output encoding — our pipeline passes sRGB pixel
+    // values straight through (textures use NoColorSpace). Without this, the
+    // default SRGBColorSpace output applies an extra linear→sRGB curve on the
+    // final blit, visibly brightening the image.
+    this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     this.renderer.setPixelRatio(1);
 
     this.scene = new THREE.Scene();
