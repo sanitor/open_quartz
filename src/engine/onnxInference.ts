@@ -592,10 +592,47 @@ export async function runDepthEstimation(
 }
 
 /**
+ * Auto-detect model input channels and scale by running a small probe tensor.
+ * Caches result per session so the probe runs only once.
+ */
+const probeCache = new WeakMap<OnnxInferenceSession, { channels: number; scale: number }>();
+
+async function probeModelShape(session: OnnxInferenceSession): Promise<{ channels: number; scale: number }> {
+  const cached = probeCache.get(session);
+  if (cached) return cached;
+
+  const probeSize = 8;
+  for (const ch of [3, 1]) {
+    const dummy = new Float32Array(ch * probeSize * probeSize);
+    dummy.fill(0.5);
+    try {
+      const out = await session.run(dummy, [1, ch, probeSize, probeSize]);
+      const outTotal = out.length;
+      let scale = 1;
+      for (const s of [1, 2, 3, 4, 8]) {
+        const outSpatial = probeSize * s;
+        if (outTotal % (outSpatial * outSpatial) === 0) {
+          scale = s;
+          break;
+        }
+      }
+      const result = { channels: ch, scale };
+      probeCache.set(session, result);
+      console.log(`[onnx-generic] probe: channels=${ch} scale=${scale}`);
+      return result;
+    } catch {
+      continue;
+    }
+  }
+  const fallback = { channels: 3, scale: 1 };
+  probeCache.set(session, fallback);
+  return fallback;
+}
+
+/**
  * Generic image→image inference for custom models.
- * Sends the full image as RGB [1,3,H,W], reads the output tensor dimensions
- * from the actual result, and reconstructs RGBA. Works for any model whose
- * input is a normalized RGB image and output is an RGB or single-channel tensor.
+ * Auto-probes model input requirements (channels, scale), then dispatches
+ * through the existing tiled inference pipeline with the appropriate codec.
  */
 export async function runGenericImageToImage(
   session: OnnxInferenceSession,
@@ -603,57 +640,7 @@ export async function runGenericImageToImage(
   width: number,
   height: number,
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
-  const px = width * height;
-  const input = new Float32Array(3 * px);
-  for (let i = 0; i < px; i++) {
-    input[i]          = rgba[i * 4]     / 255;
-    input[px + i]     = rgba[i * 4 + 1] / 255;
-    input[2 * px + i] = rgba[i * 4 + 2] / 255;
-  }
-
-  const feeds: Record<string, { data: Float32Array; shape: number[] }> = {
-    [session.inputNames[0]]: { data: input, shape: [1, 3, height, width] },
-  };
-
-  let outData: Float32Array;
-  let outDims: readonly number[];
-  try {
-    const results = await session.runFull(feeds);
-    const firstOutput = results[session.outputNames[0]];
-    outData = firstOutput.data;
-    outDims = firstOutput.dims;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!isGpuAllocError(msg) || session.isWasmFallback) throw e;
-    await session.fallbackToWasm();
-    const results = await session.runFull(feeds);
-    const firstOutput = results[session.outputNames[0]];
-    outData = firstOutput.data;
-    outDims = firstOutput.dims;
-  }
-
-  const outC = outDims.length >= 4 ? outDims[1] : (outDims.length === 3 ? outDims[0] : 1);
-  const outH = outDims.length >= 4 ? outDims[2] : (outDims.length === 3 ? outDims[1] : height);
-  const outW = outDims.length >= 4 ? outDims[3] : (outDims.length === 3 ? outDims[2] : width);
-  const outPx = outW * outH;
-  const outRgba = new Uint8ClampedArray(outPx * 4);
-
-  if (outC >= 3) {
-    for (let i = 0; i < outPx; i++) {
-      outRgba[i * 4]     = Math.max(0, Math.min(255, Math.round(outData[i] * 255)));
-      outRgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(outData[outPx + i] * 255)));
-      outRgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(outData[2 * outPx + i] * 255)));
-      outRgba[i * 4 + 3] = 255;
-    }
-  } else {
-    for (let i = 0; i < outPx; i++) {
-      const v = Math.max(0, Math.min(255, Math.round(outData[i] * 255)));
-      outRgba[i * 4] = v;
-      outRgba[i * 4 + 1] = v;
-      outRgba[i * 4 + 2] = v;
-      outRgba[i * 4 + 3] = 255;
-    }
-  }
-
-  return { rgba: outRgba, width: outW, height: outH };
+  const { channels, scale } = await probeModelShape(session);
+  const codec = channels === 1 ? ycbcrCodec : rgbCodec;
+  return runTiledInference(session, rgba, width, height, scale, codec);
 }
