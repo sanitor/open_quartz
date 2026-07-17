@@ -331,8 +331,11 @@ export class ExecutionEngine {
         if (this.onnxInFlight.has(nodeId)) continue;
         // Skip if model is still downloading / not ready.
         if (node.data.onnxStatus && node.data.onnxStatus !== 'ready') continue;
-        // Skip if output already produced (e.g. static pipeline re-render after async completion).
-        if (plan.textureSources.has(nodeId)) continue;
+        // For video-driven pipelines, skip the output-cache check so we
+        // re-infer every frame. The previous result stays in textureSources
+        // for the downstream renderer to display (1-frame latency).
+        const hasVideo = builtins.videoTextures && builtins.videoTextures.size > 0;
+        if (!hasVideo && plan.textureSources.has(nodeId)) continue;
         const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
         const sourceId = upstreamMap?.values().next().value;
         if (!sourceId) continue;
@@ -470,6 +473,7 @@ export class ExecutionEngine {
       const detections: OnnxDetection[] = result.detections;
 
       const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
+
       plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
       this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
 

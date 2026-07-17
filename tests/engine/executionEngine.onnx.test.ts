@@ -44,6 +44,7 @@ const {
     readTargetToCanvas: vi.fn(() => document.createElement('canvas')),
     dispose: vi.fn(),
     clearResources: vi.fn(),
+    getImageTexture: vi.fn(() => null),
   };
 
   const sessionState: OnnxSessionState = {
@@ -194,7 +195,10 @@ class MockImage {
 vi.stubGlobal('Image', MockImage);
 
 import { ExecutionEngine } from '../../src/engine/executionEngine';
+import type { ExecutionPlan } from '../../src/engine/executionEngine';
+import type { FrameInputs } from '../../src/engine/compositor';
 import { topologicalSort } from '../../src/engine/graphExecutor';
+import { compileNodeShader } from '../../src/engine/shaderCompiler';
 import { drawDetectionOverlay } from '../../src/engine/onnxOverlay';
 
 function makeNode(id: string, data: Partial<ShaderNodeData>): Node<ShaderNodeData> {
@@ -559,5 +563,145 @@ describe('ExecutionEngine ONNX branch', () => {
 
     engine.stop();
     expect(onnxSessionState.disposeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runFrame() — ONNX cache invalidation with video textures
+// ---------------------------------------------------------------------------
+
+function makeFrameInputs(overrides: Partial<FrameInputs> = {}): FrameInputs {
+  return {
+    time: 1.0,
+    delta: 0.016,
+    frame: 60,
+    date: new Float32Array([2026, 7, 9, 0]),
+    mouse: new Float32Array([0, 0, 0, 0]),
+    resolution: new Float32Array([512, 512, 1]),
+    ...overrides,
+  };
+}
+
+function videoInputNode(id: string): Node<ShaderNodeData> {
+  return makeNode(id, {
+    type: 'input',
+    inputMode: 'video' as never,
+    videoUrl: 'file:///test.mp4',
+  });
+}
+
+function shaderNode(id: string, inputLabel = 'inputImage'): Node<ShaderNodeData> {
+  return makeNode(id, {
+    type: 'shader',
+    inputs: [{ id: `${id}_in`, label: inputLabel, dataType: 'sampler2D', direction: 'input' }],
+    outputs: [],
+    shaderCode: 'void main(){}',
+  });
+}
+
+describe('runFrame() — ONNX re-inference with video upstream', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    onnxSessionState.runResult = {
+      detections: [{ bbox: [0, 0, 1, 1], score: 0.9, class_id: 0, class_name: 'person' }],
+      scoreThreshold: 0.25,
+      iouThreshold: 0.45,
+    };
+    onnxSessionState.runError = null;
+    onnxSessionState.initError = null;
+    onnxOverlayState.dataUrl = 'data:image/png;base64,overlay';
+  });
+
+  /**
+   * Regression test for black-output bug:
+   *
+   * video → shader → ONNX → renderer
+   *
+   * On the first frame the video texture hasn't loaded yet, so the shader FBO
+   * is all black. The ONNX node infers on the black frame, caches the result
+   * in onnxOutputCache, and never re-infers — all subsequent frames show a
+   * black overlay even though the video is now playing.
+   *
+   * Fix: when videoTextures is non-empty, clear the ONNX output cache every
+   * frame so the node re-infers on live data.
+   */
+  it('re-infers ONNX every frame with video upstream while preserving result for renderer', async () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const vid = videoInputNode('vid_1');
+    const shader = shaderNode('shader_1');
+    const onnx = onnxNode('onnx_1');
+
+    const edges: Edge[] = [
+      { id: 'e1', source: 'vid_1', target: 'shader_1', sourceHandle: 'out', targetHandle: 'shader_1_in' },
+      { id: 'e2', source: 'shader_1', target: 'onnx_1', sourceHandle: 'out', targetHandle: 'onnx_1_image' },
+    ];
+
+    vi.mocked(compileNodeShader).mockReturnValue({
+      material: { fragmentShader: 'compiled', uniforms: {} } as never,
+      upstreamSamplers: new Map([['inputImage', 'vid_1']]),
+      preambleLines: 0,
+    });
+
+    vi.mocked(topologicalSort).mockReturnValue(['vid_1', 'shader_1', 'onnx_1']);
+    const plan = engine.prepare([vid, shader, onnx], edges)!;
+    expect(plan).not.toBeNull();
+
+    const videoTex = { type: 1, isVideoTexture: true } as never;
+    const videoTextures = new Map([['vid_1', videoTex]]);
+
+    // Frame 1: shader renders, ONNX fires async inference
+    engine.runFrame(plan, makeFrameInputs({ videoTextures }));
+    expect(plan.textureSources.has('shader_1')).toBe(true);
+    expect(mockRendererInstance.readTargetToCanvas).toHaveBeenCalledTimes(1);
+
+    // Flush microtasks so the fire-and-forget runOnnxInference resolves
+    await vi.waitFor(() => {
+      expect(plan.textureSources.has('onnx_1')).toBe(true);
+    });
+
+    // The ONNX result should be in textureSources for downstream renderer
+    const frame1Result = plan.textureSources.get('onnx_1');
+    expect(frame1Result).toBeDefined();
+
+    // Frame 2: with videoTextures → skip cache check → ONNX re-fires
+    // Previous result stays in textureSources for renderer (1-frame latency).
+    mockRendererInstance.readTargetToCanvas.mockClear();
+    engine.runFrame(plan, makeFrameInputs({ videoTextures }));
+
+    // readTargetToCanvas called again for the fresh scratchTarget readback
+    expect(mockRendererInstance.readTargetToCanvas).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves ONNX output cache when no videoTextures (static image pipeline)', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const input = imageInputNode('img_1');
+    const onnx = onnxNode('onnx_1');
+
+    const edges: Edge[] = [
+      { id: 'e', source: 'img_1', target: 'onnx_1', sourceHandle: 'out', targetHandle: 'onnx_1_image' },
+    ];
+
+    vi.mocked(topologicalSort).mockReturnValue(['img_1', 'onnx_1']);
+    const plan = engine.prepare([input, onnx], edges)!;
+    expect(plan).not.toBeNull();
+
+    // Seed the image textureSource so ONNX node can read it
+    plan.textureSources.set('img_1', { kind: 'image', texture: { type: 1 } as never });
+
+    // Frame 1: ONNX fires inference
+    engine.runFrame(plan, makeFrameInputs());
+    expect(mockRendererInstance.readTargetToCanvas).toHaveBeenCalledTimes(1);
+
+    // Simulate async completion
+    plan.textureSources.set('onnx_1', { kind: 'image', texture: { isCached: true } as never });
+
+    // Frame 2: no videoTextures → cache preserved → ONNX skipped
+    vi.clearAllMocks();
+    engine.runFrame(plan, makeFrameInputs());
+
+    // readTargetToCanvas should NOT be called (cache hit — skip re-inference)
+    expect(mockRendererInstance.readTargetToCanvas).not.toHaveBeenCalled();
+    // The cached texture should still be there
+    expect((plan.textureSources.get('onnx_1')!.texture as Record<string, unknown>).isCached).toBe(true);
   });
 });

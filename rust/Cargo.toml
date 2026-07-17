@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["crates/yolo-sem"]
 
 # Room to grow: any future OpenQuartz Rust crate (segmenter, mesher, etc.)
 # lands in `rust/crates/<name>/` and is picked up automatically.

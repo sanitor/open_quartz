@@ -11,7 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Upstream: pure Rust postprocess + inline_js onnxruntime-web bridge.
-# Kept as a git dep so we track the source of truth without vendoring.
+# build:wasm runs a postbuild patch to inject `preferredOutputLocation: 'cpu'`
+# into the generated inline_js (required for WebGPU EP — see package.json).
 rimeflow-yolov8n = { git = "https://github.com/caozisheng/rimeflow-yolov8n", branch = "main" }
 
 wasm-bindgen = "0.2"
