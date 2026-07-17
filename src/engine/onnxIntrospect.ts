@@ -6,6 +6,7 @@
 import type * as OrtModule from 'onnxruntime-web';
 import type { Port } from '../types';
 import type { OnnxTask } from './onnxCatalog';
+import { ensureOrtLoaded } from './onnxInference';
 
 declare const ort: typeof OrtModule;
 
@@ -43,6 +44,7 @@ export interface OnnxModelMeta {
 export async function introspectOnnxModel(
   buffer: ArrayBuffer,
 ): Promise<OnnxModelMeta> {
+  await ensureOrtLoaded();
   const session = await ort.InferenceSession.create(buffer);
 
   const inputs: OnnxModelMeta['inputs'] = session.inputNames.map((name) => ({

@@ -136,7 +136,7 @@ let ortLoadPromise: Promise<void> | null = null;
 
 /** @internal Reset ORT load state between tests. */
 export function resetOrtLoad(): void { ortLoadPromise = null; }
-function ensureOrtLoaded(): Promise<void> {
+export function ensureOrtLoaded(): Promise<void> {
   if (typeof globalThis.ort !== 'undefined') return Promise.resolve();
   if (ortLoadPromise) return ortLoadPromise;
   ortLoadPromise = new Promise<void>((resolve, reject) => {
