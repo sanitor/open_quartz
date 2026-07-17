@@ -38,8 +38,8 @@ export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
         autocompletion({ override: [glslCompletions] }),
         EditorView.updateListener.of(onUpdate),
         EditorView.theme({
-          '&': { fontSize: '12px', backgroundColor: '#ffffff' },
-          '.cm-scroller': { fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace" },
+          '&': { fontSize: '12px', backgroundColor: '#ffffff', height: '100%' },
+          '.cm-scroller': { fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace", overflow: 'auto' },
           '.cm-gutters': { backgroundColor: '#fafafa', borderRight: '1px solid #e8e8ed' },
           '.cm-activeLineGutter': { backgroundColor: '#f0f0f0' },
           '.cm-activeLine': { backgroundColor: 'rgba(245, 245, 247, 0.5)' },
