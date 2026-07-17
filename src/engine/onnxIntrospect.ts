@@ -47,17 +47,22 @@ export async function introspectOnnxModel(
   await ensureOrtLoaded();
   const session = await ort.InferenceSession.create(buffer);
 
-  const inputs: OnnxModelMeta['inputs'] = session.inputNames.map((name) => ({
-    name,
-    shape: [],  // not available from the public API without protobuf parsing
-    dtype: 'float32',  // safe default for image models
-  }));
+  const inMeta = session.inputMetadata ?? [];
+  const outMeta = session.outputMetadata ?? [];
 
-  const outputs: OnnxModelMeta['outputs'] = session.outputNames.map((name) => ({
-    name,
-    shape: [],
-    dtype: 'float32',
-  }));
+  const inputs: OnnxModelMeta['inputs'] = session.inputNames.map((name, i) => {
+    const m = inMeta[i];
+    const shape: (number | string)[] = (m && 'shape' in m) ? [...m.shape] : [];
+    const dtype = (m && 'type' in m) ? String(m.type) : 'float32';
+    return { name, shape, dtype };
+  });
+
+  const outputs: OnnxModelMeta['outputs'] = session.outputNames.map((name, i) => {
+    const m = outMeta[i];
+    const shape: (number | string)[] = (m && 'shape' in m) ? [...m.shape] : [];
+    const dtype = (m && 'type' in m) ? String(m.type) : 'float32';
+    return { name, shape, dtype };
+  });
 
   // Best-effort: release the session to free wasm memory.
   try {

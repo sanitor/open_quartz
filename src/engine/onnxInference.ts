@@ -30,6 +30,24 @@ export class OnnxInferenceSession {
   get outputNames(): readonly string[] { return this._outputNames; }
   get isWasmFallback(): boolean { return this._isWasm; }
 
+  /** Input tensor shape from model metadata, e.g. [1, 1, 224, 224]. Empty if unavailable. */
+  get inputShape(): ReadonlyArray<number | string> {
+    if (!this.session) return [];
+    const meta = this.session.inputMetadata;
+    if (!meta || meta.length === 0) return [];
+    const m = meta[0];
+    return (m && 'shape' in m) ? m.shape : [];
+  }
+
+  /** Output tensor shape from model metadata. Empty if unavailable. */
+  get outputShape(): ReadonlyArray<number | string> {
+    if (!this.session) return [];
+    const meta = this.session.outputMetadata;
+    if (!meta || meta.length === 0) return [];
+    const m = meta[0];
+    return (m && 'shape' in m) ? m.shape : [];
+  }
+
   /** Load a model from an ArrayBuffer (already downloaded by modelManager). */
   async loadFromBuffer(buffer: ArrayBuffer): Promise<void> {
     this._buffer = buffer;
@@ -590,48 +608,10 @@ export async function runDepthEstimation(
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
   return runTiledInference(session, rgba, width, height, 1, midasCodec);
 }
-
-/**
- * Auto-detect model input channels and scale by running a small probe tensor.
- * Caches result per session so the probe runs only once.
- */
-const probeCache = new WeakMap<OnnxInferenceSession, { channels: number; scale: number }>();
-
-async function probeModelShape(session: OnnxInferenceSession): Promise<{ channels: number; scale: number }> {
-  const cached = probeCache.get(session);
-  if (cached) return cached;
-
-  const probeSize = 8;
-  for (const ch of [3, 1]) {
-    const dummy = new Float32Array(ch * probeSize * probeSize);
-    dummy.fill(0.5);
-    try {
-      const out = await session.run(dummy, [1, ch, probeSize, probeSize]);
-      const outTotal = out.length;
-      let scale = 1;
-      for (const s of [1, 2, 3, 4, 8]) {
-        const outSpatial = probeSize * s;
-        if (outTotal % (outSpatial * outSpatial) === 0) {
-          scale = s;
-          break;
-        }
-      }
-      const result = { channels: ch, scale };
-      probeCache.set(session, result);
-      console.log(`[onnx-generic] probe: channels=${ch} scale=${scale}`);
-      return result;
-    } catch {
-      continue;
-    }
-  }
-  const fallback = { channels: 3, scale: 1 };
-  probeCache.set(session, fallback);
-  return fallback;
-}
-
 /**
  * Generic image→image inference for custom models.
- * Auto-probes model input requirements (channels, scale), then dispatches
+ * Reads input shape from session.inputMetadata (channels, fixedSize),
+ * infers scale from input vs output spatial dims, then dispatches
  * through the existing tiled inference pipeline with the appropriate codec.
  */
 export async function runGenericImageToImage(
@@ -640,7 +620,30 @@ export async function runGenericImageToImage(
   width: number,
   height: number,
 ): Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }> {
-  const { channels, scale } = await probeModelShape(session);
-  const codec = channels === 1 ? ycbcrCodec : rgbCodec;
+  const inShape = session.inputShape;  // e.g. [1, 1, 224, 224] or [1, 3, 'h', 'w']
+  const outShape = session.outputShape;
+
+  // Derive channels (default 3 = RGB)
+  const channels = (inShape.length >= 4 && typeof inShape[1] === 'number') ? inShape[1] : 3;
+
+  // Derive fixedSize: if H and W are concrete and equal, model requires fixed spatial input
+  let fixedSize: number | undefined;
+  if (inShape.length >= 4 && typeof inShape[2] === 'number' && typeof inShape[3] === 'number'
+      && inShape[2] === inShape[3] && inShape[2] > 0) {
+    fixedSize = inShape[2];
+  }
+
+  // Derive scale from input vs output spatial dims
+  let scale = 1;
+  if (inShape.length >= 4 && outShape.length >= 4
+      && typeof inShape[2] === 'number' && typeof outShape[2] === 'number'
+      && inShape[2] > 0) {
+    scale = Math.round(outShape[2] / inShape[2]);
+    if (scale < 1) scale = 1;
+  }
+
+  const codec: TileCodec = channels === 1
+    ? { ...ycbcrCodec, fixedSize }
+    : { ...rgbCodec, fixedSize };
   return runTiledInference(session, rgba, width, height, scale, codec);
 }
