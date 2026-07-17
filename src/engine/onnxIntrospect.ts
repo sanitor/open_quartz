@@ -102,8 +102,9 @@ export function inferTaskFromMeta(meta: OnnxModelMeta): OnnxTask {
   if (outShape && outShape.length > 0) {
     const lastDim = outShape[outShape.length - 1];
     if (typeof lastDim === 'number') {
-      // Detection: last dim ≥ 5 (bbox + score + classes)
-      if (lastDim >= 5 && outputs.length === 1) return 'detection';
+      // Detection: last dim ≥ 5 (bbox + score + classes), but only for
+      // 2D/3D outputs. 4D outputs are image tensors (NCHW/NHWC).
+      if (lastDim >= 5 && outputs.length === 1 && outShape.length <= 3) return 'detection';
     }
 
     // Super-resolution: single input, single output, output spatial dims
