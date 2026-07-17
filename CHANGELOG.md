@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.0b] -- 2026-07-17
+
+### Features
+
+- **Resample shader** -- passthrough identity shader (`texture → fragColor`) in the FILTER group. Leverages the node's output buffer size and format settings to perform rescaling and format conversion.
+- **`npm run clean`** -- new script removes all build artifacts (`dist/`, `node_modules/.vite`, `src-tauri/target/`) for a clean rebuild.
+
+### Fixes
+
+- **ONNX introspection false detection** -- 4D image tensors (NCHW, e.g. `[1, 3, H, W]`) were misclassified as detection models because the width dimension triggered the `lastDim >= 5` heuristic. Added `outShape.length <= 3` guard so only 2D/3D outputs match detection. Custom ONNX models now correctly get `sampler2D` output ports.
+- **Double-gamma on renderer output** -- Three.js r152+ defaults `outputColorSpace = SRGBColorSpace`, applying an extra linear→sRGB transfer on the final blit. Since all textures use `NoColorSpace` (no decode on read), this double-encoded the already-sRGB pixel values, visibly brightening the renderer output vs. the ONNX preview. Fixed by setting `outputColorSpace = LinearSRGBColorSpace`.
+- **macOS icon oversized** -- regenerated `icon.icns` with Apple HIG-compliant ~80% inset on transparent canvas. macOS squircle mask now clips cleanly instead of cutting into edge-to-edge artwork.
+- **Node header corner gap** -- inner header `rounded-t-xl` (12px) didn't nest inside the outer `rounded-xl` border (12px + 1px border). Changed to `rounded-t-[11px]` (outer radius minus border width) so selected border and header background align flush.
+- **Buffer size input snaps to 512** -- width/height inputs in the side panel used `parseInt() || 512` on every keystroke, making it impossible to clear and retype a value. Now allows empty during editing and falls back to 512 only on blur.
+- **Shader editor not scrollable** -- CodeMirror root lacked `height: 100%` and `.cm-scroller` lacked `overflow: auto`, preventing scroll on long shaders.
+- **Custom ONNX node file picker** -- custom ONNX nodes now show an inline "Select .onnx file..." button instead of "Waiting to download...". Catalog nodes still show the download status. `portsVisible` simplified to `data.onnxStatus === 'ready'`.
+
 ## [0.10.0b] -- 2026-07-16
 
 ### Features
