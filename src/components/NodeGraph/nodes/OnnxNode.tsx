@@ -1,3 +1,4 @@
+import { useRef, useCallback } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../../../types';
 import { DATA_TYPE_COLORS } from '../../../types';
@@ -19,7 +20,7 @@ export function OnnxNode({ id, data, selected }: NodeProps<OnnxNodeType>) {
     (port) => !edges.some((e) => e.targetHandle === port.id),
   );
   const accent = error ? '#ff3b30' : hasUnconnectedInput ? '#8e8e93' : ACCENT;
-  const portsVisible = !data.onnxStatus || data.onnxStatus === 'ready';
+  const portsVisible = data.onnxStatus === 'ready';
 
   return (
     <div
@@ -41,7 +42,7 @@ export function OnnxNode({ id, data, selected }: NodeProps<OnnxNodeType>) {
         </div>
       )}
 
-      {data.onnxStatus === 'not-downloaded' && (
+      {data.onnxStatus === 'not-downloaded' && data.onnxSource !== 'custom' && (
         <div className="px-3 py-2 text-[10px] text-[#86868b]">Waiting to download...</div>
       )}
 
@@ -73,8 +74,8 @@ export function OnnxNode({ id, data, selected }: NodeProps<OnnxNodeType>) {
         <div className="px-3 py-2 text-[10px] text-[#ff3b30]">{data.onnxError ?? 'Unknown error'}</div>
       )}
 
-      {data.onnxSource === 'custom' && !data.onnxCustomPath && !data.onnxStatus && (
-        <div className="px-3 py-2 text-[10px] text-[#aeaeb2] italic">Select .onnx file...</div>
+      {data.onnxSource === 'custom' && !data.onnxCustomFileName && (!data.onnxStatus || data.onnxStatus === 'not-downloaded') && (
+        <OnnxFilePicker nodeId={id} />
       )}
       {portsVisible && (
         <div style={{ paddingTop: 2, paddingBottom: 2 }}>
@@ -152,6 +153,53 @@ export function OnnxNode({ id, data, selected }: NodeProps<OnnxNodeType>) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function OnnxFilePicker({ nodeId }: { nodeId: string }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const loadCustomOnnxModel = useGraphStore((s) => s.loadCustomOnnxModel);
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const buffer = reader.result as ArrayBuffer;
+        loadCustomOnnxModel(nodeId, buffer, file.name);
+      };
+      reader.readAsArrayBuffer(file);
+    },
+    [nodeId, loadCustomOnnxModel],
+  );
+
+  return (
+    <div className="px-3 py-2">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".onnx"
+        onChange={handleFileChange}
+        style={{ display: 'none' }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        style={{
+          fontSize: 10,
+          fontFamily: 'system-ui',
+          color: '#007aff',
+          background: 'none',
+          border: '1px solid #007aff',
+          borderRadius: 4,
+          padding: '2px 8px',
+          cursor: 'pointer',
+        }}
+      >
+        Select .onnx file…
+      </button>
     </div>
   );
 }

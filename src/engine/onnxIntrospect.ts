@@ -123,6 +123,10 @@ export function inferTaskFromMeta(meta: OnnxModelMeta): OnnxTask {
 
   if (outputs.length >= 3) return 'detection';  // boxes + scores + classes
 
+  // No shape info available (ORT-web limitation): 1-in 1-out models are
+  // assumed image-to-image (most common custom model use case).
+  if (inputs.length === 1 && outputs.length === 1) return 'super-resolution';
+
   return 'generic';
 }
 
@@ -146,7 +150,7 @@ function outputDataTypeForTask(task: OnnxTask | undefined): Port['dataType'] {
     case 'denoising':
       return 'sampler2D';  // image-to-image
     default:
-      return 'json';       // generic / unknown → raw JSON tensor data
+      return 'sampler2D';  // generic / unknown → image texture output
   }
 }
 

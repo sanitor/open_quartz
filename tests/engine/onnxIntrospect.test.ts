@@ -38,12 +38,12 @@ describe('inferTaskFromMeta', () => {
       },
     );
 
-    it('does NOT trigger detection when lastDim < 5', () => {
+    it('falls back to super-resolution for 1-in 1-out when lastDim < 5', () => {
       const meta = makeMeta({
         outputs: [{ name: 'out', shape: [1, 100, 4], dtype: 'float32' }],
       });
-      // lastDim=4 < 5 → falls through shape heuristic, single output → generic
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      // lastDim=4 < 5 → not detection; 1-in 1-out → super-resolution fallback
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
     it('does NOT trigger shape-based detection when there are multiple outputs', () => {
@@ -91,37 +91,37 @@ describe('inferTaskFromMeta', () => {
       expect(inferTaskFromMeta(meta)).toBe('detection');
     });
 
-    it('does NOT classify as SR when output is same size as input', () => {
+    it('falls back to image-to-image when output is same size as input (1-in 1-out)', () => {
       const meta = makeMeta({
         inputs: [{ name: 'in', shape: [1, 3, 2, 2], dtype: 'float32' }],
         outputs: [{ name: 'out', shape: [1, 3, 2, 2], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      // Shape-based SR fails (not bigger), but 1-in 1-out → super-resolution fallback
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
-    it('does NOT classify as SR when output is smaller than input', () => {
+    it('falls back to image-to-image when output is smaller than input (1-in 1-out)', () => {
       const meta = makeMeta({
         inputs: [{ name: 'in', shape: [1, 3, 4, 4], dtype: 'float32' }],
         outputs: [{ name: 'out', shape: [1, 3, 2, 2], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
-    it('does NOT classify as SR when only height is larger (not both)', () => {
+    it('falls back to image-to-image when only height is larger (1-in 1-out)', () => {
       const meta = makeMeta({
         inputs: [{ name: 'in', shape: [1, 3, 2, 3], dtype: 'float32' }],
         outputs: [{ name: 'out', shape: [1, 3, 4, 3], dtype: 'float32' }],
       });
-      // outW (3) is NOT > inW (3), so fails the outW > inW check
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
-    it('requires exactly 4-dim shapes for SR heuristic', () => {
+    it('falls back to image-to-image with non-4-dim shapes (1-in 1-out)', () => {
       const meta = makeMeta({
         inputs: [{ name: 'in', shape: [1, 3, 2], dtype: 'float32' }],
         outputs: [{ name: 'out', shape: [1, 3, 4], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
     it('skips SR heuristic when multiple inputs', () => {
@@ -135,12 +135,12 @@ describe('inferTaskFromMeta', () => {
       expect(inferTaskFromMeta(meta)).toBe('generic');
     });
 
-    it('skips SR heuristic when dims are symbolic strings', () => {
+    it('falls back to image-to-image with symbolic dims (1-in 1-out)', () => {
       const meta = makeMeta({
         inputs: [{ name: 'in', shape: [1, 3, 'h', 'w'], dtype: 'float32' }],
         outputs: [{ name: 'out', shape: [1, 3, 'h2', 'w2'], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
   });
 
@@ -180,11 +180,11 @@ describe('inferTaskFromMeta', () => {
   });
 
   describe('generic fallback', () => {
-    it('returns "generic" for single output with no shape info', () => {
+    it('returns "super-resolution" for single input/output with no shape info', () => {
       const meta = makeMeta({
         outputs: [{ name: 'output', shape: [], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
     it('returns "generic" with two outputs and no shape info', () => {
@@ -209,12 +209,12 @@ describe('inferTaskFromMeta', () => {
       expect(inferTaskFromMeta(meta)).toBe('generic');
     });
 
-    it('handles output shape with string lastDim (symbolic)', () => {
+    it('handles output shape with string lastDim (symbolic) — 1-in 1-out fallback', () => {
       const meta = makeMeta({
         outputs: [{ name: 'det', shape: [1, 'N', 'num_classes'], dtype: 'float32' }],
       });
-      // lastDim is string → typeof check fails → falls through to generic
-      expect(inferTaskFromMeta(meta)).toBe('generic');
+      // lastDim is string → shape heuristic skipped → 1-in 1-out → super-resolution
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
   });
 });
@@ -278,7 +278,7 @@ describe('metaToDefaultPorts', () => {
       { task: 'depth-estimation' as const, expectedType: 'sampler2D' },
       { task: 'segmentation' as const, expectedType: 'sampler2D' },
       { task: 'background-removal' as const, expectedType: 'sampler2D' },
-      { task: 'generic' as const, expectedType: 'json' },
+      { task: 'generic' as const, expectedType: 'sampler2D' },
     ])(
       'outputs have dataType=$expectedType when inferredTask=$task',
       ({ task, expectedType }) => {
@@ -290,11 +290,10 @@ describe('metaToDefaultPorts', () => {
       },
     );
 
-    it('defaults to "json" when inferredTask is undefined', () => {
+    it('defaults to "sampler2D" when inferredTask is undefined', () => {
       const meta = makeMeta();
-      // inferredTask not set → undefined → default case → 'json'
       const { outputs } = metaToDefaultPorts(meta);
-      expect(outputs[0].dataType).toBe('json');
+      expect(outputs[0].dataType).toBe('sampler2D');
     });
   });
 
@@ -353,12 +352,12 @@ describe('metaToDefaultPorts', () => {
       expect(outputs[0].dataType).toBe('sampler2D');
     });
 
-    it('unknown model with no shape info gets json output ports', () => {
+    it('unknown model with no shape info gets sampler2D output ports (image-to-image default)', () => {
       const meta = makeMeta();
       meta.inferredTask = inferTaskFromMeta(meta);
       const { outputs } = metaToDefaultPorts(meta);
-      expect(meta.inferredTask).toBe('generic');
-      expect(outputs[0].dataType).toBe('json');
+      expect(meta.inferredTask).toBe('super-resolution');
+      expect(outputs[0].dataType).toBe('sampler2D');
     });
   });
 });

@@ -64,6 +64,7 @@ function makeOnnxProps(
     ],
     uniforms: {},
     onnxModelId: 'yolov8n',
+    onnxStatus: 'ready',
     ...dataOverrides,
   };
 

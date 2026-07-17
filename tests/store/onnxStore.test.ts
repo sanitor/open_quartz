@@ -165,7 +165,7 @@ describe('addCustomOnnxNode', () => {
     expect(node.data.inputs).toEqual([]);
     expect(node.data.outputs).toEqual([]);
     expect(node.data.onnxSource).toBe('custom');
-    expect(node.data.onnxStatus).toBe('not-downloaded');
+    expect(node.data.onnxStatus).toBeUndefined();
   });
 
   it('uses custom position when provided', () => {

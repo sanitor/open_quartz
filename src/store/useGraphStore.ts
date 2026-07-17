@@ -502,7 +502,7 @@ export const useGraphStore = create<GraphState>()(
             outputs: [],
             uniforms: {},
             onnxSource: 'custom',
-            onnxStatus: 'not-downloaded',
+            onnxStatus: undefined,
           },
         };
         set((state) => { state.nodes.push(node); });
