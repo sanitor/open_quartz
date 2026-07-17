@@ -30,11 +30,11 @@ Open Quartz is a node-based visual programming environment for real-time image, 
 | **Resolution** | System | `vec3` | Canvas resolution and pixel ratio. |
 | **float / int / vec2-4 / mat2-4** | Constant | Various | Editable scalar, vector, and matrix values. |
 
-### Shader Nodes (30 presets + custom)
+### Shader Nodes (31 presets + custom)
 
 | Category | Shaders |
 |----------|---------|
-| **Filter** | Sobel Edge Detection, Gaussian Blur 3×3, Box Blur, Sharpen, Emboss, Pixelate, Invert |
+| **Filter** | Resample, Sobel Edge Detection, Gaussian Blur 3×3, Box Blur, Sharpen, Emboss, Pixelate |
 | **Color** | Grayscale, Brightness/Contrast, Hue Rotate, Threshold, Sepia |
 | **Generator** | Solid Color, Gradient, Checkerboard, Noise, Circle |
 | **Blend** | Add, Multiply, Screen, Overlay, Difference, Exclusion, Soft Light |
@@ -144,6 +144,40 @@ npm run build          # output to dist/
 ## Tech Stack
 
 React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Three.js · Zustand 5 · Immer · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
+
+## Roadmap
+
+### Feedback / Accumulator (next milestone)
+
+The engine currently treats every node as a pure function — inputs in, output out, no state across frames. This blocks an entire class of temporal effects that Quartz Composer's **Accumulator** patch enabled.
+
+**Goal:** Add a per-node **feedback buffer** (ping-pong render targets) so a shader can read its own previous frame output via an implicit `previousFrame` uniform.
+
+Unlocked effects:
+- Motion blur / trails (blend current frame onto decaying previous)
+- Reaction-diffusion (Gray-Scott, Belousov-Zhabotinsky)
+- Flow fields / particle advection
+- Fluid simulation (Navier-Stokes, Euler)
+- Temporal anti-aliasing (TAA)
+- Recursive feedback art / video feedback loops
+
+Engine changes required:
+1. **Ping-pong targets** — each feedback-enabled node gets two render targets; swap read/write each frame
+2. **`previousFrame` uniform** — auto-injected sampler2D bound to the node's last-frame output
+3. **Clear / reset** — initial state on first frame or on Stop→Play transition
+4. **UI** — toggle on the node to enable feedback; side panel shows buffer state
+
+### Other planned Quartz Composer parity patches
+
+| QC Patch | Description | Complexity |
+|----------|-------------|------------|
+| **Delay (1-frame)** | Read another node's previous frame output | Shares ping-pong infra with Accumulator |
+| **Image Transition** | Animated wipe/dissolve/push between two images | Shader preset + iTime |
+| **Iterator / Replicate** | Execute a sub-graph N times per frame with varying params | Graph engine loop construct |
+| **Macro Patch** | Collapse a sub-graph into a reusable compound node | Graph serialization + UI |
+| **Bloom** | Multi-pass blur + additive blend (CIFilter equivalent) | Multi-pass rendering |
+| **Motion Blur** | Directional / radial blur driven by velocity | Feedback or multi-sample |
+| **Sample & Hold** | Latch a value and hold until triggered | Stateful node type |
 
 ## License
 
