@@ -5,14 +5,14 @@
 <h1 align="center">Open Quartz</h1>
 
 <p align="center">
-  A hardware-accelerated visual graph editor for image, video, and neural network processing.
+  A real-time heterogeneous video pipeline editor — GPU shaders, neural networks, and CPU math in one graph.
 </p>
 
 <p align="center">
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based visual programming environment for real-time image, video, and ML inference processing. Build GPU-accelerated pipelines by connecting shader nodes, video/image inputs, ONNX neural network nodes, math operations, and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer and Shadertoy, with chaiNNer-style ML inference capabilities running entirely in the browser.
+Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses WebGPU/WebGL shader execution, ONNX neural-network inference, and CPU-side math into a single heterogeneous graph that runs at interactive frame rates. Connect source nodes (camera, video files, images, raw framebuffers), processing nodes (31 GLSL shader presets, 29 math ops, 7 ONNX models + custom), and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer, Shadertoy, and chaiNNer.
 
 ## Node Catalog
 
