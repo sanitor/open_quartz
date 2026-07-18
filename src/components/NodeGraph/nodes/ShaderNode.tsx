@@ -16,6 +16,7 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
   const hasUnconnectedInput = data.inputs.some(
     (port) => !edges.some((e) => e.targetHandle === port.id)
   );
+  const hasFeedback = /\bpreviousFrame\b/.test(data.shaderCode);
   const accent = error ? '#ff3b30' : hasUnconnectedInput ? '#8e8e93' : getAccent(data.type);
 
   return (
@@ -30,6 +31,9 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
         style={{ height: HEADER_H, backgroundColor: accent }}
       >
         <span className="text-xs font-semibold text-white">{data.type.toUpperCase()}</span>
+        {hasFeedback && (
+          <span className="ml-2 text-[9px] text-white/80 font-medium bg-white/20 rounded px-1.5 py-0.5">FB</span>
+        )}
         <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>
       </div>
 

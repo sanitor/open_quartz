@@ -4,6 +4,7 @@ import { colorShaders } from './color';
 import { generatorShaders } from './generator';
 import { blendShaders } from './blend';
 import { distortionShaders } from './distortion';
+import { feedbackShaders } from './feedback';
 
 export type { ShaderEntry } from './filter';
 
@@ -18,6 +19,7 @@ export { colorShaders } from './color';
 export { generatorShaders } from './generator';
 export { blendShaders } from './blend';
 export { distortionShaders } from './distortion';
+export { feedbackShaders } from './feedback';
 
 export const shaderGroups: ShaderGroup[] = [
   { category: 'FILTER', items: filterShaders },
@@ -25,4 +27,5 @@ export const shaderGroups: ShaderGroup[] = [
   { category: 'GENERATOR', items: generatorShaders },
   { category: 'BLEND', items: blendShaders },
   { category: 'DISTORTION', items: distortionShaders },
+  { category: 'FEEDBACK', items: feedbackShaders },
 ];

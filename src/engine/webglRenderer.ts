@@ -357,6 +357,18 @@ export class WebGLRenderer {
     this.renderer.clear();
   }
 
+  clearTarget(target: THREE.WebGLRenderTarget, color?: [number, number, number, number]) {
+    if (color) {
+      const [r, g, b, a] = color;
+      this.renderer.setClearColor(new THREE.Color(r, g, b), a);
+    }
+    this.renderer.setRenderTarget(target);
+    this.renderer.clear();
+    if (color) {
+      this.renderer.setClearColor(0x000000, 0);
+    }
+  }
+
   clearResources() {
     for (const t of this.targets.values()) t.dispose();
     for (const t of this.previewTargets.values()) t.dispose();

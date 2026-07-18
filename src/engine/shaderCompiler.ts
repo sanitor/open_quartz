@@ -48,9 +48,13 @@ export function compileNodeShader(
   material: THREE.ShaderMaterial;
   upstreamSamplers: Map<string, string>; // uniformName -> upstream nodeId
   preambleLines: number;
+  needsFeedback: boolean;
 } {
   const upstreamSamplers = new Map<string, string>();
   let userCode = stripInjected(nodeShaderCode);
+
+  // Auto-detect: if shader references `previousFrame`, enable feedback
+  const needsFeedback = /\bpreviousFrame\b/.test(nodeShaderCode);
 
   let src = `precision highp float;\nin vec2 v_uv;\nout vec4 fragColor;\n`;
   let uniformCount = 0;
@@ -66,7 +70,7 @@ export function compileNodeShader(
       src += `uniform ${port.dataType} ${uniformName};\n`;
       uniformCount++;
     }
-    const re = new RegExp(`uniform\\s+\\w+\\s+${uniformName}\\s*;?`, 'g');
+    const re = new RegExp(`uniform\\s+\\w+\\s+${uniformName}\\s*(?:=\\s*[^;]+)?\\s*;`, 'g');
     userCode = userCode.replace(re, '');
   }
 
@@ -75,9 +79,16 @@ export function compileNodeShader(
     if (!upstreamMap.has(input.label) && input.dataType !== 'sampler2D') {
       src += `uniform ${input.dataType} ${input.label};\n`;
       uniformCount++;
-      const re = new RegExp(`uniform\\s+${input.dataType}\\s+${input.label}\\s*;?`, 'g');
+      const re = new RegExp(`uniform\\s+${input.dataType}\\s+${input.label}\\s*(?:=\\s*[^;]+)?\\s*;`, 'g');
       userCode = userCode.replace(re, '');
     }
+  }
+
+  // Auto-inject previousFrame uniform if shader references it
+  if (needsFeedback) {
+    src += `uniform sampler2D previousFrame;\n`;
+    uniformCount++;
+    userCode = userCode.replace(/uniform\s+sampler2D\s+previousFrame\s*(?:=\s*[^;]+)?\s*;/g, '');
   }
 
   src += `\n${userCode}\n`;
@@ -93,5 +104,5 @@ export function compileNodeShader(
   // src prefix: precision, v_uv, fragColor (3 lines) + uniforms + empty line before userCode
   const preambleLines = 1 + 3 + uniformCount + 1;
 
-  return { material, upstreamSamplers, preambleLines };
+  return { material, upstreamSamplers, preambleLines, needsFeedback };
 }

@@ -18,7 +18,7 @@ type TextureSource =
   | { kind: 'fbo'; target: THREE.WebGLRenderTarget }
   | { kind: 'image'; texture: THREE.Texture };
 
-const BUILTIN_UNIFORMS = new Set(['iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution']);
+const BUILTIN_UNIFORMS = new Set(['iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution', 'previousFrame']);
 
 export interface ExecutionPlan {
   sortedIds: string[];
@@ -38,6 +38,10 @@ export interface ExecutionPlan {
   defaultW: number;
   mathValues: Map<string, unknown>;
   defaultH: number;
+  // Feedback / Accumulator fields
+  feedbackTargets: Map<string, [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]>;
+  feedbackReadIndex: Map<string, number>;
+  feedbackFirstFrame: Set<string>;
 }
 
 export class ExecutionEngine {
@@ -120,6 +124,9 @@ export class ExecutionEngine {
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textureSources = new Map<string, TextureSource>();
     const targets = new Map<string, THREE.WebGLRenderTarget>();
+    const feedbackTargets = new Map<string, [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]>();
+    const feedbackReadIndex = new Map<string, number>();
+    const feedbackFirstFrame = new Set<string>();
 
     for (const nodeId of sortedIds) {
       const node = nodeMap.get(nodeId);
@@ -209,14 +216,6 @@ export class ExecutionEngine {
         const outH = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
         const outFormat = node.data.outFormat;
         const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
-        const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-        if (node.data.texFilter || node.data.texWrap) {
-          this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
-        }
-        targets.set(nodeId, target);
-        onOutputSize?.(nodeId, outW, outH);
-        resolutionUniforms.set(nodeId, new Float32Array([outW, outH, 1]));
-
 
         const compiled = compileNodeShader(node.data.shaderCode, node.data.inputs, upstreamMap);
         const material = compiled.material;
@@ -224,11 +223,41 @@ export class ExecutionEngine {
         const err = validateFragmentShader(gl, material.fragmentShader);
         if (err) throw new Error(err);
 
+        if (compiled.needsFeedback) {
+          // Feedback nodes need float textures for PDE precision
+          const targetA = this.renderer.createTarget(`${nodeId}_fb0`, outW, outH, true, 'rgba32f');
+          const targetB = this.renderer.createTarget(`${nodeId}_fb1`, outW, outH, true, 'rgba32f');
+          if (node.data.texFilter || node.data.texWrap) {
+            this.renderer.applyTextureSampling(targetA.texture, node.data.texFilter, node.data.texWrap);
+            this.renderer.applyTextureSampling(targetB.texture, node.data.texFilter, node.data.texWrap);
+          }
+          feedbackTargets.set(nodeId, [targetA, targetB]);
+          feedbackReadIndex.set(nodeId, 0);
+          feedbackFirstFrame.add(nodeId);
+          targets.set(nodeId, targetA); // primary target for downstream compatibility
+        } else {
+          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
+          if (node.data.texFilter || node.data.texWrap) {
+            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
+          }
+          targets.set(nodeId, target);
+        }
+        onOutputSize?.(nodeId, outW, outH);
+        resolutionUniforms.set(nodeId, new Float32Array([outW, outH, 1]));
+
         materials.set(nodeId, material);
         upstreamSamplerBindings.set(nodeId, compiled.upstreamSamplers);
         scalarUpstream.set(nodeId, upstreamMap);
         scalarBindings.set(nodeId, upstreamScalarValues);
-        selfUniforms.set(nodeId, node.data.uniforms);
+        const selfVals = { ...node.data.uniforms };
+        for (const port of node.data.inputs) {
+          if (!upstreamMap.has(port.label) && port.dataType !== 'sampler2D' && port.dataType !== 'samplerCube') {
+            if (!(port.label in selfVals) && port.defaultValue !== undefined) {
+              selfVals[port.label] = normalizeUniformValue(port.defaultValue);
+            }
+          }
+        }
+        selfUniforms.set(nodeId, selfVals);
         builtinPorts.set(nodeId, builtin);
         preambleLines.set(nodeId, compiled.preambleLines);
       } catch (e) {
@@ -264,6 +293,9 @@ export class ExecutionEngine {
       defaultW,
       defaultH,
       mathValues: new Map<string, unknown>(),
+      feedbackTargets,
+      feedbackReadIndex,
+      feedbackFirstFrame,
     };
   }
 
@@ -352,11 +384,34 @@ export class ExecutionEngine {
         void this.runOnnxInference(plan, nodeId, node, sourceCanvas, srcW, srcH);
         continue;
       }
-      const target = plan.targets.get(nodeId);
-      if (!target) continue;
-
       const material = plan.materials.get(nodeId);
       if (!material) continue;
+
+      // Feedback: determine read/write targets, bind previousFrame, clear on first frame
+      const isFeedback = plan.feedbackTargets.has(nodeId);
+      let renderTarget: THREE.WebGLRenderTarget;
+      if (isFeedback) {
+        const fbTargets = plan.feedbackTargets.get(nodeId)!;
+        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        const fbWriteIdx = 1 - fbReadIdx;
+
+        // First frame: clear both ping-pong buffers to initial state
+        if (plan.feedbackFirstFrame.has(nodeId)) {
+          const clearColor = node.data.feedbackClearColor as [number, number, number, number] | undefined;
+          this.renderer.clearTarget(fbTargets[0], clearColor);
+          this.renderer.clearTarget(fbTargets[1], clearColor);
+          plan.feedbackFirstFrame.delete(nodeId);
+        }
+
+        // Bind previousFrame uniform to the read target's texture
+        setUniform(material, 'previousFrame', fbTargets[fbReadIdx].texture);
+
+        renderTarget = fbTargets[fbWriteIdx];
+      } else {
+        const target = plan.targets.get(nodeId);
+        if (!target) continue;
+        renderTarget = target;
+      }
 
       const upstreamSamplers = plan.upstreamSamplerBindings.get(nodeId);
       if (upstreamSamplers) {
@@ -401,8 +456,14 @@ export class ExecutionEngine {
         if (builtin.has('iResolution')) setUniform(material, 'iResolution', plan.resolutionUniforms.get(nodeId) ?? builtins.resolution);
       }
 
-      this.renderer.renderWithMaterial(material, target);
-      plan.textureSources.set(nodeId, { kind: 'fbo', target });
+      this.renderer.renderWithMaterial(material, renderTarget);
+      plan.textureSources.set(nodeId, { kind: 'fbo', target: renderTarget });
+
+      // Swap feedback read index for next frame
+      if (isFeedback) {
+        const current = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        plan.feedbackReadIndex.set(nodeId, 1 - current);
+      }
     }
   }
 
@@ -569,6 +630,15 @@ export class ExecutionEngine {
           }
           this.renderer.renderSampler2DInput(src.texture, target);
           onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
+        }
+        continue;
+      }
+      // For feedback nodes, read from textureSources (has latest write target)
+      const isFeedback = node ? plan.feedbackTargets.has(nodeId) : false;
+      if (isFeedback) {
+        const src = plan.textureSources.get(nodeId);
+        if (src?.kind === 'fbo') {
+          onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
         }
         continue;
       }

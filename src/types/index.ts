@@ -83,6 +83,9 @@ export interface ShaderNodeData {
   videoPlaybackRate?: number;
   systemSource?: 'time' | 'timeDelta' | 'frame' | 'mouse' | 'resolution';
   mathOp?: string;
+  // Feedback / Accumulator fields
+  feedbackEnabled?: boolean;
+  feedbackClearColor?: [number, number, number, number]; // clear color for feedback buffer initialization
   [key: string]: unknown;
 }
 

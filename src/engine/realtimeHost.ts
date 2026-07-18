@@ -33,7 +33,7 @@ export function isStaticPipeline(nodes: Node<ShaderNodeData>[]): boolean {
     if (node.data.type === 'input' && node.data.inputMode === 'system'
         && node.data.systemSource && DYNAMIC_SYSTEM_SOURCES[node.data.systemSource]) return false;
     if ((node.data.type === 'shader' || node.data.type === 'constant')
-        && DYNAMIC_BUILTINS.test(node.data.shaderCode)) return false;
+        && (DYNAMIC_BUILTINS.test(node.data.shaderCode) || /\bpreviousFrame\b/.test(node.data.shaderCode))) return false;
   }
   return true;
 }

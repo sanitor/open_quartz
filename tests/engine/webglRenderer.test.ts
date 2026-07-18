@@ -103,6 +103,7 @@ vi.mock('three', () => {
     FloatType: FLOAT_TYPE,
     HalfFloatType: HALF_FLOAT_TYPE,
     GLSL3: 'GLSL3',
+    LinearSRGBColorSpace: 'srgb-linear',
     RawShaderMaterial: class {
       vertexShader: string;
       fragmentShader: string;

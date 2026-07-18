@@ -422,6 +422,60 @@ export function SidePanel() {
     });
   }
 
+  // --- FEEDBACK CONFIG (shader / constant) ---
+  if (data.type === 'shader' || data.type === 'constant') {
+    const needsFeedback = /\bpreviousFrame\b/.test(data.shaderCode);
+    sections.push({
+      id: 'feedback',
+      title: 'FEEDBACK',
+      content: (
+        <div className="px-4 py-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className={`text-[11px] font-medium px-2 py-0.5 rounded ${needsFeedback ? 'text-[#30b94e] bg-[#e8f8eb]' : 'text-[#aeaeb2] bg-[#f5f5f7]'}`}>
+              {needsFeedback ? '● Active' : '○ Inactive'}
+            </div>
+            <span className="text-[10px] text-[#86868b]">
+              {needsFeedback ? 'reads previousFrame' : 'no previousFrame reference'}
+            </span>
+          </div>
+          {needsFeedback && (
+            <div>
+              <label className="block text-[10px] text-[#86868b] font-medium mb-1">Clear Color (RGBA)</label>
+              <div className="flex items-center gap-2">
+                {(['R', 'G', 'B', 'A'] as const).map((ch, i) => (
+                  <div key={ch} className="flex-1">
+                    <label className="block text-[9px] text-[#aeaeb2] text-center">{ch}</label>
+                    <input
+                      type="number" step="0.01" min="0" max="1"
+                      value={data.feedbackClearColor?.[i] ?? 0}
+                      onChange={(e) => {
+                        const arr: [number, number, number, number] = [...(data.feedbackClearColor ?? [0, 0, 0, 0])] as [number, number, number, number];
+                        arr[i] = parseFloat(e.target.value) || 0;
+                        updateNodeData(selectedNodeId!, { feedbackClearColor: arr });
+                      }}
+                      className="w-full text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center tabular-nums"
+                    />
+                  </div>
+                ))}
+                <div
+                  className="w-8 h-8 rounded border border-[#d2d2d7] flex-shrink-0"
+                  style={{
+                    backgroundColor: data.feedbackClearColor
+                      ? `rgba(${data.feedbackClearColor.map((v, i) => i < 3 ? Math.round(v * 255) : v).join(',')})`
+                      : 'rgba(0,0,0,0)',
+                  }}
+                />
+              </div>
+              <div className="text-[9px] text-[#aeaeb2] mt-1">
+                Initial buffer state on Play. Gray-Scott: (R=1, G=0, B=0, A=0)
+              </div>
+            </div>
+          )}
+        </div>
+      ),
+    });
+  }
+
   // --- RENDERER CONFIG ---
   if (data.type === 'renderer') {
     sections.push({
