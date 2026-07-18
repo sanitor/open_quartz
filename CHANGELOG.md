@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.0b] -- 2026-07-18
+
+### Features
+
+- **Feedback/Accumulator engine** — ping-pong double-buffering with `previousFrame` uniform for shaders that accumulate state across frames. Auto-detected: if shader code references `previousFrame`, the engine creates two `rgba32f` ping-pong targets, binds the previous frame's texture on read, renders to the write target, and swaps per frame. No manual toggle needed.
+- **Gray-Scott Reaction-Diffusion screensaver** — predefined FEEDBACK shader implementing the classic PDE system (`dA=0.16, dB=0.08, feedRate=0.040, killRate=0.060, timestep=0.2`) with 5-point Laplacian stencil, `uniform float iFrame` for periodic re-seeding, and configurable Clear Color RGBA in the side panel.
+- **Field Color Map shader** — companion FEEDBACK shader that reads the G channel (chemical B concentration) from Gray-Scott output and maps it through a turbo colormap. Must remain split from the PDE node to avoid corrupting simulation state.
+- **FEEDBACK shader category** — new shader category in the toolbar with Active/Inactive badge and Clear Color palette in the side panel.
+- **Feedback badge on node cards** — "FB" indicator on shader nodes that use `previousFrame`.
+- **Uniform default value extraction** — shader compiler now parses `uniform float name = value;` syntax, extracts the default value, and injects it into `selfUniforms` when the port is unconnected. All three stripping regexes handle the `= value` syntax.
+
+### Fixes
+
+- **WebGL renderer mock** — added `LinearSRGBColorSpace` export to three.js mock, fixing test failure.
+- **ONNX introspection test** — fixed expected task for 4D output tensors.
+- **Gray-Scott parameter scaling** — Laplacian kernel switched from 9-point (wrong anisotropy) to 5-point stencil; diffusion coefficients scaled for UV-space (no `1/h²` factor): `dA=0.16, dB=0.08`.
+- **`uniform int` → `uniform float`** — `iFrame` changed to `float` type to avoid Three.js int uniform mismatch; comparison uses `iFrame < 0.5`.
+- **Shader compile error line mapping** — preamble line offset corrected for shaders with `= default` syntax.
+
 ## [0.11.0b] -- 2026-07-17
 
 ### Features
