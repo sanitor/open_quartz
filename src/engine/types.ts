@@ -1,5 +1,4 @@
 import type { Port } from '../types';
-import * as THREE from 'three';
 
 export interface ParsedShader {
   inputs: Port[];
