@@ -20,6 +20,10 @@ const { mockReadPixels, mockRendererContext, LINEAR_FILTER, NEAREST_FILTER, LINE
 
 vi.mock('three', () => {
   const mockDomElement = typeof document !== 'undefined' ? document.createElement('canvas') : {};
+  class Color {
+    r: number; g: number; b: number;
+    constructor(r: number, g: number, b: number) { this.r = r; this.g = g; this.b = b; }
+  }
   class WebGLRenderer {
     domElement = mockDomElement;
     setPixelRatio = vi.fn();
@@ -29,6 +33,7 @@ vi.mock('three', () => {
     clear = vi.fn();
     dispose = vi.fn();
     setViewport = vi.fn();
+    setClearColor = vi.fn();
     readRenderTargetPixels = mockReadPixels;
     getContext = vi.fn(() => mockRendererContext);
   }
@@ -81,6 +86,7 @@ vi.mock('three', () => {
   }
 
   return {
+    Color,
     WebGLRenderer,
     Scene,
     OrthographicCamera,
@@ -643,6 +649,18 @@ describe('WebGLRenderer', () => {
       const target = renderer.createTarget('after-resize', 800, 600);
       expect(target.width).toBe(800);
       expect(target.height).toBe(600);
+    });
+  });
+
+  describe('clearTarget', () => {
+    it('clears target without throwing', () => {
+      const target = renderer.createTarget('ct1', 64, 64);
+      expect(() => renderer.clearTarget(target)).not.toThrow();
+    });
+
+    it('clears target with explicit color', () => {
+      const target = renderer.createTarget('ct2', 64, 64);
+      expect(() => renderer.clearTarget(target, [1, 0, 0, 1])).not.toThrow();
     });
   });
 });

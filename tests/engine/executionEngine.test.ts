@@ -24,6 +24,7 @@ const { mockRendererInstance } = vi.hoisted(() => {
     getImageTexture: vi.fn(() => undefined),
     dispose: vi.fn(),
     clearResources: vi.fn(),
+    clearTarget: vi.fn(),
     canvas: document.createElement('canvas'),
   };
   return { mockRendererInstance: inst };
@@ -70,6 +71,7 @@ vi.mock('../../src/engine/shaderCompiler', () => ({
     material: { fragmentShader: 'compiled', uniforms: {} },
     upstreamSamplers: new Map(),
     preambleLines: 5,
+    needsFeedback: false,
   })),
   validateFragmentShader: vi.fn(() => null),
 }));
@@ -648,6 +650,49 @@ describe('ExecutionEngine.prepare()', () => {
     expect(plan!.materials.has('s1')).toBe(false);
     expect(onNodeError).toHaveBeenCalledWith('s1', expect.stringContaining('ERROR:'));
   });
+
+  it('creates feedback ping-pong targets when compileNodeShader returns needsFeedback=true', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb1', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+      inputs: [],
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb1']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+
+    const plan = engine.prepare([node], [])!;
+
+    expect(plan.feedbackTargets.has('fb1')).toBe(true);
+    const targets = plan.feedbackTargets.get('fb1')!;
+    expect(targets).toHaveLength(2);
+    expect(targets[0]).toBeDefined();
+    expect(targets[1]).toBeDefined();
+    expect(targets[0]).not.toBe(targets[1]); // distinct targets
+    expect(plan.feedbackReadIndex.get('fb1')).toBe(0);
+    expect(plan.feedbackFirstFrame.has('fb1')).toBe(true);
+    // Feedback node's primary target should be the first ping-pong target
+    expect(plan.targets.get('fb1')).toBe(targets[0]);
+    // Targets should be rgba32f (float textures)
+    expect(mockRendererInstance.createTarget).toHaveBeenCalledWith('fb1_fb0', expect.any(Number), expect.any(Number), true, 'rgba32f');
+    expect(mockRendererInstance.createTarget).toHaveBeenCalledWith('fb1_fb1', expect.any(Number), expect.any(Number), true, 'rgba32f');
+  });
+
+  it('non-feedback nodes do not populate feedback plan fields', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('s1', { type: 'shader', shaderCode: 'void main(){}' });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['s1']);
+
+    const plan = engine.prepare([node], [])!;
+
+    expect(plan.feedbackTargets.has('s1')).toBe(false);
+    expect(plan.feedbackFirstFrame.size).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -779,6 +824,7 @@ describe('ExecutionEngine.runFrame()', () => {
       edges: [],
       materials: new Map(),
       upstreamSamplerBindings: new Map(),
+      scalarUpstream: new Map(),
       scalarBindings: new Map(),
       selfUniforms: new Map(),
       targets: new Map(),
@@ -789,6 +835,10 @@ describe('ExecutionEngine.runFrame()', () => {
       preambleLines: new Map(),
       defaultW: 512,
       defaultH: 512,
+      mathValues: new Map(),
+      feedbackTargets: new Map(),
+      feedbackReadIndex: new Map(),
+      feedbackFirstFrame: new Set(),
     };
 
     // Should not throw
@@ -826,6 +876,152 @@ describe('ExecutionEngine.runFrame()', () => {
 
     // The material should have the upstream texture bound
     expect(material.uniforms['tex']).toEqual({ value: fakeTex });
+  });
+
+  // --- Feedback runFrame tests ---
+
+  it('feedback: binds previousFrame uniform and swaps read index after render', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb1', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+      inputs: [],
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb1']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    vi.clearAllMocks();
+
+    const material = plan.materials.get('fb1')!;
+    // prepare created feedbackTargets with 2 targets; read index starts at 0
+    const fbTargets = plan.feedbackTargets.get('fb1')!;
+
+    engine.runFrame(plan, makeFrameInputs());
+
+    // previousFrame should be bound to fbTargets[0] (read target)
+    expect(material.uniforms['previousFrame']).toBeDefined();
+    expect(material.uniforms['previousFrame'].value).toBe(fbTargets[0].texture);
+    // Render was called with fbTargets[1] (write target)
+    expect(mockRendererInstance.renderWithMaterial).toHaveBeenCalledWith(material, fbTargets[1]);
+    // Read index should be swapped to 1
+    expect(plan.feedbackReadIndex.get('fb1')).toBe(1);
+    // textureSources set to the write target
+    expect(plan.textureSources.get('fb1')).toEqual({ kind: 'fbo', target: fbTargets[1] });
+  });
+
+  it('feedback: second frame reads from swapped target and writes to the other', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb2', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb2']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    vi.clearAllMocks();
+
+    const fbTargets = plan.feedbackTargets.get('fb2')!;
+    // First frame: clear + swap (this test starts from state after first frame)
+    plan.feedbackFirstFrame.delete('fb2');
+    plan.feedbackReadIndex.set('fb2', 1); // after first frame, read index = 1
+
+    const material = plan.materials.get('fb2')!;
+    engine.runFrame(plan, makeFrameInputs());
+
+    // previousFrame should now read from fbTargets[1]
+    expect(material.uniforms['previousFrame'].value).toBe(fbTargets[1].texture);
+    // Should render to fbTargets[0] (write = 1 - read)
+    expect(mockRendererInstance.renderWithMaterial).toHaveBeenCalledWith(material, fbTargets[0]);
+    // Read index flips back to 0
+    expect(plan.feedbackReadIndex.get('fb2')).toBe(0);
+  });
+
+  it('feedback: first frame clears both ping-pong targets', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb3', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+      feedbackClearColor: [0, 0, 0, 1],
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb3']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    vi.clearAllMocks();
+
+    const fbTargets = plan.feedbackTargets.get('fb3')!;
+
+    engine.runFrame(plan, makeFrameInputs());
+
+    // clearTarget called for both targets
+    expect(mockRendererInstance.clearTarget).toHaveBeenCalledWith(fbTargets[0], [0, 0, 0, 1]);
+    expect(mockRendererInstance.clearTarget).toHaveBeenCalledWith(fbTargets[1], [0, 0, 0, 1]);
+    // feedbackFirstFrame should be cleared after first run
+    expect(plan.feedbackFirstFrame.has('fb3')).toBe(false);
+  });
+
+  it('feedback: first frame clears with default clear color (no color specified)', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb4', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb4']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    vi.clearAllMocks();
+
+    const fbTargets = plan.feedbackTargets.get('fb4')!;
+
+    engine.runFrame(plan, makeFrameInputs());
+
+    // When no clear color specified, color is undefined
+    expect(mockRendererInstance.clearTarget).toHaveBeenCalledWith(fbTargets[0], undefined);
+    expect(mockRendererInstance.clearTarget).toHaveBeenCalledWith(fbTargets[1], undefined);
+  });
+
+  it('feedback: does not clear on subsequent frames', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb5', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb5']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    vi.clearAllMocks();
+
+    // Simulate first frame happened already
+    plan.feedbackFirstFrame.delete('fb5');
+
+    engine.runFrame(plan, makeFrameInputs());
+
+    // clearTarget should NOT be called on subsequent frames
+    expect(mockRendererInstance.clearTarget).not.toHaveBeenCalled();
   });
 });
 
@@ -912,6 +1108,7 @@ describe('ExecutionEngine.readOutputs()', () => {
       edges: [],
       materials: new Map(),
       upstreamSamplerBindings: new Map(),
+      scalarUpstream: new Map(),
       scalarBindings: new Map(),
       selfUniforms: new Map(),
       targets: new Map(),
@@ -922,12 +1119,41 @@ describe('ExecutionEngine.readOutputs()', () => {
       preambleLines: new Map(),
       defaultW: 512,
       defaultH: 512,
+      mathValues: new Map(),
+      feedbackTargets: new Map(),
+      feedbackReadIndex: new Map(),
+      feedbackFirstFrame: new Set(),
     };
     const onOutput = vi.fn();
 
     engine.readOutputs(plan, onOutput);
 
     expect(onOutput).not.toHaveBeenCalled();
+  });
+
+  it('reads output for feedback nodes from textureSources (latest write target)', () => {
+    const engine = new ExecutionEngine(document.createElement('canvas'));
+    const node = makeNode('fb_fb', {
+      type: 'shader',
+      shaderCode: 'void main() { vec4 c = texture(previousFrame, v_uv); }',
+    });
+    vi.mocked(topologicalSort).mockReturnValueOnce(['fb_fb']);
+    vi.mocked(compileNodeShader).mockReturnValueOnce({
+      material: { fragmentShader: 'fb', uniforms: {} } as never,
+      upstreamSamplers: new Map(),
+      preambleLines: 5,
+      needsFeedback: true,
+    });
+    const plan = engine.prepare([node], [])!;
+    // Simulate that runFrame was called, writing to the feedback write target
+    const writeTarget = { texture: { type: 1 }, width: 512, height: 512, dispose: vi.fn() };
+    plan.textureSources.set('fb_fb', { kind: 'fbo', target: writeTarget as never });
+    const onOutput = vi.fn();
+
+    engine.readOutputs(plan, onOutput);
+
+    expect(onOutput).toHaveBeenCalledWith('fb_fb', 'data:image/png;base64,mock');
+    expect(mockRendererInstance.readTargetToDataURL).toHaveBeenCalledWith(writeTarget, 512);
   });
 });
 
@@ -1106,6 +1332,7 @@ describe('ExecutionEngine.captureRendererScreenshot()', () => {
       edges: [],
       materials: new Map(),
       upstreamSamplerBindings: new Map([['r1', new Map([['input', 'a']])]]),
+      scalarUpstream: new Map(),
       scalarBindings: new Map(),
       selfUniforms: new Map(),
       targets: new Map(),
@@ -1116,6 +1343,10 @@ describe('ExecutionEngine.captureRendererScreenshot()', () => {
       preambleLines: new Map(),
       defaultW: 512,
       defaultH: 512,
+      mathValues: new Map(),
+      feedbackTargets: new Map(),
+      feedbackReadIndex: new Map(),
+      feedbackFirstFrame: new Set(),
     };
 
     const result = engine.captureRendererScreenshot(plan, 'r1');

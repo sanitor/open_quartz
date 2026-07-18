@@ -153,6 +153,72 @@ describe('compileNodeShader', () => {
     expect(result.material.vertexShader).toContain('v_uv');
     expect(result.material.vertexShader).toContain('gl_Position');
   });
+
+  // --- Feedback / previousFrame ---
+
+  it('returns needsFeedback=true when code references previousFrame', () => {
+    const code = 'void main() { vec4 c = texture(previousFrame, v_uv); }';
+    const result = compileNodeShader(code, [], new Map());
+    expect(result.needsFeedback).toBe(true);
+  });
+
+  it('returns needsFeedback=false when code does not reference previousFrame', () => {
+    const result = compileNodeShader('void main() { fragColor = vec4(1.0); }', [], new Map());
+    expect(result.needsFeedback).toBe(false);
+  });
+
+  it('auto-injects uniform sampler2D previousFrame when needsFeedback', () => {
+    const code = 'void main() { vec4 c = texture(previousFrame, v_uv); }';
+    const result = compileNodeShader(code, [], new Map());
+    expect(result.material.fragmentShader).toContain('uniform sampler2D previousFrame;');
+  });
+
+  it('strips user-declared uniform sampler2D previousFrame and re-injects it', () => {
+    const code =
+      'uniform sampler2D previousFrame;\nvoid main() { vec4 c = texture(previousFrame, v_uv); }';
+    const result = compileNodeShader(code, [], new Map());
+    const matches = result.material.fragmentShader.match(/uniform sampler2D previousFrame;/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it('injects previousFrame alongside connected upstream sampler uniforms', () => {
+    const code =
+      'uniform sampler2D inputImage;\nuniform sampler2D previousFrame;\n' +
+      'void main() { vec4 a = texture(inputImage, v_uv); vec4 b = texture(previousFrame, v_uv); }';
+    const inputs = [{ label: 'inputImage', dataType: 'sampler2D' }];
+    const upstreamMap = new Map([['inputImage', 'node_a']]);
+    const result = compileNodeShader(code, inputs, upstreamMap);
+    expect(result.needsFeedback).toBe(true);
+    expect(result.material.fragmentShader).toContain('uniform sampler2D inputImage;');
+    expect(result.material.fragmentShader).toContain('uniform sampler2D previousFrame;');
+  });
+
+  // --- Stripping uniforms with `= default` value ---
+
+  it('strips connected upstream uniform with = default syntax', () => {
+    const code =
+      'uniform float brightness = 0.5;\nvoid main() { fragColor = vec4(brightness); }';
+    const inputs = [{ label: 'brightness', dataType: 'float' }];
+    const upstreamMap = new Map([['brightness', 'n1']]);
+    const result = compileNodeShader(code, inputs, upstreamMap);
+    // Should only appear once (the injected one)
+    expect(result.material.fragmentShader).toContain('uniform float brightness;');
+    const matches = result.material.fragmentShader.match(/uniform float brightness/g);
+    expect(matches).toHaveLength(1);
+    // The `= 0.5` should be stripped
+    expect(result.material.fragmentShader).not.toMatch(/uniform float brightness\s*=\s*0\.5/);
+  });
+
+  it('strips unconnected scalar uniform with = default syntax', () => {
+    const code =
+      'uniform float intensity = 2.0;\nvoid main() { fragColor = vec4(intensity); }';
+    const inputs = [{ label: 'intensity', dataType: 'float' }];
+    const result = compileNodeShader(code, inputs, new Map());
+    expect(result.material.fragmentShader).toContain('uniform float intensity;');
+    const matches = result.material.fragmentShader.match(/uniform float intensity/g);
+    expect(matches).toHaveLength(1);
+    expect(result.material.fragmentShader).not.toMatch(/uniform float intensity\s*=\s*2\.0/);
+  });
 });
 
 describe('validateFragmentShader', () => {

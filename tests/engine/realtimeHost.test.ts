@@ -67,6 +67,18 @@ describe('isStaticPipeline', () => {
         isStaticPipeline([node({ type: 'shader', shaderCode: 'float x = iTimekeeper;' })]),
       ).toBe(true);
     });
+
+    it('returns false for shader node referencing previousFrame (feedback)', () => {
+      expect(
+        isStaticPipeline([node({ type: 'shader', shaderCode: 'texture(previousFrame, v_uv)' })]),
+      ).toBe(false);
+    });
+
+    it('returns false for constant node referencing previousFrame', () => {
+      expect(
+        isStaticPipeline([node({ type: 'constant', shaderCode: 'texture(previousFrame, v_uv)' })]),
+      ).toBe(false);
+    });
   });
 
   describe('input nodes — video', () => {

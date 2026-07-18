@@ -81,14 +81,15 @@ describe('inferTaskFromMeta', () => {
       expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
-    it('detection heuristic takes precedence over SR when lastDim >= 5', () => {
-      // Real image models (W=128) hit detection first — documenting this
-      // precedence as the actual behavior.
+    it('4D image output with larger spatial dims is super-resolution, not detection', () => {
+      // 4D output [N,C,H,W] is an image tensor — super-resolution fires first
+      // even when lastDim >= 5, because the outShape.length <= 3 guard
+      // prevents detection from matching 4D image tensors.
       const meta = makeMeta({
         inputs: [{ name: 'lr', shape: [1, 3, 64, 64], dtype: 'float32' }],
         outputs: [{ name: 'hr', shape: [1, 3, 128, 128], dtype: 'float32' }],
       });
-      expect(inferTaskFromMeta(meta)).toBe('detection');
+      expect(inferTaskFromMeta(meta)).toBe('super-resolution');
     });
 
     it('falls back to image-to-image when output is same size as input (1-in 1-out)', () => {
