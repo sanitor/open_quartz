@@ -162,8 +162,20 @@ export class RealtimeHost {
   }
 
   updateGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): void {
+    const prevNodes = this.nodes;
+    const prevEdges = this.edges;
     this.nodes = nodes;
     this.edges = edges;
+
+    // Only recompile when topology or node data actually changed.
+    // Position-only moves (dragging) must not rebuild the plan — that
+    // would reset feedback ping-pong buffers and clear the simulation.
+    const graphChanged = edges !== prevEdges
+      || nodes.length !== prevNodes.length
+      || nodes.some((n, i) => n.id !== prevNodes[i].id || n.data !== prevNodes[i].data);
+
+    if (!graphChanged) return;
+
     this.needsRecompile = true;
     void this.reconcileVideoSources(nodes);
 
