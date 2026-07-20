@@ -5,6 +5,9 @@ import type { ParsedShader } from './types';
 const UNIFORM_RE = /uniform\s+(float|int|uint|bool|[biu]?vec[234]|mat[234]|sampler2D|samplerCube)\s+(\w+)(?:\s*=\s*([^;]+))?\s*;/g;
 const OUTPUT_RE = /out\s+(float|int|uint|bool|[biu]?vec[234]|mat[234])\s+(\w+)\s*;/g;
 
+/** Uniforms injected by the engine — never shown as user-connectable ports. */
+const BUILTIN_UNIFORMS = new Set(['iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution', 'previousFrame']);
+
 let portCounter = 0;
 function nextPortId(): string {
   return `port_${++portCounter}_${Date.now()}`;
@@ -32,6 +35,7 @@ export function parseShader(
   while ((m = UNIFORM_RE.exec(code)) !== null) {
     const dataType = mapType(m[1]);
     const label = m[2];
+    if (BUILTIN_UNIFORMS.has(label)) continue;
     const defaultValue = m[3]?.trim();
     const existing = existingInputMap.get(label);
     inputs.push({

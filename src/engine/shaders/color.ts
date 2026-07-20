@@ -95,4 +95,32 @@ void main() {
   fragColor = vec4(min(r, 1.0), min(g, 1.0), min(b, 1.0), col.a);
 }`,
   },
+  {
+    label: 'Field Color Map',
+    code: `uniform sampler2D inputImage;
+
+out vec4 fragColor;
+
+vec3 turbo(float t) {
+    vec3 a = vec3(0.114, 0.056, 0.566);
+    vec3 b = vec3(0.376, 0.763, 0.843);
+    vec3 c = vec3(0.267, 0.472, 0.090);
+    vec3 d = vec3(0.905, 0.811, 0.011);
+    vec3 e = vec3(0.740, 0.080, 0.055);
+
+    vec3 r;
+    if (t < 0.25) r = mix(a, b, t / 0.25);
+    else if (t < 0.5) r = mix(b, c, (t - 0.25) / 0.25);
+    else if (t < 0.75) r = mix(c, d, (t - 0.5) / 0.25);
+    else r = mix(d, e, (t - 0.75) / 0.25);
+    return r;
+}
+
+void main() {
+    vec4 raw = texture(inputImage, v_uv);
+    float v = raw.g;  // Read chemical B from G channel
+    vec3 color = turbo(clamp(v, 0.0, 1.0));
+    fragColor = vec4(color, 1.0);
+}`,
+  },
 ];

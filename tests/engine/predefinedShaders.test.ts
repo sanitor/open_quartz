@@ -5,6 +5,7 @@ import {
   CUSTOM_2IN1_SHADER,
 } from '../../src/engine/predefinedShaders';
 import { generatorShaders } from '../../src/engine/shaders/generator';
+import { feedbackShaders } from '../../src/engine/shaders/feedback';
 import { parseShader } from '../../src/engine/shaderParser';
 
 describe('predefinedShaders', () => {
@@ -40,8 +41,9 @@ describe('predefinedShaders', () => {
 
   it('each non-generator shader has at least one sampler2D input', () => {
     const generatorLabels = new Set(generatorShaders.map((s) => s.label));
+    const feedbackLabels = new Set(feedbackShaders.map((s) => s.label));
     for (const shader of predefinedShaders) {
-      if (generatorLabels.has(shader.label)) continue;
+      if (generatorLabels.has(shader.label) || feedbackLabels.has(shader.label)) continue;
       const result = parseShader(shader.code);
       const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
       expect(hasSampler).toBe(true);
