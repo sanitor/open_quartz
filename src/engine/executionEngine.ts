@@ -82,6 +82,7 @@ export class ExecutionEngine {
     onOutputData?: (nodeId: string, data: unknown) => void,
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
+    prevPlan?: ExecutionPlan | null,
   ): ExecutionPlan | null {
     if (!this.renderer) return null;
     this.onnxCallbacks = { onOutput, onNodeError, onOutputSize, onOutputData, onOnnxComplete };
@@ -224,17 +225,28 @@ export class ExecutionEngine {
         if (err) throw new Error(err);
 
         if (compiled.needsFeedback) {
-          // Feedback nodes need float textures for PDE precision
-          const targetA = this.renderer.createTarget(`${nodeId}_fb0`, outW, outH, true, 'rgba32f');
-          const targetB = this.renderer.createTarget(`${nodeId}_fb1`, outW, outH, true, 'rgba32f');
-          if (node.data.texFilter || node.data.texWrap) {
-            this.renderer.applyTextureSampling(targetA.texture, node.data.texFilter, node.data.texWrap);
-            this.renderer.applyTextureSampling(targetB.texture, node.data.texFilter, node.data.texWrap);
+          // Reuse existing feedback targets when shader + size haven't changed
+          const prevFb = prevPlan?.feedbackTargets.get(nodeId);
+          const canReuse = prevFb
+            && prevFb[0].width === outW && prevFb[0].height === outH;
+
+          if (canReuse) {
+            feedbackTargets.set(nodeId, prevFb);
+            feedbackReadIndex.set(nodeId, prevPlan!.feedbackReadIndex.get(nodeId) ?? 0);
+            // Do NOT add to feedbackFirstFrame — preserve accumulated state
+            targets.set(nodeId, prevFb[feedbackReadIndex.get(nodeId)!]);
+          } else {
+            const targetA = this.renderer.createTarget(`${nodeId}_fb0`, outW, outH, true, 'rgba32f');
+            const targetB = this.renderer.createTarget(`${nodeId}_fb1`, outW, outH, true, 'rgba32f');
+            if (node.data.texFilter || node.data.texWrap) {
+              this.renderer.applyTextureSampling(targetA.texture, node.data.texFilter, node.data.texWrap);
+              this.renderer.applyTextureSampling(targetB.texture, node.data.texFilter, node.data.texWrap);
+            }
+            feedbackTargets.set(nodeId, [targetA, targetB]);
+            feedbackReadIndex.set(nodeId, 0);
+            feedbackFirstFrame.add(nodeId);
+            targets.set(nodeId, targetA);
           }
-          feedbackTargets.set(nodeId, [targetA, targetB]);
-          feedbackReadIndex.set(nodeId, 0);
-          feedbackFirstFrame.add(nodeId);
-          targets.set(nodeId, targetA); // primary target for downstream compatibility
         } else {
           const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
           if (node.data.texFilter || node.data.texWrap) {
