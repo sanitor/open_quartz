@@ -9,6 +9,7 @@ import {
   useOnViewportChange,
   useConnection,
   getBezierPath,
+  addEdge,
   type Node,
   type NodeTypes,
   type EdgeTypes,
@@ -104,7 +105,7 @@ function MiniMapController() {
 }
 
 function isConnectionValid(connection: Connection | Edge): boolean {
-  const { nodes } = useGraphStore.getState();
+  const { nodes, edges } = useGraphStore.getState();
   const sourceNode = nodes.find((n) => n.id === connection.source);
   const targetNode = nodes.find((n) => n.id === connection.target);
   if (!sourceNode || !targetNode) return false;
@@ -113,6 +114,11 @@ function isConnectionValid(connection: Connection | Edge): boolean {
   const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
   if (!sourcePort || !targetPort) return false;
 
+  // Each input port accepts only one connection (exclude the edge being reconnected)
+  const alreadyConnected = edges.some(
+    (e) => e.targetHandle === connection.targetHandle && e.target === connection.target,
+  );
+  if (alreadyConnected) return false;
   const sourceIsAuto = sourcePort.dataType === 'auto';
   const targetIsAuto = targetPort.dataType === 'auto';
 
@@ -175,6 +181,11 @@ export function NodeGraph() {
     removeSelectedElements,
   } = useGraphStore();
 
+  // When the user presses on a connected target (input) handle, detach the
+  // edge and re-dispatch the pointer event on the source (output) handle so
+  // the drag visually originates from the output side.
+  const detachedEdgeRef = useRef<Edge | null>(null);
+
   const clipboardRef = useRef<{ nodes: ClipboardNode[]; edges: { source: string; target: string; sourceHandle: string | null; targetHandle: string | null }[] } | null>(null);
 
   const isInputFocused = () => {
@@ -188,6 +199,51 @@ export function NodeGraph() {
   };
 
   useEffect(() => {
+    // Capture-phase mousedown listener intercepts clicks on target handles
+    // BEFORE ReactFlow sees them, enabling input-port reconnection.
+    const wrapper = document.querySelector('[data-testid="rf__wrapper"]');
+    if (!wrapper) return;
+
+    const onMouseDownCapture = (ev: Event) => {
+      const e = ev as MouseEvent;
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      if (!target.classList.contains('target') || !target.classList.contains('react-flow__handle')) return;
+
+      const nodeId = target.dataset.nodeid;
+      const handleId = target.dataset.handleid;
+      if (!nodeId || !handleId) return;
+
+      const { edges: currentEdges } = useGraphStore.getState();
+      const existing = currentEdges.find(
+        (edge) => edge.target === nodeId && edge.targetHandle === handleId,
+      );
+      if (!existing) return;
+
+      // Don't remove the edge yet — just record it. The actual removal
+      // happens in onConnectStart so the connection line appears in the
+      // same frame the old edge disappears (no flash).
+      detachedEdgeRef.current = existing;
+
+      // Stop this mousedown from reaching the target handle
+      e.stopPropagation();
+
+      // Re-dispatch on the source handle so ReactFlow starts a drag from there
+      const sourceSelector = `.react-flow__handle.source[data-nodeid="${existing.source}"][data-handleid="${existing.sourceHandle}"]`;
+      const sourceHandle = document.querySelector(sourceSelector);
+      if (sourceHandle) {
+        const rect = sourceHandle.getBoundingClientRect();
+        sourceHandle.dispatchEvent(new MouseEvent('mousedown', {
+          bubbles: true, cancelable: true,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+          button: 0, buttons: 1,
+        }));
+      }
+    };
+
+    wrapper.addEventListener('mousedown', onMouseDownCapture, true);
+
     const handler = (e: KeyboardEvent) => {
       if (isInputFocused()) return;
 
@@ -260,7 +316,10 @@ export function NodeGraph() {
       }
     };
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      wrapper.removeEventListener('mousedown', onMouseDownCapture, true);
+      document.removeEventListener('keydown', handler);
+    };
   }, [removeSelectedElements]);
 
   const defaultEdgeOptions = useMemo(() => ({
@@ -274,9 +333,48 @@ export function NodeGraph() {
     [setSelectedNode],
   );
 
+  const onEdgeClick = useCallback(() => {
+    setSelectedNode(null);
+  }, [setSelectedNode]);
+
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
   }, [setSelectedNode]);
+
+  const onConnectStart = useCallback(
+    () => {
+      // If a detached edge is pending, remove it now — the connection line
+      // is already visible so there's no flash.
+      const detached = detachedEdgeRef.current;
+      if (!detached) return;
+      const { edges: currentEdges } = useGraphStore.getState();
+      const still = currentEdges.some((e) => e.id === detached.id);
+      if (still) {
+        useGraphStore.setState((state) => {
+          state.edges = state.edges.filter((e) => e.id !== detached.id);
+        });
+      }
+    },
+    [],
+  );
+
+  const onConnectEnd = useCallback(
+    () => {
+      const detached = detachedEdgeRef.current;
+      if (!detached) return;
+      detachedEdgeRef.current = null;
+      const currentEdges = useGraphStore.getState().edges;
+      const wasReconnected = currentEdges.some(
+        (e) => e.source === detached.source && e.sourceHandle === detached.sourceHandle,
+      );
+      if (!wasReconnected) {
+        useGraphStore.setState((state) => {
+          state.edges = addEdge(detached, state.edges);
+        });
+      }
+    },
+    [],
+  );
 
   return (
     <ReactFlow
@@ -286,11 +384,14 @@ export function NodeGraph() {
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
       isValidConnection={isConnectionValid}
+      onConnectStart={onConnectStart}
+      onConnectEnd={onConnectEnd}
       connectionLineComponent={ConnectionLine}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       defaultEdgeOptions={defaultEdgeOptions}
       onNodeClick={onNodeClick}
+      onEdgeClick={onEdgeClick}
       onPaneClick={onPaneClick}
       selectionMode={SelectionMode.Partial}
       fitView
