@@ -80,8 +80,9 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 - **rAF-driven rendering loop** with PLAY / PAUSE / STOP transport controls
 - **Host/Compositor architecture** inspired by Quartz Composer's QCRenderer
 - **Shadertoy-compatible builtin uniforms**: `iTime`, `iTimeDelta`, `iFrame`, `iDate`, `iMouse`, `iResolution`
-- **Static pipeline optimization** — graphs without time-varying inputs render one frame then stop
+- **Static pipeline optimization** — graphs without time-varying inputs render one frame then stop; async texture loads awaited before first render
 - **GPU-only output path** — no `readPixels` in the realtime loop; preview via mirror canvas blit
+- **Feedback / Accumulator** — per-node ping-pong render targets with `previousFrame` uniform for temporal effects (reaction-diffusion, trails, fluid sim)
 
 ### Node Graph Editor
 - Drag, connect, and arrange nodes on an infinite canvas (React Flow)
@@ -90,8 +91,10 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 
 ### Node Inspector (Side Panel)
 - CodeMirror 6 shader editor with GLSL syntax highlighting, error linting, and autocompletion
+- Read-only shader viewer for prebuilt catalog shaders (code visible for learning, not editable)
 - Port inspector with color-coded type indicators and inline uniform editing
 - Per-component vector editing (x/y/z/w) for vec2-4 uniforms
+- Per-node live preview readback (selected node only, zero overhead when unselected)
 - Output preview, Auto Size, sampling config (filter/wrap)
 
 ### Preview Lightbox
@@ -123,7 +126,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 990 unit tests (fast, CI gate)
+npm test               # 1045 unit tests (fast, CI gate)
 npm run test:models    # 15 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 6 WebGL2 bit-true tests (system browser, real GPU)
 ```
@@ -147,27 +150,7 @@ React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Three.js · Zustand 5 · 
 
 ## Roadmap
 
-### Feedback / Accumulator (next milestone)
-
-The engine currently treats every node as a pure function — inputs in, output out, no state across frames. This blocks an entire class of temporal effects that Quartz Composer's **Accumulator** patch enabled.
-
-**Goal:** Add a per-node **feedback buffer** (ping-pong render targets) so a shader can read its own previous frame output via an implicit `previousFrame` uniform.
-
-Unlocked effects:
-- Motion blur / trails (blend current frame onto decaying previous)
-- Reaction-diffusion (Gray-Scott, Belousov-Zhabotinsky)
-- Flow fields / particle advection
-- Fluid simulation (Navier-Stokes, Euler)
-- Temporal anti-aliasing (TAA)
-- Recursive feedback art / video feedback loops
-
-Engine changes required:
-1. **Ping-pong targets** — each feedback-enabled node gets two render targets; swap read/write each frame
-2. **`previousFrame` uniform** — auto-injected sampler2D bound to the node's last-frame output
-3. **Clear / reset** — initial state on first frame or on Stop→Play transition
-4. **UI** — toggle on the node to enable feedback; side panel shows buffer state
-
-### Other planned Quartz Composer parity patches
+### Planned Quartz Composer parity patches
 
 | QC Patch | Description | Complexity |
 |----------|-------------|------------|

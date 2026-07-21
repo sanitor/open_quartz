@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.0b] -- 2026-07-21
+
+### Features
+
+- **NodeShell base component** — all 5 node types (Shader, Math, ONNX, Input, Renderer) now share a single `NodeShell` wrapper for header, caption, status LED, and border styling. Header layout: SVG icon (matching toolbar) + type name (UPPERCASE) + instance label (lowercase) + status LED (green/gray/red).
+- **Prebuilt shader code sharing** — predefined catalog shaders (Resample, Blur, etc.) store a `shaderTemplateId` reference instead of per-instance code. All instances share the same source; project JSON omits shader code for prebuilt nodes. Side panel shows read-only shader editor with gray background for prebuilt shaders.
+- **Instance labels** — each node gets a unique auto-generated instance name (`resample_1`, `add_2`) separate from the type/template name. Users can rename instances in the side panel. Multiple instances of the same shader type are now distinguishable.
+- **Per-node preview readback** — side panel preview reads back only the selected node's FBO each frame via `readNodeOutput()`. No readback when no node is selected (zero GPU overhead). Works for both static and dynamic pipelines.
+- **Project file format v0.4.0** — new fields: `shaderTemplateId`, `templateName`. Prebuilt shader code stripped on save, restored from catalog on load.
+
+### Fixes
+
+- **Static pipeline async texture race** — image input textures load asynchronously (`loadImageTexture` returns Promise), but static pipelines rendered immediately before the texture was ready, producing black output. Now awaits all pending texture loads before the first render frame.
+- **Gray-Scott reaction-diffusion tuning** — corrected Laplacian kernel and diffusion coefficient scaling.
+- **Feedback buffer reset on drag** — dragging nodes during playback no longer resets ping-pong feedback buffers; plan rebuilds only trigger on topology/data changes, not position changes.
+- **Builtin uniforms in ports** — `iTime`, `iMouse`, etc. no longer appear as editable input ports on node cards.
+- **Field Color Map category** — moved from FEEDBACK to COLOR category where it belongs.
+- **Node graph interaction** — fixed edge detach, reconnect, and delete behaviors.
+
 ## [0.12.0b] -- 2026-07-18
 
 ### Features
