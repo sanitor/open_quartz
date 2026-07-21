@@ -54,6 +54,7 @@ vi.mock('../../src/engine/realtimeHost', () => ({
     this.resume = vi.fn();
     this.updateGraph = vi.fn();
     this.captureScreenshot = mockHostCapture;
+    this.setPreviewNode = vi.fn();
   }),
 }));
 

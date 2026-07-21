@@ -50,6 +50,7 @@ export default function App() {
         useGraphStore.getState().setCaptureScreenshot((id) => hostRef.current?.captureScreenshot(id) ?? null);
         setTimeout(() => {
           const s = useGraphStore.getState();
+          hostRef.current?.setPreviewNode(s.selectedNodeId);
           hostRef.current?.play(s.nodes, s.edges);
         }, 0);
       }
@@ -72,6 +73,11 @@ export default function App() {
       if (state.loopState === 'playing' &&
           (state.nodes !== prev.nodes || state.edges !== prev.edges)) {
         hostRef.current?.updateGraph(state.nodes, state.edges);
+      }
+
+      // Sync preview node with side panel selection
+      if (state.selectedNodeId !== prev.selectedNodeId) {
+        hostRef.current?.setPreviewNode(state.selectedNodeId);
       }
     });
     return () => unsub();

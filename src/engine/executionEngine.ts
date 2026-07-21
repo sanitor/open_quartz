@@ -43,6 +43,8 @@ export interface ExecutionPlan {
   feedbackTargets: Map<string, [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]>;
   feedbackReadIndex: Map<string, number>;
   feedbackFirstFrame: Set<string>;
+  /** Promises for async texture loads (image inputs). Must resolve before first render. */
+  pendingTextures: Promise<void>[];
 }
 
 export class ExecutionEngine {
@@ -88,6 +90,7 @@ export class ExecutionEngine {
     if (!this.renderer) return null;
     this.onnxCallbacks = { onOutput, onNodeError, onOutputSize, onOutputData, onOnnxComplete };
     const materials = new Map<string, THREE.ShaderMaterial>();
+    const pendingTextures: Promise<void>[] = [];
     const upstreamSamplerBindings = new Map<string, Map<string, string>>();
     const scalarUpstream = new Map<string, Map<string, string>>();
     const scalarBindings = new Map<string, Map<string, unknown>>();
@@ -135,7 +138,8 @@ export class ExecutionEngine {
       if (!node) continue;
 
       if (node.data.type === 'input' && node.data.inputMode !== 'system') {
-        this.prepareInputTexture(node, textureSources, onNodeError);
+        const pending = this.prepareInputTexture(node, textureSources, onNodeError);
+        if (pending) pendingTextures.push(pending);
         continue;
       }
 
@@ -312,6 +316,7 @@ export class ExecutionEngine {
       feedbackTargets,
       feedbackReadIndex,
       feedbackFirstFrame,
+      pendingTextures,
     };
   }
 
@@ -662,6 +667,47 @@ export class ExecutionEngine {
       if (!target) continue;
       onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
     }
+  }
+
+  /** Read back a single node's render target as a data URL. */
+  readNodeOutput(plan: ExecutionPlan, nodeId: string, onOutput: (nodeId: string, dataUrl: string) => void): void {
+    if (!this.renderer) return;
+    const node = plan.nodeMap.get(nodeId);
+    if (!node) return;
+
+    if (node.data.type === 'renderer') {
+      const sourceId = plan.upstreamSamplerBindings.get(nodeId)?.values().next().value;
+      if (!sourceId) return;
+      const src = plan.textureSources.get(sourceId);
+      if (src?.kind === 'fbo') {
+        onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
+      } else if (src?.kind === 'image') {
+        const sourceNode = plan.nodeMap.get(sourceId);
+        const w = sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth ?? plan.defaultW;
+        const h = sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight ?? plan.defaultH;
+        let target = plan.targets.get(nodeId);
+        if (!target) {
+          target = this.renderer.createTarget(nodeId, w, h);
+          plan.targets.set(nodeId, target);
+        }
+        this.renderer.renderSampler2DInput(src.texture, target);
+        onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
+      }
+      return;
+    }
+
+    const isFeedback = plan.feedbackTargets.has(nodeId);
+    if (isFeedback) {
+      const src = plan.textureSources.get(nodeId);
+      if (src?.kind === 'fbo') {
+        onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
+      }
+      return;
+    }
+
+    const target = plan.targets.get(nodeId);
+    if (!target) return;
+    onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
   }
 
   renderRendererToScreen(plan: ExecutionPlan, rendererNodeId: string): void {
@@ -1131,8 +1177,8 @@ export class ExecutionEngine {
     node: Node<ShaderNodeData>,
     textureSources: Map<string, TextureSource>,
     onNodeError?: (nodeId: string, error: string) => void,
-  ): void {
-    if (!this.renderer) return;
+  ): Promise<void> | null {
+    if (!this.renderer) return null;
     if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
       try {
         const b64 = node.data.rawDataUrl.split(',')[1];
@@ -1156,16 +1202,16 @@ export class ExecutionEngine {
         const msg = e instanceof Error ? e.message : String(e);
         onNodeError?.(node.id, msg);
       }
-      return;
+      return null;
     }
 
     const cached = this.renderer.getImageTexture(node.id);
     if (cached) {
       textureSources.set(node.id, { kind: 'image', texture: cached });
-      return;
+      return null;
     }
     if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-      this.renderer.loadImageTexture(node.id, node.data.imageDataUrl)
+      return this.renderer.loadImageTexture(node.id, node.data.imageDataUrl)
         .then((tex) => {
           this.renderer?.applyTextureSampling(tex, node.data.texFilter, node.data.texWrap);
           textureSources.set(node.id, { kind: 'image', texture: tex });
@@ -1175,6 +1221,7 @@ export class ExecutionEngine {
           onNodeError?.(node.id, msg);
         });
     }
+    return null;
   }
 }
 

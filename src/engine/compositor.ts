@@ -29,9 +29,9 @@ export class Compositor {
     onOutputData?: (nodeId: string, data: unknown) => void,
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
-  ): boolean {
+  ): Promise<void>[] {
     this.plan = this.engine.prepare(nodes, edges, onNodeError, onOutputSize, onOutputData, onOutput, onOnnxComplete, this.plan);
-    return this.plan !== null;
+    return this.plan?.pendingTextures ?? [];
   }
 
   render(inputs: FrameInputs): void {
@@ -42,6 +42,12 @@ export class Compositor {
   readOutputs(onOutput: (nodeId: string, dataUrl: string) => void): void {
     if (!this.plan) return;
     this.engine.readOutputs(this.plan, onOutput);
+  }
+
+  /** Read back a single node's output as a data URL. */
+  readNodeOutput(nodeId: string, onOutput: (nodeId: string, dataUrl: string) => void): void {
+    if (!this.plan) return;
+    this.engine.readNodeOutput(this.plan, nodeId, onOutput);
   }
 
   renderRendererToScreen(rendererNodeId: string): void {

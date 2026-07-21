@@ -53,6 +53,7 @@ export class RealtimeHost {
   private needsRecompile = false;
   private isStatic = false;
   private lastInputs: FrameInputs | null = null;
+  private previewNodeId: string | null = null;
 
   /** Repaint all renderer mirrors on demand (e.g. fullscreen canvas mounted). */
   private onRemount = (): void => {
@@ -73,6 +74,9 @@ export class RealtimeHost {
       if (this.state !== 'playing' || !this.lastInputs) return;
       this.compositor.render(this.lastInputs);
       this.renderToScreen();
+      if (this.previewNodeId && this.callbacks.onOutput) {
+        this.compositor.readNodeOutput(this.previewNodeId, this.callbacks.onOutput);
+      }
     });
   };
 
@@ -85,7 +89,7 @@ export class RealtimeHost {
     this.nodes = nodes;
     this.edges = edges;
     this.isStatic = isStaticPipeline(nodes);
-    this.compositor.prepare(
+    const pending = this.compositor.prepare(
       nodes,
       edges,
       this.callbacks.onNodeError,
@@ -102,11 +106,18 @@ export class RealtimeHost {
     this.callbacks.onStateChange?.('playing');
 
     if (this.isStatic) {
-      // Static pipeline: render one frame, then stop the loop.
-      this.rafId = requestAnimationFrame((now) => {
-        this.tick(now);
-        this.rafId = null;
-      });
+      // Static pipeline: wait for async texture loads, then render one frame.
+      const startTick = () => {
+        this.rafId = requestAnimationFrame((now) => {
+          this.tick(now);
+          this.rafId = null;
+        });
+      };
+      if (pending.length > 0) {
+        void Promise.all(pending).then(startTick);
+      } else {
+        startTick();
+      }
     } else {
       const frame = (now: DOMHighResTimeStamp): void => {
         if (this.state === 'stopped') return;
@@ -266,7 +277,7 @@ export class RealtimeHost {
   private tick(now: DOMHighResTimeStamp): void {
     if (this.needsRecompile) {
       this.needsRecompile = false;
-      this.compositor.prepare(
+      const pending = this.compositor.prepare(
         this.nodes,
         this.edges,
         this.callbacks.onNodeError,
@@ -275,6 +286,14 @@ export class RealtimeHost {
         this.callbacks.onOutput,
         this.scheduleRerender,
       );
+      // If there are async texture loads and we're static, defer this tick.
+      if (pending.length > 0 && this.isStatic) {
+        void Promise.all(pending).then(() => {
+          if (this.state !== 'playing') return;
+          this.rafId = requestAnimationFrame((t) => { this.tick(t); this.rafId = null; });
+        });
+        return;
+      }
     }
 
     const ts = this.clock.tick(now);
@@ -297,7 +316,18 @@ export class RealtimeHost {
     this.lastInputs = inputs;
     this.compositor.render(inputs);
     this.renderToScreen();
+
+    // Read back the selected node's preview (only when side panel is showing it).
+    if (this.previewNodeId && this.callbacks.onOutput) {
+      this.compositor.readNodeOutput(this.previewNodeId, this.callbacks.onOutput);
+    }
+
     this.callbacks.onFrame?.(ts);
+  }
+
+  /** Set which node should have its output read back for preview each frame. null = none. */
+  setPreviewNode(nodeId: string | null): void {
+    this.previewNodeId = nodeId;
   }
 
   private renderToScreen(): void {
