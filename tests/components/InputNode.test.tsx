@@ -214,15 +214,16 @@ describe('InputNode', () => {
   });
 
 
-  it('renders gray accent when sampler2D with no data', () => {
+  it('renders gray status LED when sampler2D with no data', () => {
     const props = makeNodeProps({
       inputDataType: 'sampler2D',
       inputs: [],
       outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
     });
     const { container } = render(<InputNode {...props} />);
-    const header = container.querySelector('[style*="background-color"]') as HTMLElement;
-    expect(header?.style.backgroundColor).toBe('rgb(142, 142, 147)');
+    const led = container.querySelector('.rounded-full') as HTMLElement;
+    expect(led).toBeTruthy();
+    expect(led.style.backgroundColor).toBe('rgb(142, 142, 147)');
   });
 
   it('renders ivec3 input with x,y,z fields', () => {

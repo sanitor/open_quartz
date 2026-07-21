@@ -3,10 +3,10 @@ import type { ShaderNodeData, DataType } from '../../../types';
 import { DATA_TYPE_COLORS } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 import { MATH_OPS } from '../../../engine/mathOps';
+import { NodeShell, MENU_ICONS, type NodeStatus } from './NodeShell';
 
-const MATH_ACCENT = '#f59e0b';
 const ROW_H = 22;
-const HEADER_H = 26;
+const PORT_COLOR = '#8e8e93';
 
 const OP_SYMBOLS: Record<string, string> = {
   add: '+', subtract: '−', multiply: '×', divide: '÷',
@@ -54,25 +54,24 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
 
   function portColor(portId: string, isInput: boolean): string {
     const inferred = inferType(portId, isInput);
-    if (inferred !== 'auto') return DATA_TYPE_COLORS[inferred] ?? MATH_ACCENT;
-    return MATH_ACCENT;
+    if (inferred !== 'auto') return DATA_TYPE_COLORS[inferred] ?? PORT_COLOR;
+    return PORT_COLOR;
   }
 
+  const allConnected = data.inputs.every((p) =>
+    edges.some((e) => e.targetHandle === p.id)
+  );
+  const status: NodeStatus = allConnected ? 'ready' : 'not-ready';
+
   return (
-    <div
-      className={`rounded-xl border bg-white shadow-sm ${
-        selected ? 'border-[#007aff] shadow-md' : 'border-[#d2d2d7]'
-      }`}
-      style={{ minWidth: 120 }}
+    <NodeShell
+      icon={MENU_ICONS.math}
+      typeName={op?.label ?? 'Math'}
+      label={data.label}
+      status={status}
+      selected={selected}
+      minWidth={120}
     >
-      {/* Header */}
-      <div
-        className="flex items-center px-2 rounded-t-[11px]"
-        style={{ height: HEADER_H, backgroundColor: MATH_ACCENT }}
-      >
-        <span className="text-[9px] font-semibold text-white">MATH</span>
-        <span className="ml-auto text-[10px] text-white/80 font-medium">{op?.label ?? data.label}</span>
-      </div>
 
       {/* Body: symbol + ports */}
       <div className="flex items-stretch">
@@ -131,6 +130,6 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
           })}
         </div>
       </div>
-    </div>
+    </NodeShell>
   );
 }

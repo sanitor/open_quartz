@@ -1,10 +1,7 @@
-import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
+import { type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
-
-const PORT_COLOR = '#8e8e93';
-const ROW_H = 26;
-const HEADER_H = 28;
+import { NodeShell, MENU_ICONS, InputPortRow, OutputPortRow, PortDivider, type NodeStatus } from './NodeShell';
 
 type ShaderNodeType = Node<ShaderNodeData>;
 
@@ -17,77 +14,45 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
     (port) => !edges.some((e) => e.targetHandle === port.id)
   );
   const hasFeedback = /\bpreviousFrame\b/.test(data.shaderCode);
-  const accent = error ? '#ff3b30' : hasUnconnectedInput ? '#8e8e93' : getAccent(data.type);
+
+  const status: NodeStatus = error ? 'error' : hasUnconnectedInput ? 'not-ready' : 'ready';
+
+  const feedbackBadge = hasFeedback ? (
+    <span className="ml-2 text-[9px] text-white/80 font-medium bg-white/20 rounded px-1.5 py-0.5">FB</span>
+  ) : null;
 
   return (
-    <div
-      className={`rounded-xl border bg-white shadow-sm min-w-[200px] ${
-        selected ? 'border-[#007aff] shadow-md' : 'border-[#d2d2d7]'
-      }`}
+    <NodeShell
+      icon={MENU_ICONS.shader}
+      typeName={data.label}
+      label={data.label}
+      status={status}
+      selected={selected}
+      minWidth={200}
+      headerExtra={feedbackBadge}
     >
-      {/* Header */}
-      <div
-        className="flex items-center px-3 rounded-t-[11px]"
-        style={{ height: HEADER_H, backgroundColor: accent }}
-      >
-        <span className="text-xs font-semibold text-white">{data.type.toUpperCase()}</span>
-        {hasFeedback && (
-          <span className="ml-2 text-[9px] text-white/80 font-medium bg-white/20 rounded px-1.5 py-0.5">FB</span>
-        )}
-        <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>
-      </div>
-
       {/* Input ports */}
       <div style={{ paddingTop: 2, paddingBottom: 2 }}>
         {data.inputs.map((port) => {
           const connected = edges.some((e) => e.targetHandle === port.id);
-          const portErr = !connected && !!error;
           return (
-            <div
+            <InputPortRow
               key={port.id}
-              className="flex items-center text-[11px] text-[#1d1d1f] px-3"
-              style={{ height: ROW_H, position: 'relative' }}
-            >
-              <Handle
-                type="target"
-                position={Position.Left}
-                id={port.id}
-                className="!w-3 !h-3 !border-2"
-                style={{
-                  borderColor: portErr ? '#ff3b30' : PORT_COLOR,
-                  backgroundColor: portErr ? '#ff3b30' : connected ? PORT_COLOR : 'transparent',
-                }}
-              />
-              <span className={`ml-4 ${portErr ? 'text-[#ff3b30] font-medium' : ''}`}>{port.label}</span>
-              <span className="ml-auto text-[9px] text-[#aeaeb2]">{port.dataType}</span>
-            </div>
+              port={port}
+              connected={connected}
+              error={!connected && !!error}
+            />
           );
         })}
       </div>
 
       {/* Divider between input/output */}
-      {data.inputs.length > 0 && data.outputs.length > 0 && (
-        <div className="mx-3 border-t border-[#f0f0f0]" />
-      )}
+      {data.inputs.length > 0 && data.outputs.length > 0 && <PortDivider />}
 
       {/* Output ports */}
       <div style={{ paddingTop: 2, paddingBottom: 6 }}>
         {data.outputs.map((port) => (
-          <div
-            key={port.id}
-            className="flex items-center justify-end text-[11px] text-[#1d1d1f] px-3"
-            style={{ height: ROW_H, position: 'relative' }}
-          >
-            <span className="mr-auto text-[9px] text-[#aeaeb2]">{port.dataType}</span>
-            <span className="mr-4">{port.label}</span>
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={port.id}
-              className="!w-2.5 !h-2.5 !border-2 !border-white"
-              style={{ backgroundColor: PORT_COLOR }}
-            />
-          </div>
+          <OutputPortRow key={port.id} port={port} />
         ))}
       </div>
 
@@ -102,14 +67,6 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
           )}
         </div>
       )}
-    </div>
+    </NodeShell>
   );
-}
-
-function getAccent(type: string): string {
-  switch (type) {
-    case 'shader': return '#af52de';
-    case 'input': return '#007aff';
-    default: return '#8e8e93';
-  }
 }

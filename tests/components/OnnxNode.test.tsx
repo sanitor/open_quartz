@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 vi.mock('@xyflow/react', () => ({
-  Handle: ({ type, id }: { type: string; position: string; id: string }) => (
-    <span data-testid={`handle-${type}-${id}`} />
+  Handle: ({ type, id, style }: { type: string; position: string; id: string; style?: React.CSSProperties }) => (
+    <span data-testid={`handle-${type}-${id}`} style={style} />
   ),
   Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
 }));
@@ -95,9 +95,9 @@ describe('OnnxNode', () => {
     Object.assign(defaultStoreState, { edges: [], nodeErrors: {}, outputPreviews: {} });
   });
 
-  it("renders the 'ONNX' header badge", () => {
+  it("renders the typeName header badge from onnxModelId (uppercased)", () => {
     render(<OnnxNode {...makeOnnxProps()} />);
-    expect(screen.getByText('ONNX')).toBeInTheDocument();
+    expect(screen.getByText('YOLOV8N')).toBeInTheDocument();
   });
 
   it('renders the label from data.label', () => {
@@ -131,30 +131,33 @@ describe('OnnxNode', () => {
     expect(screen.getByText('image')).toBeInTheDocument();
   });
 
-  it('paints the header with the ONNX accent when input is connected and no error', () => {
-    // Accent constant in source: '#ff8a65' → rgb(255, 138, 101).
+  it('shows a green StatusLed when input is connected and no error', () => {
     const props = makeOnnxProps({}, { edges: [{ targetHandle: 'onnx_1_image' }] });
     const { container } = render(<OnnxNode {...props} />);
-    const header = container.querySelector('[style*="background-color: rgb(255, 138, 101)"]');
-    expect(header).toBeTruthy();
+    // Header bg is always dark-blue
+    expect(container.querySelector('[style*="background-color: rgb(30, 41, 59)"]')).toBeTruthy();
+    // StatusLed green: #34c759 → rgb(52, 199, 89)
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
   });
 
-  it('paints the header grey when the input is unconnected and no error', () => {
-    // '#8e8e93' → rgb(142, 142, 147).
+  it('shows a gray StatusLed when the input is unconnected and no error', () => {
     const { container } = render(<OnnxNode {...makeOnnxProps()} />);
-    const header = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
-    expect(header).toBeTruthy();
+    // Header bg is always dark-blue
+    expect(container.querySelector('[style*="background-color: rgb(30, 41, 59)"]')).toBeTruthy();
+    // StatusLed gray: #8e8e93 → rgb(142, 142, 147)
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
   });
 
-  it('paints the header red when nodeErrors[id] is set', () => {
-    // '#ff3b30' → rgb(255, 59, 48).
+  it('shows a red StatusLed when nodeErrors[id] is set', () => {
     const props = makeOnnxProps({}, {
       edges: [{ targetHandle: 'onnx_1_image' }],
       nodeErrors: { 'onnx-1': 'run failed' },
     });
     const { container } = render(<OnnxNode {...props} />);
-    const header = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
-    expect(header).toBeTruthy();
+    // Header bg is always dark-blue
+    expect(container.querySelector('[style*="background-color: rgb(30, 41, 59)"]')).toBeTruthy();
+    // StatusLed red: #ff3b30 → rgb(255, 59, 48)
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(255, 59, 48)"]')).toBeTruthy();
   });
 
   it('marks the unconnected input port red when there is an error', () => {

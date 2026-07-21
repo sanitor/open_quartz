@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 vi.mock('@xyflow/react', () => ({
-  Handle: ({ type, id }: { type: string; position: string; id: string }) => (
-    <span data-testid={`handle-${type}-${id}`} />
+  Handle: ({ type, id, style }: { type: string; position: string; id: string; style?: Record<string, unknown> }) => (
+    <span data-testid={`handle-${type}-${id}`} style={style} />
   ),
   Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
 }));
@@ -87,16 +87,16 @@ describe('ShaderNode', () => {
     Object.assign(defaultStoreState, { edges: [], nodeErrors: {} });
   });
 
-  it('renders header with SHADER text', () => {
+  it('renders header with Shader text', () => {
     const props = makeShaderProps();
     render(<ShaderNode {...props} />);
-    expect(screen.getByText('SHADER')).toBeInTheDocument();
+    expect(screen.getByText('MYSHADER')).toBeInTheDocument();
   });
 
   it('renders label in header', () => {
     const props = makeShaderProps({ label: 'Blur' });
     render(<ShaderNode {...props} />);
-    expect(screen.getByText('Blur')).toBeInTheDocument();
+    expect(screen.getByText('BLUR')).toBeInTheDocument();
   });
 
   it('renders input handles for each input port', () => {
@@ -135,24 +135,31 @@ describe('ShaderNode', () => {
     expect(screen.getByText('vec4')).toBeInTheDocument();
   });
 
-  it('applies purple accent for shader type', () => {
+  it('shows green status LED when connected and no error', () => {
     const props = makeShaderProps({}, { edges: [{ targetHandle: 'in-1' }] });
     const { container } = render(<ShaderNode {...props} />);
-    const header = container.querySelector('[style*="background-color: rgb(175, 82, 222)"]');
-    expect(header).toBeTruthy();
+    const led = container.querySelector('[style*="background-color: rgb(52, 199, 89)"]');
+    expect(led).toBeTruthy();
   });
 
-  it('applies red accent when node has error', () => {
+  it('shows red status LED when node has error', () => {
     const props = makeShaderProps({}, { nodeErrors: { 'shader-1': 'compile error' } });
     const { container } = render(<ShaderNode {...props} />);
-    const header = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
-    expect(header).toBeTruthy();
+    const led = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
+    expect(led).toBeTruthy();
   });
 
-  it('applies gray accent when input is unconnected', () => {
+  it('shows gray status LED when input is unconnected', () => {
     const props = makeShaderProps();
     const { container } = render(<ShaderNode {...props} />);
-    const header = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
+    const led = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
+    expect(led).toBeTruthy();
+  });
+
+  it('header background is always dark blue', () => {
+    const props = makeShaderProps();
+    const { container } = render(<ShaderNode {...props} />);
+    const header = container.querySelector('[style*="background-color: rgb(30, 41, 59)"]');
     expect(header).toBeTruthy();
   });
 

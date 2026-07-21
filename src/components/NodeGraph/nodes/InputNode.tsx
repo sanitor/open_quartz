@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react';
+import { NodeShell, ROW_H, SOURCE_ICONS, type NodeStatus } from './NodeShell';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType, FramebufferFormat } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
@@ -25,10 +26,6 @@ const MAT_DIMS: Record<string, number> = {
   mat3: 3,
   mat4: 4,
 };
-
-const PORT_COLOR = '#8e8e93';
-const ROW_H = 26;
-const HEADER_H = 28;
 
 type InputNodeType = Node<ShaderNodeData>;
 
@@ -66,7 +63,10 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const isSystem = data.inputMode === 'system';
   const error = nodeErrors[id];
   const hasNoValue = currentType === 'sampler2D' && !data.imageDataUrl && !data.rawDataUrl && !data.videoUrl;
-  const accent = isSystem ? '#34c759' : error ? '#ff3b30' : hasNoValue ? '#8e8e93' : '#007aff';
+  const sourceCategory = isSystem ? 'system' : (currentType === 'sampler2D' ? 'external' : 'constants');
+  const icon = SOURCE_ICONS[sourceCategory] ?? '○';
+  const typeName = isSystem ? (data.systemSource ?? 'system') : isVideo ? 'Video' : isFramebuffer ? 'Framebuffer' : currentType === 'sampler2D' ? 'Image' : currentType;
+  const status: NodeStatus = error ? 'error' : (isSystem || !hasNoValue) ? 'ready' : 'not-ready';
 
   const fbPreview = useMemo(() => {
     if (!isFramebuffer || !data.rawDataUrl || !data.fbWidth || !data.fbHeight) return null;
@@ -170,20 +170,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   );
 
   return (
-    <div
-      className={`rounded-xl border bg-white shadow-sm min-w-[180px] ${
-        selected ? 'border-[#007aff] shadow-md' : 'border-[#d2d2d7]'
-      }`}
-    >
-      <div
-        className="flex items-center px-3 rounded-t-[11px]"
-        style={{ height: HEADER_H, backgroundColor: accent }}
-      >
-        <span className="text-xs font-semibold text-white">
-          {isSystem ? data.label.toUpperCase() : isVideo ? 'VIDEO' : isFramebuffer ? 'FRAMEBUFFER' : currentType === 'sampler2D' ? 'IMAGE' : currentType.toUpperCase()}
-        </span>
-        {!isSystem && <span className="ml-auto text-[10px] text-white/60 font-medium">{data.label}</span>}
-      </div>
+    <NodeShell icon={icon} typeName={typeName} label={data.label} status={status} selected={selected} minWidth={180}>
 
       {isSystem ? (
         /* System source: read-only live value */
@@ -240,7 +227,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                 position={Position.Right}
                 id={data.outputs[0].id}
                 className="!w-2.5 !h-2.5 !border-2 !border-white"
-                style={{ backgroundColor: PORT_COLOR }}
+                style={{ backgroundColor: '#8e8e93' }}
               />
             </div>
           )}
@@ -274,7 +261,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                 position={Position.Right}
                 id={data.outputs[0].id}
                 className="!w-2.5 !h-2.5 !border-2 !border-white"
-                style={{ backgroundColor: PORT_COLOR }}
+                style={{ backgroundColor: '#8e8e93' }}
               />
             </div>
           )}
@@ -303,7 +290,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                 position={Position.Right}
                 id={data.outputs[0].id}
                 className="!w-2.5 !h-2.5 !border-2 !border-white"
-                style={{ backgroundColor: PORT_COLOR }}
+                style={{ backgroundColor: '#8e8e93' }}
               />
             </div>
           )}
@@ -383,7 +370,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                     position={Position.Right}
                     id={data.outputs[0].id}
                     className="!w-2.5 !h-2.5 !border-2 !border-white"
-                    style={{ backgroundColor: PORT_COLOR }}
+                    style={{ backgroundColor: '#8e8e93' }}
                   />
                 )}
               </div>
@@ -391,6 +378,6 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
           })}
         </div>
       )}
-    </div>
+    </NodeShell>
   );
 }

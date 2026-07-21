@@ -93,19 +93,20 @@ describe('MathNode', () => {
     Object.assign(defaultStoreState, { edges: [], nodes: [] });
   });
 
-  it("renders the 'MATH' header badge", () => {
-    render(<MathNode {...makeMathProps()} />);
-    expect(screen.getByText('MATH')).toBeInTheDocument();
+  it("renders the op typeName 'Add' in the header", () => {
+    render(<MathNode {...makeMathProps({ label: 'math-1' })} />);
+    expect(screen.getByText('ADD')).toBeInTheDocument();
   });
 
   it('renders the op label from MATH_OPS when mathOp is set', () => {
     render(<MathNode {...makeMathProps({ mathOp: 'multiply' })} />);
-    expect(screen.getByText('Multiply')).toBeInTheDocument();
+    expect(screen.getByText('MULTIPLY')).toBeInTheDocument();
   });
 
   it('falls back to data.label when mathOp is not defined', () => {
     render(<MathNode {...makeMathProps({ mathOp: undefined, label: 'CustomNode' })} />);
-    expect(screen.getByText('CustomNode')).toBeInTheDocument();
+    expect(screen.getByText('MATH')).toBeInTheDocument();
+    expect(screen.getByText('customnode')).toBeInTheDocument();
   });
 
   it('renders the operation symbol for a known mathOp', () => {
@@ -170,10 +171,10 @@ describe('MathNode', () => {
     expect(screen.queryByTestId('handle-target-in_b')).toBeNull();
   });
 
-  it('paints the header with the math amber accent', () => {
-    // MATH_ACCENT = '#f59e0b' → rgb(245, 158, 11)
+  it('paints the header with unified dark-blue background', () => {
+    // HEADER_BG = '#1e293b' → rgb(30, 41, 59)
     const { container } = render(<MathNode {...makeMathProps()} />);
-    const header = container.querySelector('[style*="background-color: rgb(245, 158, 11)"]');
+    const header = container.querySelector('[style*="background-color: rgb(30, 41, 59)"]');
     expect(header).toBeTruthy();
   });
 
@@ -204,11 +205,11 @@ describe('MathNode', () => {
     expect(handle.style.borderColor).toBe('rgb(79, 195, 247)');
   });
 
-  it('uses amber accent for unconnected input ports', () => {
-    // MATH_ACCENT = '#f59e0b'
+  it('uses PORT_COLOR for unconnected input ports', () => {
+    // PORT_COLOR = '#8e8e93' → rgb(142, 142, 147)
     render(<MathNode {...makeMathProps()} />);
     const handle = screen.getByTestId('handle-target-in_a');
-    expect(handle.style.borderColor).toBe('rgb(245, 158, 11)');
+    expect(handle.style.borderColor).toBe('rgb(142, 142, 147)');
   });
 
   it('output port color inferred as widest connected input type', () => {
@@ -251,12 +252,14 @@ describe('MathNode', () => {
 
   it('falls back to data.label as symbol when mathOp is not in OP_SYMBOLS', () => {
     // symbol = data.mathOp ? (OP_SYMBOLS[data.mathOp] ?? data.label) : '?'
-    // When mathOp is set but not in OP_SYMBOLS, both header label and symbol show data.label
+    // When mathOp is set but not in OP_SYMBOLS or MATH_OPS:
+    // typeName = op?.label ?? 'Math' = 'Math' (op is undefined) → UPPERCASE → 'MATH'
+    // symbol = OP_SYMBOLS['unknownOp'] ?? data.label = 'Fallback'
+    // label = 'Fallback' → lowercase → 'fallback'
     const props = makeMathProps({ mathOp: 'unknownOp', label: 'Fallback' });
     render(<MathNode {...props} />);
-    const matches = screen.getAllByText('Fallback');
-    // Appears in header label (op?.label ?? data.label → data.label since op is undefined)
-    // and in symbol area (OP_SYMBOLS['unknownOp'] ?? data.label → data.label)
-    expect(matches.length).toBe(2);
+    expect(screen.getByText('MATH')).toBeInTheDocument();
+    expect(screen.getByText('Fallback')).toBeInTheDocument();
+    expect(screen.getByText('fallback')).toBeInTheDocument();
   });
 });

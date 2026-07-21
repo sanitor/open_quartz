@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('@xyflow/react', () => ({
-  Handle: ({ type, id }: { type: string; position: string; id: string }) => (
-    <span data-testid={`handle-${type}-${id}`} />
+  Handle: ({ type, id, style }: { type: string; position: string; id: string; style?: React.CSSProperties }) => (
+    <span data-testid={`handle-${type}-${id}`} style={style} />
   ),
   Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
 }));
@@ -108,19 +108,23 @@ describe('RendererNode', () => {
     });
   });
 
-  it('renders green header with RENDERER text when connected', () => {
+  it('renders green header with Renderer text when connected', () => {
     const props = makeProps({}, { edges: [{ targetHandle: 'r1-input' }] });
     const { container } = render(<RendererNode {...props} />);
+    // typeName is UPPERCASE
     expect(screen.getByText('RENDERER')).toBeInTheDocument();
-    // #34c759 = rgb(52, 199, 89) — green accent
-    const header = container.querySelector('[style*="background-color: rgb(52, 199, 89)"]');
+    // header bg is always dark blue
+    const header = container.querySelector('[style*="background-color: rgb(30, 41, 59)"]');
     expect(header).toBeTruthy();
+    // StatusLed is green when connected
+    const led = container.querySelector('[style*="background-color: rgb(52, 199, 89)"]');
+    expect(led).toBeTruthy();
   });
 
   it('renders label from data.label', () => {
     const props = makeProps({ label: 'MainOutput' });
     render(<RendererNode {...props} />);
-    expect(screen.getByText('MainOutput')).toBeInTheDocument();
+    expect(screen.getByText('mainoutput')).toBeInTheDocument();
   });
 
   it('renders input handle for inputTexture (sampler2D)', () => {
@@ -241,12 +245,15 @@ describe('RendererNode', () => {
     expect(container.querySelector('.border-\\[\\#007aff\\]')).toBeNull();
   });
 
-  it('error state changes header to red', () => {
+  it('error state shows StatusLed red', () => {
     const props = makeProps({}, { nodeErrors: { 'renderer-1': 'GPU error' } });
     const { container } = render(<RendererNode {...props} />);
-    // #ff3b30 = rgb(255, 59, 48)
-    const header = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
+    // header bg is always dark blue
+    const header = container.querySelector('[style*="background-color: rgb(30, 41, 59)"]');
     expect(header).toBeTruthy();
+    // StatusLed is red on error
+    const led = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
+    expect(led).toBeTruthy();
   });
 
   it('error state also colors port border and label', () => {
@@ -260,12 +267,15 @@ describe('RendererNode', () => {
     expect(portLabel.className).toContain('text-[#ff3b30]');
   });
 
-  it('unconnected input shows gray header', () => {
+  it('unconnected input shows StatusLed gray', () => {
     const props = makeProps({}, { edges: [] });
     const { container } = render(<RendererNode {...props} />);
-    // #8e8e93 = rgb(142, 142, 147)
-    const header = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
+    // header bg is always dark blue
+    const header = container.querySelector('[style*="background-color: rgb(30, 41, 59)"]');
     expect(header).toBeTruthy();
+    // StatusLed is gray when not connected
+    const led = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
+    expect(led).toBeTruthy();
   });
 
   it('small resolution does not exceed actual width for preview', () => {
