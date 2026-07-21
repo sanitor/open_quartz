@@ -154,13 +154,17 @@ function makeNode(type: ShaderNodeData['type'], position?: { x: number; y: numbe
   const cascade = nodeCascade++ * 28;
   const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
 
+  const baseName = labelOverride ?? type;
+  const instanceLabel = `${baseName.toLowerCase().replace(/\s+/g, '_')}_${nodeCounter}`;
+
   return {
     id,
     type,
     position: pos,
     data: {
       type,
-      label: labelOverride ?? `${type}_${nodeCounter}`,
+      label: instanceLabel,
+      templateName: labelOverride,
       shaderCode,
       inputs: parsed.inputs,
       outputs: parsed.outputs,
@@ -466,7 +470,8 @@ export const useGraphStore = create<GraphState>()(
           position: pos,
           data: {
             type: 'onnx',
-            label: entry.label,
+            label: `${entry.label.toLowerCase().replace(/\s+/g, '_')}_${nodeCounter}`,
+            templateName: entry.label,
             shaderCode: '',
             inputs: entry.expectedIO.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
             outputs: entry.expectedIO.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
@@ -574,7 +579,8 @@ export const useGraphStore = create<GraphState>()(
           position: pos,
           data: {
             type: 'math',
-            label: op.label,
+            label: `${op.label.toLowerCase()}_${nodeCounter}`,
+            templateName: op.label,
             shaderCode: '',
             inputs: ports.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
             outputs: ports.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
@@ -723,7 +729,7 @@ export const useGraphStore = create<GraphState>()(
           position: pos,
           data: {
             type: 'renderer',
-            label: `Renderer ${nodeCounter}`,
+            label: `renderer_${nodeCounter}`,
             shaderCode: '',
             inputs: [{ id: 'input_inputTexture', label: 'inputTexture', dataType: 'sampler2D', direction: 'input' }],
             outputs: [],

@@ -26,7 +26,7 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
   const edges = useGraphStore((s) => s.edges);
   const nodes = useGraphStore((s) => s.nodes);
   const op = data.mathOp ? MATH_OPS[data.mathOp] : undefined;
-  const symbol = data.mathOp ? (OP_SYMBOLS[data.mathOp] ?? data.label) : '?';
+  const symbol = data.mathOp ? (OP_SYMBOLS[data.mathOp] ?? data.templateName ?? '?') : '?';
 
   // Infer actual type from connected peer
   function inferType(portId: string, isInput: boolean): DataType {

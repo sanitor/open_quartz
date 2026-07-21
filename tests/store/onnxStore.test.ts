@@ -73,7 +73,8 @@ describe('addOnnxNode', () => {
 
     expect(node.type).toBe('onnx');
     expect(node.data.type).toBe('onnx');
-    expect(node.data.label).toBe(entry.label);
+      expect(node.data.templateName).toBe(entry.label);
+      expect(node.data.label).toMatch(/^yolov8n_detector_\d+$/);
 
     // Ports match catalog expectedIO
     expect(node.data.inputs).toHaveLength(entry.expectedIO.inputs.length);

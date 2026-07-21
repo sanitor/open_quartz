@@ -33,6 +33,8 @@ export type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | '
 export interface ShaderNodeData {
   type: NodeType;
   label: string;
+  /** Template/class name for the node type (e.g. "Resample", "Add"). Instance label is `label`. */
+  templateName?: string;
   shaderCode: string;
   inputs: Port[];
   outputs: Port[];

@@ -24,7 +24,7 @@ export function ShaderNode({ id, data, selected }: NodeProps<ShaderNodeType>) {
   return (
     <NodeShell
       icon={MENU_ICONS.shader}
-      typeName={data.label}
+      typeName={data.templateName ?? data.label}
       label={data.label}
       status={status}
       selected={selected}

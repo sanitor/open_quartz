@@ -173,7 +173,8 @@ describe('useGraphStore', () => {
       const code = 'uniform float x;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(x); }';
       useGraphStore.getState().addShaderNode(code, 'Custom');
       const node = useGraphStore.getState().nodes[0];
-      expect(node.data.label).toBe('Custom');
+      expect(node.data.templateName).toBe('Custom');
+      expect(node.data.label).toMatch(/^custom_\d+$/);
       expect(node.data.shaderCode).toBe(code);
       expect(node.data.type).toBe('shader');
       // Should parse the uniform
@@ -682,7 +683,7 @@ describe('useGraphStore', () => {
       const node = state.nodes[0];
       expect(node.type).toBe('renderer');
       expect(node.data.type).toBe('renderer');
-      expect(node.data.label).toMatch(/^Renderer \d+$/);
+      expect(node.data.label).toMatch(/^renderer_\d+$/);
     });
 
     it('creates renderer node with sampler2D input port', () => {

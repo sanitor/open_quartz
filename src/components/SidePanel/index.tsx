@@ -162,7 +162,7 @@ export function SidePanel() {
     };
     sections.push({
       id: 'systemsource',
-      title: data.label.toUpperCase(),
+      title: (data.templateName ?? data.label).toUpperCase(),
       content: (
         <div className="px-4 py-3 space-y-2">
           <div className="flex items-center justify-between">

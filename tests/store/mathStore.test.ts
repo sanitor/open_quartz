@@ -68,7 +68,8 @@ describe('Math and System nodes in useGraphStore', () => {
     it('sets the label from MATH_OPS definition', () => {
       useGraphStore.getState().addMathNode('multiply');
       const node = useGraphStore.getState().nodes[0];
-      expect(node.data.label).toBe(MATH_OPS['multiply'].label);
+      expect(node.data.templateName).toBe(MATH_OPS['multiply'].label);
+      expect(node.data.label).toMatch(/^multiply_\d+$/);
     });
 
     it.each([

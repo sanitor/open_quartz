@@ -250,16 +250,16 @@ describe('MathNode', () => {
     expect(handle.style.backgroundColor).toBe('transparent');
   });
 
-  it('falls back to data.label as symbol when mathOp is not in OP_SYMBOLS', () => {
-    // symbol = data.mathOp ? (OP_SYMBOLS[data.mathOp] ?? data.label) : '?'
+  it('falls back to templateName as symbol when mathOp is not in OP_SYMBOLS', () => {
+    // symbol = data.mathOp ? (OP_SYMBOLS[data.mathOp] ?? data.templateName ?? '?') : '?'
     // When mathOp is set but not in OP_SYMBOLS or MATH_OPS:
     // typeName = op?.label ?? 'Math' = 'Math' (op is undefined) → UPPERCASE → 'MATH'
-    // symbol = OP_SYMBOLS['unknownOp'] ?? data.label = 'Fallback'
-    // label = 'Fallback' → lowercase → 'fallback'
-    const props = makeMathProps({ mathOp: 'unknownOp', label: 'Fallback' });
+    // symbol = OP_SYMBOLS['unknownOp'] ?? data.templateName = 'Fallback'
+    // label = 'fallback_1' → lowercase → 'fallback_1'
+    const props = makeMathProps({ mathOp: 'unknownOp', label: 'fallback_1', templateName: 'Fallback' });
     render(<MathNode {...props} />);
     expect(screen.getByText('MATH')).toBeInTheDocument();
     expect(screen.getByText('Fallback')).toBeInTheDocument();
-    expect(screen.getByText('fallback')).toBeInTheDocument();
+    expect(screen.getByText('fallback_1')).toBeInTheDocument();
   });
 });
