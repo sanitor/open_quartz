@@ -35,6 +35,8 @@ export interface ShaderNodeData {
   label: string;
   /** Template/class name for the node type (e.g. "Resample", "Add"). Instance label is `label`. */
   templateName?: string;
+  /** When set, this node uses a predefined shader from the catalog; shaderCode is resolved at runtime. */
+  shaderTemplateId?: string;
   shaderCode: string;
   inputs: Port[];
   outputs: Port[];

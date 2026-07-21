@@ -13,6 +13,7 @@ import { SemSegSession } from './onnxSegSession';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
 import { MATH_OPS } from './mathOps';
+import { SHADER_TEMPLATES } from './predefinedShaders';
 
 type TextureSource =
   | { kind: 'fbo'; target: THREE.WebGLRenderTarget }
@@ -218,7 +219,10 @@ export class ExecutionEngine {
         const outFormat = node.data.outFormat;
         const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
 
-        const compiled = compileNodeShader(node.data.shaderCode, node.data.inputs, upstreamMap);
+        const shaderCode = node.data.shaderTemplateId
+          ? (SHADER_TEMPLATES.get(node.data.shaderTemplateId)?.code ?? node.data.shaderCode)
+          : node.data.shaderCode;
+        const compiled = compileNodeShader(shaderCode, node.data.inputs, upstreamMap);
         const material = compiled.material;
         const gl = this.renderer.getContext();
         const err = validateFragmentShader(gl, material.fragmentShader);

@@ -8,6 +8,7 @@ import {
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseShader } from '../engine/shaderParser';
+import { SHADER_TEMPLATES } from '../engine/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../engine/mathOps';
 import { ONNX_CATALOG } from '../engine/onnxCatalog';
 import type { CatalogEntry } from '../engine/onnxCatalog';
@@ -430,6 +431,9 @@ export const useGraphStore = create<GraphState>()(
       addShaderNode: (code, label, position) => {
         saveSnapshot();
         const node = makeNode('shader', position, undefined, code, label);
+        if (SHADER_TEMPLATES.has(label)) {
+          node.data.shaderTemplateId = label;
+        }
         set((state) => { state.nodes.push(node); });
       },
 

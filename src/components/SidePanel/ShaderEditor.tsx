@@ -10,9 +10,10 @@ import { glslCompletions } from '../../engine/shaderCompletions';
 interface ShaderEditorProps {
   code: string;
   onChange: (code: string) => void;
+  readOnly?: boolean;
 }
 
-export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
+export function ShaderEditor({ code, onChange, readOnly }: ShaderEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
 
@@ -34,13 +35,14 @@ export function ShaderEditor({ code, onChange }: ShaderEditorProps) {
         basicSetup,
         EditorView.lineWrapping,
         glsl(),
-        linter(glslLinter),
-        autocompletion({ override: [glslCompletions] }),
+        ...(readOnly
+          ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+          : [linter(glslLinter), autocompletion({ override: [glslCompletions] })]),
         EditorView.updateListener.of(onUpdate),
         EditorView.theme({
-          '&': { fontSize: '12px', backgroundColor: '#ffffff', height: '100%' },
+          '&': { fontSize: '12px', backgroundColor: readOnly ? '#f9f9f9' : '#ffffff', height: '100%' },
           '.cm-scroller': { fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace", overflow: 'auto' },
-          '.cm-gutters': { backgroundColor: '#fafafa', borderRight: '1px solid #e8e8ed' },
+          '.cm-gutters': { backgroundColor: readOnly ? '#f0f0f0' : '#fafafa', borderRight: '1px solid #e8e8ed' },
           '.cm-activeLineGutter': { backgroundColor: '#f0f0f0' },
           '.cm-activeLine': { backgroundColor: 'rgba(245, 245, 247, 0.5)' },
           '.cm-cursor': { borderLeftColor: '#007aff' },

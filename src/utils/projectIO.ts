@@ -2,8 +2,9 @@ import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import { checkIsTauri, tauriConvertFileSrc } from './tauri';
+import { SHADER_TEMPLATES } from '../engine/predefinedShaders';
 
-const CURRENT_VERSION = '0.3.0';
+const CURRENT_VERSION = '0.4.0';
 
 export function serializeProject(
   nodes: Node<ShaderNodeData>[],
@@ -20,6 +21,10 @@ export function serializeProject(
         const data = { ...n.data };
         if (data.inputMode === 'video') {
           delete data.videoUrl;
+        }
+        // Prebuilt shaders: strip code from project file (resolved at runtime)
+        if (data.shaderTemplateId) {
+          data.shaderCode = '';
         }
         return {
           id: n.id,
@@ -73,14 +78,22 @@ export async function deserializeProject(json: string): Promise<{
     throw new Error(`Incompatible project version: expected ${CURRENT_VERSION}, got ${project.version}`);
   }
 
-  const nodes: Node<ShaderNodeData>[] = project.graph.nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: n.position,
-    data: n.data,
-    selected: false,
-    dragging: false,
-  }));
+  const nodes: Node<ShaderNodeData>[] = project.graph.nodes.map((n) => {
+    const data = { ...n.data };
+    // Restore prebuilt shader code from catalog
+    if (data.shaderTemplateId && !data.shaderCode) {
+      const tpl = SHADER_TEMPLATES.get(data.shaderTemplateId);
+      if (tpl) data.shaderCode = tpl.code;
+    }
+    return {
+      id: n.id,
+      type: n.type,
+      position: n.position,
+      data,
+      selected: false,
+      dragging: false,
+    };
+  });
 
   const tauri = await checkIsTauri();
   if (tauri) {

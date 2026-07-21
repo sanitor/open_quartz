@@ -130,15 +130,16 @@ export function SidePanel() {
   // Build sections array based on node type
   const sections: { id: string; title: string; content: React.ReactNode; extra?: React.ReactNode; flexFill?: boolean }[] = [];
 
-  // --- SHADER EDITOR (shader nodes only) ---
+  // --- SHADER EDITOR (editable for custom, read-only for prebuilt) ---
   if (data.type === 'shader') {
+    const isPrebuilt = !!data.shaderTemplateId;
     sections.push({
       id: 'editor',
-      title: 'SHADER EDITOR',
+      title: isPrebuilt ? 'SHADER (READ-ONLY)' : 'SHADER EDITOR',
       flexFill: true,
       content: (
         <div className="flex-1 overflow-hidden">
-          <ShaderEditor key={selectedNodeId} code={data.shaderCode} onChange={handleShaderChange} />
+          <ShaderEditor key={selectedNodeId} code={data.shaderCode} onChange={handleShaderChange} readOnly={isPrebuilt} />
         </div>
       ),
     });
