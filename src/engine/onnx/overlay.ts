@@ -1,5 +1,11 @@
 import * as THREE from 'three';
-import type { OnnxDetection } from './onnxSession';
+
+export interface OnnxDetection {
+  bbox: [number, number, number, number];
+  score: number;
+  class_id: number;
+  class_name: string;
+}
 
 const CLASS_HUE_STEP = 47; // co-prime with 360, gives good visual separation
 

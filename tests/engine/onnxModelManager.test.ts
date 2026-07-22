@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { CatalogEntry } from '../../src/catalog/onnxCatalog';
-import type { ModelState } from '../../src/engine/onnxModelManager';
+import type { ModelState } from '../../src/engine/onnx/modelManager';
 
 // Ensure non-Tauri path: isTauri is `'__TAURI_INTERNALS__' in window`
 // evaluated at module load. jsdom doesn't set it, but be explicit.
 delete (window as Record<string, unknown>).__TAURI_INTERNALS__;
 
-import { OnnxModelManager } from '../../src/engine/onnxModelManager';
+import { OnnxModelManager } from '../../src/engine/onnx/modelManager';
 
 function makeCatalogEntry(overrides: Partial<CatalogEntry> = {}): CatalogEntry {
   return {

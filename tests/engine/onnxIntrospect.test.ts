@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { OnnxModelMeta } from '../../src/engine/onnxIntrospect';
-import { inferTaskFromMeta, metaToDefaultPorts } from '../../src/engine/onnxIntrospect';
+import type { OnnxModelMeta } from '../../src/engine/onnx/introspect';
+import { inferTaskFromMeta, metaToDefaultPorts } from '../../src/engine/onnx/introspect';
 
 // ---------------------------------------------------------------------------
 // Helpers

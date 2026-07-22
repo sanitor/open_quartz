@@ -4,9 +4,9 @@
 // so we import only the *types* from the package for compile-time safety.
 
 import type * as OrtModule from 'onnxruntime-web';
-import type { Port } from '../types';
-import type { OnnxTask } from '../catalog/onnxCatalog';
-import { ensureOrtLoaded } from './onnxInference';
+import type { Port } from '../../types';
+import type { OnnxTask } from '../../catalog/onnxCatalog';
+import { ensureOrtLoaded } from './inference';
 
 declare const ort: typeof OrtModule;
 

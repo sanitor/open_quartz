@@ -138,9 +138,6 @@ vi.mock('../../src/catalog/onnxRegistry', () => ({
   },
   DEFAULT_ONNX_MODEL_ID: 'yolov8n',
 }));
-vi.mock('../../src/engine/onnxSession', () => ({
-  OnnxSession: vi.fn(),
-}));
 vi.mock('../../src/engine/onnxOverlay', () => ({
   drawDetectionOverlay: vi.fn(() => ({
     texture: { type: 1, dispose: vi.fn() },

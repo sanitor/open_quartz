@@ -99,9 +99,6 @@ vi.mock('../../src/catalog/onnxRegistry', () => ({
   ONNX_MODELS: {},
   DEFAULT_ONNX_MODEL_ID: 'yolov8n',
 }));
-vi.mock('../../src/engine/onnxSession', () => ({
-  OnnxSession: vi.fn(),
-}));
 vi.mock('../../src/engine/onnxOverlay', () => ({
   drawDetectionOverlay: vi.fn(),
 }));

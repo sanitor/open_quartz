@@ -5,8 +5,8 @@ import {
   nms,
   detectPostprocess,
   COCO_CLASSES,
-} from '../../src/engine/yoloDetectionPostprocess';
-import type { Detection } from '../../src/engine/yoloDetectionPostprocess';
+} from '../../src/engine/onnx/yoloDetectionPostprocess';
+import type { Detection } from '../../src/engine/onnx/yoloDetectionPostprocess';
 
 // ---------------------------------------------------------------------------
 // Helpers — build a minimal [1, 84, 8400] tensor with known detections

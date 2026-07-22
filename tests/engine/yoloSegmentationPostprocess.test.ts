@@ -6,7 +6,7 @@ import {
   segmentPostprocess,
   CITYSCAPES_PALETTE,
   CITYSCAPES_CLASSES,
-} from '../../src/engine/yoloSegmentationPostprocess';
+} from '../../src/engine/onnx/yoloSegmentationPostprocess';
 
 // ---------------------------------------------------------------------------
 // Helpers — build a [1, C, H, W] logits tensor

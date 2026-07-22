@@ -9,8 +9,8 @@ import { parseShader } from '../engine/shaderParser';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
-import { OnnxInferenceSession } from '../engine/onnxInference';
-import { introspectOnnxModel, metaToDefaultPorts } from '../engine/onnxIntrospect';
+import { OnnxInferenceSession } from '../engine/onnx/inference';
+import { introspectOnnxModel, metaToDefaultPorts } from '../engine/onnx/introspect';
 import type { GraphState } from './index';
 import {
   counters,

@@ -59,7 +59,7 @@ import {
   MIN_TILE,
   resetProvenTileSize,
   resetOrtLoad,
-} from '../../src/engine/onnxInference';
+} from '../../src/engine/onnx/inference';
 
 // ---------------------------------------------------------------------------
 // Helpers

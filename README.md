@@ -115,11 +115,8 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 
 ```bash
 npm install
-npm run build:wasm     # builds ONNX wasm bridge (requires wasm-pack)
 npm run dev
 ```
-
-> **Note:** `build:wasm` is required before first run. `wasm-pack` install: `cargo install wasm-pack`
 
 Open http://localhost:5173 in your browser. See `docs/` for architecture and design documents.
 

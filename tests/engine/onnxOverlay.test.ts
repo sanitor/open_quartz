@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { OnnxDetection } from '../../src/engine/onnxSession';
+import type { OnnxDetection } from '../../src/engine/onnx/overlay';
 
 // Mock three's CanvasTexture — mirror the executionEngine.test.ts style.
 vi.mock('three', () => ({
@@ -14,7 +14,7 @@ vi.mock('three', () => ({
   },
 }));
 
-import { drawDetectionOverlay, drawSegmentationOverlay } from '../../src/engine/onnxOverlay';
+import { drawDetectionOverlay, drawSegmentationOverlay } from '../../src/engine/onnx/overlay';
 
 interface MeasureTextResult { width: number }
 

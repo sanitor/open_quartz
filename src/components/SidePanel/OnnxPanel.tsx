@@ -3,7 +3,7 @@ import { useGraphStore } from '../../store/useGraphStore';
 import { ONNX_MODELS } from '../../catalog/onnxRegistry';
 import { ONNX_CATALOG } from '../../catalog/onnxCatalog';
 import type { CatalogEntry } from '../../catalog/onnxCatalog';
-import type { OnnxDetection } from '../../engine/onnxSession';
+import type { OnnxDetection } from '../../engine/onnx/overlay';
 import type { OnnxModelDescriptor } from '../../catalog/onnxRegistry';
 
 interface OnnxDetectionsPayload {

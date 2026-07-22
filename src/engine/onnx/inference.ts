@@ -1,8 +1,8 @@
-// onnxInference.ts — Generic TypeScript ORT inference session.
+// onnxInference.ts — TypeScript ORT inference session + task-specific codecs.
 //
-// Unlike the Rust wasm path (onnxSession.ts / YoloDetectorWasm), this runs
-// directly against `globalThis.ort` (onnxruntime-web loaded via <script>).
-// Used for non-YOLO tasks: super-resolution, background removal, depth, etc.
+// Runs against `globalThis.ort` (onnxruntime-web loaded via <script>).
+// Handles all ONNX tasks: super-resolution, background removal, depth,
+// detection (YOLO decode+NMS), segmentation (argmax+colorize), and custom.
 
 import type * as OrtModule from 'onnxruntime-web';
 
@@ -646,4 +646,107 @@ export async function runGenericImageToImage(
     ? { ...ycbcrCodec, fixedSize }
     : { ...rgbCodec, fixedSize };
   return runTiledInference(session, rgba, width, height, scale, codec);
+}
+
+// ---------------------------------------------------------------------------
+// Detection (replaces Rust WASM yolo-detector)
+// ---------------------------------------------------------------------------
+
+import { detectPostprocess } from './yoloDetectionPostprocess';
+import type { Detection } from './yoloDetectionPostprocess';
+import { segmentPostprocess } from './yoloSegmentationPostprocess';
+import type { SegmentationResult } from './yoloSegmentationPostprocess';
+
+/**
+ * Letterbox-resize RGBA pixels to `targetSize × targetSize`, returning the
+ * float32 tensor [1, 3, targetSize, targetSize] plus letterbox parameters.
+ */
+function letterboxPreprocess(
+  rgba: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  targetSize: number,
+): { tensor: Float32Array; scale: number; padX: number; padY: number } {
+  const scale = Math.min(targetSize / srcW, targetSize / srcH);
+  const newW = Math.round(srcW * scale);
+  const newH = Math.round(srcH * scale);
+  const padX = (targetSize - newW) / 2;
+  const padY = (targetSize - newH) / 2;
+
+  // Create an offscreen canvas for the resize
+  const canvas = document.createElement('canvas');
+  canvas.width = targetSize;
+  canvas.height = targetSize;
+  const ctx = canvas.getContext('2d')!;
+
+  // Fill with gray (114/255 ≈ 0.447, standard YOLO letterbox fill)
+  ctx.fillStyle = 'rgb(114,114,114)';
+  ctx.fillRect(0, 0, targetSize, targetSize);
+
+  // Draw source image rescaled into the content area
+  // We need to put the RGBA data onto a temp canvas first
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = srcW;
+  srcCanvas.height = srcH;
+  const srcCtx = srcCanvas.getContext('2d')!;
+  srcCtx.putImageData(new ImageData(rgba, srcW, srcH), 0, 0);
+
+  ctx.drawImage(srcCanvas, Math.round(padX), Math.round(padY), newW, newH);
+
+  // Read back as RGBA, convert to float32 [1, 3, H, W] (RGB, 0-255 range for YOLO)
+  const imgData = ctx.getImageData(0, 0, targetSize, targetSize).data;
+  const tensor = new Float32Array(3 * targetSize * targetSize);
+  for (let y = 0; y < targetSize; y++) {
+    for (let x = 0; x < targetSize; x++) {
+      const srcIdx = (y * targetSize + x) * 4;
+      const dstIdx = y * targetSize + x;
+      tensor[0 * targetSize * targetSize + dstIdx] = imgData[srcIdx];       // R
+      tensor[1 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 1];   // G
+      tensor[2 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 2];   // B
+    }
+  }
+
+  return { tensor, scale, padX, padY };
+}
+
+/**
+ * Run YOLO object detection on RGBA pixel data.
+ * Uses TS ORT for inference + TS postprocess (decode + NMS).
+ * Replaces the Rust WASM `YoloDetectorWasm` path.
+ */
+export async function runDetection(
+  session: OnnxInferenceSession,
+  rgba: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  targetSize = 640,
+  scoreThreshold = 0.25,
+  iouThreshold = 0.45,
+): Promise<{ detections: Detection[]; width: number; height: number }> {
+  const { tensor, scale, padX, padY } = letterboxPreprocess(rgba, srcW, srcH, targetSize);
+  const rawOutput = await session.run(tensor, [1, 3, targetSize, targetSize]);
+  const detections = detectPostprocess(rawOutput, srcW, srcH, scale, padX, padY, scoreThreshold, iouThreshold);
+  return { detections, width: srcW, height: srcH };
+}
+
+// ---------------------------------------------------------------------------
+// Segmentation (replaces Rust WASM yolo-sem)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run YOLO semantic segmentation on RGBA pixel data.
+ * Uses TS ORT for inference + TS postprocess (argmax + colorize).
+ * Replaces the Rust WASM `YoloSemWasm` path.
+ */
+export async function runSegmentation(
+  session: OnnxInferenceSession,
+  rgba: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  targetSize = 640,
+): Promise<{ segmentation: SegmentationResult; width: number; height: number }> {
+  const { tensor, scale, padX, padY } = letterboxPreprocess(rgba, srcW, srcH, targetSize);
+  const rawOutput = await session.run(tensor, [1, 3, targetSize, targetSize]);
+  const segmentation = segmentPostprocess(rawOutput, srcW, srcH, scale, padX, padY);
+  return { segmentation, width: srcW, height: srcH };
 }

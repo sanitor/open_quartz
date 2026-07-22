@@ -16,8 +16,6 @@
     "test:coverage": "vitest run --coverage",
     "test:models": "vitest run --config vitest.functional.config.ts",
     "test:shaders": "vitest run --config vitest.shaders.config.ts",
-    "build:wasm": "wasm-pack build rust/crates/yolo-detector --target web --release --out-dir pkg",
-    "build:wasm:seg": "wasm-pack build rust/crates/yolo-sem --target web --release --out-dir pkg",
     "copy:ort": "node scripts/copy-ort.mjs",
     "clean": "rm -rf dist node_modules/.vite src-tauri/target"
   },

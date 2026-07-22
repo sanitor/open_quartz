@@ -5,13 +5,12 @@ import type { FrameInputs } from './compositor';
 import { WebGLRenderer } from './webglRenderer';
 import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
-import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from '../catalog/onnxRegistry';
+import { DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { modelManager } from '../store/helpers';
-import { OnnxSession, type OnnxDetection } from './onnxSession';
-import { SemSegSession } from './onnxSegSession';
-import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
-import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
+import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage, runDetection, runSegmentation } from './onnx/inference';
+import { COCO_CLASSES } from './onnx/yoloDetectionPostprocess';
+import { drawDetectionOverlay, drawSegmentationOverlay } from './onnx/overlay';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import {
   type TextureSource,
@@ -415,17 +414,17 @@ export class ExecutionEngine {
       }
 
       if (catalogEntry && catalogEntry.task === 'segmentation') {
-        const descriptor = ONNX_MODELS[modelId];
-        if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
-        const session = await this.getSemSegSession(descriptor);
-        const result = await session.run(sourceCanvas, srcW, srcH);
-        const seg = result.segmentation;
-        const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
-        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
-        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
-        this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
+        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
+          async (s, _d, w, h) => {
+            const ctx = sourceCanvas.getContext('2d');
+            if (!ctx) throw new Error('Cannot get 2d context');
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const result = await runSegmentation(s, imgData.data, w, h, catalogEntry.targetSize ?? 640);
+            const seg = result.segmentation;
+            this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
+            const overlay = drawSegmentationOverlay(sourceCanvas, w, h, seg.maskRgba, seg.maskW, seg.maskH);
+            return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
+          });
         return;
       }
 
@@ -436,26 +435,25 @@ export class ExecutionEngine {
         return;
       }
 
-      // Catalog detection models: Rust wasm path
-      const descriptor = ONNX_MODELS[modelId];
-      if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
-
-      const session = await this.getOnnxSession(descriptor);
-      if (node.data.onnxScoreThreshold !== undefined && node.data.onnxIouThreshold !== undefined) {
-        session.setThresholds(node.data.onnxScoreThreshold, node.data.onnxIouThreshold);
-      }
-
-      const result = await session.run(sourceCanvas, srcW, srcH);
-      const detections: OnnxDetection[] = result.detections;
-
-      const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
-
-      plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
-      this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
-
-      this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
-      this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
-      this.onnxCallbacks.onOutputData?.(nodeId, { detections });
+      // Detection models: TS ORT + TS postprocess (replaces Rust WASM)
+      await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
+        async (s, _d, w, h) => {
+          const ctx = sourceCanvas.getContext('2d');
+          if (!ctx) throw new Error('Cannot get 2d context');
+          const imgData = ctx.getImageData(0, 0, w, h);
+          const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
+          const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
+          const result = await runDetection(s, imgData.data, w, h, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
+          const detections = result.detections.map(d => ({
+            bbox: d.bbox as [number, number, number, number],
+            score: d.score,
+            class_id: d.classId,
+            class_name: COCO_CLASSES[d.classId] ?? 'unknown',
+          }));
+          this.onnxCallbacks.onOutputData?.(nodeId, { detections });
+          const overlay = drawDetectionOverlay(sourceCanvas, w, h, detections);
+          return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
+        });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`ONNX error for node ${nodeId}:`, msg);
@@ -954,24 +952,39 @@ export class ExecutionEngine {
             await runTsOrt((s, d, w, h) => runBackgroundRemoval(s, d, w, h, modelId));
           } else if (catalogEntry && catalogEntry.task === 'depth-estimation') {
             await runTsOrt((s, d, w, h) => runDepthEstimation(s, d, w, h));
+          } else if (catalogEntry && catalogEntry.task === 'segmentation') {
+            await runTsOrt(async (s, _d, w, h) => {
+              const ctx2 = sourceCanvas.getContext('2d');
+              if (!ctx2) throw new Error('Cannot get 2d context');
+              const imgD = ctx2.getImageData(0, 0, w, h);
+              const segResult = await runSegmentation(s, imgD.data, w, h, catalogEntry.targetSize ?? 640);
+              const seg = segResult.segmentation;
+              onOutputData?.(nodeId, { segmentation: seg });
+              const overlay = drawSegmentationOverlay(sourceCanvas, w, h, seg.maskRgba, seg.maskW, seg.maskH);
+              return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
+            });
           } else if (node.data.onnxSource === 'custom' || !catalogEntry) {
             // Custom or generic: full-image inference, output dims from tensor
             await runTsOrt((s, d, w, h) => runGenericImageToImage(s, d, w, h));
           } else {
-            // Catalog detection models: Rust wasm path
-            const descriptor = ONNX_MODELS[modelId];
-            if (!descriptor) throw new Error(`Unknown ONNX model: ${modelId}`);
-            const session = await this.getOnnxSession(descriptor);
-            if (node.data.onnxScoreThreshold !== undefined && node.data.onnxIouThreshold !== undefined) {
-              session.setThresholds(node.data.onnxScoreThreshold, node.data.onnxIouThreshold);
-            }
-            const result = await session.run(sourceCanvas, srcW, srcH);
-            const detections: OnnxDetection[] = result.detections;
-            const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
-            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
-            onOutput?.(nodeId, overlay.dataUrl);
-            onOutputSize?.(nodeId, srcW, srcH);
-            onOutputData?.(nodeId, { detections });
+            // Detection models: TS ORT + TS postprocess
+            await runTsOrt(async (s, _d, w, h) => {
+              const ctx2 = sourceCanvas.getContext('2d');
+              if (!ctx2) throw new Error('Cannot get 2d context');
+              const imgD = ctx2.getImageData(0, 0, w, h);
+              const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
+              const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
+              const detResult = await runDetection(s, imgD.data, w, h, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
+              const detections = detResult.detections.map(d => ({
+                bbox: d.bbox as [number, number, number, number],
+                score: d.score,
+                class_id: d.classId,
+                class_name: COCO_CLASSES[d.classId] ?? 'unknown',
+              }));
+              onOutputData?.(nodeId, { detections });
+              const overlay = drawDetectionOverlay(sourceCanvas, w, h, detections);
+              return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
+            });
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -985,81 +998,13 @@ export class ExecutionEngine {
     }
   }
 
-  private onnxSessions = new Map<string, OnnxSession>();
-  private onnxBlobUrls = new Map<string, string>();
-
-  private async getOnnxSession(descriptor: OnnxModelDescriptor): Promise<OnnxSession> {
-    const existing = this.onnxSessions.get(descriptor.id);
-    if (existing) {
-      if (existing.status !== 'ready') await existing.init();
-      return existing;
-    }
-
-    // Try to get model buffer from the model manager (catalog download).
-    // If available, create a blob URL so the Rust wasm bridge can fetch it.
-    let effectiveDescriptor = descriptor;
-    const catalogEntry = ONNX_CATALOG[descriptor.id];
-    if (catalogEntry) {
-      const buffer = await modelManager.loadCachedModel(descriptor.id);
-      if (buffer) {
-        const blob = new Blob([buffer], { type: 'application/octet-stream' });
-        const blobUrl = URL.createObjectURL(blob);
-        this.onnxBlobUrls.set(descriptor.id, blobUrl);
-        effectiveDescriptor = { ...descriptor, modelUrl: blobUrl };
-      }
-    }
-
-    const session = new OnnxSession(effectiveDescriptor);
-    this.onnxSessions.set(descriptor.id, session);
-    await session.init();
-    return session;
-  }
-
-  private semSegSessions = new Map<string, SemSegSession>();
-
-  private async getSemSegSession(descriptor: OnnxModelDescriptor): Promise<SemSegSession> {
-    const existing = this.semSegSessions.get(descriptor.id);
-    if (existing) {
-      if (existing.status !== 'ready') await existing.init();
-      return existing;
-    }
-
-    let modelUrl = descriptor.modelUrl;
-    const catalogEntry = ONNX_CATALOG[descriptor.id];
-    if (catalogEntry) {
-      const buffer = await modelManager.loadCachedModel(descriptor.id);
-      if (buffer) {
-        const blob = new Blob([buffer], { type: 'application/octet-stream' });
-        const blobUrl = URL.createObjectURL(blob);
-        this.onnxBlobUrls.set(descriptor.id, blobUrl);
-        modelUrl = blobUrl;
-      }
-    }
-
-    const session = new SemSegSession(modelUrl, descriptor.targetSize);
-    this.semSegSessions.set(descriptor.id, session);
-    await session.init();
-    return session;
-  }
 
   stop() {
     this.running = false;
-    for (const s of this.onnxSessions.values()) {
-      try { s.dispose(); } catch { /* ignore */ }
-    }
-    this.onnxSessions.clear();
     for (const s of this.tsOrtSessions.values()) {
       try { s.dispose(); } catch { /* ignore */ }
     }
     this.tsOrtSessions.clear();
-    for (const s of this.semSegSessions.values()) {
-      try { s.dispose(); } catch { /* ignore */ }
-    }
-    this.semSegSessions.clear();
-    for (const url of this.onnxBlobUrls.values()) {
-      URL.revokeObjectURL(url);
-    }
-    this.onnxBlobUrls.clear();
     this.onnxOutputCache.clear();
     this.renderer?.clearResources();
   }
