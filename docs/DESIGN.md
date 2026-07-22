@@ -1,24 +1,20 @@
-# OpenQuartz — 硬件加速图像视频处理图编辑器
+# OpenQuartz — 实时异构视频管线编辑框架
 
-> Version 0.11.0b — 受 Apple Quartz Composer 启发的可视化节点图编辑与运行环境
+> Version 0.11.0b — GPU shaders, neural networks, and CPU math in one reactive graph
 
 ---
 
 ## 1. 项目概述
 
-OpenQuartz 是一个基于 Web 的硬件加速图像和视频处理节点图编辑器与运行环境，受 Apple Quartz Composer 和 Shadertoy 启发。
-- 用户通过**节点图（DAG）**组织 GLSL shader 片段
-- 每个节点是一个可编程的 shader 处理单元
-- **Shader 即接口声明**：解析 GLSL `uniform` 自动生成输入端口，`out` 生成输出端口
-- 输入输出可互相连接，类型校验
-- 支持**工程文件保存/载入**：整个图结构 + 节点状态 + 输入值 + 图片数据序列化为 `.quartz.json` 文件
-- **实时渲染循环**：rAF 驱动的 Host/Compositor 架构，PLAY/PAUSE/STOP 三态控制
-- **Renderer 节点**：显式输出查看器（QC 的 QCView 等价物），直接读取上游 FBO 显示
-- **视频输入**：摄像头与文件视频作为 sampler2D 纹理源
-- **ONNX 推理节点**：异步机器学习推理，非阻塞，best-effort 延迟
-- **时间系统**：Shadertoy 兼容的 iTime/iTimeDelta/iFrame/iDate/iMouse/iResolution 内置 uniform
-- **Feedback/Accumulator**：shader 通过 `previousFrame` 隐式声明式读取自身上一帧输出，引擎自动启用 ping-pong 双缓冲
+OpenQuartz 是一个基于 Web 的实时异构视频管线编辑框架，受 Apple Quartz Composer、Shadertoy 和 chaiNNer 启发。
 
+- **异构计算**：GPU shader（WebGL2）、ONNX 神经网络推理（WebGPU/WASM）、CPU 数学运算，三种执行后端统一在一个可视化节点图（DAG）中
+- **实时管线**：rAF 驱动的 Host/Compositor 架构，60fps interactive frame rate
+- **Shader 即接口声明**：解析 GLSL `uniform` 自动生成输入端口，`out` 生成输出端口
+- **Feedback/Accumulator**：shader 通过 `previousFrame` 隐式声明式读取自身上一帧输出，引擎自动启用 ping-pong 双缓冲
+- 支持摄像头/视频文件/图片/原始 framebuffer 作为输入源
+- 支持**工程文件保存/载入**：`.quartz.json` 格式
+- Tauri 2 桌面端（macOS/Windows）+ 纯 Web 浏览器模式
 ---
 
 ## 2. 交互设计原则
@@ -381,79 +377,263 @@ updateGraph(nodes, edges):
 
 ---
 
-## 10. 当前目录结构
+## 10. 软件架构
+
+### 10.1 现状问题
+
+当前代码库 10,320 行 / 54 文件，存在以下架构问题：
+
+| 问题 | 症状 |
+|------|------|
+| **God Store** | `useGraphStore.ts`（756 行）混合图 CRUD、ONNX 模型管理、undo/redo、播放控制、项目 I/O、UI 选中状态。直接 import 8 个 engine 模块 |
+| **God Engine** | `executionEngine.ts`（1,266 行）单体类：shader 编译、4 种 ONNX 推理路径、math 求值、纹理管理、feedback buffer、preview readback、renderer 输出 |
+| **Engine → Store 反向依赖** | `executionEngine.ts` import `useGraphStore` 在异步 ONNX 推理中读写 node data（`onnxBackend`）。引擎不应知道 store 存在 |
+| **无 pipeline 抽象** | 执行是 topo-sort 后一个 `for` 循环 + `if (type === 'shader') ... else if (type === 'onnx') ...` 分支。无可插拔 executor 接口。ONNX 异步用 `Set<string>` 手动跟踪 |
+| **UI 直接 import engine** | Header → shaders/onnxCatalog/mathOps，SidePanel → onnxRegistry/onnxSession。无 service 层隔离 |
+
+### 10.2 目标架构
 
 ```
-open-quartz/
-├── DESIGN.md
-├── CHANGELOG.md
-├── index.html
-├── package.json
-├── vite.config.ts
-├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
-├── src-tauri/                        ← Tauri 桌面端（可选）
-│   ├── tauri.conf.json
-│   └── Cargo.toml
-├── src/
-│   ├── main.tsx
-│   ├── App.tsx                       ← RealtimeHost 生命周期管理
-│   ├── index.css                     ← Tailwind 入口 + React Flow 样式重置
-│   ├── version.ts                    ← 版本号
-│   ├── components/
-│   │   ├── Header.tsx                ← macOS 菜单栏 + PLAY/PAUSE/STOP + FPS
-│   │   ├── NodeGraph/
-│   │   │   ├── index.tsx             ← ReactFlow 容器
-│   │   │   └── nodes/
-│   │   │       ├── ShaderNode.tsx
-│   │   │       ├── InputNode.tsx
-│   │   │       ├── OnnxNode.tsx      ← ONNX 推理节点
-│   │   │       ├── RendererNode.tsx  ← 输出查看器（mirror canvas blit）
-│   │   │       └── MathNode.tsx      ← CPU 运算节点（auto 类型推定）
-│   │   ├── SidePanel/
-│   │   │   ├── index.tsx
-│   │   │   ├── ShaderEditor.tsx      ← CodeMirror 6
-│   │   │   ├── PortInspector.tsx     ← uniform 编辑 + builtin AUTO 徽章
-│   │   │   └── OnnxPanel.tsx         ← ONNX 模型参数
-│   │   └── ImageLightbox.tsx
-│   ├── engine/
-│   │   ├── realtimeHost.ts           ← rAF 循环 + Clock/Mouse/Video 管理
-│   │   ├── compositor.ts             ← 组合器：包装 ExecutionEngine
-│   │   ├── clock.ts                  ← 时钟：iTime/iTimeDelta/iFrame/iDate/fps
-│   │   ├── mouseState.ts             ← 鼠标状态：iMouse（Shadertoy 约定）
-│   │   ├── videoSource.ts            ← 视频源：HTMLVideoElement → THREE.VideoTexture
-│   │   ├── executionEngine.ts        ← 执行引擎：编译/FBO 分配/逐帧渲染
-│   │   ├── shaderParser.ts           ← 正则解析 GLSL
-│   │   ├── shaderCompiler.ts         ← RawShaderMaterial 编译 + previousFrame 自动检测
-│   │   ├── graphExecutor.ts          ← 拓扑排序
-│   │   ├── webglRenderer.ts          ← Three.js FBO 管线
-│   │   ├── mathOps.ts                ← 29 个数学运算注册表
-│   │   ├── onnxRegistry.ts           ← ONNX 模型注册表
-│   │   ├── onnxSession.ts            ← ONNX Runtime 会话管理
-│   │   ├── onnxOverlay.ts            ← ONNX 检测结果叠加渲染
-│   │   ├── predefinedShaders.ts      ← 预设 shader
-│   │   ├── shaderLinter.ts           ← Shader 语法检查
-│   │   └── shaderCompletions.ts      ← Shader 自动补全
-│   │   └── shaders/
-│   │       ├── index.ts              ← shader 组注册表
-│   │       ├── filter.ts
-│   │       ├── color.ts
-│   │       ├── generator.ts
-│   │       ├── blend.ts
-│   │       ├── distortion.ts
-│   │       ├── templates.ts
-│   │       └── feedback.ts           ← 隐式声明式反馈预设 shader
-│   ├── store/
-│   │   └── useGraphStore.ts          ← Zustand 全局状态
-│   ├── utils/
-│   │   ├── graphUtils.ts
-│   │   ├── projectIO.ts              ← 序列化/反序列化
-│   │   ├── rawPreview.ts             ← 原始数据预览
-│   │   └── tauri.ts                  ← Tauri 文件路径转换
-│   └── types/
-│       └── index.ts                  ← 类型定义 + DATA_TYPE_COLORS
+src/
+├── types/                  ← 纯类型，零运行时依赖
+│
+├── catalog/                ← 静态注册表（纯数据，无副作用）
+│   ├── shaders/            shader presets: ShaderEntry[]
+│   ├── onnx.ts             ONNX 模型目录: CatalogEntry[]
+│   └── math.ts             Math 运算库: MathOp[]
+│
+├── runtime/                ← 执行引擎（纯逻辑，禁止 import store/components）
+│   ├── pipeline/
+│   │   ├── Pipeline.ts         响应式管线：graph diff → 增量 plan → dirty-set 执行
+│   │   ├── NodeExecutor.ts     interface NodeExecutor { prepare, execute, dispose }
+│   │   ├── ShaderExecutor.ts   implements NodeExecutor — shader 编译 + FBO 渲染
+│   │   ├── OnnxExecutor.ts     implements NodeExecutor — 异步推理 + 结果缓存
+│   │   ├── MathExecutor.ts     implements NodeExecutor — CPU 运算
+│   │   └── RendererExecutor.ts implements NodeExecutor — blit to screen
+│   ├── gpu/
+│   │   ├── WebGLBackend.ts     Three.js renderer + render target 生命周期
+│   │   └── TexturePool.ts      引用计数的 FBO/texture 缓存
+│   ├── onnx/
+│   │   ├── ModelManager.ts     模型下载 + buffer 缓存
+│   │   ├── InferenceSession.ts ORT 会话管理
+│   │   ├── Introspect.ts       模型 I/O 元数据提取
+│   │   └── Overlay.ts          检测/分割结果可视化
+│   ├── Scheduler.ts            frame loop + async work tracking
+│   ├── Clock.ts
+│   └── MouseState.ts
+│
+├── store/                  ← Zustand slices，只存 UI/graph 状态
+│   ├── graphSlice.ts       nodes, edges, CRUD, undo/redo
+│   ├── transportSlice.ts   play/pause/stop, fps, currentTime
+│   ├── projectSlice.ts     projectName, savedFilePath
+│   ├── uiSlice.ts          selectedNodeId, activeRendererId, previews, nodeErrors
+│   └── index.ts            combine slices → useGraphStore
+│
+├── services/               ← 胶水层：store ↔ runtime 的唯一桥接
+│   ├── PipelineService.ts  subscribe(store) → drive Pipeline
+│   └── OnnxService.ts      model download/probe → update store
+│
+├── components/             ← 纯 UI，只 import store + catalog
+│   ├── Header.tsx
+│   ├── SidePanel/
+│   ├── NodeGraph/
+│   └── ImageLightbox.tsx
+│
+├── utils/
+└── App.tsx                 ← 挂载 PipelineService + layout
 ```
 
----
+### 10.3 分层依赖规则
+
+```
+types  ←  catalog  ←  runtime  ←  services  ←  App
+                                      ↕
+                                    store  ←  components
+```
+
+| 层 | 可 import | 禁止 import | 职责 |
+|----|-----------|------------|------|
+| **types** | — | 任何运行时模块 | 纯 TypeScript 类型定义 |
+| **catalog** | types | runtime, store, components | 静态数据注册表：shader 预设、ONNX 目录、math 运算表 |
+| **runtime** | types, catalog | store, components, react | 管线执行引擎：编译、渲染、推理、调度。通过回调接口输出结果，不知道 store 存在 |
+| **store** | types, catalog | runtime, components | Zustand 状态切片：图数据、传输控制、项目元数据、UI 状态 |
+| **services** | types, catalog, runtime, store | components | 桥接层：订阅 store 变化驱动 runtime，将 runtime 回调写回 store |
+| **components** | types, catalog, store | runtime | React UI 组件：只读/写 store，不直接接触引擎 |
+
+### 10.4 响应式管线设计
+
+当前 `ExecutionEngine.runFrame()` 是命令式 for 循环：每帧遍历全部节点，按类型 if/else 分支。目标是改为**增量响应式管线**——只执行变脏的节点，通过可插拔 executor 接口消除类型分支。
+
+#### NodeExecutor 接口
+
+```typescript
+interface NodeExecutor {
+  /** 编译/初始化（graph 变更时调用）。返回该节点的 port 签名 */
+  prepare(node: NodeDescriptor, backend: WebGLBackend): PrepareResult;
+
+  /** 每帧执行。inputs 是上游节点的输出，按 port name 索引 */
+  execute(inputs: Map<string, TextureSource | number>, frameInputs: FrameInputs): ExecuteResult;
+
+  /** 释放 GPU 资源 */
+  dispose(): void;
+}
+
+// 每种节点类型注册一个 executor
+const EXECUTORS: Record<NodeType, () => NodeExecutor> = {
+  shader:   () => new ShaderExecutor(),
+  onnx:     () => new OnnxExecutor(),
+  math:     () => new MathExecutor(),
+  renderer: () => new RendererExecutor(),
+  input:    () => new InputExecutor(),
+  constant: () => new ConstantExecutor(),
+};
+```
+
+#### 增量执行（Dirty-Set）
+
+```typescript
+class Pipeline {
+  private executors = new Map<string, NodeExecutor>();
+  private dirty = new Set<string>();
+  private outputs = new Map<string, TextureSource>();
+  private topo: string[] = [];        // 缓存的拓扑序
+
+  /** graph 变更 → diff → 增量更新 executor 实例 */
+  updateGraph(nodes, edges): void {
+    // 1. 新增节点 → 创建 executor + prepare
+    // 2. 删除节点 → dispose executor
+    // 3. 变更节点 → re-prepare
+    // 4. 重算拓扑序
+    // 5. 标脏所有受影响节点
+  }
+
+  /** 输入变化（视频帧、uniform 编辑）→ 标脏下游 */
+  markDirty(nodeId: string): void {
+    this.dirty.add(nodeId);
+    for (const downstream of this.dependents(nodeId)) {
+      this.dirty.add(downstream);
+    }
+  }
+
+  /** 每帧：只跑 dirty 节点，按拓扑序 */
+  tick(inputs: FrameInputs): void {
+    for (const id of this.topo) {
+      if (!this.dirty.has(id)) continue;
+      const executor = this.executors.get(id)!;
+      const nodeInputs = this.gatherInputs(id);
+      const result = executor.execute(nodeInputs, inputs);
+      this.outputs.set(id, result);
+    }
+    this.dirty.clear();
+  }
+}
+```
+
+**好处**：
+- 静态管线（无时间变量）在首帧后 dirty set 为空，零 GPU 开销
+- 编辑 uniform 只标脏该节点及其下游，上游不受影响
+- ONNX 异步完成后，`markDirty(onnxNodeId)` 触发下游增量更新
+- 新增节点类型只需实现 `NodeExecutor`，不改 Pipeline 核心
+
+**vs RxJS**：考虑过 RxJS Observable Graph（每个 node = `Observable<TextureSource>`，edges = `pipe`/`combineLatest`），但 60fps 实时管线中 Observable 的 per-frame allocation 和 WebGL 同步渲染语义不搭。Dirty-set 方案零外部依赖、零分配、复杂度可控。
+
+### 10.5 Store 切片设计
+
+将单体 `useGraphStore`（756 行）拆为 4 个职责单一的 slice：
+
+| Slice | 状态 | 职责 |
+|-------|------|------|
+| **graphSlice** | `nodes`, `edges`, `undoStack`, `redoStack` | 图 CRUD、undo/redo、节点工厂（addShaderNode 等）。Import catalog 获取预设数据 |
+| **transportSlice** | `loopState`, `fps`, `currentTime`, `currentFrame` | 播放控制：play/pause/resume/stop。不依赖 engine |
+| **projectSlice** | `projectName`, `savedFilePath` | 工程文件元数据。序列化/反序列化调用 utils/projectIO |
+| **uiSlice** | `selectedNodeId`, `activeRendererId`, `outputPreviews`, `nodeErrors`, `outputData` | UI 展示状态。services 层写入预览和错误 |
+
+合并导出：
+
+```typescript
+// store/index.ts
+export const useGraphStore = create<GraphState>()(
+  immer((...args) => ({
+    ...graphSlice(...args),
+    ...transportSlice(...args),
+    ...projectSlice(...args),
+    ...uiSlice(...args),
+  }))
+);
+```
+
+对外接口不变——所有 `useGraphStore(s => s.xxx)` 调用无需修改。
+
+### 10.6 Service 层设计
+
+Service 层是 store 与 runtime 的**唯一桥接**，消除当前 engine→store 的反向依赖。
+
+#### PipelineService
+
+```typescript
+// services/PipelineService.ts
+class PipelineService {
+  private pipeline: Pipeline;
+  private host: RealtimeHost;
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.pipeline = new Pipeline(new WebGLBackend(canvas));
+  }
+
+  /** 在 App mount 时调用，订阅 store 变化 */
+  attach(): () => void {
+    return useGraphStore.subscribe((state, prev) => {
+      // graph 变更 → pipeline.updateGraph()
+      if (state.nodes !== prev.nodes || state.edges !== prev.edges) {
+        this.pipeline.updateGraph(state.nodes, state.edges);
+      }
+      // transport 变更 → start/stop frame loop
+      if (state.loopState !== prev.loopState) {
+        this.handleTransport(state.loopState);
+      }
+    });
+  }
+
+  /** pipeline 回调 → 写回 store */
+  private onOutput = (nodeId: string, dataUrl: string) => {
+    useGraphStore.getState().setOutputPreview(nodeId, dataUrl);
+  };
+  private onError = (nodeId: string, error: string) => {
+    useGraphStore.getState().setNodeError(nodeId, error);
+  };
+}
+```
+
+#### OnnxService
+
+从 `useGraphStore` 中提取的 ONNX 模型下载/WebGPU probe 逻辑：
+
+```typescript
+// services/OnnxService.ts
+// subscribe graph changes → detect new ONNX nodes → trigger download → update store status
+// probe WebGPU compatibility → update onnxBackend in store
+```
+
+### 10.7 Catalog 抽离
+
+当前 `engine/shaders/`、`engine/onnxCatalog.ts`、`engine/mathOps.ts` 本质上是**纯数据注册表**，不包含运行时逻辑，但因为放在 `engine/` 下导致 components 必须 import engine。
+
+抽离到 `catalog/` 后：
+- `components/Header.tsx` import `catalog/shaders` 而非 `engine/shaders`
+- `components/SidePanel/OnnxPanel.tsx` import `catalog/onnx` 而非 `engine/onnxCatalog`
+- `store/graphSlice.ts` import `catalog/math` 而非 `engine/mathOps`
+- `runtime/` import `catalog/` 获取模型描述符
+
+### 10.8 实施路径
+
+| PR | 内容 | 风险 | 依赖 |
+|----|------|------|------|
+| **PR 1: Store 拆片** | `useGraphStore` → 4 slices，合并导出，外部接口不变 | 低 | — |
+| **PR 2: Catalog 抽离** | `engine/shaders/`、`onnxCatalog`、`mathOps` → `catalog/`。更新所有 import | 低 | — |
+| **PR 3: Executor 接口** | 定义 `NodeExecutor`，从 executionEngine 提取 ShaderExecutor / OnnxExecutor / MathExecutor / RendererExecutor。`Pipeline` 类替代 `ExecutionEngine` | 中 | PR 2 |
+| **PR 4: Service 层** | `PipelineService` + `OnnxService` 桥接 store↔pipeline。消除 engine→store 反向依赖。App.tsx 精简 | 中 | PR 1, PR 3 |
+
+PR 1 和 PR 2 互不依赖，可并行。PR 3 依赖 PR 2（executor 需要从 catalog 读取数据）。PR 4 依赖 PR 1 和 PR 3。
 
 ## 11. 实现状态
 
