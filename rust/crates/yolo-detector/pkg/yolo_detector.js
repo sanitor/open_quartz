@@ -181,7 +181,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__h850593459dec73d0(a, state0.b, arg0, arg1);
+                        return wasm_bindgen__convert__closures_____invoke__h1dc9a019bc55d49b(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -250,7 +250,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 33, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3092d8be52a12707);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h5cccfa4fd073b239);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -281,15 +281,15 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h3092d8be52a12707(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h3092d8be52a12707(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h5cccfa4fd073b239(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h5cccfa4fd073b239(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h850593459dec73d0(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h850593459dec73d0(arg0, arg1, arg2, arg3);
+function wasm_bindgen__convert__closures_____invoke__h1dc9a019bc55d49b(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h1dc9a019bc55d49b(arg0, arg1, arg2, arg3);
 }
 
 const YoloDetectorWasmFinalization = (typeof FinalizationRegistry === 'undefined')
