@@ -150,10 +150,23 @@ React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Three.js · Zustand 5 · 
 
 ## Roadmap
 
-### Planned Quartz Composer parity patches
+### Full GPU Pipeline (primary focus)
 
-| QC Patch | Description | Complexity |
-|----------|-------------|------------|
+The current pipeline has two CPU roundtrips per ONNX inference frame — `readPixels` to feed the model, and `readback` to consume the result. The goal is a **zero-copy, all-GPU datapath**: WebGPU shaders → ONNX WebGPU inference → WebGPU compute post-processing → WebGPU shaders, with data never leaving VRAM.
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript (~200 lines), remove `rust/crates/`, `wasm-pack` dependency | 🔜 Next |
+| **2. Node-based post-processing** | Decode/NMS as independent graph nodes, Overlay as shader node — detection pipeline becomes composable | Planned |
+| **3. WebGPU renderer** | Three.js `WebGLRenderer` → `WebGPURenderer` — shader output becomes `GPUTexture` | Planned |
+| **4. ORT I/O binding** | ONNX inference reads/writes `GPUTexture` directly via `io_binding` — eliminates readPixels bottleneck | Planned |
+| **5. Compute shader post-processing** | Decode/NMS as WebGPU compute shaders + `tensor` data type — eliminates CPU readback for post-processing | Planned |
+| **6. Shared GPUDevice** | Three.js and ORT share one `GPUDevice` — true zero-copy end-to-end | Planned |
+
+### Quartz Composer parity
+
+| Patch | Description | Complexity |
+|-------|-------------|------------|
 | **Delay (1-frame)** | Read another node's previous frame output | Shares ping-pong infra with Accumulator |
 | **Image Transition** | Animated wipe/dissolve/push between two images | Shader preset + iTime |
 | **Iterator / Replicate** | Execute a sub-graph N times per frame with varying params | Graph engine loop construct |
