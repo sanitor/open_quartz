@@ -926,86 +926,194 @@ Shader(WebGL)                    ONNX(WebGPU)                     Shader(WebGL)
 - **瓶颈 1**：shader 输出必须 readPixels 到 CPU canvas，才能喂给 ONNX 推理
 - **瓶颈 2**：ONNX 推理结果必须从 GPU buffer 读回 CPU，再上传为 texture
 - Detection/segmentation 的后处理（decode + NMS）也在 CPU 上执行
+- WebGL 和 WebGPU 是两套独立的 GPU API，无法共享纹理/buffer
 
-### 16.2 目标：全程 GPU 零拷贝
-
-```
-Shader(WebGPU) ──→ GPUTexture ──→ ONNX(WebGPU) ──→ GPUBuffer ──→ Compute Shader ──→ GPUTexture ──→ Shader(WebGPU)
-                   零拷贝          共享 Device       Decode+NMS      零拷贝           零拷贝
-                                  io_binding        全在 GPU 上
-```
-
-- 渲染引擎从 WebGL 切到 WebGPU（Three.js WebGPURenderer）
-- ONNX 推理通过 `io_binding` 直接读写 `GPUTexture`/`GPUBuffer`，不 readback
-- 后处理（tensor decode、NMS）作为 WebGPU compute shader 执行，不回 CPU
-- 整条管线在同一个 `GPUDevice` 上运行，数据全程留在显存
-
-### 16.3 Detection 后处理解构
-
-当前 detection（YOLOv8n）后处理由 Rust WASM crate 完成（`rust/crates/yolo-detector`），耦合在引擎内部。需要拆解为可组合的图节点：
-
-#### 后处理步骤
-
-1. **Letterbox 预处理** — 原图等比缩放到 640×640，短边补灰，记录 `scale`、`padX`、`padY`
-2. **模型推理** — 输出 raw tensor `[1, 84, 8400]`（4 bbox coords + 80 class scores × 8400 候选框）
-3. **Decode** — 逐候选提取 bbox 坐标，反算 letterbox padding 还原到原图坐标，取 max class score + class_id，过 score 阈值初筛
-4. **NMS** — Non-Maximum Suppression，按 score 降序，逐个检查与已选框的 IoU（交并比），IoU > 阈值的丢弃
-5. **Overlay 绘制** — 在原图上画矩形框 + 类名标签，输出叠加后的图像
-
-步骤 5 已经在 TS 中实现（`onnxOverlay.ts`）。步骤 1-4 目前在 Rust WASM 中。
-
-#### Segmentation 后处理
-
-更简单：模型输出 `[1, 19, H, W]` logits → 每像素 argmax 得类别 ID → 类别 ID 映射 RGBA 颜色 → 输出 mask texture。全是逐像素并行操作，天然适合 GPU。
-
-### 16.4 节点化后处理设计
-
-将后处理从引擎内部硬编码拆解为独立图节点，用户可自由组合：
+### 16.2 目标：单 GPUDevice 全程零拷贝
 
 ```
-Camera ──→ ONNX (yolov8n) ──→ Decode/NMS ──→ Overlay ──→ Renderer
-                                  ↑               ↑
-                            score/IoU 阈值      原图接入
+┌─────────────────────── 共享 GPUDevice ───────────────────────┐
+│                                                              │
+│  2D Shader ──→ GPUTexture ──→ ONNX ──→ GPUBuffer ──→ 2D Shader
+│  (WGSL)        copyTexToBuffer  io_binding  copyBufToTex  (WGSL)
+│                 (GPU内搬运)                (GPU内搬运)       │
+│  3D Scene ──→ GPUTexture ──→ 下游 shader / ONNX             │
+│  (Three.js)                                                  │
+│                                                              │
+│  Compute ──→ GPUBuffer ──→ 下游 shader / overlay            │
+│  (Decode+NMS)                                                │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-#### Decode 节点（compute shader / CPU）
+三个执行引擎共享同一个 `GPUDevice`，数据全程留在显存：
+- **2D shader 节点**：用户写 WGSL，直接编译成 `GPUShaderModule`，全屏 quad 渲染到 `GPUTexture`
+- **3D 场景节点**：Three.js WebGPURenderer 渲染 3D 模型（GLTF、PBR、灯光），输出到 `GPUTexture`
+- **ONNX 推理节点**：onnxruntime-web WebGPU EP，通过 IO binding 直接读写 `GPUBuffer`
+- **Compute shader 节点**：后处理（decode + NMS）在 GPU 上完成
 
-- **输入**：`tensor`（ONNX raw output）+ 元信息（model type、letterbox params）
-- **参数**：score threshold、IoU threshold、class filter
-- **输出**：`roi` 类型 — `[{bbox, score, class_id, class_name}]` 结构化数组
-- GPU 阶段：decode 是逐候选独立计算，可并行 → compute shader
-- GPU 阶段：NMS 涉及排序和条件剔除 → compute shader（parallel prefix / bitonic sort）或 CPU 回退（8400 框的 NMS < 1ms）
+### 16.3 混合渲染架构
 
-#### Overlay 节点（fragment shader）
+#### 为什么不能完全删掉 Three.js
 
-- **输入**：`sampler2D`（原图）+ `roi`（检测结果）
-- **输出**：`sampler2D`（叠加了框和标签的图像）
-- 可作为 shader 节点实现，roi 数据通过 SSBO 或 uniform buffer 传入
+Three.js WebGPURenderer 不支持 `RawShaderMaterial`（我们当前用来让用户写 GLSL 的方式）。但 Three.js 提供了 3D 场景图、GLTF 加载、PBR 材质、灯光系统——这些是未来 Quartz Composer 3D patch 对标所需要的。自己从头写 3D 渲染引擎不值得。
 
-#### 新增 `tensor` 数据类型
+#### 混合方案
 
-ONNX 模型的 raw output 既不是 texture 也不是 roi。需要新的端口类型：
+```
+Three.js WebGPURenderer
+├── 3D 节点: GLTF/OBJ、PBR 材质、灯光、相机
+│   → 用 Three.js 内置 NodeMaterial，不需要用户写 shader
+│   → 输出到 GPUTexture，下游 2D shader 节点可直接采样
+│
+├── 2D Shader 节点: 全屏 quad 图像处理
+│   → 绕过 Three.js 材质系统
+│   → 直接用 device.createRenderPipeline() + 用户写的 WGSL
+│   → 输出到 GPUTexture
+│
+├── ONNX 推理节点:
+│   → 共享同一个 GPUDevice
+│   → IO binding：输入 GPUBuffer（从上游 GPUTexture copyTexToBuffer）
+│   → 输出 GPUBuffer（copyBufToTexture 到下游 GPUTexture）
+│
+└── Compute Shader 节点:
+    → 后处理（decode, NMS, argmax）
+    → 输入输出都是 GPUBuffer / GPUTexture
+```
+
+#### GPUDevice 共享机制
 
 ```typescript
-type DataType = GlslDataType | 'roi' | 'tensor' | 'auto';
+// 1. Three.js 创建 WebGPURenderer，获取底层 GPUDevice
+const renderer = new THREE.WebGPURenderer();
+await renderer.init();
+const device: GPUDevice = renderer.backend.device;
+
+// 2. ORT 注入同一个 GPUDevice
+ort.env.webgpu.device = device;
+const session = await ort.InferenceSession.create(modelBuffer, {
+  executionProviders: ['webgpu'],
+  preferredOutputLocation: 'gpu-buffer',  // 输出留在 GPU
+});
+
+// 3. 2D shader pipeline 也用同一个 device
+const shaderModule = device.createShaderModule({ code: userWgslCode });
+const pipeline = device.createRenderPipeline({ /* ... */ });
+```
+
+#### 数据流：GPUTexture ↔ GPUBuffer（GPU 内搬运）
+
+```typescript
+// Shader 输出 GPUTexture → ONNX 输入 GPUBuffer（零拷贝）
+const encoder = device.createCommandEncoder();
+encoder.copyTextureToBuffer(
+  { texture: shaderOutputTexture },
+  { buffer: ortInputBuffer, bytesPerRow: width * 4 },
+  { width, height },
+);
+device.queue.submit([encoder.finish()]);
+
+// ONNX 输出 GPUBuffer → Shader 输入 GPUTexture（零拷贝）
+const encoder2 = device.createCommandEncoder();
+encoder2.copyBufferToTexture(
+  { buffer: ortOutputBuffer, bytesPerRow: outWidth * 4 },
+  { texture: nextShaderInputTexture },
+  { width: outWidth, height: outHeight },
+);
+device.queue.submit([encoder2.finish()]);
+
+// ORT IO Binding：直接从/向 GPUBuffer 推理
+const inputTensor = ort.Tensor.fromGpuBuffer(ortInputBuffer, {
+  dataType: 'float32',
+  dims: [1, 3, 640, 640],
+});
+const results = await session.run({ input: inputTensor });
+// results.output.gpuBuffer → 直接用于 copyBufferToTexture
+```
+
+`copyTextureToBuffer` / `copyBufferToTexture` 是 **GPU 内部搬运**，不经过 CPU，延迟在纳秒级。
+
+### 16.4 Shader 语言迁移：GLSL → WGSL
+
+WebGPU 原生支持 WGSL（WebGPU Shading Language），不支持 GLSL。WGSL 和 GLSL 语法接近：
+
+```glsl
+// GLSL 300 es (当前)
+uniform sampler2D inputImage;
+uniform float intensity;
+out vec4 fragColor;
+
+void main() {
+  vec4 color = texture(inputImage, v_uv);
+  color.rgb *= intensity;
+  fragColor = color;
+}
+```
+
+```wgsl
+// WGSL (目标)
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputSampler: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+struct Params { intensity: f32 }
+
+@fragment
+fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  let color = textureSample(inputImage, inputSampler, v_uv);
+  return vec4f(color.rgb * params.intensity, color.a);
+}
+```
+
+迁移影响：
+- 31 个 shader preset 全部转写为 WGSL
+- Custom shader 编辑器从 GLSL 切换到 WGSL
+- CodeMirror 语法高亮切换到 WGSL
+- Shader parser 适配 WGSL 语法（`@binding`、`var<uniform>`、`texture_2d` 等）
+- Shader compiler 从 `RawShaderMaterial` 改为 `device.createRenderPipeline()`
+
+### 16.5 Detection / Segmentation 后处理
+
+Phase 1（已完成）：TS 重写 decode + NMS，删除 Rust WASM。后处理步骤：
+
+**Detection (YOLOv8n)**：
+1. Letterbox 预处理 — 原图等比缩放到 640×640，短边补灰
+2. 模型推理 — 输出 `[1, 84, 8400]` raw tensor
+3. Decode — 逐候选提取 bbox，反算 letterbox padding，过 score 阈值
+4. NMS — 按 score 降序，IoU 去重
+5. Overlay 绘制 — 在原图上画框 + 标签
+
+**Segmentation (YOLO26n)**：
+1. Letterbox 预处理 — 同上
+2. 模型推理 — 输出 `[1, 19, H, W]` logits
+3. Argmax — 每像素取最大类别
+4. Resize + Colorize — 最近邻缩放 + Cityscapes 调色板
+
+Phase 2（计划）：后处理节点化 — Decode/NMS 作为独立图节点，可自由组合
+Phase 5（计划）：迁移到 compute shader — decode 并行化，NMS 用 parallel sort
+
+### 16.6 `tensor` 数据类型
+
+ONNX raw output 需要新的端口类型在图中流动：
+
+```typescript
+type DataType = WgslDataType | 'roi' | 'tensor' | 'auto';
 
 // tensor 在 GPU 管线中对应 GPUBuffer + shape 元信息
-interface TensorPort {
+interface TensorDescriptor {
   buffer: GPUBuffer;
   shape: number[];
   dtype: 'float32' | 'float16' | 'int32';
 }
 ```
 
-### 16.5 实施路径
+### 16.7 实施路径
 
-| 阶段 | 内容 | 前置依赖 |
-|------|------|----------|
-| **Phase 1：删 Rust WASM** | TS 重写 decode + NMS（~200 行），去掉 `rust/crates/`、`wasm-pack`、vite alias | — |
-| **Phase 2：后处理节点化** | Decode/NMS 作为独立 CPU 节点，Overlay 作为 shader 节点，detection 管线可组合 | Phase 1 |
-| **Phase 3：WebGPU 渲染器** | Three.js `WebGLRenderer` → `WebGPURenderer`，shader output 变 `GPUTexture` | — |
-| **Phase 4：ORT io_binding** | ONNX 推理通过 `io_binding` 直接读写 `GPUTexture`，消除瓶颈 1 | Phase 3 |
-| **Phase 5：Compute Shader 后处理** | Decode/NMS 从 CPU 迁移到 WebGPU compute shader，引入 `tensor` 数据类型，消除瓶颈 2 | Phase 3, Phase 4 |
-| **Phase 6：GPUDevice 共享** | Three.js 和 ORT 共享同一个 `GPUDevice`，真正的零拷贝 | Phase 4 |
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Phase 1：删 Rust WASM** | TS 重写 decode + NMS，去掉 `rust/crates/`、`wasm-pack` | ✅ 已完成 |
+| **Phase 2：WebGPU 渲染层** | Three.js WebGPURenderer + 自建 2D shader pipeline（WGSL），共享 GPUDevice | 🔜 下一步 |
+| **Phase 3：WGSL 迁移** | 31 个 shader preset 转 WGSL，parser/compiler 适配，CodeMirror WGSL 高亮 | Phase 2 后 |
+| **Phase 4：ORT IO binding** | ONNX 推理通过 IO binding 直接读写 GPUBuffer，消除瓶颈 1+2 | Phase 2 后 |
+| **Phase 5：Compute Shader 后处理** | Decode/NMS/argmax 迁移到 compute shader，引入 `tensor` 数据类型 | Phase 3, 4 后 |
+| **Phase 6：后处理节点化** | Decode/NMS 作为独立图节点，detection pipeline 可组合 | Phase 5 后 |
+| **Phase 7：3D 节点** | Three.js 3D 场景节点（GLTF 加载、PBR、灯光），对标 QC 3D patch | Phase 2 后 |
 
-Phase 1-2 不依赖 WebGPU 迁移，可立即开始。Phase 3-6 是 WebGPU 全链路。
+Phase 2 和 Phase 3 是核心：建立 WebGPU 渲染基础 + WGSL shader 体系。Phase 4 接入 ORT 零拷贝。Phase 5-7 在基础上渐进扩展。

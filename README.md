@@ -149,21 +149,24 @@ React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Three.js · Zustand 5 · 
 
 ### Full GPU Pipeline (primary focus)
 
-The current pipeline has two CPU roundtrips per ONNX inference frame — `readPixels` to feed the model, and `readback` to consume the result. The goal is a **zero-copy, all-GPU datapath**: WebGPU shaders → ONNX WebGPU inference → WebGPU compute post-processing → WebGPU shaders, with data never leaving VRAM.
+The current pipeline uses WebGL for shaders and WebGPU for ONNX inference — two separate GPU APIs that can't share textures, forcing CPU roundtrips. The goal is a **single-GPUDevice, zero-copy datapath**: all shaders (WGSL), ONNX inference, compute post-processing, and 3D rendering share one `GPUDevice`, with data never leaving VRAM.
 
 | Phase | What | Status |
 |-------|------|--------|
-| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript (~200 lines), remove `rust/crates/`, `wasm-pack` dependency | ✅ Done |
-| **2. Node-based post-processing** | Decode/NMS as independent graph nodes, Overlay as shader node — detection pipeline becomes composable | Planned |
-| **3. WebGPU renderer** | Three.js `WebGLRenderer` → `WebGPURenderer` — shader output becomes `GPUTexture` | Planned |
-| **4. ORT I/O binding** | ONNX inference reads/writes `GPUTexture` directly via `io_binding` — eliminates readPixels bottleneck | Planned |
-| **5. Compute shader post-processing** | Decode/NMS as WebGPU compute shaders + `tensor` data type — eliminates CPU readback for post-processing | Planned |
-| **6. Shared GPUDevice** | Three.js and ORT share one `GPUDevice` — true zero-copy end-to-end | Planned |
+| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript, remove `rust/crates/`, `wasm-pack` | ✅ Done |
+| **2. WebGPU rendering layer** | Three.js `WebGPURenderer` + custom 2D shader pipeline (WGSL), shared `GPUDevice` | 🔜 Next |
+| **3. WGSL migration** | 31 shader presets → WGSL, parser/compiler adapted, CodeMirror WGSL highlighting | Planned |
+| **4. ORT I/O binding** | ONNX inference reads/writes `GPUBuffer` directly via `io_binding` — zero CPU readback | Planned |
+| **5. Compute shader post-processing** | Decode/NMS/argmax as compute shaders + `tensor` data type | Planned |
+| **6. Post-processing nodes** | Decode/NMS as composable graph nodes, detection pipeline user-configurable | Planned |
+| **7. 3D scene nodes** | GLTF/OBJ loading, PBR materials, lights, camera — Quartz Composer 3D patch parity | Planned |
 
 ### Quartz Composer parity
 
 | Patch | Description | Complexity |
 |-------|-------------|------------|
+| **3D Object / Mesh** | Load and render 3D models (GLTF/OBJ) as scene nodes | Three.js WebGPU + node material |
+| **Lighting / Camera** | Directional, point, spot lights + perspective/ortho camera | Three.js built-in |
 | **Delay (1-frame)** | Read another node's previous frame output | Shares ping-pong infra with Accumulator |
 | **Image Transition** | Animated wipe/dissolve/push between two images | Shader preset + iTime |
 | **Iterator / Replicate** | Execute a sub-graph N times per frame with varying params | Graph engine loop construct |
