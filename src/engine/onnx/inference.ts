@@ -693,16 +693,16 @@ function letterboxPreprocess(
 
   ctx.drawImage(srcCanvas, Math.round(padX), Math.round(padY), newW, newH);
 
-  // Read back as RGBA, convert to float32 [1, 3, H, W] (RGB, 0-255 range for YOLO)
+  // Read back as RGBA, convert to float32 [1, 3, H, W] normalized to 0-1
   const imgData = ctx.getImageData(0, 0, targetSize, targetSize).data;
   const tensor = new Float32Array(3 * targetSize * targetSize);
   for (let y = 0; y < targetSize; y++) {
     for (let x = 0; x < targetSize; x++) {
       const srcIdx = (y * targetSize + x) * 4;
       const dstIdx = y * targetSize + x;
-      tensor[0 * targetSize * targetSize + dstIdx] = imgData[srcIdx];       // R
-      tensor[1 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 1];   // G
-      tensor[2 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 2];   // B
+      tensor[0 * targetSize * targetSize + dstIdx] = imgData[srcIdx] / 255;       // R
+      tensor[1 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 1] / 255;   // G
+      tensor[2 * targetSize * targetSize + dstIdx] = imgData[srcIdx + 2] / 255;   // B
     }
   }
 
