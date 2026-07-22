@@ -414,17 +414,31 @@ export class ExecutionEngine {
       }
 
       if (catalogEntry && catalogEntry.task === 'segmentation') {
-        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          async (s, _d, w, h) => {
-            const ctx = sourceCanvas.getContext('2d');
-            if (!ctx) throw new Error('Cannot get 2d context');
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const result = await runSegmentation(s, imgData.data, w, h, catalogEntry.targetSize ?? 640);
-            const seg = result.segmentation;
-            this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
-            const overlay = drawSegmentationOverlay(sourceCanvas, w, h, seg.maskRgba, seg.maskW, seg.maskH);
-            return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
-          });
+        let session = this.tsOrtSessions.get(modelId);
+        if (!session) {
+          session = new OnnxInferenceSession();
+          const buffer = await modelManager.loadCachedModel(modelId);
+          if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
+          await session.loadFromBuffer(buffer);
+          this.tsOrtSessions.set(modelId, session);
+        }
+
+        const ctx = sourceCanvas.getContext('2d');
+        if (!ctx) throw new Error('Cannot get 2d context from source canvas');
+        const imageData = ctx.getImageData(0, 0, srcW, srcH);
+
+        const result = await runSegmentation(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640);
+        const seg = result.segmentation;
+
+        const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
+        this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
+
+        const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
+        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
+        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
+        this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
         return;
       }
 
@@ -434,26 +448,42 @@ export class ExecutionEngine {
           (s, d, w, h) => runGenericImageToImage(s, d, w, h));
         return;
       }
+      // Detection models: TS ORT + TS postprocess
+      {
+        let session = this.tsOrtSessions.get(modelId);
+        if (!session) {
+          session = new OnnxInferenceSession();
+          const buffer = await modelManager.loadCachedModel(modelId);
+          if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
+          await session.loadFromBuffer(buffer);
+          this.tsOrtSessions.set(modelId, session);
+        }
 
-      // Detection models: TS ORT + TS postprocess (replaces Rust WASM)
-      await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-        async (s, _d, w, h) => {
-          const ctx = sourceCanvas.getContext('2d');
-          if (!ctx) throw new Error('Cannot get 2d context');
-          const imgData = ctx.getImageData(0, 0, w, h);
-          const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
-          const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
-          const result = await runDetection(s, imgData.data, w, h, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
-          const detections = result.detections.map(d => ({
-            bbox: d.bbox as [number, number, number, number],
-            score: d.score,
-            class_id: d.classId,
-            class_name: COCO_CLASSES[d.classId] ?? 'unknown',
-          }));
-          this.onnxCallbacks.onOutputData?.(nodeId, { detections });
-          const overlay = drawDetectionOverlay(sourceCanvas, w, h, detections);
-          return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
-        });
+        const ctx = sourceCanvas.getContext('2d');
+        if (!ctx) throw new Error('Cannot get 2d context from source canvas');
+        const imageData = ctx.getImageData(0, 0, srcW, srcH);
+
+        const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
+        const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
+        const result = await runDetection(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
+
+        const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
+        this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
+
+        const detections = result.detections.map(d => ({
+          bbox: d.bbox as [number, number, number, number],
+          score: d.score,
+          class_id: d.classId,
+          class_name: COCO_CLASSES[d.classId] ?? 'unknown',
+        }));
+
+        const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
+        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
+        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
+        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
+        this.onnxCallbacks.onOutputData?.(nodeId, { detections });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`ONNX error for node ${nodeId}:`, msg);
@@ -953,38 +983,30 @@ export class ExecutionEngine {
           } else if (catalogEntry && catalogEntry.task === 'depth-estimation') {
             await runTsOrt((s, d, w, h) => runDepthEstimation(s, d, w, h));
           } else if (catalogEntry && catalogEntry.task === 'segmentation') {
-            await runTsOrt(async (s, _d, w, h) => {
-              const ctx2 = sourceCanvas.getContext('2d');
-              if (!ctx2) throw new Error('Cannot get 2d context');
-              const imgD = ctx2.getImageData(0, 0, w, h);
-              const segResult = await runSegmentation(s, imgD.data, w, h, catalogEntry.targetSize ?? 640);
-              const seg = segResult.segmentation;
-              onOutputData?.(nodeId, { segmentation: seg });
-              const overlay = drawSegmentationOverlay(sourceCanvas, w, h, seg.maskRgba, seg.maskW, seg.maskH);
-              return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
-            });
+            const segResult = await runSegmentation(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640);
+            const seg = segResult.segmentation;
+            onOutputData?.(nodeId, { segmentation: seg });
+            const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
+            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
+            onOutput?.(nodeId, overlay.dataUrl);
+            onOutputSize?.(nodeId, srcW, srcH);
           } else if (node.data.onnxSource === 'custom' || !catalogEntry) {
-            // Custom or generic: full-image inference, output dims from tensor
             await runTsOrt((s, d, w, h) => runGenericImageToImage(s, d, w, h));
           } else {
-            // Detection models: TS ORT + TS postprocess
-            await runTsOrt(async (s, _d, w, h) => {
-              const ctx2 = sourceCanvas.getContext('2d');
-              if (!ctx2) throw new Error('Cannot get 2d context');
-              const imgD = ctx2.getImageData(0, 0, w, h);
-              const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
-              const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
-              const detResult = await runDetection(s, imgD.data, w, h, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
-              const detections = detResult.detections.map(d => ({
-                bbox: d.bbox as [number, number, number, number],
-                score: d.score,
-                class_id: d.classId,
-                class_name: COCO_CLASSES[d.classId] ?? 'unknown',
-              }));
-              onOutputData?.(nodeId, { detections });
-              const overlay = drawDetectionOverlay(sourceCanvas, w, h, detections);
-              return { rgba: new Uint8ClampedArray(overlay.canvas.getContext('2d')!.getImageData(0, 0, w, h).data), width: w, height: h };
-            });
+            const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
+            const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
+            const detResult = await runDetection(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
+            const detections = detResult.detections.map(d => ({
+              bbox: d.bbox as [number, number, number, number],
+              score: d.score,
+              class_id: d.classId,
+              class_name: COCO_CLASSES[d.classId] ?? 'unknown',
+            }));
+            const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
+            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
+            onOutput?.(nodeId, overlay.dataUrl);
+            onOutputSize?.(nodeId, srcW, srcH);
+            onOutputData?.(nodeId, { detections });
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
