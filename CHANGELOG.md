@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.0b] -- 2026-07-22
+
+### Architecture Refactoring
+
+- **Store slicing** — split the 756-line `useGraphStore` monolith into 4 Zustand slices (`graphSlice`, `transportSlice`, `projectSlice`, `uiSlice`) plus a shared `helpers` module. External API unchanged — all existing `useGraphStore` selectors continue working.
+- **Catalog extraction** — moved shader presets, ONNX catalog/registry, and math ops from `engine/` to `catalog/`. Components and store no longer depend on engine for static data. 30 import paths updated.
+- **Executor extraction** — extracted shader, math, and input execution logic from the 1,266-line `ExecutionEngine` into dedicated modules under `engine/executors/` (ShaderExecutor, MathExecutor, InputExecutor). Engine delegates to executors; public API unchanged.
+- **Service layer** — introduced `PipelineService` (`services/PipelineService.ts`) as the sole bridge between store and engine. Eliminated the engine→store backflow (`useGraphStore` import removed from `executionEngine.ts`). ONNX backend detection now uses a callback chain instead of direct store access.
+- **App.tsx simplified** — 107 → 33 lines. No direct engine or store imports; just mounts `PipelineService` on the hidden canvas.
+
+### Tests
+
+- **79 regression tests** for architecture safety: pipeline integration (23), executor contracts (25), lifecycle/bridge (31). Total: 1124 tests across 44 files.
+
+### Docs
+
+- **DESIGN.md §10 — Software Architecture** — new section covering layered architecture, dependency rules, reactive pipeline design, store slicing, service layer, and 4-PR implementation roadmap.
+
 ## [0.13.0b] -- 2026-07-21
 
 ### Features

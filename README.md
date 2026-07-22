@@ -126,7 +126,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 1045 unit tests (fast, CI gate)
+npm test               # 1124 unit tests (fast, CI gate)
 npm run test:models    # 15 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 6 WebGL2 bit-true tests (system browser, real GPU)
 ```
