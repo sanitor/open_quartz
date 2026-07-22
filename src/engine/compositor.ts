@@ -1,7 +1,6 @@
-import * as THREE from 'three';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import { ExecutionEngine, type ExecutionPlan } from './executionEngine';
+import { WebGPUExecutionEngine, type WebGPUExecutionPlan } from './executionEngine';
 
 export interface FrameInputs {
   time: number;
@@ -10,15 +9,24 @@ export interface FrameInputs {
   date: Float32Array;
   mouse: Float32Array;
   resolution: Float32Array;
-  videoTextures?: Map<string, THREE.Texture>;
+  videoElements?: Map<string, HTMLVideoElement>;
 }
 
 export class Compositor {
-  private engine: ExecutionEngine;
-  private plan: ExecutionPlan | null = null;
+  private engine: WebGPUExecutionEngine;
+  private plan: WebGPUExecutionPlan | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
-    this.engine = new ExecutionEngine(canvas);
+  constructor() {
+    this.engine = new WebGPUExecutionEngine();
+  }
+
+  /** Async init — must be called before prepare/render. */
+  async init(canvas: HTMLCanvasElement): Promise<void> {
+    await this.engine.init(canvas);
+  }
+
+  get device(): GPUDevice | null {
+    return this.engine.device;
   }
 
   prepare(
@@ -40,15 +48,9 @@ export class Compositor {
     this.engine.runFrame(this.plan, inputs);
   }
 
-  readOutputs(onOutput: (nodeId: string, dataUrl: string) => void): void {
+  async readOutputs(onOutput: (nodeId: string, dataUrl: string) => void): Promise<void> {
     if (!this.plan) return;
-    this.engine.readOutputs(this.plan, onOutput);
-  }
-
-  /** Read back a single node's output as a data URL. */
-  readNodeOutput(nodeId: string, onOutput: (nodeId: string, dataUrl: string) => void): void {
-    if (!this.plan) return;
-    this.engine.readNodeOutput(this.plan, nodeId, onOutput);
+    await this.engine.readOutputs(this.plan, onOutput);
   }
 
   renderRendererToScreen(rendererNodeId: string): void {
@@ -56,13 +58,22 @@ export class Compositor {
     this.engine.renderRendererToScreen(this.plan, rendererNodeId);
   }
 
-  getCanvas(): HTMLCanvasElement | null {
-    return this.engine.getCanvas();
+  /** Read back a single node's output as a data URL. */
+  async readNodeOutput(nodeId: string, onOutput: (nodeId: string, dataUrl: string) => void): Promise<void> {
+    if (!this.plan) return;
+    // For now, use readOutputs filtered to the single node
+    await this.engine.readOutputs(this.plan, (id, url) => {
+      if (id === nodeId) onOutput(id, url);
+    });
   }
 
-  captureScreenshot(rendererNodeId: string): string | null {
-    if (!this.plan) return null;
-    return this.engine.captureRendererScreenshot(this.plan, rendererNodeId);
+  async captureScreenshot(rendererNodeId: string): Promise<string | null> {
+    // TODO: implement proper screenshot capture via WebGPU readback
+    return null;
+  }
+
+  getCanvas(): HTMLCanvasElement | null {
+    return this.engine.canvas;
   }
 
   dispose(): void {

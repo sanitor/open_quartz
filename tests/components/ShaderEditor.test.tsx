@@ -51,25 +51,10 @@ vi.mock('@codemirror/state', () => ({
   },
 }));
 
-vi.mock('codemirror-lang-glsl', () => ({
-  glsl: vi.fn(() => Symbol('glsl')),
+vi.mock('@iizukak/codemirror-lang-wgsl', () => ({
+  wgsl: vi.fn(() => Symbol('wgsl')),
 }));
 
-vi.mock('@codemirror/lint', () => ({
-  linter: vi.fn(() => Symbol('linter')),
-}));
-
-vi.mock('@codemirror/autocomplete', () => ({
-  autocompletion: vi.fn(() => Symbol('autocompletion')),
-}));
-
-vi.mock('../../src/engine/shaderLinter', () => ({
-  glslLinter: vi.fn(),
-}));
-
-vi.mock('../../src/engine/shaderCompletions', () => ({
-  glslCompletions: vi.fn(),
-}));
 
 import { ShaderEditor } from '../../src/components/SidePanel/ShaderEditor';
 

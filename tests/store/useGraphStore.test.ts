@@ -276,7 +276,7 @@ describe('useGraphStore', () => {
       useGraphStore.getState().addNode('shader');
       const id = useGraphStore.getState().nodes[0].id;
 
-      const newCode = 'uniform vec3 color;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(color, 1.0); }';
+      const newCode = '@group(0) @binding(0) var<uniform> color: vec3f;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(color, 1.0); }';
       useGraphStore.getState().updateNodeData(id, { shaderCode: newCode });
 
       const node = useGraphStore.getState().nodes.find(n => n.id === id)!;
@@ -341,7 +341,7 @@ describe('useGraphStore', () => {
       useGraphStore.getState().updateNodeInputType(id, 'sampler2D');
       const node = useGraphStore.getState().nodes.find(n => n.id === id)!;
       expect(node.data.inputDataType).toBe('sampler2D');
-      expect(node.data.shaderCode).toContain('sampler2D');
+      expect(node.data.shaderCode).toContain('texture_2d');
     });
   });
 

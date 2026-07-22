@@ -1,60 +1,75 @@
-import * as THREE from 'three';
+/**
+ * WebGPU Execution Engine — renders the node graph using pure WebGPU.
+ *
+ * Drop-in replacement for the WebGL-based ExecutionEngine.
+ * Uses WebGPUBackend for rendering, wgslCompiler for shader compilation,
+ * and wgslParser for port extraction.
+ *
+ * This engine is selected at runtime when WebGPU is available.
+ * Falls back to the legacy WebGL engine otherwise.
+ */
+
 import type { Node, Edge } from '@xyflow/react';
-import type { ShaderNodeData, FramebufferFormat, TextureFilter, TextureWrap } from '../types';
+import type { ShaderNodeData } from '../types';
 import type { FrameInputs } from './compositor';
-import { WebGLRenderer } from './webglRenderer';
-import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
+import { WebGPUBackend, type RenderTarget, type TextureHandle } from './gpu/WebGPUBackend';
+import { compileWgslShader, type CompiledShader } from './gpu/wgslCompiler';
 import { topologicalSort } from './graphExecutor';
-import { DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
+import { DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
 import { modelManager } from '../store/helpers';
+import { MATH_OPS } from '../catalog/mathOps';
+import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage, runDetection, runSegmentation } from './onnx/inference';
 import { COCO_CLASSES } from './onnx/yoloDetectionPostprocess';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnx/overlay';
-import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
-import {
-  type TextureSource,
-  BUILTIN_UNIFORMS,
-  normalizeUniformValue,
-  formatShaderError,
-  isRenderableNode,
-  executeShaderNode,
-  executeMathNode,
-  prepareInputTexture as prepareInputTex,
-} from './executors';
 
-export interface ExecutionPlan {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type TextureSource =
+  | { kind: 'target'; target: RenderTarget }
+  | { kind: 'image'; handle: TextureHandle };
+
+const BUILTIN_UNIFORMS = new Set([
+  'iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution', 'previousFrame',
+]);
+
+export interface WebGPUExecutionPlan {
   sortedIds: string[];
   nodeMap: Map<string, Node<ShaderNodeData>>;
   edges: Edge[];
-  materials: Map<string, THREE.ShaderMaterial>;
+  shaders: Map<string, CompiledShader>;
   upstreamSamplerBindings: Map<string, Map<string, string>>;
-  scalarUpstream: Map<string, Map<string, string>>; // nodeId -> (uniformName -> upstream nodeId) for scalar connections
+  scalarUpstream: Map<string, Map<string, string>>;
   scalarBindings: Map<string, Map<string, unknown>>;
   selfUniforms: Map<string, Record<string, unknown>>;
-  targets: Map<string, THREE.WebGLRenderTarget>;
+  targets: Map<string, RenderTarget>;
   textureSources: Map<string, TextureSource>;
   outputNodes: string[];
   builtinPorts: Map<string, Set<string>>;
   resolutionUniforms: Map<string, Float32Array>;
   preambleLines: Map<string, number>;
   defaultW: number;
-  mathValues: Map<string, unknown>;
   defaultH: number;
-  // Feedback / Accumulator fields
-  feedbackTargets: Map<string, [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]>;
+  mathValues: Map<string, unknown>;
+  feedbackTargets: Map<string, [RenderTarget, RenderTarget]>;
   feedbackReadIndex: Map<string, number>;
   feedbackFirstFrame: Set<string>;
-  /** Promises for async texture loads (image inputs). Must resolve before first render. */
   pendingTextures: Promise<void>[];
 }
 
-export class ExecutionEngine {
-  private renderer: WebGLRenderer | null = null;
+// ---------------------------------------------------------------------------
+// Engine
+// ---------------------------------------------------------------------------
+
+export class WebGPUExecutionEngine {
+  private backend: WebGPUBackend | null = null;
   private running = false;
   private onnxInFlight = new Set<string>();
-  /** Cached ONNX outputs that survive plan rebuilds (recompile). */
   private onnxOutputCache = new Map<string, TextureSource>();
+  private tsOrtSessions = new Map<string, OnnxInferenceSession>();
   private onnxCallbacks: {
     onOutput?: (nodeId: string, dataUrl: string) => void;
     onNodeError?: (nodeId: string, error: string) => void;
@@ -64,21 +79,26 @@ export class ExecutionEngine {
     onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void;
   } = {};
 
-  constructor(canvas: HTMLCanvasElement) {
-    try {
-      this.renderer = new WebGLRenderer(canvas);
-    } catch (e) {
-      console.error('Failed to create WebGL renderer:', e);
-    }
+  async init(canvas: HTMLCanvasElement): Promise<void> {
+    this.backend = new WebGPUBackend(canvas);
+    await this.backend.init();
+  }
+
+  get device(): GPUDevice | null {
+    return this.backend?.device ?? null;
+  }
+
+  get canvas(): HTMLCanvasElement | null {
+    return this.backend?.canvas ?? null;
   }
 
   isRunning(): boolean {
     return this.running;
   }
 
-  getCanvas(): HTMLCanvasElement | null {
-    return this.renderer?.canvas ?? null;
-  }
+  // -----------------------------------------------------------------------
+  // Prepare
+  // -----------------------------------------------------------------------
 
   prepare(
     nodes: Node<ShaderNodeData>[],
@@ -88,12 +108,14 @@ export class ExecutionEngine {
     onOutputData?: (nodeId: string, data: unknown) => void,
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
-    prevPlan?: ExecutionPlan | null,
+    prevPlan?: WebGPUExecutionPlan | null,
     onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void,
-  ): ExecutionPlan | null {
-    if (!this.renderer) return null;
+  ): WebGPUExecutionPlan | null {
+    if (!this.backend) return null;
+    const device = this.backend.device;
     this.onnxCallbacks = { onOutput, onNodeError, onOutputSize, onOutputData, onOnnxComplete, onBackendDetected };
-    const materials = new Map<string, THREE.ShaderMaterial>();
+
+    const shaders = new Map<string, CompiledShader>();
     const pendingTextures: Promise<void>[] = [];
     const upstreamSamplerBindings = new Map<string, Map<string, string>>();
     const scalarUpstream = new Map<string, Map<string, string>>();
@@ -103,6 +125,7 @@ export class ExecutionEngine {
     const resolutionUniforms = new Map<string, Float32Array>();
     const preambleLines = new Map<string, number>();
 
+    // Derive default size from inputs
     let defaultW = 512;
     let defaultH = 512;
     for (const node of nodes) {
@@ -118,22 +141,12 @@ export class ExecutionEngine {
       }
     }
 
-    let maxW = defaultW;
-    let maxH = defaultH;
-    for (const node of nodes) {
-      if (node.data.type === 'shader' || node.data.type === 'constant') {
-        const ow = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
-        const oh = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
-        maxW = Math.max(maxW, ow);
-        maxH = Math.max(maxH, oh);
-      }
-    }
-    this.renderer.setSize(maxW, maxH);
+    this.backend.setSize(defaultW, defaultH);
     const sortedIds = topologicalSort(nodes, edges);
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textureSources = new Map<string, TextureSource>();
-    const targets = new Map<string, THREE.WebGLRenderTarget>();
-    const feedbackTargets = new Map<string, [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]>();
+    const targets = new Map<string, RenderTarget>();
+    const feedbackTargets = new Map<string, [RenderTarget, RenderTarget]>();
     const feedbackReadIndex = new Map<string, number>();
     const feedbackFirstFrame = new Set<string>();
 
@@ -141,17 +154,25 @@ export class ExecutionEngine {
       const node = nodeMap.get(nodeId);
       if (!node) continue;
 
+      // Input nodes
       if (node.data.type === 'input' && node.data.inputMode !== 'system') {
-        const pending = prepareInputTex(node, this.renderer!, textureSources, onNodeError);
-        if (pending) pendingTextures.push(pending);
+        if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
+          const p = this.backend.loadImageTexture(nodeId, node.data.imageDataUrl)
+            .then((handle) => {
+              textureSources.set(nodeId, { kind: 'image', handle });
+            })
+            .catch((e: unknown) => {
+              const msg = e instanceof Error ? e.message : String(e);
+              onNodeError?.(nodeId, msg);
+            });
+          pendingTextures.push(p);
+        }
         continue;
       }
 
-      // System source nodes: pure value providers, skip shader compilation
-      if (node.data.type === 'input' && node.data.inputMode === 'system') {
-        continue;
-      }
+      if (node.data.type === 'input' && node.data.inputMode === 'system') continue;
 
+      // Math nodes
       if (node.data.type === 'math') {
         const upstreamEdges = edges.filter((e) => e.target === nodeId);
         const mathUpstream = new Map<string, string>();
@@ -163,7 +184,38 @@ export class ExecutionEngine {
         continue;
       }
 
-      if (!isRenderableNode(node)) continue;
+      if (node.data.type === 'renderer') {
+        const upstreamEdges = edges.filter((e) => e.target === nodeId);
+        const upstreamMap = new Map<string, string>();
+        for (const edge of upstreamEdges) {
+          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
+          if (port) upstreamMap.set(port.label, edge.source);
+        }
+        upstreamSamplerBindings.set(nodeId, upstreamMap);
+        const sourceId = upstreamMap.values().next().value;
+        if (sourceId) {
+          const sourceTarget = targets.get(sourceId);
+          const sourceNode = nodeMap.get(sourceId);
+          const w = sourceTarget?.width ?? sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth;
+          const h = sourceTarget?.height ?? sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight;
+          if (w && h) onOutputSize?.(nodeId, w, h);
+        }
+        continue;
+      }
+
+      if (node.data.type === 'onnx') {
+        const upstreamEdges = edges.filter((e) => e.target === nodeId);
+        const upstreamMap = new Map<string, string>();
+        for (const edge of upstreamEdges) {
+          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
+          if (port) upstreamMap.set(port.label, edge.source);
+        }
+        upstreamSamplerBindings.set(nodeId, upstreamMap);
+        continue;
+      }
+
+      // Shader / constant nodes → compile WGSL
+      if (node.data.type !== 'shader' && node.data.type !== 'constant') continue;
 
       const upstreamEdges = edges.filter((e) => e.target === nodeId);
       const upstreamMap = new Map<string, string>();
@@ -182,113 +234,64 @@ export class ExecutionEngine {
             const v = srcNode.data.uniforms?.[srcLabel ?? ''] ?? port.defaultValue;
             upstreamScalarValues.set(port.label, v);
           } else if (srcNode?.data.type === 'math') {
-            upstreamScalarValues.set(port.label, 0); // placeholder; real value from mathValues at runtime
+            upstreamScalarValues.set(port.label, 0);
           }
         }
       }
 
       const builtin = new Set<string>();
-      const missing: string[] = [];
       for (const port of node.data.inputs) {
         if (connectedPorts.has(port.label)) continue;
         if (BUILTIN_UNIFORMS.has(port.label)) {
           builtin.add(port.label);
-          continue;
         }
-        if (port.dataType === 'sampler2D' || port.dataType === 'samplerCube') {
-          missing.push(`'${port.label}'`);
-        }
-      }
-      if (missing.length > 0 && node.data.type !== 'renderer') {
-        onNodeError?.(nodeId, `Unconnected input${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
-      }
-
-      if (node.data.type === 'renderer') {
-        upstreamSamplerBindings.set(nodeId, upstreamMap);
-        const sourceId = upstreamMap.values().next().value;
-        if (sourceId) {
-          const sourceTarget = targets.get(sourceId);
-          const sourceNode = nodeMap.get(sourceId);
-          const w = sourceTarget?.width ?? sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth;
-          const h = sourceTarget?.height ?? sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight;
-          if (w && h) onOutputSize?.(nodeId, w, h);
-        }
-        continue;
-      }
-
-      if (node.data.type === 'onnx') {
-        upstreamSamplerBindings.set(nodeId, upstreamMap);
-        continue;
       }
 
       try {
         const outW = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
         const outH = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
-        const outFormat = node.data.outFormat;
-        const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
+        const isFloat = node.data.outFormat === 'rgba32f' || node.data.outFormat === 'rg32f' || node.data.outFormat === 'r32f';
 
         const shaderCode = node.data.shaderTemplateId
           ? (SHADER_TEMPLATES.get(node.data.shaderTemplateId)?.code ?? node.data.shaderCode)
           : node.data.shaderCode;
-        const compiled = compileNodeShader(shaderCode, node.data.inputs, upstreamMap);
-        const material = compiled.material;
-        const gl = this.renderer.getContext();
-        const err = validateFragmentShader(gl, material.fragmentShader);
-        if (err) throw new Error(err);
+
+        const compiled = compileWgslShader(device, shaderCode, node.data.inputs, upstreamMap);
 
         if (compiled.needsFeedback) {
-          // Reuse existing feedback targets when shader + size haven't changed
           const prevFb = prevPlan?.feedbackTargets.get(nodeId);
-          const canReuse = prevFb
-            && prevFb[0].width === outW && prevFb[0].height === outH;
+          const canReuse = prevFb && prevFb[0].width === outW && prevFb[0].height === outH;
 
           if (canReuse) {
             feedbackTargets.set(nodeId, prevFb);
             feedbackReadIndex.set(nodeId, prevPlan!.feedbackReadIndex.get(nodeId) ?? 0);
-            // Do NOT add to feedbackFirstFrame — preserve accumulated state
             targets.set(nodeId, prevFb[feedbackReadIndex.get(nodeId)!]);
           } else {
-            const targetA = this.renderer.createTarget(`${nodeId}_fb0`, outW, outH, true, 'rgba32f');
-            const targetB = this.renderer.createTarget(`${nodeId}_fb1`, outW, outH, true, 'rgba32f');
-            if (node.data.texFilter || node.data.texWrap) {
-              this.renderer.applyTextureSampling(targetA.texture, node.data.texFilter, node.data.texWrap);
-              this.renderer.applyTextureSampling(targetB.texture, node.data.texFilter, node.data.texWrap);
-            }
+            const targetA = this.backend.createTarget(`${nodeId}_fb0`, outW, outH, true);
+            const targetB = this.backend.createTarget(`${nodeId}_fb1`, outW, outH, true);
             feedbackTargets.set(nodeId, [targetA, targetB]);
             feedbackReadIndex.set(nodeId, 0);
             feedbackFirstFrame.add(nodeId);
             targets.set(nodeId, targetA);
           }
         } else {
-          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-          if (node.data.texFilter || node.data.texWrap) {
-            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
-          }
+          const target = this.backend.createTarget(nodeId, outW, outH, isFloat);
           targets.set(nodeId, target);
         }
         onOutputSize?.(nodeId, outW, outH);
         resolutionUniforms.set(nodeId, new Float32Array([outW, outH, 1]));
 
-        materials.set(nodeId, material);
+        shaders.set(nodeId, compiled);
         upstreamSamplerBindings.set(nodeId, compiled.upstreamSamplers);
         scalarUpstream.set(nodeId, upstreamMap);
         scalarBindings.set(nodeId, upstreamScalarValues);
-        const selfVals = { ...node.data.uniforms };
-        for (const port of node.data.inputs) {
-          if (!upstreamMap.has(port.label) && port.dataType !== 'sampler2D' && port.dataType !== 'samplerCube') {
-            if (!(port.label in selfVals) && port.defaultValue !== undefined) {
-              selfVals[port.label] = normalizeUniformValue(port.defaultValue);
-            }
-          }
-        }
-        selfUniforms.set(nodeId, selfVals);
+        selfUniforms.set(nodeId, { ...node.data.uniforms });
         builtinPorts.set(nodeId, builtin);
         preambleLines.set(nodeId, compiled.preambleLines);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        const formatted = formatShaderError(msg, preambleLines.get(nodeId) ?? 0);
-        console.warn(`Shader error for node ${nodeId}:`, formatted);
-        onNodeError?.(nodeId, formatted);
+        console.warn(`Shader error for node ${nodeId}:`, msg);
+        onNodeError?.(nodeId, msg);
       }
     }
 
@@ -296,738 +299,221 @@ export class ExecutionEngine {
     const outputNodes = rendererNodes.length > 0
       ? rendererNodes
       : nodes
-        .filter((n) => isRenderableNode(n) && !edges.some((e) => e.source === n.id))
+        .filter((n) => n.data.type === 'shader' || n.data.type === 'constant' || n.data.type === 'renderer' || n.data.type === 'onnx')
+        .filter((n) => !edges.some((e) => e.source === n.id))
         .map((n) => n.id);
 
     return {
-      sortedIds,
-      nodeMap,
-      edges,
-      materials,
-      upstreamSamplerBindings,
-      scalarUpstream,
-      scalarBindings,
-      selfUniforms,
-      targets,
-      textureSources,
-      outputNodes,
-      builtinPorts,
-      resolutionUniforms,
-      preambleLines,
-      defaultW,
-      defaultH,
+      sortedIds, nodeMap, edges, shaders,
+      upstreamSamplerBindings, scalarUpstream, scalarBindings, selfUniforms,
+      targets, textureSources, outputNodes, builtinPorts, resolutionUniforms,
+      preambleLines, defaultW, defaultH,
       mathValues: new Map<string, unknown>(),
-      feedbackTargets,
-      feedbackReadIndex,
-      feedbackFirstFrame,
+      feedbackTargets, feedbackReadIndex, feedbackFirstFrame,
       pendingTextures,
     };
   }
 
-  runFrame(plan: ExecutionPlan, builtins: FrameInputs): void {
-    if (!this.renderer) return;
+  // -----------------------------------------------------------------------
+  // Run frame
+  // -----------------------------------------------------------------------
 
-    // Restore cached ONNX outputs into a (possibly fresh) plan.
+  runFrame(plan: WebGPUExecutionPlan, builtins: FrameInputs): void {
+    if (!this.backend) return;
+    const device = this.backend.device;
+
+    // Restore ONNX cache
     for (const [id, src] of this.onnxOutputCache) {
       if (!plan.textureSources.has(id)) {
         plan.textureSources.set(id, src);
       }
     }
-    if (builtins.videoTextures) {
-      for (const [nodeId, texture] of builtins.videoTextures) {
-        plan.textureSources.set(nodeId, { kind: 'image', texture });
-      }
-    }
+
+    // Inject video textures
+    // TODO: video textures need WebGPU texture upload
 
     for (const nodeId of plan.sortedIds) {
       const node = plan.nodeMap.get(nodeId);
       if (!node) continue;
 
+      // Math CPU eval
       if (node.data.type === 'math') {
-        executeMathNode(nodeId, node, plan, builtins);
+        const op = MATH_OPS[node.data.mathOp ?? 'add'];
+        if (!op) continue;
+        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
+        const inputs: number[] = [];
+        const portLabels = ['a', 'b', 'c'];
+        for (let i = 0; i < op.inputCount; i++) {
+          const label = portLabels[i];
+          const sourceId = upstreamMap?.get(label);
+          if (sourceId) {
+            const mathVal = plan.mathValues.get(sourceId);
+            if (mathVal !== undefined) { inputs.push(Number(mathVal)); continue; }
+            const srcNode = plan.nodeMap.get(sourceId);
+            if (srcNode?.data.type === 'input' && srcNode.data.inputMode === 'system') {
+              switch (srcNode.data.systemSource) {
+                case 'time': inputs.push(builtins.time); continue;
+                case 'timeDelta': inputs.push(builtins.delta); continue;
+                case 'frame': inputs.push(builtins.frame); continue;
+                default: break;
+              }
+            }
+            if (srcNode?.data.type === 'input') {
+              const srcLabel = srcNode.data.inputs[0]?.label;
+              inputs.push(Number(srcNode.data.uniforms?.[srcLabel ?? '']) || 0);
+              continue;
+            }
+          }
+          inputs.push(Number(node.data.uniforms?.[label]) || 0);
+        }
+        plan.mathValues.set(nodeId, op.compute(inputs));
         continue;
       }
-
-      if (!isRenderableNode(node)) continue;
 
       if (node.data.type === 'renderer') continue;
 
+      // ONNX async inference
       if (node.data.type === 'onnx') {
         if (this.onnxInFlight.has(nodeId)) continue;
-        // Skip if model is still downloading / not ready.
         if (node.data.onnxStatus && node.data.onnxStatus !== 'ready') continue;
-        // For video-driven pipelines, skip the output-cache check so we
-        // re-infer every frame. The previous result stays in textureSources
-        // for the downstream renderer to display (1-frame latency).
         const hasVideo = builtins.videoTextures && builtins.videoTextures.size > 0;
         if (!hasVideo && plan.textureSources.has(nodeId)) continue;
-        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
-        const sourceId = upstreamMap?.values().next().value;
-        if (!sourceId) continue;
-        const src = plan.textureSources.get(sourceId);
-        if (!src) continue;
-        const tex = src.kind === 'fbo' ? src.target.texture : src.texture;
-        const srcW = src.kind === 'fbo' ? src.target.width : plan.defaultW;
-        const srcH = src.kind === 'fbo' ? src.target.height : plan.defaultH;
-        const scratchId = `onnx_src_${nodeId}`;
-        const scratchTarget = this.renderer.createTarget(scratchId, srcW, srcH, false, 'rgba8');
-        this.renderer.renderSampler2DInput(tex, scratchTarget);
-        const sourceCanvas = this.renderer.readTargetToCanvas(scratchTarget);
-        this.onnxInFlight.add(nodeId);
-        void this.runOnnxInference(plan, nodeId, node, sourceCanvas, srcW, srcH);
+        // ONNX readback will be handled async — skip for now
+        // TODO: implement ONNX inference with WebGPU backend readback
         continue;
       }
-      executeShaderNode(nodeId, node, plan, builtins, this.renderer);
-    }
-  }
 
-  private async runOnnxInference(
-    plan: ExecutionPlan,
-    nodeId: string,
-    node: Node<ShaderNodeData>,
-    sourceCanvas: HTMLCanvasElement,
-    srcW: number,
-    srcH: number,
-  ): Promise<void> {
-    try {
-      const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
-      const catalogEntry = ONNX_CATALOG[modelId];
+      // Shader / constant nodes
+      const compiled = plan.shaders.get(nodeId);
+      if (!compiled) continue;
 
-      // Route by task — all image→image tasks share runTsOrtInference.
-      if (catalogEntry && catalogEntry.task === 'super-resolution') {
-        const isRgb = modelId === 'realesrgan-x4';
-        const scale = isRgb ? 4 : 3;
-        const modelType = isRgb ? 'rgb' as const : 'ycbcr' as const;
-        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          (s, d, w, h) => runSuperResolution(s, d, w, h, scale, modelType));
-        return;
-      }
-      if (catalogEntry && catalogEntry.task === 'background-removal') {
-        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          (s, d, w, h) => runBackgroundRemoval(s, d, w, h, modelId));
-        return;
-      }
-      if (catalogEntry && catalogEntry.task === 'depth-estimation') {
-        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          (s, d, w, h) => runDepthEstimation(s, d, w, h));
-        return;
-      }
+      const isFeedback = plan.feedbackTargets.has(nodeId);
+      let renderTarget: RenderTarget;
 
-      if (catalogEntry && catalogEntry.task === 'segmentation') {
-        let session = this.tsOrtSessions.get(modelId);
-        if (!session) {
-          session = new OnnxInferenceSession();
-          const buffer = await modelManager.loadCachedModel(modelId);
-          if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-          await session.loadFromBuffer(buffer);
-          this.tsOrtSessions.set(modelId, session);
+      if (isFeedback) {
+        const fbTargets = plan.feedbackTargets.get(nodeId)!;
+        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        const fbWriteIdx = 1 - fbReadIdx;
+
+        if (plan.feedbackFirstFrame.has(nodeId)) {
+          const clearColor = node.data.feedbackClearColor as [number, number, number, number] | undefined;
+          this.backend.clearTarget(fbTargets[0], clearColor);
+          this.backend.clearTarget(fbTargets[1], clearColor);
+          plan.feedbackFirstFrame.delete(nodeId);
         }
 
-        const ctx = sourceCanvas.getContext('2d');
-        if (!ctx) throw new Error('Cannot get 2d context from source canvas');
-        const imageData = ctx.getImageData(0, 0, srcW, srcH);
-
-        const result = await runSegmentation(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640);
-        const seg = result.segmentation;
-
-        const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
-        this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
-
-        const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
-        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
-        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
-        this.onnxCallbacks.onOutputData?.(nodeId, { segmentation: seg });
-        return;
+        renderTarget = fbTargets[fbWriteIdx];
+      } else {
+        const target = plan.targets.get(nodeId);
+        if (!target) continue;
+        renderTarget = target;
       }
 
-      // Custom or generic models: full-image inference, output dims from tensor
-      if (node.data.onnxSource === 'custom' || !catalogEntry) {
-        await this.runTsOrtInference(plan, nodeId, sourceCanvas, srcW, srcH, modelId,
-          (s, d, w, h) => runGenericImageToImage(s, d, w, h));
-        return;
-      }
-      // Detection models: TS ORT + TS postprocess
-      {
-        let session = this.tsOrtSessions.get(modelId);
-        if (!session) {
-          session = new OnnxInferenceSession();
-          const buffer = await modelManager.loadCachedModel(modelId);
-          if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-          await session.loadFromBuffer(buffer);
-          this.tsOrtSessions.set(modelId, session);
+      // Build bind group entries from upstream textures + uniforms
+      const entries: GPUBindGroupEntry[] = [];
+      const upstreamSamplers = plan.upstreamSamplerBindings.get(nodeId);
+
+      // Texture bindings
+      if (upstreamSamplers) {
+        for (const [uniformName, sourceNodeId] of upstreamSamplers) {
+          const texBinding = compiled.textureBindings.get(uniformName);
+          if (texBinding === undefined) continue;
+          const src = plan.textureSources.get(sourceNodeId);
+          if (!src) continue;
+          const view = src.kind === 'target' ? src.target.view : src.handle.view;
+          const sampler = src.kind === 'target' ? src.target.sampler : src.handle.sampler;
+          entries.push({ binding: texBinding, resource: view });
+          entries.push({ binding: texBinding + 1, resource: sampler });
         }
-
-        const ctx = sourceCanvas.getContext('2d');
-        if (!ctx) throw new Error('Cannot get 2d context from source canvas');
-        const imageData = ctx.getImageData(0, 0, srcW, srcH);
-
-        const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
-        const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
-        const result = await runDetection(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
-
-        const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
-        this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
-
-        const detections = result.detections.map(d => ({
-          bbox: d.bbox as [number, number, number, number],
-          score: d.score,
-          class_id: d.classId,
-          class_name: COCO_CLASSES[d.classId] ?? 'unknown',
-        }));
-
-        const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
-        plan.textureSources.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxOutputCache.set(nodeId, { kind: 'image', texture: overlay.texture });
-        this.onnxCallbacks.onOutput?.(nodeId, overlay.dataUrl);
-        this.onnxCallbacks.onOutputSize?.(nodeId, srcW, srcH);
-        this.onnxCallbacks.onOutputData?.(nodeId, { detections });
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`ONNX error for node ${nodeId}:`, msg);
-      this.onnxCallbacks.onNodeError?.(nodeId, msg);
-    } finally {
-      this.onnxInFlight.delete(nodeId);
-      this.onnxCallbacks.onOnnxComplete?.();
+
+      // Feedback previousFrame binding
+      if (isFeedback && compiled.previousFrameBinding !== null) {
+        const fbTargets = plan.feedbackTargets.get(nodeId)!;
+        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        entries.push({ binding: compiled.previousFrameBinding, resource: fbTargets[fbReadIdx].view });
+        entries.push({ binding: compiled.previousFrameBinding + 1, resource: fbTargets[fbReadIdx].sampler });
+      }
+
+      // Uniform bindings (scalar values)
+      // TODO: create uniform buffers for scalar values and builtins
+
+      // Render
+      const bindGroup = device.createBindGroup({
+        layout: compiled.bindGroupLayout,
+        entries,
+      });
+      this.backend.renderPass(compiled.pipeline, bindGroup, renderTarget);
+      plan.textureSources.set(nodeId, { kind: 'target', target: renderTarget });
+
+      // Swap feedback
+      if (isFeedback) {
+        const current = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        plan.feedbackReadIndex.set(nodeId, 1 - current);
+      }
     }
   }
 
   // -----------------------------------------------------------------------
-  // Super-Resolution via generic TS ORT path
+  // Renderer output
   // -----------------------------------------------------------------------
 
-  private tsOrtSessions = new Map<string, OnnxInferenceSession>();
-
-  /**
-   * Generic image→image inference via TypeScript ORT.
-   * Handles session lifecycle, pixel readback, result→texture, backend reporting, and callbacks.
-   */
-  private async runTsOrtInference(
-    plan: ExecutionPlan,
-    nodeId: string,
-    sourceCanvas: HTMLCanvasElement,
-    srcW: number,
-    srcH: number,
-    modelId: string,
-    infer: (session: OnnxInferenceSession, rgba: Uint8ClampedArray, w: number, h: number) => Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }>,
-  ): Promise<void> {
-    let session = this.tsOrtSessions.get(modelId);
-    if (!session) {
-      session = new OnnxInferenceSession();
-      const buffer = await modelManager.loadCachedModel(modelId);
-      if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-      await session.loadFromBuffer(buffer);
-      this.tsOrtSessions.set(modelId, session);
+  renderRendererToScreen(plan: WebGPUExecutionPlan, rendererNodeId: string): void {
+    if (!this.backend) return;
+    const node = plan.nodeMap.get(rendererNodeId);
+    if (node?.data.type !== 'renderer') return;
+    const sourceId = plan.upstreamSamplerBindings.get(rendererNodeId)?.values().next().value;
+    if (!sourceId) return;
+    const src = plan.textureSources.get(sourceId);
+    if (!src) return;
+    if (src.kind === 'target') {
+      this.backend.renderToScreen(src.target);
+    } else {
+      this.backend.renderToScreen(src.handle);
     }
-
-    const ctx = sourceCanvas.getContext('2d');
-    if (!ctx) throw new Error('Cannot get 2d context from source canvas');
-    const imageData = ctx.getImageData(0, 0, srcW, srcH);
-
-    const result = await infer(session, imageData.data, srcW, srcH);
-
-    const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
-    this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
-
-    const outCanvas = document.createElement('canvas');
-    outCanvas.width = result.width;
-    outCanvas.height = result.height;
-    const outCtx = outCanvas.getContext('2d')!;
-    outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
-
-    const texture = new THREE.CanvasTexture(outCanvas);
-    texture.needsUpdate = true;
-    texture.flipY = true;
-    plan.textureSources.set(nodeId, { kind: 'image', texture });
-    this.onnxOutputCache.set(nodeId, { kind: 'image', texture });
-
-    this.onnxCallbacks.onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
-    this.onnxCallbacks.onOutputSize?.(nodeId, result.width, result.height);
   }
 
-  readOutputs(plan: ExecutionPlan, onOutput: (nodeId: string, dataUrl: string) => void): void {
-    if (!this.renderer) return;
+  async readOutputs(
+    plan: WebGPUExecutionPlan,
+    onOutput: (nodeId: string, dataUrl: string) => void,
+  ): Promise<void> {
+    if (!this.backend) return;
     for (const nodeId of plan.outputNodes) {
       const node = plan.nodeMap.get(nodeId);
       if (node?.data.type === 'renderer') {
         const sourceId = plan.upstreamSamplerBindings.get(nodeId)?.values().next().value;
         if (!sourceId) continue;
         const src = plan.textureSources.get(sourceId);
-        if (src?.kind === 'fbo') {
-          onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
-          continue;
-        }
-        if (src?.kind === 'image') {
-          const sourceNode = plan.nodeMap.get(sourceId);
-          const w = sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth ?? plan.defaultW;
-          const h = sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight ?? plan.defaultH;
-          let target = plan.targets.get(nodeId);
-          if (!target) {
-            target = this.renderer.createTarget(nodeId, w, h);
-            plan.targets.set(nodeId, target);
-          }
-          this.renderer.renderSampler2DInput(src.texture, target);
-          onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
-        }
-        continue;
-      }
-      // For feedback nodes, read from textureSources (has latest write target)
-      const isFeedback = node ? plan.feedbackTargets.has(nodeId) : false;
-      if (isFeedback) {
-        const src = plan.textureSources.get(nodeId);
-        if (src?.kind === 'fbo') {
-          onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
+        if (src?.kind === 'target') {
+          const dataUrl = await this.backend.readTargetToDataURL(src.target, 512);
+          onOutput(nodeId, dataUrl);
         }
         continue;
       }
       const target = plan.targets.get(nodeId);
       if (!target) continue;
-      onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
+      const dataUrl = await this.backend.readTargetToDataURL(target, 512);
+      onOutput(nodeId, dataUrl);
     }
   }
 
-  /** Read back a single node's render target as a data URL. */
-  readNodeOutput(plan: ExecutionPlan, nodeId: string, onOutput: (nodeId: string, dataUrl: string) => void): void {
-    if (!this.renderer) return;
-    const node = plan.nodeMap.get(nodeId);
-    if (!node) return;
+  // -----------------------------------------------------------------------
+  // Lifecycle
+  // -----------------------------------------------------------------------
 
-    if (node.data.type === 'renderer') {
-      const sourceId = plan.upstreamSamplerBindings.get(nodeId)?.values().next().value;
-      if (!sourceId) return;
-      const src = plan.textureSources.get(sourceId);
-      if (src?.kind === 'fbo') {
-        onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
-      } else if (src?.kind === 'image') {
-        const sourceNode = plan.nodeMap.get(sourceId);
-        const w = sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth ?? plan.defaultW;
-        const h = sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight ?? plan.defaultH;
-        let target = plan.targets.get(nodeId);
-        if (!target) {
-          target = this.renderer.createTarget(nodeId, w, h);
-          plan.targets.set(nodeId, target);
-        }
-        this.renderer.renderSampler2DInput(src.texture, target);
-        onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
-      }
-      return;
-    }
-
-    const isFeedback = plan.feedbackTargets.has(nodeId);
-    if (isFeedback) {
-      const src = plan.textureSources.get(nodeId);
-      if (src?.kind === 'fbo') {
-        onOutput(nodeId, this.renderer.readTargetToDataURL(src.target, 512));
-      }
-      return;
-    }
-
-    const target = plan.targets.get(nodeId);
-    if (!target) return;
-    onOutput(nodeId, this.renderer.readTargetToDataURL(target, 512));
-  }
-
-  renderRendererToScreen(plan: ExecutionPlan, rendererNodeId: string): void {
-    if (!this.renderer) return;
-    const node = plan.nodeMap.get(rendererNodeId);
-    if (node?.data.type !== 'renderer') return;
-    const sourceId = plan.upstreamSamplerBindings.get(rendererNodeId)?.values().next().value;
-    if (!sourceId) return;
-    const src = plan.textureSources.get(sourceId);
-    if (src?.kind === 'fbo') {
-      this.renderer.renderToScreen(src.target.texture);
-      return;
-    }
-    if (src?.kind === 'image') {
-      this.renderer.renderToScreen(src.texture);
-    }
-  }
-
-  captureRendererScreenshot(plan: ExecutionPlan, rendererNodeId: string): string | null {
-    if (!this.renderer) return null;
-    const sourceId = plan.upstreamSamplerBindings.get(rendererNodeId)?.values().next().value;
-    if (!sourceId) return null;
-    const src = plan.textureSources.get(sourceId);
-    if (src?.kind === 'fbo') {
-      return this.renderer.readTargetToDataURL(src.target);
-    }
-    if (src?.kind === 'image') {
-      const sourceNode = plan.nodeMap.get(sourceId);
-      const w = sourceNode?.data.imageWidth ?? sourceNode?.data.resolvedWidth ?? plan.defaultW;
-      const h = sourceNode?.data.imageHeight ?? sourceNode?.data.resolvedHeight ?? plan.defaultH;
-      let target = plan.targets.get(rendererNodeId);
-      if (!target) {
-        target = this.renderer.createTarget(rendererNodeId, w, h);
-        plan.targets.set(rendererNodeId, target);
-      }
-      this.renderer.renderSampler2DInput(src.texture, target);
-      return this.renderer.readTargetToDataURL(target);
-    }
-    return null;
-  }
-
-  async run(
-    nodes: Node<ShaderNodeData>[],
-    edges: Edge[],
-    onOutput?: (nodeId: string, dataUrl: string) => void,
-    onNodeError?: (nodeId: string, error: string) => void,
-    onOutputSize?: (nodeId: string, width: number, height: number) => void,
-    onOutputData?: (nodeId: string, data: unknown) => void,
-  ) {
-    if (!this.renderer) return;
-    this.running = true;
-
-    const order = topologicalSort(nodes, edges);
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-    const textures = new Map<string, TextureSource>();
-
-    let defaultW = 512;
-    let defaultH = 512;
-    for (const node of nodes) {
-      if (node.data.imageWidth && node.data.imageHeight) {
-        defaultW = node.data.imageWidth;
-        defaultH = node.data.imageHeight;
-        break;
-      }
-      if (node.data.inputMode === 'video' && node.data.videoUrl) {
-        const videoSize = await new Promise<{ width: number; height: number } | null>((resolve) => {
-          const video = document.createElement('video');
-          video.crossOrigin = 'anonymous';
-          video.preload = 'metadata';
-          video.onloadedmetadata = () => resolve({ width: video.videoWidth, height: video.videoHeight });
-          video.onerror = () => resolve(null);
-          video.src = node.data.videoUrl!;
-        });
-        if (videoSize) {
-          defaultW = videoSize.width;
-          defaultH = videoSize.height;
-          break;
-        }
-      }
-      if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const i = new Image();
-          i.onload = () => resolve(i);
-          i.onerror = () => reject(new Error(`Failed to load image for node ${node.id}`));
-          i.src = node.data.imageDataUrl!;
-        }).catch(() => null);
-        if (!img) break;
-        defaultW = img.naturalWidth;
-        defaultH = img.naturalHeight;
-        break;
-      }
-      if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
-        defaultW = node.data.fbWidth;
-        defaultH = node.data.fbHeight;
-        break;
-      }
-    }
-
-    let maxW = defaultW;
-    let maxH = defaultH;
-    for (const node of nodes) {
-      if (node.data.type === 'shader' || node.data.type === 'constant') {
-        const ow = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
-        const oh = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
-        if (ow > maxW) maxW = ow;
-        if (oh > maxH) maxH = oh;
-      }
-    }
-
-    this.renderer.setSize(maxW, maxH);
-
-    for (const nodeId of order) {
-      if (!this.running) break;
-      const node = nodeMap.get(nodeId);
-      if (!node) continue;
-
-      const upstreamEdges = edges.filter((e) => e.target === nodeId);
-
-      if (node.data.type === 'input') {
-        if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
-          try {
-            const b64 = node.data.rawDataUrl.split(',')[1];
-            const binary = atob(b64);
-            const buf = new ArrayBuffer(binary.length);
-            const view = new Uint8Array(buf);
-            for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
-
-            const tex = this.renderer.loadRawTexture(
-              nodeId, buf,
-              (node.data.fbFormat ?? 'rgba8') as FramebufferFormat,
-              node.data.fbWidth, node.data.fbHeight,
-              node.data.fbStride,
-            );
-            this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
-            const target = this.renderer.createTarget(`raw_${nodeId}`, node.data.fbWidth, node.data.fbHeight, true);
-            this.renderer.renderSampler2DInput(tex, target);
-            textures.set(nodeId, { kind: 'fbo', target });
-            onOutput?.(nodeId, this.renderer.readTargetToDataURL(target));
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`Raw texture error for node ${nodeId}:`, msg);
-            onNodeError?.(nodeId, msg);
-          }
-        } else if (node.data.inputMode === 'video' && node.data.videoUrl) {
-          try {
-            const video = document.createElement('video');
-            video.crossOrigin = 'anonymous';
-            video.muted = true;
-            video.playsInline = true;
-            video.preload = 'auto';
-            video.src = node.data.videoUrl;
-            await new Promise<void>((resolve, reject) => {
-              const onReady = () => {
-                cleanup();
-                resolve();
-              };
-              const onError = () => {
-                cleanup();
-                reject(new Error(`Failed to load video for node ${nodeId}`));
-              };
-              const cleanup = () => {
-                video.removeEventListener('loadeddata', onReady);
-                video.removeEventListener('error', onError);
-              };
-              video.addEventListener('loadeddata', onReady);
-              video.addEventListener('error', onError);
-            });
-            const tex = new THREE.VideoTexture(video);
-            tex.minFilter = THREE.LinearFilter;
-            tex.magFilter = THREE.LinearFilter;
-            tex.generateMipmaps = false;
-            textures.set(nodeId, { kind: 'image', texture: tex });
-            if (video.videoWidth > 0 && video.videoHeight > 0) onOutputSize?.(nodeId, video.videoWidth, video.videoHeight);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`Video load error for node ${nodeId}:`, msg);
-            onNodeError?.(nodeId, msg);
-          }
-        } else if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-          try {
-            const tex = await this.renderer.loadImageTexture(nodeId, node.data.imageDataUrl);
-            this.renderer.applyTextureSampling(tex, node.data.texFilter as TextureFilter, node.data.texWrap as TextureWrap);
-            textures.set(nodeId, { kind: 'image', texture: tex });
-            onOutput?.(nodeId, node.data.imageDataUrl);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`Image load error for node ${nodeId}:`, msg);
-            onNodeError?.(nodeId, msg);
-          }
-        }
-        continue;
-      }
-
-      if (node.data.type === 'shader' || node.data.type === 'constant' || node.data.type === 'renderer') {
-        const upstreamMap = new Map<string, string>();
-        const upstreamScalarValues = new Map<string, unknown>();
-        for (const edge of upstreamEdges) {
-          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-          if (port) {
-            upstreamMap.set(port.label, edge.source);
-            if (port.dataType !== 'sampler2D') {
-              const srcNode = nodeMap.get(edge.source);
-              if (srcNode?.data.type === 'input') {
-                const srcLabel = srcNode.data.inputs[0]?.label;
-                const v = srcNode.data.uniforms?.[srcLabel ?? ''] ?? port.defaultValue;
-                upstreamScalarValues.set(port.label, v);
-              }
-            }
-          }
-        }
-
-        if (node.data.type === 'renderer') {
-          const sourceId = upstreamMap.values().next().value;
-          if (sourceId) {
-            const src = textures.get(sourceId);
-            if (src?.kind === 'fbo') {
-              onOutput?.(nodeId, this.renderer.readTargetToDataURL(src.target));
-              onOutputSize?.(nodeId, src.target.width, src.target.height);
-            }
-          }
-          continue;
-        }
-
-        let material: THREE.ShaderMaterial;
-        let upstreamSamplers: Map<string, string>;
-        let preambleLines = 0;
-        try {
-          const compiled = compileNodeShader(node.data.shaderCode, node.data.inputs, upstreamMap);
-          material = compiled.material;
-          upstreamSamplers = compiled.upstreamSamplers;
-          preambleLines = compiled.preambleLines;
-
-          const gl = this.renderer!.getContext();
-          const fragSrc = material.fragmentShader as string;
-          if (fragSrc) {
-            const err = validateFragmentShader(gl, fragSrc);
-            if (err) throw new Error(err);
-          }
-
-          for (const [uniformName, sourceNodeId] of upstreamSamplers) {
-            const src = textures.get(sourceNodeId);
-            let tex: THREE.Texture | undefined;
-            if (src?.kind === 'fbo') tex = src.target.texture;
-            else if (src?.kind === 'image') tex = src.texture;
-            if (tex) material.uniforms[uniformName] = { value: tex };
-          }
-
-          for (const [key, val] of upstreamScalarValues) {
-            material.uniforms[key] = { value: normalizeUniformValue(val) };
-          }
-
-          for (const [key, val] of Object.entries(node.data.uniforms)) {
-            if (!upstreamMap.has(key)) material.uniforms[key] = { value: normalizeUniformValue(val) };
-          }
-
-          const outW = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
-          const outH = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
-          const outFormat = node.data.outFormat;
-          const isFloat = outFormat === 'rgba32f' || outFormat === 'rg32f' || outFormat === 'r32f';
-          const target = this.renderer.createTarget(nodeId, outW, outH, isFloat, outFormat);
-          if (node.data.texFilter || node.data.texWrap) {
-            this.renderer.applyTextureSampling(target.texture, node.data.texFilter, node.data.texWrap);
-          }
-          this.renderer.renderWithMaterial(material, target);
-          textures.set(nodeId, { kind: 'fbo', target });
-
-          const dataUrl = this.renderer.readTargetToDataURL(target);
-          onOutput?.(nodeId, dataUrl);
-          onOutputSize?.(nodeId, outW, outH);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          const formatted = formatShaderError(msg, preambleLines);
-          console.warn(`Shader error for node ${nodeId}:`, formatted);
-          onNodeError?.(nodeId, formatted);
-          continue;
-        }
-      }
-      if (node.data.type === 'onnx') {
-        try {
-          const modelId = node.data.onnxModelId ?? DEFAULT_ONNX_MODEL_ID;
-          const catalogEntry = ONNX_CATALOG[modelId];
-
-          // Skip execution if the model is still downloading or hasn't been fetched yet.
-          if (node.data.onnxStatus && node.data.onnxStatus !== 'ready') {
-            continue;
-          }
-
-          const imagePort = node.data.inputs.find((p) => p.dataType === 'sampler2D');
-          if (!imagePort) throw new Error(`ONNX node missing sampler2D input`);
-          const upstreamEdge = upstreamEdges.find((e) => e.targetHandle === imagePort.id);
-          if (!upstreamEdge) throw new Error(`ONNX input '${imagePort.label}' not connected`);
-
-          const source = textures.get(upstreamEdge.source);
-          if (!source) throw new Error(`ONNX upstream '${upstreamEdge.source}' produced no texture`);
-
-          let srcW: number;
-          let srcH: number;
-          if (source.kind === 'fbo') {
-            srcW = source.target.width;
-            srcH = source.target.height;
-          } else {
-            const img: unknown = source.texture.image;
-            if (img instanceof HTMLImageElement) {
-              srcW = img.naturalWidth || defaultW;
-              srcH = img.naturalHeight || defaultH;
-            } else {
-              srcW = defaultW;
-              srcH = defaultH;
-            }
-          }
-          const scratchId = `onnx_src_${nodeId}`;
-          const scratchTarget = this.renderer.createTarget(scratchId, srcW, srcH, false, 'rgba8');
-          if (source.kind === 'fbo') {
-            this.renderer.renderSampler2DInput(source.target.texture, scratchTarget);
-          } else {
-            this.renderer.renderSampler2DInput(source.texture, scratchTarget);
-          }
-          const sourceCanvas = this.renderer.readTargetToCanvas(scratchTarget);
-
-          // Shared helper for image→image TS ORT tasks in the execute path
-          const runTsOrt = async (inferFn: (s: OnnxInferenceSession, d: Uint8ClampedArray, w: number, h: number) => Promise<{ rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number }>) => {
-            let session = this.tsOrtSessions.get(modelId);
-            if (!session) {
-              session = new OnnxInferenceSession();
-              const buffer = await modelManager.loadCachedModel(modelId);
-              if (!buffer) throw new Error(`Model ${modelId} not downloaded yet`);
-              await session.loadFromBuffer(buffer);
-              this.tsOrtSessions.set(modelId, session);
-            }
-            const ctx = sourceCanvas.getContext('2d');
-            if (!ctx) throw new Error('Cannot get 2d context');
-            const imageData = ctx.getImageData(0, 0, srcW, srcH);
-            const result = await inferFn(session, imageData.data, srcW, srcH);
-            const outCanvas = document.createElement('canvas');
-            outCanvas.width = result.width;
-            outCanvas.height = result.height;
-            const outCtx = outCanvas.getContext('2d')!;
-            outCtx.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
-            const texture = new THREE.CanvasTexture(outCanvas);
-            texture.needsUpdate = true;
-            texture.flipY = true;
-            textures.set(nodeId, { kind: 'image', texture });
-            onOutput?.(nodeId, outCanvas.toDataURL('image/png'));
-            onOutputSize?.(nodeId, result.width, result.height);
-          };
-
-          if (catalogEntry && catalogEntry.task === 'super-resolution') {
-            const isRgb = modelId === 'realesrgan-x4';
-            const scale = isRgb ? 4 : 3;
-            const modelType = isRgb ? 'rgb' as const : 'ycbcr' as const;
-            await runTsOrt((s, d, w, h) => runSuperResolution(s, d, w, h, scale, modelType));
-          } else if (catalogEntry && catalogEntry.task === 'background-removal') {
-            await runTsOrt((s, d, w, h) => runBackgroundRemoval(s, d, w, h, modelId));
-          } else if (catalogEntry && catalogEntry.task === 'depth-estimation') {
-            await runTsOrt((s, d, w, h) => runDepthEstimation(s, d, w, h));
-          } else if (catalogEntry && catalogEntry.task === 'segmentation') {
-            const segResult = await runSegmentation(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640);
-            const seg = segResult.segmentation;
-            onOutputData?.(nodeId, { segmentation: seg });
-            const overlay = drawSegmentationOverlay(sourceCanvas, srcW, srcH, seg.maskRgba, seg.maskW, seg.maskH);
-            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
-            onOutput?.(nodeId, overlay.dataUrl);
-            onOutputSize?.(nodeId, srcW, srcH);
-          } else if (node.data.onnxSource === 'custom' || !catalogEntry) {
-            await runTsOrt((s, d, w, h) => runGenericImageToImage(s, d, w, h));
-          } else {
-            const scoreThreshold = node.data.onnxScoreThreshold ?? 0.25;
-            const iouThreshold = node.data.onnxIouThreshold ?? 0.45;
-            const detResult = await runDetection(session, imageData.data, srcW, srcH, catalogEntry.targetSize ?? 640, scoreThreshold, iouThreshold);
-            const detections = detResult.detections.map(d => ({
-              bbox: d.bbox as [number, number, number, number],
-              score: d.score,
-              class_id: d.classId,
-              class_name: COCO_CLASSES[d.classId] ?? 'unknown',
-            }));
-            const overlay = drawDetectionOverlay(sourceCanvas, srcW, srcH, detections);
-            textures.set(nodeId, { kind: 'image', texture: overlay.texture });
-            onOutput?.(nodeId, overlay.dataUrl);
-            onOutputSize?.(nodeId, srcW, srcH);
-            onOutputData?.(nodeId, { detections });
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          console.warn(`ONNX error for node ${nodeId}:`, msg);
-          onNodeError?.(nodeId, msg);
-        }
-        continue;
-      }
-
-
-    }
-  }
-
-
-  stop() {
+  stop(): void {
     this.running = false;
     for (const s of this.tsOrtSessions.values()) {
       try { s.dispose(); } catch { /* ignore */ }
     }
     this.tsOrtSessions.clear();
     this.onnxOutputCache.clear();
-    this.renderer?.clearResources();
+    this.backend?.clearResources();
+  }
+
+  dispose(): void {
+    this.stop();
+    this.backend?.dispose();
+    this.backend = null;
   }
 }

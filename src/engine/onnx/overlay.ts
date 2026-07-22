@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 export interface OnnxDetection {
   bbox: [number, number, number, number];
   score: number;
@@ -29,7 +27,7 @@ export function drawDetectionOverlay(
   width: number,
   height: number,
   detections: OnnxDetection[],
-): { dataUrl: string; texture: THREE.CanvasTexture; canvas: HTMLCanvasElement } {
+): { dataUrl: string; canvas: HTMLCanvasElement } {
   const out = document.createElement('canvas');
   out.width = width;
   out.height = height;
@@ -63,10 +61,7 @@ export function drawDetectionOverlay(
     ctx.fillText(label, px + 3, Math.max(0, py - th) + 1);
   }
 
-  const texture = new THREE.CanvasTexture(out);
-  texture.needsUpdate = true;
-  texture.flipY = true;
-  return { dataUrl: out.toDataURL('image/png'), texture, canvas: out };
+  return { dataUrl: out.toDataURL('image/png'), canvas: out };
 }
 
 export function drawSegmentationOverlay(
@@ -76,7 +71,7 @@ export function drawSegmentationOverlay(
   maskRgba: Uint8Array,
   maskW: number,
   maskH: number,
-): { dataUrl: string; texture: THREE.CanvasTexture; canvas: HTMLCanvasElement } {
+): { dataUrl: string; canvas: HTMLCanvasElement } {
   const out = document.createElement('canvas');
   out.width = width;
   out.height = height;
@@ -97,8 +92,5 @@ export function drawSegmentationOverlay(
     ctx.drawImage(maskCanvas, 0, 0, width, height);
   }
 
-  const texture = new THREE.CanvasTexture(out);
-  texture.needsUpdate = true;
-  texture.flipY = true;
-  return { dataUrl: out.toDataURL('image/png'), texture, canvas: out };
+  return { dataUrl: out.toDataURL('image/png'), canvas: out };
 }

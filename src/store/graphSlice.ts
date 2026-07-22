@@ -5,7 +5,7 @@ import {
   addEdge,
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
-import { parseShader } from '../engine/shaderParser';
+import { parseWgslShader } from '../engine/gpu/wgslParser';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
@@ -333,7 +333,7 @@ export function graphSlice(
         const node = state.nodes.find((n) => n.id === id);
         if (!node) return;
         if (data.shaderCode !== undefined) {
-          const parsed = parseShader(data.shaderCode, node.data.inputs, node.data.outputs);
+          const parsed = parseWgslShader(data.shaderCode, node.data.inputs, node.data.outputs);
           node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
         } else {
           Object.assign(node.data, data);
@@ -347,7 +347,7 @@ export function graphSlice(
         const node = state.nodes.find((n) => n.id === id);
         if (!node || node.data.type !== 'input') return;
         const shaderCode = createInputShader(dataType);
-        const parsed = parseShader(shaderCode, node.data.inputs, node.data.outputs);
+        const parsed = parseWgslShader(shaderCode, node.data.inputs, node.data.outputs);
         node.data.shaderCode = shaderCode;
         node.data.inputDataType = dataType;
         node.data.inputs = parsed.inputs;

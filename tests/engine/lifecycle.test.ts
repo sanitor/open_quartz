@@ -13,13 +13,14 @@ const {
 } = vi.hoisted(() => {
   const canvas = document.createElement('canvas');
   const compositor = {
+    init: vi.fn(() => Promise.resolve()),
     prepare: vi.fn(() => []),
     render: vi.fn(),
     readOutputs: vi.fn(),
-    readNodeOutput: vi.fn(),
+    readNodeOutput: vi.fn(() => Promise.resolve()),
     renderRendererToScreen: vi.fn(),
     getCanvas: vi.fn(() => canvas),
-    captureScreenshot: vi.fn(() => null),
+    captureScreenshot: vi.fn(() => Promise.resolve(null)),
     dispose: vi.fn(),
   };
   const clock = {
@@ -215,18 +216,18 @@ beforeEach(() => {
 // ===========================================================================
 
 describe('RealtimeHost lifecycle', () => {
-  it('play() starts the rAF loop', () => {
+  it('play() starts the rAF loop', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     expect(mockRAF).toHaveBeenCalled();
     expect(mockClockInstance.start).toHaveBeenCalled();
     expect(mockMouseInstance.attach).toHaveBeenCalledWith(document.body);
   });
 
-  it('pause() freezes the clock and fires onStateChange', () => {
+  it('pause() freezes the clock and fires onStateChange', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     vi.clearAllMocks();
 
     host.pause();
@@ -235,9 +236,9 @@ describe('RealtimeHost lifecycle', () => {
     expect(callbacks.onStateChange).toHaveBeenCalledWith('paused');
   });
 
-  it('resume() resumes the clock and restarts the rAF loop', () => {
+  it('resume() resumes the clock and restarts the rAF loop', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     host.pause();
     vi.clearAllMocks();
 
@@ -248,9 +249,9 @@ describe('RealtimeHost lifecycle', () => {
     expect(callbacks.onStateChange).toHaveBeenCalledWith('playing');
   });
 
-  it('stop() cleans up compositor, clock, mouse, and cancels rAF', () => {
+  it('stop() cleans up compositor, clock, mouse, and cancels rAF', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     vi.clearAllMocks();
 
     host.stop();
@@ -261,12 +262,12 @@ describe('RealtimeHost lifecycle', () => {
     expect(callbacks.onStateChange).toHaveBeenCalledWith('stopped');
   });
 
-  it('play→pause→resume→stop full lifecycle sequence', () => {
+  it('play→pause→resume→stop full lifecycle sequence', async () => {
     const nodes = [makeDynamicNode('s1')];
     const stateChanges: HostState[] = [];
     callbacks.onStateChange = (s: HostState) => stateChanges.push(s);
 
-    host.play(nodes, []);
+    await host.play(nodes, []);
     expect(host.getState()).toBe('playing');
 
     host.pause();
@@ -281,9 +282,9 @@ describe('RealtimeHost lifecycle', () => {
     expect(stateChanges).toEqual(['playing', 'paused', 'playing', 'stopped']);
   });
 
-  it('updateGraph() sets needsRecompile — compositor.prepare() called on next tick', () => {
+  it('updateGraph() sets needsRecompile — compositor.prepare() called on next tick', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     // Initial prepare from play()
     expect(mockCompositorInstance.prepare).toHaveBeenCalledTimes(1);
 
@@ -299,9 +300,9 @@ describe('RealtimeHost lifecycle', () => {
     expect(mockCompositorInstance.prepare.mock.calls[1][0]).toBe(newNodes);
   });
 
-  it('setPreviewNode() stores the preview node ID — readNodeOutput called during tick', () => {
+  it('setPreviewNode() stores the preview node ID — readNodeOutput called during tick', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     host.setPreviewNode('s1');
     flushRAF();
@@ -312,9 +313,9 @@ describe('RealtimeHost lifecycle', () => {
     );
   });
 
-  it('play() with static pipeline runs one frame then does not chain rAF', () => {
+  it('play() with static pipeline runs one frame then does not chain rAF', async () => {
     const nodes = [makeImageInputNode('img1'), makeRendererNode('r1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     // One rAF was queued for the single frame
     expect(rafCallbacks).toHaveLength(1);
@@ -325,9 +326,9 @@ describe('RealtimeHost lifecycle', () => {
     expect(rafCallbacks).toHaveLength(0);
   });
 
-  it('play() calls onFrame callback with time state', () => {
+  it('play() calls onFrame callback with time state', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     flushRAF();
 
@@ -336,19 +337,17 @@ describe('RealtimeHost lifecycle', () => {
     );
   });
 
-  it('captureScreenshot() delegates to compositor', () => {
+  it('captureScreenshot() returns null (WebGPU readback not yet implemented)', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     const result = host.captureScreenshot('r1');
-
-    expect(mockCompositorInstance.captureScreenshot).toHaveBeenCalledWith('r1');
-    expect(result).toBeNull(); // mock returns null
+    expect(result).toBeNull();
   });
 
-  it('stop() cancels a pending rAF', () => {
+  it('stop() cancels a pending rAF', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     const queuedBefore = rafCallbacks.length;
     expect(queuedBefore).toBeGreaterThan(0);
@@ -363,22 +362,22 @@ describe('RealtimeHost lifecycle', () => {
 // ===========================================================================
 
 describe('Static vs dynamic pipeline detection', () => {
-  it('shader with iTime is classified as dynamic', () => {
+  it('shader with iTime is classified as dynamic', async () => {
     const nodes = [makeDynamicNode('s1')];
     expect(isStaticPipeline(nodes)).toBe(false);
   });
 
-  it('video input node forces dynamic pipeline', () => {
+  it('video input node forces dynamic pipeline', async () => {
     const nodes = [makeVideoInputNode('v1')];
     expect(isStaticPipeline(nodes)).toBe(false);
   });
 
-  it('image-only pipeline is static', () => {
+  it('image-only pipeline is static', async () => {
     const nodes = [makeImageInputNode('img1'), makeRendererNode('r1')];
     expect(isStaticPipeline(nodes)).toBe(true);
   });
 
-  it('system source "time" forces dynamic', () => {
+  it('system source "time" forces dynamic', async () => {
     const nodes = [makeNode('sys', {
       type: 'input',
       inputMode: 'system',
@@ -388,7 +387,7 @@ describe('Static vs dynamic pipeline detection', () => {
     expect(isStaticPipeline(nodes)).toBe(false);
   });
 
-  it('system source "resolution" is static', () => {
+  it('system source "resolution" is static', async () => {
     const nodes = [makeNode('sys', {
       type: 'input',
       inputMode: 'system',
@@ -398,16 +397,16 @@ describe('Static vs dynamic pipeline detection', () => {
     expect(isStaticPipeline(nodes)).toBe(true);
   });
 
-  it('shader with previousFrame is dynamic', () => {
+  it('shader with previousFrame is dynamic', async () => {
     const nodes = [makeNode('s1', {
       shaderCode: 'void main() { vec4 c = previousFrame; }',
     })];
     expect(isStaticPipeline(nodes)).toBe(false);
   });
 
-  it('static pipeline via RealtimeHost: rAF stops after first render', () => {
+  it('static pipeline via RealtimeHost: rAF stops after first render', async () => {
     const nodes = [makeImageInputNode('img1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     // Exactly one rAF was queued
     expect(rafCallbacks).toHaveLength(1);
@@ -420,9 +419,9 @@ describe('Static vs dynamic pipeline detection', () => {
     expect(mockCompositorInstance.render).toHaveBeenCalledTimes(1);
   });
 
-  it('dynamic pipeline via RealtimeHost: rAF chains continuously', () => {
+  it('dynamic pipeline via RealtimeHost: rAF chains continuously', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     // Flush 3 frames — each tick re-queues rAF
     flushRAF(16);
@@ -440,9 +439,9 @@ describe('Static vs dynamic pipeline detection', () => {
 // ===========================================================================
 
 describe('Hot-update while playing', () => {
-  it('updateGraph during play triggers recompile on next tick', () => {
+  it('updateGraph during play triggers recompile on next tick', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     expect(mockCompositorInstance.prepare).toHaveBeenCalledTimes(1);
 
     // Change the shader code in a new node array to force data change
@@ -456,10 +455,10 @@ describe('Hot-update while playing', () => {
     expect(mockCompositorInstance.prepare).toHaveBeenCalledTimes(2);
   });
 
-  it('recompile passes updated nodes and edges to compositor.prepare', () => {
+  it('recompile passes updated nodes and edges to compositor.prepare', async () => {
     const nodes = [makeDynamicNode('s1')];
     const edges: Edge[] = [];
-    host.play(nodes, edges);
+    await host.play(nodes, edges);
 
     const newEdges: Edge[] = [{ id: 'e1', source: 's1', target: 's2' }];
     const newNodes = [makeDynamicNode('s1'), makeDynamicNode('s2')];
@@ -474,9 +473,9 @@ describe('Hot-update while playing', () => {
     expect(lastCall[1]).toBe(newEdges);
   });
 
-  it('updateGraph with new nodes triggers prepare with updated node list', () => {
+  it('updateGraph with new nodes triggers prepare with updated node list', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
 
     const newNodes = [makeDynamicNode('s1'), makeDynamicNode('s2'), makeDynamicNode('s3')];
     host.updateGraph(newNodes, []);
@@ -489,9 +488,9 @@ describe('Hot-update while playing', () => {
     expect(recompileNodes.map((n: Node<ShaderNodeData>) => n.id)).toEqual(['s1', 's2', 's3']);
   });
 
-  it('position-only change still triggers recompile (no diff optimization yet)', () => {
+  it('position-only change still triggers recompile (no diff optimization yet)', async () => {
     const nodes = [makeDynamicNode('s1')];
-    host.play(nodes, []);
+    await host.play(nodes, []);
     expect(mockCompositorInstance.prepare).toHaveBeenCalledTimes(1);
 
     // Move node position — updateGraph currently always recompiles
@@ -615,7 +614,7 @@ describe('App store→host bridge', () => {
     );
   });
 
-  it('stopped→playing creates host and calls play()', () => {
+  it('stopped→playing creates host and calls play()', async () => {
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
 
     handler(playingState, stoppedState);
@@ -624,7 +623,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.play).toHaveBeenCalledWith(defaultNodes, defaultEdges);
   });
 
-  it('playing→paused calls host.pause()', () => {
+  it('playing→paused calls host.pause()', async () => {
     // First transition to playing
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
@@ -635,7 +634,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.pause).toHaveBeenCalledTimes(1);
   });
 
-  it('paused→playing calls host.resume()', () => {
+  it('paused→playing calls host.resume()', async () => {
     // Setup: stopped → playing → paused
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
@@ -650,7 +649,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.play).toHaveBeenCalledTimes(1); // only from initial start
   });
 
-  it('playing→stopped calls host.stop()', () => {
+  it('playing→stopped calls host.stop()', async () => {
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
 
@@ -659,7 +658,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('nodes/edges change while playing calls host.updateGraph()', () => {
+  it('nodes/edges change while playing calls host.updateGraph()', async () => {
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
 
@@ -670,7 +669,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.updateGraph).toHaveBeenCalledWith(newNodes, defaultEdges);
   });
 
-  it('nodes/edges change while stopped does NOT call updateGraph', () => {
+  it('nodes/edges change while stopped does NOT call updateGraph', async () => {
     // Go playing first to create the host, then stop
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
@@ -683,7 +682,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.updateGraph).not.toHaveBeenCalled();
   });
 
-  it('selectedNodeId change syncs preview node', () => {
+  it('selectedNodeId change syncs preview node', async () => {
     const playingState: StoreSlice = { ...stoppedState, loopState: 'playing' };
     handler(playingState, stoppedState);
 
@@ -694,7 +693,7 @@ describe('App store→host bridge', () => {
     expect(mockHost!.setPreviewNode).toHaveBeenCalledWith('s1');
   });
 
-  it('full bridge lifecycle: stopped→playing→paused→playing→stopped', () => {
+  it('full bridge lifecycle: stopped→playing→paused→playing→stopped', async () => {
     const playing: StoreSlice = { ...stoppedState, loopState: 'playing' };
     const paused: StoreSlice = { ...playing, loopState: 'paused' };
 

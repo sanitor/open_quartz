@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
-import { parseShader } from '../engine/shaderParser';
+import { parseWgslShader } from '../engine/gpu/wgslParser';
 import type { CatalogEntry } from '../catalog/onnxCatalog';
 import { OnnxModelManager } from '../engine/onnx/modelManager';
 import { OnnxInferenceSession } from '../engine/onnx/inference';
@@ -29,11 +29,11 @@ export const SYSTEM_SOURCES: Record<
   NonNullable<ShaderNodeData['systemSource']>,
   { label: string; dataType: DataType; code: string }
 > = {
-  time: { label: 'Time', dataType: 'float', code: 'uniform float value;\nout float outputValue;\nvoid main() { outputValue = value; }' },
-  timeDelta: { label: 'Time Delta', dataType: 'float', code: 'uniform float value;\nout float outputValue;\nvoid main() { outputValue = value; }' },
-  frame: { label: 'Frame', dataType: 'int', code: 'uniform int value;\nout int outputValue;\nvoid main() { outputValue = value; }' },
-  mouse: { label: 'Mouse', dataType: 'vec4', code: 'uniform vec4 value;\nout vec4 outputValue;\nvoid main() { outputValue = value; }' },
-  resolution: { label: 'Resolution', dataType: 'vec3', code: 'uniform vec3 value;\nout vec3 outputValue;\nvoid main() { outputValue = value; }' },
+  time: { label: 'Time', dataType: 'float', code: '@group(0) @binding(0) var<uniform> value: f32;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(value, 0.0, 0.0, 1.0); }' },
+  timeDelta: { label: 'Time Delta', dataType: 'float', code: '@group(0) @binding(0) var<uniform> value: f32;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(value, 0.0, 0.0, 1.0); }' },
+  frame: { label: 'Frame', dataType: 'int', code: '@group(0) @binding(0) var<uniform> value: i32;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(f32(value), 0.0, 0.0, 1.0); }' },
+  mouse: { label: 'Mouse', dataType: 'vec4', code: '@group(0) @binding(0) var<uniform> value: vec4f;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return value; }' },
+  resolution: { label: 'Resolution', dataType: 'vec3', code: '@group(0) @binding(0) var<uniform> value: vec3f;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(value, 1.0); }' },
 };
 
 export const ID_RE = /^(.+?)_(\d+)$/;
@@ -50,30 +50,30 @@ export const counters = { node: 0, cascade: 0 };
 
 export function createInputShader(dataType: DataType): string {
   if (dataType === 'sampler2D') {
-    return `uniform sampler2D value;\nout vec4 outputValue;\nvoid main() { outputValue = texture(value, v_uv); }`;
+    return '@group(0) @binding(0) var value: texture_2d<f32>;\n@group(0) @binding(1) var valueSampler: sampler;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return textureSample(value, valueSampler, v_uv); }';
   }
-  return `uniform ${dataType} value;\nout ${dataType} outputValue;\nvoid main() { outputValue = value; }`;
+  return `@group(0) @binding(0) var<uniform> value: f32;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(value, 0.0, 0.0, 1.0); }`;
 }
 
 export function createDefaultShaderCode(type: ShaderNodeData['type'], inputDataType?: DataType): string {
   switch (type) {
     case 'shader':
       return [
-        'uniform sampler2D inputImage;',
-        'uniform float intensity;',
+        '@group(0) @binding(0) var inputImage: texture_2d<f32>;',
+        '@group(0) @binding(1) var inputImageSampler: sampler;',
+        '@group(0) @binding(2) var<uniform> intensity: f32;',
         '',
-        'out vec4 fragColor;',
-        '',
-        'void main() {',
-        '  vec4 color = texture(inputImage, v_uv);',
-        '  color.rgb *= intensity;',
-        '  fragColor = color;',
+        '@fragment',
+        'fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {',
+        '  var color = textureSample(inputImage, inputImageSampler, v_uv);',
+        '  color = vec4f(color.rgb * intensity, color.a);',
+        '  return color;',
         '}',
       ].join('\n');
     case 'input':
       return createInputShader(inputDataType ?? 'float');
     case 'constant':
-      return 'uniform vec4 color;\nout vec4 fragColor;\nvoid main() { fragColor = color; }';
+      return '@group(0) @binding(0) var<uniform> color: vec4f;\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return color; }';
     case 'onnx':
     case 'renderer':
     case 'math':
@@ -114,7 +114,7 @@ export function makeNode(
   counters.node++;
   const id = `${type}_${counters.node}`;
   const shaderCode = shaderCodeOverride ?? createDefaultShaderCode(type, inputDataType);
-  const parsed = parseShader(shaderCode);
+  const parsed = parseWgslShader(shaderCode);
 
   const cascade = counters.cascade++ * 28;
   const pos = position ?? { x: 100 + cascade, y: 100 + cascade };

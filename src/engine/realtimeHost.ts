@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import { Clock, type TimeState } from './clock';
@@ -50,7 +49,7 @@ export class RealtimeHost {
   private edges: Edge[] = [];
   private resolution = new Float32Array(3); // [w, h, pixelRatio]
   private videoSources = new Map<string, VideoSource>();
-  private videoTextures = new Map<string, THREE.Texture>();
+  private videoElements = new Map<string, HTMLVideoElement>();
   private needsRecompile = false;
   private isStatic = false;
   private lastInputs: FrameInputs | null = null;
@@ -81,15 +80,19 @@ export class RealtimeHost {
     });
   };
 
-  constructor(canvas: HTMLCanvasElement, callbacks: HostCallbacks) {
-    this.compositor = new Compositor(canvas);
+  constructor(private readonly canvas: HTMLCanvasElement, callbacks: HostCallbacks) {
+    this.compositor = new Compositor();
     this.callbacks = callbacks;
   }
 
-  play(nodes: Node<ShaderNodeData>[], edges: Edge[]): void {
+  async play(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void> {
     this.nodes = nodes;
     this.edges = edges;
     this.isStatic = isStaticPipeline(nodes);
+
+    // Init compositor on first play
+    await this.compositor.init(this.canvas);
+
     const pending = this.compositor.prepare(
       nodes,
       edges,
@@ -108,7 +111,6 @@ export class RealtimeHost {
     this.callbacks.onStateChange?.('playing');
 
     if (this.isStatic) {
-      // Static pipeline: wait for async texture loads, then render one frame.
       const startTick = () => {
         this.rafId = requestAnimationFrame((now) => {
           this.tick(now);
@@ -169,7 +171,7 @@ export class RealtimeHost {
     window.removeEventListener('renderer-remount', this.onRemount);
     for (const source of this.videoSources.values()) source.dispose();
     this.videoSources.clear();
-    this.videoTextures.clear();
+    this.videoElements.clear();
     this.compositor.dispose();
     this.callbacks.onStateChange?.('stopped');
   }
@@ -216,8 +218,9 @@ export class RealtimeHost {
   }
 
 
-  captureScreenshot(rendererId: string): string | null {
-    return this.compositor.captureScreenshot(rendererId);
+  captureScreenshot(_rendererId: string): string | null {
+    // TODO: implement async screenshot via WebGPU readback
+    return null;
   }
 
   async addVideoSource(nodeId: string, config: VideoSourceConfig): Promise<void> {
@@ -225,15 +228,15 @@ export class RealtimeHost {
     const source = new VideoSource(config);
     await source.init();
     this.videoSources.set(nodeId, source);
-    const texture = source.getTexture();
-    if (texture) this.videoTextures.set(nodeId, texture);
+    const el = source.getVideoElement();
+    if (el) this.videoElements.set(nodeId, el);
   }
 
   removeVideoSource(nodeId: string): void {
     const source = this.videoSources.get(nodeId);
     if (source) source.dispose();
     this.videoSources.delete(nodeId);
-    this.videoTextures.delete(nodeId);
+    this.videoElements.delete(nodeId);
   }
 
   private async reconcileVideoSources(nodes: Node<ShaderNodeData>[]): Promise<void> {
@@ -302,8 +305,8 @@ export class RealtimeHost {
     const ts = this.clock.tick(now);
 
     for (const [nodeId, source] of this.videoSources) {
-      const texture = source.getTexture();
-      if (texture) this.videoTextures.set(nodeId, texture);
+      const el = source.getVideoElement();
+      if (el) this.videoElements.set(nodeId, el);
     }
 
     const inputs: FrameInputs = {
@@ -313,7 +316,7 @@ export class RealtimeHost {
       date: ts.date,
       mouse: this.mouse.iMouse,
       resolution: this.resolution,
-      videoTextures: this.videoTextures,
+      videoElements: this.videoElements,
     };
 
     this.lastInputs = inputs;

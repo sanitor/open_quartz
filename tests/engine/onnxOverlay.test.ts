@@ -1,18 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { OnnxDetection } from '../../src/engine/onnx/overlay';
 
-// Mock three's CanvasTexture — mirror the executionEngine.test.ts style.
-vi.mock('three', () => ({
-  CanvasTexture: class {
-    image: unknown;
-    needsUpdate = false;
-    flipY = true;
-    dispose = vi.fn();
-    constructor(img?: unknown) {
-      this.image = img;
-    }
-  },
-}));
 
 import { drawDetectionOverlay, drawSegmentationOverlay } from '../../src/engine/onnx/overlay';
 
@@ -109,15 +97,9 @@ describe('drawDetectionOverlay', () => {
     expect(result.canvas.width).toBe(320);
     expect(result.canvas.height).toBe(240);
     expect(result.dataUrl).toBe('data:image/png;base64,MOCK');
-    expect(result.texture).toBeDefined();
+    expect(result.canvas).toBeInstanceOf(HTMLCanvasElement);
   });
 
-  it('marks the CanvasTexture as needsUpdate=true and flipY=true', () => {
-    const source = document.createElement('canvas');
-    const result = drawDetectionOverlay(source, 100, 100, []);
-    expect(result.texture.needsUpdate).toBe(true);
-    expect(result.texture.flipY).toBe(true);
-  });
 
   it('throws when 2d context is unavailable', () => {
     HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as typeof HTMLCanvasElement.prototype.getContext;
@@ -251,16 +233,9 @@ describe('drawSegmentationOverlay', () => {
     expect(result.canvas.width).toBe(320);
     expect(result.canvas.height).toBe(240);
     expect(result.dataUrl).toBe('data:image/png;base64,MOCK');
-    expect(result.texture).toBeDefined();
+    expect(result.canvas).toBeInstanceOf(HTMLCanvasElement);
   });
 
-  it('marks CanvasTexture as needsUpdate=true and flipY=true', () => {
-    const source = document.createElement('canvas');
-    const mask = new Uint8Array(4);
-    const result = drawSegmentationOverlay(source, 100, 100, mask, 1, 1);
-    expect(result.texture.needsUpdate).toBe(true);
-    expect(result.texture.flipY).toBe(true);
-  });
 
   it('throws when 2d context is unavailable', () => {
     HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as typeof HTMLCanvasElement.prototype.getContext;

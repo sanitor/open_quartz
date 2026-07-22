@@ -73,7 +73,7 @@ export class PipelineService {
         setTimeout(() => {
           const s = useGraphStore.getState();
           this.host?.setPreviewNode(s.selectedNodeId);
-          this.host?.play(s.nodes, s.edges);
+          void this.host?.play(s.nodes, s.edges);
         }, 0);
       }
 

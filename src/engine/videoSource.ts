@@ -1,5 +1,5 @@
-import * as THREE from 'three';
-
+// VideoSource — manages HTMLVideoElement for camera/file video input.
+// The WebGPU backend uploads frames via copyExternalImageToTexture().
 export type VideoSourceType = 'camera' | 'file';
 
 export interface VideoSourceConfig {
@@ -14,7 +14,6 @@ export interface VideoSourceConfig {
 export class VideoSource {
   private readonly video: HTMLVideoElement;
   private readonly config: VideoSourceConfig;
-  private texture: THREE.VideoTexture | null = null;
   private stream: MediaStream | null = null;
   private ready = false;
 
@@ -59,15 +58,12 @@ export class VideoSource {
     });
 
     await this.video.play();
-    this.texture = new THREE.VideoTexture(this.video);
-    this.texture.minFilter = THREE.LinearFilter;
-    this.texture.magFilter = THREE.LinearFilter;
-    this.texture.generateMipmaps = false;
     this.ready = true;
   }
 
-  getTexture(): THREE.VideoTexture | null {
-    return this.ready ? this.texture : null;
+  /** Get the raw video element for GPU texture upload. */
+  getVideoElement(): HTMLVideoElement | null {
+    return this.ready ? this.video : null;
   }
 
   getResolution(): { width: number; height: number } {

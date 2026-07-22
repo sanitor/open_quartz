@@ -44,8 +44,8 @@ vi.mock('../../src/utils/projectIO', () => ({
 
 // Mock executionEngine
 vi.mock('../../src/engine/executionEngine', () => ({
-  ExecutionEngine: vi.fn().mockImplementation(() => ({
-    run: vi.fn().mockResolvedValue(undefined),
+  WebGPUExecutionEngine: vi.fn().mockImplementation(() => ({
+    init: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn(),
   })),
 }));
