@@ -1,5 +1,4 @@
 import { defineConfig } from 'vitest/config';
-import { resolve } from 'node:path';
 
 /**
  * Functional / integration tests that use real ONNX models and real inference.
@@ -10,19 +9,14 @@ import { resolve } from 'node:path';
  * - Run real inference (~seconds per model)
  * - Cannot run in jsdom (no WebGL, no ORT web)
  *
- * Run with: npm run test:functional
+ * Run with: npm run test:models
  */
 export default defineConfig({
-  resolve: {
-    alias: {
-      '@nodes/yolo-detector': resolve(__dirname, 'rust/crates/yolo-detector/pkg/yolo_detector.js'),
-    },
-  },
   test: {
     globals: true,
     environment: 'node',
     include: ['tests/functional/**/*.test.ts'],
-    pool: 'forks',         // isolate ORT sessions across test files
+    pool: 'forks',
     testTimeout: 120_000,
     hookTimeout: 120_000,
   },

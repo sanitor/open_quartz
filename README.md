@@ -153,7 +153,7 @@ The current pipeline has two CPU roundtrips per ONNX inference frame — `readPi
 
 | Phase | What | Status |
 |-------|------|--------|
-| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript (~200 lines), remove `rust/crates/`, `wasm-pack` dependency | 🔜 Next |
+| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript (~200 lines), remove `rust/crates/`, `wasm-pack` dependency | ✅ Done |
 | **2. Node-based post-processing** | Decode/NMS as independent graph nodes, Overlay as shader node — detection pipeline becomes composable | Planned |
 | **3. WebGPU renderer** | Three.js `WebGLRenderer` → `WebGPURenderer` — shader output becomes `GPUTexture` | Planned |
 | **4. ORT I/O binding** | ONNX inference reads/writes `GPUTexture` directly via `io_binding` — eliminates readPixels bottleneck | Planned |
