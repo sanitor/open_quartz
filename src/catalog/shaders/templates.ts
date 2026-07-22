@@ -1,24 +1,15 @@
 export const CUSTOM_SHADER_CODE = [
-  'uniform sampler2D inputImage;',
-  'uniform float intensity;',
-  '',
-  'out vec4 fragColor;',
-  '',
-  'void main() {',
-  '  vec4 color = texture(inputImage, v_uv);',
-  '  color.rgb *= intensity;',
-  '  fragColor = color;',
+  '@fragment',
+  'fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {',
+  '  var color = textureSample(inputImage, inputImageSampler, v_uv);',
+  '  color = vec4f(color.rgb * intensity, color.a);',
+  '  return color;',
   '}',
 ].join('\n');
 
-export const CUSTOM_2IN1_SHADER = `uniform sampler2D inputA;
-uniform sampler2D inputB;
-uniform float mixFactor;
-
-out vec4 fragColor;
-
-void main() {
-  vec4 a = texture(inputA, v_uv);
-  vec4 b = texture(inputB, v_uv);
-  fragColor = mix(a, b, mixFactor);
+export const CUSTOM_2IN1_SHADER = `@fragment
+fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  let a = textureSample(inputA, inputASampler, v_uv);
+  let b = textureSample(inputB, inputBSampler, v_uv);
+  return mix(a, b, mixFactor);
 }`;
