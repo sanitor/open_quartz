@@ -6,9 +6,9 @@ import {
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseShader } from '../engine/shaderParser';
-import { SHADER_TEMPLATES } from '../engine/predefinedShaders';
-import { MATH_OPS, getMathPorts } from '../engine/mathOps';
-import { ONNX_CATALOG } from '../engine/onnxCatalog';
+import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
+import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
+import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { OnnxInferenceSession } from '../engine/onnxInference';
 import { introspectOnnxModel, metaToDefaultPorts } from '../engine/onnxIntrospect';
 import type { GraphState } from './index';

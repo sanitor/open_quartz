@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../../src/engine/onnxCatalog';
-import type { CatalogEntry } from '../../src/engine/onnxCatalog';
+import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../../src/catalog/onnxCatalog';
+import type { CatalogEntry } from '../../src/catalog/onnxCatalog';
 
 const catalogKeys = Object.keys(ONNX_CATALOG);
 const catalogEntries = Object.entries(ONNX_CATALOG);

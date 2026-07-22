@@ -112,7 +112,7 @@ vi.stubGlobal('atob', (b64: string) => {
 });
 
 // Mock onnx modules
-vi.mock('../../src/engine/onnxRegistry', () => ({
+vi.mock('../../src/catalog/onnxRegistry', () => ({
   ONNX_MODELS: {
     yolov8n: { id: 'yolov8n', label: 'YOLOv8n', modelUrl: '/m.onnx', targetSize: 640, scoreThreshold: 0.25, iouThreshold: 0.45, description: '', inputs: [], outputs: [] },
   },

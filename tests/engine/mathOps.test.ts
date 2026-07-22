@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../src/engine/mathOps';
+import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../src/catalog/mathOps';
 
 describe('MATH_OPS compute', () => {
   // Table-driven: each row names the op, inputs, and the expected output.

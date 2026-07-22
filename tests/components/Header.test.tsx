@@ -1,5 +1,5 @@
 // Mock onnxRegistry
-vi.mock('../../src/engine/onnxRegistry', () => ({
+vi.mock('../../src/catalog/onnxRegistry', () => ({
   ONNX_MODELS: {
     yolov8n: {
       id: 'yolov8n',
@@ -120,7 +120,7 @@ vi.mock('../../src/store/useGraphStore', () => ({
 }));
 
 // Mock predefined shaders
-vi.mock('../../src/engine/predefinedShaders', () => ({
+vi.mock('../../src/catalog/predefinedShaders', () => ({
   CUSTOM_SHADER_CODE: 'uniform sampler2D inputImage;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }',
   CUSTOM_2IN1_SHADER: 'uniform sampler2D inputA;\nuniform sampler2D inputB;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }',
   predefinedShaders: [

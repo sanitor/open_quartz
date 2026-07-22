@@ -6,7 +6,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { ImageLightbox } from '../ImageLightbox';
 import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '../../types';
 import { generateRawPreview } from '../../utils/rawPreview';
-import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../engine/mathOps';
+import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },

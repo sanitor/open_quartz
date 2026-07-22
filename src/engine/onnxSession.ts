@@ -11,7 +11,7 @@
 //   emit `.d.ts`. We own the domain type here and narrow at the boundary.
 
 import __wbg_init, { YoloDetectorWasm } from '@nodes/yolo-detector';
-import type { OnnxModelDescriptor } from './onnxRegistry';
+import type { OnnxModelDescriptor } from '../catalog/onnxRegistry';
 
 export interface OnnxDetection {
   bbox: [number, number, number, number];

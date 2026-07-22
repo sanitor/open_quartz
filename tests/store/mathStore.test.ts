@@ -32,7 +32,7 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 import { useGraphStore } from '../../src/store/useGraphStore';
-import { MATH_OPS, getMathPorts } from '../../src/engine/mathOps';
+import { MATH_OPS, getMathPorts } from '../../src/catalog/mathOps';
 
 function resetStore() {
   useGraphStore.setState({

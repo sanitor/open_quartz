@@ -41,7 +41,7 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 import { useGraphStore } from '../../src/store/useGraphStore';
-import { ONNX_CATALOG } from '../../src/engine/onnxCatalog';
+import { ONNX_CATALOG } from '../../src/catalog/onnxCatalog';
 
 function resetStore() {
   useGraphStore.setState({

@@ -1,7 +1,7 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseShader } from '../engine/shaderParser';
-import type { CatalogEntry } from '../engine/onnxCatalog';
+import type { CatalogEntry } from '../catalog/onnxCatalog';
 import { OnnxModelManager } from '../engine/onnxModelManager';
 import { OnnxInferenceSession } from '../engine/onnxInference';
 import type { GraphState } from './index';

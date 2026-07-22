@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { CatalogEntry } from '../../src/engine/onnxCatalog';
+import type { CatalogEntry } from '../../src/catalog/onnxCatalog';
 import type { ModelState } from '../../src/engine/onnxModelManager';
 
 // Ensure non-Tauri path: isTauri is `'__TAURI_INTERNALS__' in window`

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { OnnxDetection } from '../../src/engine/onnxSession';
-import type { OnnxModelDescriptor } from '../../src/engine/onnxRegistry';
+import type { OnnxModelDescriptor } from '../../src/catalog/onnxRegistry';
 import type { YoloMockState } from '../fixtures/onnxMock';
 import { buildYoloModuleShape, resetYoloState } from '../fixtures/onnxMock';
 

@@ -5,7 +5,7 @@
 
 import type * as OrtModule from 'onnxruntime-web';
 import type { Port } from '../types';
-import type { OnnxTask } from './onnxCatalog';
+import type { OnnxTask } from '../catalog/onnxCatalog';
 import { ensureOrtLoaded } from './onnxInference';
 
 declare const ort: typeof OrtModule;

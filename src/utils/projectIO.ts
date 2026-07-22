@@ -2,7 +2,7 @@ import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import { checkIsTauri, tauriConvertFileSrc } from './tauri';
-import { SHADER_TEMPLATES } from '../engine/predefinedShaders';
+import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 
 const CURRENT_VERSION = '0.4.0';
 

@@ -2,7 +2,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType } from '../../../types';
 import { DATA_TYPE_COLORS } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
-import { MATH_OPS } from '../../../engine/mathOps';
+import { MATH_OPS } from '../../../catalog/mathOps';
 import { NodeShell, MENU_ICONS, type NodeStatus } from './NodeShell';
 
 const ROW_H = 22;

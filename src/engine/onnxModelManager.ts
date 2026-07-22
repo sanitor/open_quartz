@@ -1,4 +1,4 @@
-import type { CatalogEntry } from './onnxCatalog';
+import type { CatalogEntry } from '../catalog/onnxCatalog';
 
 // ---------------------------------------------------------------------------
 // Model lifecycle status

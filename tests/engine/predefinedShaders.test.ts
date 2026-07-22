@@ -3,9 +3,9 @@ import {
   predefinedShaders,
   CUSTOM_SHADER_CODE,
   CUSTOM_2IN1_SHADER,
-} from '../../src/engine/predefinedShaders';
-import { generatorShaders } from '../../src/engine/shaders/generator';
-import { feedbackShaders } from '../../src/engine/shaders/feedback';
+} from '../../src/catalog/predefinedShaders';
+import { generatorShaders } from '../../src/catalog/shaders/generator';
+import { feedbackShaders } from '../../src/catalog/shaders/feedback';
 import { parseShader } from '../../src/engine/shaderParser';
 
 describe('predefinedShaders', () => {

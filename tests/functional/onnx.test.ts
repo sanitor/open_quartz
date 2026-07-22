@@ -11,7 +11,7 @@ import * as ort from 'onnxruntime-node';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { ONNX_CATALOG } from '../../src/engine/onnxCatalog';
+import { ONNX_CATALOG } from '../../src/catalog/onnxCatalog';
 
 // ---------------------------------------------------------------------------
 // Helpers

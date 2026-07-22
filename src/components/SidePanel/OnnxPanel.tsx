@@ -1,10 +1,10 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { useGraphStore } from '../../store/useGraphStore';
-import { ONNX_MODELS } from '../../engine/onnxRegistry';
-import { ONNX_CATALOG } from '../../engine/onnxCatalog';
-import type { CatalogEntry } from '../../engine/onnxCatalog';
+import { ONNX_MODELS } from '../../catalog/onnxRegistry';
+import { ONNX_CATALOG } from '../../catalog/onnxCatalog';
+import type { CatalogEntry } from '../../catalog/onnxCatalog';
 import type { OnnxDetection } from '../../engine/onnxSession';
-import type { OnnxModelDescriptor } from '../../engine/onnxRegistry';
+import type { OnnxModelDescriptor } from '../../catalog/onnxRegistry';
 
 interface OnnxDetectionsPayload {
   detections: OnnxDetection[];

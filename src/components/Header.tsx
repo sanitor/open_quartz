@@ -4,9 +4,9 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
 import type { DataType, InputMode, ShaderNodeData } from '../types';
-import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../engine/shaders';
-import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../engine/onnxCatalog';
-import { MATH_CATEGORIES, MATH_OPS } from '../engine/mathOps';
+import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../catalog/shaders'
+import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../catalog/onnxCatalog';
+import { MATH_CATEGORIES, MATH_OPS } from '../catalog/mathOps';
 
 const isMac = navigator.platform.startsWith('Mac');
 

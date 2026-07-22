@@ -5,15 +5,15 @@ import type { FrameInputs } from './compositor';
 import { WebGLRenderer } from './webglRenderer';
 import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
-import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from './onnxRegistry';
-import { ONNX_CATALOG } from './onnxCatalog';
+import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from '../catalog/onnxRegistry';
+import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { modelManager, useGraphStore } from '../store/useGraphStore';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
 import { SemSegSession } from './onnxSegSession';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
-import { MATH_OPS } from './mathOps';
-import { SHADER_TEMPLATES } from './predefinedShaders';
+import { MATH_OPS } from '../catalog/mathOps';
+import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 
 type TextureSource =
   | { kind: 'fbo'; target: THREE.WebGLRenderTarget }

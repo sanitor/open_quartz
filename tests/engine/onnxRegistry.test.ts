@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID } from '../../src/engine/onnxRegistry';
+import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID } from '../../src/catalog/onnxRegistry';
 
 describe('onnxRegistry', () => {
   it('DEFAULT_ONNX_MODEL_ID points at yolov8n', () => {

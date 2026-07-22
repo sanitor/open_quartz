@@ -95,7 +95,7 @@ class MockImage {
 vi.stubGlobal('Image', MockImage);
 
 // Mock onnx modules
-vi.mock('../../src/engine/onnxRegistry', () => ({
+vi.mock('../../src/catalog/onnxRegistry', () => ({
   ONNX_MODELS: {},
   DEFAULT_ONNX_MODEL_ID: 'yolov8n',
 }));
