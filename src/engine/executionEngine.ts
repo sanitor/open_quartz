@@ -12,14 +12,17 @@ import { OnnxSession, type OnnxDetection } from './onnxSession';
 import { SemSegSession } from './onnxSegSession';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnxOverlay';
-import { MATH_OPS } from '../catalog/mathOps';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
-
-type TextureSource =
-  | { kind: 'fbo'; target: THREE.WebGLRenderTarget }
-  | { kind: 'image'; texture: THREE.Texture };
-
-const BUILTIN_UNIFORMS = new Set(['iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution', 'previousFrame']);
+import {
+  type TextureSource,
+  BUILTIN_UNIFORMS,
+  normalizeUniformValue,
+  formatShaderError,
+  isRenderableNode,
+  executeShaderNode,
+  executeMathNode,
+  prepareInputTexture as prepareInputTex,
+} from './executors';
 
 export interface ExecutionPlan {
   sortedIds: string[];
@@ -138,7 +141,7 @@ export class ExecutionEngine {
       if (!node) continue;
 
       if (node.data.type === 'input' && node.data.inputMode !== 'system') {
-        const pending = this.prepareInputTexture(node, textureSources, onNodeError);
+        const pending = prepareInputTex(node, this.renderer!, textureSources, onNodeError);
         if (pending) pendingTextures.push(pending);
         continue;
       }
@@ -339,40 +342,8 @@ export class ExecutionEngine {
       const node = plan.nodeMap.get(nodeId);
       if (!node) continue;
 
-      // Math nodes: CPU-only evaluation
       if (node.data.type === 'math') {
-        const op = MATH_OPS[node.data.mathOp ?? 'add'];
-        if (!op) continue;
-        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
-        const inputs: number[] = [];
-        const portLabels = ['a', 'b', 'c'];
-        for (let i = 0; i < op.inputCount; i++) {
-          const label = portLabels[i];
-          const sourceId = upstreamMap?.get(label);
-          if (sourceId) {
-            const mathVal = plan.mathValues.get(sourceId);
-            if (mathVal !== undefined) { inputs.push(Number(mathVal)); continue; }
-            const srcNode = plan.nodeMap.get(sourceId);
-            if (srcNode?.data.type === 'input') {
-              if (srcNode.data.inputMode === 'system' && srcNode.data.systemSource) {
-                switch (srcNode.data.systemSource) {
-                  case 'time': inputs.push(builtins.time); continue;
-                  case 'timeDelta': inputs.push(builtins.delta); continue;
-                  case 'frame': inputs.push(builtins.frame); continue;
-                  default: break;
-                }
-              }
-              const srcLabel = srcNode.data.inputs[0]?.label;
-              const val = srcNode.data.uniforms?.[srcLabel ?? ''];
-              inputs.push(Number(val) || 0);
-              continue;
-            }
-          }
-          const selfVal = node.data.uniforms?.[label];
-          inputs.push(Number(selfVal) || 0);
-        }
-        const result = op.compute(inputs);
-        plan.mathValues.set(nodeId, result);
+        executeMathNode(nodeId, node, plan, builtins);
         continue;
       }
 
@@ -405,86 +376,7 @@ export class ExecutionEngine {
         void this.runOnnxInference(plan, nodeId, node, sourceCanvas, srcW, srcH);
         continue;
       }
-      const material = plan.materials.get(nodeId);
-      if (!material) continue;
-
-      // Feedback: determine read/write targets, bind previousFrame, clear on first frame
-      const isFeedback = plan.feedbackTargets.has(nodeId);
-      let renderTarget: THREE.WebGLRenderTarget;
-      if (isFeedback) {
-        const fbTargets = plan.feedbackTargets.get(nodeId)!;
-        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
-        const fbWriteIdx = 1 - fbReadIdx;
-
-        // First frame: clear both ping-pong buffers to initial state
-        if (plan.feedbackFirstFrame.has(nodeId)) {
-          const clearColor = node.data.feedbackClearColor as [number, number, number, number] | undefined;
-          this.renderer.clearTarget(fbTargets[0], clearColor);
-          this.renderer.clearTarget(fbTargets[1], clearColor);
-          plan.feedbackFirstFrame.delete(nodeId);
-        }
-
-        // Bind previousFrame uniform to the read target's texture
-        setUniform(material, 'previousFrame', fbTargets[fbReadIdx].texture);
-
-        renderTarget = fbTargets[fbWriteIdx];
-      } else {
-        const target = plan.targets.get(nodeId);
-        if (!target) continue;
-        renderTarget = target;
-      }
-
-      const upstreamSamplers = plan.upstreamSamplerBindings.get(nodeId);
-      if (upstreamSamplers) {
-        for (const [uniformName, sourceNodeId] of upstreamSamplers) {
-          const videoTex = builtins.videoTextures?.get(sourceNodeId);
-          const src = plan.textureSources.get(sourceNodeId);
-          let tex: THREE.Texture | undefined = videoTex;
-          if (!tex && src?.kind === 'fbo') tex = src.target.texture;
-          if (!tex && src?.kind === 'image') tex = src.texture;
-          if (tex) setUniform(material, uniformName, tex);
-        }
-      }
-
-      const scalars = plan.scalarBindings.get(nodeId);
-      if (scalars) {
-        for (const [key, val] of scalars) {
-          // For math upstream, inject live value from mathValues
-          const upstreamId = plan.scalarUpstream.get(nodeId)?.get(key);
-          if (upstreamId && plan.mathValues.has(upstreamId)) {
-            setUniform(material, key, normalizeUniformValue(plan.mathValues.get(upstreamId)));
-          } else {
-            setUniform(material, key, normalizeUniformValue(val));
-          }
-        }
-      }
-
-      const self = plan.selfUniforms.get(nodeId);
-      if (self) {
-        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
-        for (const [key, val] of Object.entries(self)) {
-          if (!upstreamMap?.has(key)) setUniform(material, key, normalizeUniformValue(val));
-        }
-      }
-
-      const builtin = plan.builtinPorts.get(nodeId);
-      if (builtin) {
-        if (builtin.has('iTime')) setUniform(material, 'iTime', builtins.time);
-        if (builtin.has('iTimeDelta')) setUniform(material, 'iTimeDelta', builtins.delta);
-        if (builtin.has('iFrame')) setUniform(material, 'iFrame', builtins.frame);
-        if (builtin.has('iDate')) setUniform(material, 'iDate', builtins.date);
-        if (builtin.has('iMouse')) setUniform(material, 'iMouse', builtins.mouse);
-        if (builtin.has('iResolution')) setUniform(material, 'iResolution', plan.resolutionUniforms.get(nodeId) ?? builtins.resolution);
-      }
-
-      this.renderer.renderWithMaterial(material, renderTarget);
-      plan.textureSources.set(nodeId, { kind: 'fbo', target: renderTarget });
-
-      // Swap feedback read index for next frame
-      if (isFeedback) {
-        const current = plan.feedbackReadIndex.get(nodeId) ?? 0;
-        plan.feedbackReadIndex.set(nodeId, 1 - current);
-      }
+      executeShaderNode(nodeId, node, plan, builtins, this.renderer);
     }
   }
 
@@ -1172,95 +1064,4 @@ export class ExecutionEngine {
     this.onnxOutputCache.clear();
     this.renderer?.clearResources();
   }
-
-  private prepareInputTexture(
-    node: Node<ShaderNodeData>,
-    textureSources: Map<string, TextureSource>,
-    onNodeError?: (nodeId: string, error: string) => void,
-  ): Promise<void> | null {
-    if (!this.renderer) return null;
-    if (node.data.inputMode === 'framebuffer' && node.data.rawDataUrl && node.data.fbWidth && node.data.fbHeight) {
-      try {
-        const b64 = node.data.rawDataUrl.split(',')[1];
-        const binary = atob(b64);
-        const buf = new ArrayBuffer(binary.length);
-        const view = new Uint8Array(buf);
-        for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
-        const tex = this.renderer.loadRawTexture(
-          node.id,
-          buf,
-          (node.data.fbFormat ?? 'rgba8') as FramebufferFormat,
-          node.data.fbWidth,
-          node.data.fbHeight,
-          node.data.fbStride,
-        );
-        this.renderer.applyTextureSampling(tex, node.data.texFilter, node.data.texWrap);
-        const target = this.renderer.createTarget(`raw_${node.id}`, node.data.fbWidth, node.data.fbHeight, true);
-        this.renderer.renderSampler2DInput(tex, target);
-        textureSources.set(node.id, { kind: 'fbo', target });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        onNodeError?.(node.id, msg);
-      }
-      return null;
-    }
-
-    const cached = this.renderer.getImageTexture(node.id);
-    if (cached) {
-      textureSources.set(node.id, { kind: 'image', texture: cached });
-      return null;
-    }
-    if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
-      return this.renderer.loadImageTexture(node.id, node.data.imageDataUrl)
-        .then((tex) => {
-          this.renderer?.applyTextureSampling(tex, node.data.texFilter, node.data.texWrap);
-          textureSources.set(node.id, { kind: 'image', texture: tex });
-        })
-        .catch((e: unknown) => {
-          const msg = e instanceof Error ? e.message : String(e);
-          onNodeError?.(node.id, msg);
-        });
-    }
-    return null;
-  }
-}
-
-function isRenderableNode(node: Node<ShaderNodeData>): boolean {
-  return node.data.type === 'shader' || node.data.type === 'constant' || node.data.type === 'renderer' || node.data.type === 'onnx';
-}
-
-function setUniform(material: THREE.ShaderMaterial, key: string, value: unknown): void {
-  const uniform = material.uniforms[key];
-  if (uniform) {
-    uniform.value = value;
-  } else {
-    material.uniforms[key] = { value };
-  }
-}
-
-function normalizeUniformValue(value: unknown): unknown {
-  if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const num = Number(value);
-    return Number.isNaN(num) ? value : num;
-  }
-  return value;
-}
-
-function formatShaderError(msg: string, preambleLines: number): string {
-  const lines = msg.split('\n');
-  const relevant = lines.filter(
-    (l) => l.includes('ERROR:') || l.includes('WARNING:')
-  );
-  const result = relevant.length > 0 ? relevant : lines.filter(
-    (l) => l.includes('Shader Error') || l.includes('getProgramInfoLog')
-  );
-  if (result.length === 0) return msg;
-  if (preambleLines <= 0) return result.join('\n');
-  return result.map((line) =>
-    line.replace(/(\d+):(\d+):/g, (_match, strNum, lineNum) => {
-      const adjusted = parseInt(lineNum, 10) - preambleLines;
-      return `${strNum}:${adjusted > 0 ? adjusted : 1}:`;
-    })
-  ).join('\n');
 }
