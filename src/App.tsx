@@ -3,84 +3,17 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { Header } from './components/Header';
 import { NodeGraph } from './components/NodeGraph';
 import { SidePanel } from './components/SidePanel';
-import { useGraphStore } from './store/useGraphStore';
-import { RealtimeHost } from './engine/realtimeHost';
+import { PipelineService } from './services/PipelineService';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const hostRef = useRef<RealtimeHost | null>(null);
-
 
   useEffect(() => {
-    const unsub = useGraphStore.subscribe((state, prev) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      // Play
-      if (state.loopState === 'playing' && prev.loopState === 'stopped') {
-        const store = useGraphStore.getState();
-        store.clearOutputPreviews();
-        store.clearNodeErrors();
-        if (!hostRef.current) {
-          hostRef.current = new RealtimeHost(canvas, {
-            onFrame: (ts) => {
-              const s = useGraphStore.getState();
-              s.setFps(ts.fps);
-              s.setCurrentTime(ts.time);
-              s.setCurrentFrame(ts.frame);
-            },
-            onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
-            onNodeError: (nodeId, error) => {
-              useGraphStore.getState().setNodeError(nodeId, error);
-            },
-            onOutputSize: (nodeId, w, h) => {
-              const s = useGraphStore.getState();
-              const node = s.nodes.find((n) => n.id === nodeId);
-              if (node?.data.type === 'input' && node.data.inputMode === 'video') {
-                s.updateNodeData(nodeId, { imageWidth: w, imageHeight: h, resolvedWidth: w, resolvedHeight: h });
-              } else {
-                s.updateNodeData(nodeId, { resolvedWidth: w, resolvedHeight: h });
-              }
-            },
-            onOutputData: (nodeId, data) => {
-              useGraphStore.getState().setOutputData(nodeId, data);
-            },
-          });
-        }
-        useGraphStore.getState().setCaptureScreenshot((id) => hostRef.current?.captureScreenshot(id) ?? null);
-        setTimeout(() => {
-          const s = useGraphStore.getState();
-          hostRef.current?.setPreviewNode(s.selectedNodeId);
-          hostRef.current?.play(s.nodes, s.edges);
-        }, 0);
-      }
-
-      // Pause
-      if (state.loopState === 'paused' && prev.loopState === 'playing') {
-        hostRef.current?.pause();
-      }
-      // Resume
-      if (state.loopState === 'playing' && prev.loopState === 'paused') {
-        hostRef.current?.resume();
-      }
-
-      // Stop
-      if (state.loopState === 'stopped' && prev.loopState !== 'stopped') {
-        hostRef.current?.stop();
-      }
-
-      // Hot-update graph while playing
-      if (state.loopState === 'playing' &&
-          (state.nodes !== prev.nodes || state.edges !== prev.edges)) {
-        hostRef.current?.updateGraph(state.nodes, state.edges);
-      }
-
-      // Sync preview node with side panel selection
-      if (state.selectedNodeId !== prev.selectedNodeId) {
-        hostRef.current?.setPreviewNode(state.selectedNodeId);
-      }
-    });
-    return () => unsub();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const service = new PipelineService();
+    service.attach(canvas);
+    return () => service.detach();
   }, []);
 
   return (

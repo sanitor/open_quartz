@@ -29,8 +29,9 @@ export class Compositor {
     onOutputData?: (nodeId: string, data: unknown) => void,
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
+    onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void,
   ): Promise<void>[] {
-    this.plan = this.engine.prepare(nodes, edges, onNodeError, onOutputSize, onOutputData, onOutput, onOnnxComplete, this.plan);
+    this.plan = this.engine.prepare(nodes, edges, onNodeError, onOutputSize, onOutputData, onOutput, onOnnxComplete, this.plan, onBackendDetected);
     return this.plan?.pendingTextures ?? [];
   }
 

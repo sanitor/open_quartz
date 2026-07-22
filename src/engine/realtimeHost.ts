@@ -15,6 +15,7 @@ export interface HostCallbacks {
   onOutputSize?: (nodeId: string, w: number, h: number) => void;
   onOutputData?: (nodeId: string, data: unknown) => void;
   onStateChange?: (state: HostState) => void;
+  onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void;
 }
 
 /** Time-varying builtins — if a shader references any of these it needs continuous frames. */
@@ -97,6 +98,7 @@ export class RealtimeHost {
       this.callbacks.onOutputData,
       this.callbacks.onOutput,
       this.scheduleRerender,
+      this.callbacks.onBackendDetected,
     );
     void this.reconcileVideoSources(nodes);
     window.addEventListener('renderer-remount', this.onRemount);
@@ -285,6 +287,7 @@ export class RealtimeHost {
         this.callbacks.onOutputData,
         this.callbacks.onOutput,
         this.scheduleRerender,
+        this.callbacks.onBackendDetected,
       );
       // If there are async texture loads and we're static, defer this tick.
       if (pending.length > 0 && this.isStatic) {

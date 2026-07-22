@@ -7,7 +7,7 @@ import { compileNodeShader, validateFragmentShader } from './shaderCompiler';
 import { topologicalSort } from './graphExecutor';
 import { ONNX_MODELS, DEFAULT_ONNX_MODEL_ID, type OnnxModelDescriptor } from '../catalog/onnxRegistry';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
-import { modelManager, useGraphStore } from '../store/useGraphStore';
+import { modelManager } from '../store/helpers';
 import { OnnxSession, type OnnxDetection } from './onnxSession';
 import { SemSegSession } from './onnxSegSession';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage } from './onnxInference';
@@ -62,6 +62,7 @@ export class ExecutionEngine {
     onOutputSize?: (nodeId: string, w: number, h: number) => void;
     onOutputData?: (nodeId: string, data: unknown) => void;
     onOnnxComplete?: () => void;
+    onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void;
   } = {};
 
   constructor(canvas: HTMLCanvasElement) {
@@ -89,9 +90,10 @@ export class ExecutionEngine {
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
     prevPlan?: ExecutionPlan | null,
+    onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void,
   ): ExecutionPlan | null {
     if (!this.renderer) return null;
-    this.onnxCallbacks = { onOutput, onNodeError, onOutputSize, onOutputData, onOnnxComplete };
+    this.onnxCallbacks = { onOutput, onNodeError, onOutputSize, onOutputData, onOnnxComplete, onBackendDetected };
     const materials = new Map<string, THREE.ShaderMaterial>();
     const pendingTextures: Promise<void>[] = [];
     const upstreamSamplerBindings = new Map<string, Map<string, string>>();
@@ -499,10 +501,7 @@ export class ExecutionEngine {
     const result = await infer(session, imageData.data, srcW, srcH);
 
     const backend = session.isWasmFallback ? 'wasm' as const : 'webgpu' as const;
-    const currentNode = useGraphStore.getState().nodes.find((n) => n.id === nodeId);
-    if (currentNode && currentNode.data.onnxBackend !== backend) {
-      useGraphStore.getState().updateNodeData(nodeId, { onnxBackend: backend });
-    }
+    this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
 
     const outCanvas = document.createElement('canvas');
     outCanvas.width = result.width;
