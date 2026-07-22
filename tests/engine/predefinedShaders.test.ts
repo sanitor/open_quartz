@@ -6,7 +6,7 @@ import {
 } from '../../src/catalog/predefinedShaders';
 import { generatorShaders } from '../../src/catalog/shaders/generator';
 import { feedbackShaders } from '../../src/catalog/shaders/feedback';
-import { parseShader } from '../../src/engine/shaderParser';
+import { parseWgslShader } from '../../src/engine/gpu/wgslParser';
 
 describe('predefinedShaders', () => {
   it('is a non-empty array', () => {
@@ -29,30 +29,29 @@ describe('predefinedShaders', () => {
     expect(unique.size).toBe(labels.length);
   });
 
-  it('each shader template can be parsed by parseShader', () => {
+  it('each shader template can be parsed by parseWgslShader', () => {
     for (const shader of predefinedShaders) {
-      const result = parseShader(shader.code);
+      const result = parseWgslShader(shader.code);
       // Every predefined shader should have at least one output
       expect(result.outputs.length).toBeGreaterThanOrEqual(1);
-      // raw should match the code
       expect(result.raw).toBe(shader.code);
     }
   });
 
-  it('each non-generator shader has at least one sampler2D input', () => {
+  it('each non-generator shader has at least one texture_2d input', () => {
     const generatorLabels = new Set(generatorShaders.map((s) => s.label));
     const feedbackLabels = new Set(feedbackShaders.map((s) => s.label));
     for (const shader of predefinedShaders) {
       if (generatorLabels.has(shader.label) || feedbackLabels.has(shader.label)) continue;
-      const result = parseShader(shader.code);
+      const result = parseWgslShader(shader.code);
       const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
       expect(hasSampler).toBe(true);
     }
   });
 
-  it('generator shaders have no sampler2D input', () => {
+  it('generator shaders have no texture_2d input', () => {
     for (const shader of generatorShaders) {
-      const result = parseShader(shader.code);
+      const result = parseWgslShader(shader.code);
       const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
       expect(hasSampler).toBe(false);
     }
@@ -65,23 +64,23 @@ describe('CUSTOM_SHADER_CODE', () => {
     expect(CUSTOM_SHADER_CODE.length).toBeGreaterThan(0);
   });
 
-  it('contains a uniform declaration', () => {
-    expect(CUSTOM_SHADER_CODE).toMatch(/uniform\s+\w+\s+\w+/);
+  it('contains a textureSample call', () => {
+    expect(CUSTOM_SHADER_CODE).toMatch(/textureSample/);
   });
 
-  it('contains an out declaration', () => {
-    expect(CUSTOM_SHADER_CODE).toMatch(/out\s+vec4\s+fragColor/);
+  it('contains an @fragment fn main', () => {
+    expect(CUSTOM_SHADER_CODE).toMatch(/@fragment/);
   });
 
-  it('can be parsed by parseShader', () => {
-    const result = parseShader(CUSTOM_SHADER_CODE);
+  it('can be parsed by parseWgslShader', () => {
+    const result = parseWgslShader(CUSTOM_SHADER_CODE);
     expect(result.inputs.length).toBeGreaterThanOrEqual(1);
     expect(result.outputs).toHaveLength(1);
     expect(result.outputs[0].label).toBe('fragColor');
   });
 
   it('has a sampler2D input and a float input', () => {
-    const result = parseShader(CUSTOM_SHADER_CODE);
+    const result = parseWgslShader(CUSTOM_SHADER_CODE);
     const types = new Map(result.inputs.map(p => [p.label, p.dataType]));
     expect(types.get('inputImage')).toBe('sampler2D');
     expect(types.get('intensity')).toBe('float');
@@ -94,14 +93,14 @@ describe('CUSTOM_2IN1_SHADER', () => {
     expect(CUSTOM_2IN1_SHADER.length).toBeGreaterThan(0);
   });
 
-  it('contains two sampler2D uniforms', () => {
-    const matches = CUSTOM_2IN1_SHADER.match(/uniform\s+sampler2D\s+\w+/g);
+  it('contains two textureSample calls (inputA + inputB)', () => {
+    const matches = CUSTOM_2IN1_SHADER.match(/textureSample\s*\(/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBe(2);
   });
 
-  it('can be parsed by parseShader', () => {
-    const result = parseShader(CUSTOM_2IN1_SHADER);
+  it('can be parsed by parseWgslShader', () => {
+    const result = parseWgslShader(CUSTOM_2IN1_SHADER);
     const samplers = result.inputs.filter(p => p.dataType === 'sampler2D');
     expect(samplers).toHaveLength(2);
     expect(samplers.map(s => s.label)).toContain('inputA');
@@ -109,14 +108,14 @@ describe('CUSTOM_2IN1_SHADER', () => {
   });
 
   it('has a mixFactor float uniform', () => {
-    const result = parseShader(CUSTOM_2IN1_SHADER);
+    const result = parseWgslShader(CUSTOM_2IN1_SHADER);
     const mixPort = result.inputs.find(p => p.label === 'mixFactor');
     expect(mixPort).toBeDefined();
     expect(mixPort!.dataType).toBe('float');
   });
 
   it('has a fragColor output', () => {
-    const result = parseShader(CUSTOM_2IN1_SHADER);
+    const result = parseWgslShader(CUSTOM_2IN1_SHADER);
     expect(result.outputs).toHaveLength(1);
     expect(result.outputs[0].label).toBe('fragColor');
     expect(result.outputs[0].dataType).toBe('vec4');
