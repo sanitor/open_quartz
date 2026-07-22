@@ -1,11 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
-import { glsl } from 'codemirror-lang-glsl';
-import { linter } from '@codemirror/lint';
-import { autocompletion } from '@codemirror/autocomplete';
-import { glslLinter } from '../../engine/shaderLinter';
-import { glslCompletions } from '../../engine/shaderCompletions';
+import { wgsl } from '@iizukak/codemirror-lang-wgsl';
 
 interface ShaderEditorProps {
   code: string;
@@ -34,10 +30,10 @@ export function ShaderEditor({ code, onChange, readOnly }: ShaderEditorProps) {
       extensions: [
         basicSetup,
         EditorView.lineWrapping,
-        glsl(),
+        wgsl(),
         ...(readOnly
           ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
-          : [linter(glslLinter), autocompletion({ override: [glslCompletions] })]),
+          : []),
         EditorView.updateListener.of(onUpdate),
         EditorView.theme({
           '&': { fontSize: '12px', backgroundColor: readOnly ? '#f9f9f9' : '#ffffff', height: '100%' },
