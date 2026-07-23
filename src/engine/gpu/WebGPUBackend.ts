@@ -459,6 +459,147 @@ export class WebGPUBackend {
   }
 
   // -------------------------------------------------------------------------
+  // GPU I/O (ONNX integration — Phase 4)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Read a render target's pixels to a CPU Uint8ClampedArray (RGBA).
+   * Used for ONNX input preprocessing that still needs CPU access.
+   */
+  async readTargetToRgba(target: RenderTarget): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> {
+    const { width, height } = target;
+    const device = this.device;
+    const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
+    const bufferSize = bytesPerRow * height;
+
+    const readBuffer = device.createBuffer({
+      size: bufferSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture: target.texture },
+      { buffer: readBuffer, bytesPerRow },
+      { width, height },
+    );
+    device.queue.submit([encoder.finish()]);
+
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const data = new Uint8Array(readBuffer.getMappedRange());
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      const srcOffset = y * bytesPerRow;
+      const dstOffset = y * width * 4;
+      rgba.set(data.subarray(srcOffset, srcOffset + width * 4), dstOffset);
+    }
+    readBuffer.unmap();
+    readBuffer.destroy();
+    return { rgba, width, height };
+  }
+
+  /**
+   * Write RGBA pixel data (CPU) into a render target's texture.
+   * Used when ORT output has been decoded to RGBA on CPU.
+   */
+  writeRgbaToTarget(rgba: Uint8ClampedArray, target: RenderTarget): void {
+    const device = this.device;
+    device.queue.writeTexture(
+      { texture: target.texture },
+      rgba,
+      { bytesPerRow: target.width * 4 },
+      { width: target.width, height: target.height },
+    );
+  }
+
+  /**
+   * Write an ORT output GPUBuffer (planar float32 [1,C,H,W], values 0-1) directly
+   * into a render target without CPU readback. Uses a compute shader to convert
+   * CHW float32 → RGBA8.
+   *
+   * @param gpuBuffer The GPUBuffer from ORT (preferredOutputLocation: 'gpu-buffer')
+   * @param channels Number of channels in the planar buffer (1 or 3)
+   * @param width Output width
+   * @param height Output height
+   * @param target Destination render target
+   */
+  writeOrtBufferToTarget(
+    gpuBuffer: GPUBuffer,
+    channels: number,
+    width: number,
+    height: number,
+    target: RenderTarget,
+  ): void {
+    const device = this.device;
+    const wgsl = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var dst: texture_storage_2d<rgba8unorm, write>;
+
+struct Params { width: u32, height: u32, channels: u32 }
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let x = gid.x;
+  let y = gid.y;
+  if (x >= params.width || y >= params.height) { return; }
+  let pixelCount = params.width * params.height;
+  let idx = y * params.width + x;
+  var r: f32 = 0.0;
+  var g: f32 = 0.0;
+  var b: f32 = 0.0;
+  if (params.channels == 1u) {
+    r = src[idx];
+    g = r;
+    b = r;
+  } else {
+    r = src[idx];
+    g = src[pixelCount + idx];
+    b = src[2u * pixelCount + idx];
+  }
+  textureStore(dst, vec2u(x, y), vec4f(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0));
+}`;
+
+    const module = device.createShaderModule({ code: wgsl });
+    const bindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba8unorm' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
+    const pipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+      compute: { module, entryPoint: 'main' },
+    });
+
+    const paramsBuffer = device.createBuffer({
+      size: 12,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(paramsBuffer, 0, new Uint32Array([width, height, channels]));
+
+    const bindGroup = device.createBindGroup({
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: gpuBuffer } },
+        { binding: 1, resource: target.texture.createView() },
+        { binding: 2, resource: { buffer: paramsBuffer } },
+      ],
+    });
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    paramsBuffer.destroy();
+  }
+
+  // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
 

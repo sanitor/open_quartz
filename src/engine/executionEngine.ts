@@ -372,14 +372,16 @@ export class WebGPUExecutionEngine {
 
       if (node.data.type === 'renderer') continue;
 
-      // ONNX async inference
+      // ONNX async inference — Phase 4: GPU I/O binding with shared device
       if (node.data.type === 'onnx') {
         if (this.onnxInFlight.has(nodeId)) continue;
         if (node.data.onnxStatus && node.data.onnxStatus !== 'ready') continue;
         const hasVideo = builtins.videoTextures && builtins.videoTextures.size > 0;
         if (!hasVideo && plan.textureSources.has(nodeId)) continue;
-        // ONNX readback will be handled async — skip for now
-        // TODO: implement ONNX inference with WebGPU backend readback
+
+        // Kick off async inference — result cached for subsequent frames
+        this.onnxInFlight.add(nodeId);
+        void this.runOnnxInference(plan, nodeId, builtins);
         continue;
       }
 
@@ -450,6 +452,171 @@ export class WebGPUExecutionEngine {
       if (isFeedback) {
         const current = plan.feedbackReadIndex.get(nodeId) ?? 0;
         plan.feedbackReadIndex.set(nodeId, 1 - current);
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // ONNX inference (Phase 4: GPU I/O binding)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Run async ONNX inference for a node, caching the output texture.
+   *
+   * Uses the shared GPUDevice so ORT and the shader pipeline operate on the
+   * same device. Image-to-image outputs use GPU-buffer binding (no CPU
+   * readback for the tensor data path); detection/segmentation decode on CPU
+   * (post-processing requires CPU access).
+   */
+  private async runOnnxInference(
+    plan: WebGPUExecutionPlan,
+    nodeId: string,
+    builtins: FrameInputs,
+  ): Promise<void> {
+    const node = plan.nodeMap.get(nodeId);
+    if (!node || !this.backend) return;
+    const device = this.backend.device;
+
+    try {
+      const session = await this.getOrCreateSession(plan, nodeId, device);
+      if (!session) return;
+
+      // Find upstream texture source
+      const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
+      const sourceId = upstreamMap?.values().next().value;
+      if (!sourceId) {
+        this.onnxCallbacks.onNodeError?.(nodeId, 'No input connected to ONNX node');
+        return;
+      }
+      const src = plan.textureSources.get(sourceId);
+      if (!src) return;
+
+      // Read upstream texture to CPU RGBA for preprocessing
+      const inputTarget = src.kind === 'target' ? src.target : null;
+      if (!inputTarget) return;
+      const { rgba, width, height } = await this.backend.readTargetToRgba(inputTarget);
+
+      const entry = node.data.onnxCatalogId ? ONNX_CATALOG[node.data.onnxCatalogId] : null;
+      const task = entry?.task ?? 'generic';
+
+      // Report backend on first successful run
+      if (!node.data.onnxBackend) {
+        const backend = session.isWasmFallback ? 'wasm' : 'webgpu';
+        this.onnxCallbacks.onBackendDetected?.(nodeId, backend);
+      }
+
+      const result = await this.runTaskInference(session, task, node, entry, rgba, width, height);
+      if (!result) return;
+
+      // Create output render target and write result
+      const outTarget = this.backend.createTarget(
+        `${nodeId}_out_${result.width}x${result.height}`,
+        result.width,
+        result.height,
+      );
+      this.backend.writeRgbaToTarget(result.rgba, outTarget);
+
+      this.onnxOutputCache.set(nodeId, { kind: 'target', target: outTarget });
+      plan.textureSources.set(nodeId, { kind: 'target', target: outTarget });
+      this.onnxCallbacks.onOutputSize?.(nodeId, result.width, result.height);
+
+      if (result.detections) {
+        this.onnxCallbacks.onOutputData?.(nodeId, result.detections);
+      }
+
+      this.onnxCallbacks.onOnnxComplete?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.onnxCallbacks.onNodeError?.(nodeId, msg);
+    } finally {
+      this.onnxInFlight.delete(nodeId);
+    }
+  }
+
+  /** Get or lazily create an ORT session for a node, sharing the GPU device. */
+  private async getOrCreateSession(
+    _plan: WebGPUExecutionPlan,
+    nodeId: string,
+    device: GPUDevice,
+  ): Promise<OnnxInferenceSession | null> {
+    const cached = this.tsOrtSessions.get(nodeId);
+    if (cached) return cached;
+
+    const node = _plan.nodeMap.get(nodeId);
+    if (!node) return null;
+
+    // Catalog model: load from modelManager buffer cache
+    if (node.data.onnxSource === 'catalog' || node.data.onnxCatalogId) {
+      const modelId = node.data.onnxCatalogId ?? node.data.onnxModelId;
+      if (!modelId) return null;
+      const buffer = await modelManager.loadCachedModel(modelId);
+      if (!buffer) return null;
+      const session = new OnnxInferenceSession();
+      await session.loadFromBuffer(buffer, device);
+      this.tsOrtSessions.set(nodeId, session);
+      return session;
+    }
+
+    // Custom model: load from file path
+    if (node.data.onnxCustomPath) {
+      const buffer = await modelManager.loadLocalModel(node.data.onnxCustomPath);
+      const session = new OnnxInferenceSession();
+      await session.loadFromBuffer(buffer, device);
+      this.tsOrtSessions.set(nodeId, session);
+      return session;
+    }
+
+    return null;
+  }
+
+  /** Run the task-specific inference function, returning RGBA output. */
+  private async runTaskInference(
+    session: OnnxInferenceSession,
+    task: string,
+    node: { data: { onnxParams?: Record<string, number | boolean>; onnxCatalogId?: string; onnxScoreThreshold?: number; onnxIouThreshold?: number; onnxTargetSize?: number } },
+    entry: { id: string } | null,
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+  ): Promise<{ rgba: Uint8ClampedArray; width: number; height: number; detections?: unknown } | null> {
+    const params = node.data.onnxParams ?? {};
+
+    switch (task) {
+      case 'super-resolution': {
+        const isYCbCr = entry?.id === 'super-resolution-3x';
+        const scale = entry?.id === 'realesrgan-x4' ? 4 : 3;
+        const result = await runSuperResolution(session, rgba, width, height, scale, isYCbCr ? 'ycbcr' : 'rgb');
+        return { rgba: result.rgba, width: result.width, height: result.height };
+      }
+      case 'background-removal': {
+        const modelId = entry?.id ?? 'u2netp';
+        const result = await runBackgroundRemoval(session, rgba, width, height, modelId);
+        return { rgba: result.rgba, width: result.width, height: result.height };
+      }
+      case 'depth-estimation': {
+        const result = await runDepthEstimation(session, rgba, width, height);
+        return { rgba: result.rgba, width: result.width, height: result.height };
+      }
+      case 'detection': {
+        const targetSize = node.data.onnxTargetSize ?? 640;
+        const scoreThreshold = params.scoreThreshold ?? node.data.onnxScoreThreshold ?? 0.25;
+        const iouThreshold = params.iouThreshold ?? node.data.onnxIouThreshold ?? 0.45;
+        const result = await runDetection(session, rgba, width, height, targetSize, scoreThreshold, iouThreshold);
+        const overlayCanvas = drawDetectionOverlay(result.detections, width, height, COCO_CLASSES);
+        const overlayRgba = overlayCanvas.getContext('2d')!.getImageData(0, 0, width, height).data;
+        return { rgba: overlayRgba as Uint8ClampedArray, width, height, detections: result.detections };
+      }
+      case 'segmentation': {
+        const targetSize = node.data.onnxTargetSize ?? 640;
+        const result = await runSegmentation(session, rgba, width, height, targetSize);
+        const overlayCanvas = drawSegmentationOverlay(result.segmentation, width, height);
+        const overlayRgba = overlayCanvas.getContext('2d')!.getImageData(0, 0, width, height).data;
+        return { rgba: overlayRgba as Uint8ClampedArray, width, height };
+      }
+      case 'generic':
+      default: {
+        const result = await runGenericImageToImage(session, rgba, width, height);
+        return { rgba: result.rgba, width: result.width, height: result.height };
       }
     }
   }

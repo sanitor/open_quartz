@@ -25,10 +25,14 @@ export class OnnxInferenceSession {
   private _outputNames: string[] = [];
   private _buffer: ArrayBuffer | null = null;
   private _isWasm = false;
+  private _gpuDevice: GPUDevice | null = null;
+  private _gpuOutputEnabled = false;
 
   get inputNames(): readonly string[] { return this._inputNames; }
   get outputNames(): readonly string[] { return this._outputNames; }
   get isWasmFallback(): boolean { return this._isWasm; }
+  /** Whether this session was created with GPU I/O binding. */
+  get gpuOutputEnabled(): boolean { return this._gpuOutputEnabled; }
 
   /** Input tensor shape from model metadata, e.g. [1, 1, 224, 224]. Empty if unavailable. */
   get inputShape(): ReadonlyArray<number | string> {
@@ -48,18 +52,35 @@ export class OnnxInferenceSession {
     return (m && 'shape' in m) ? m.shape : [];
   }
 
-  /** Load a model from an ArrayBuffer (already downloaded by modelManager). */
-  async loadFromBuffer(buffer: ArrayBuffer): Promise<void> {
+  /**
+   * Load a model from an ArrayBuffer (already downloaded by modelManager).
+   * When gpuDevice is provided, the session shares the device with the render
+   * pipeline and outputs tensors as GPUBuffers (zero CPU readback).
+   */
+  async loadFromBuffer(buffer: ArrayBuffer, gpuDevice?: GPUDevice): Promise<void> {
     this._buffer = buffer;
-    await this.createSession(buffer, ['webgpu', 'wasm']);
+    this._gpuDevice = gpuDevice ?? null;
+    if (gpuDevice) {
+      await this.createSession(buffer, [{ name: 'webgpu', device: gpuDevice } as unknown as string, 'wasm'], 'gpu-buffer');
+    } else {
+      await this.createSession(buffer, ['webgpu', 'wasm']);
+    }
   }
 
   /** Load a model from a URL (blob URL or network URL). */
-  async loadFromUrl(url: string): Promise<void> {
+  async loadFromUrl(url: string, gpuDevice?: GPUDevice): Promise<void> {
     await ensureOrtLoaded();
-    this.session = await ort.InferenceSession.create(url, {
-      executionProviders: ['webgpu', 'wasm'],
-    });
+    this._gpuDevice = gpuDevice ?? null;
+    const options: OrtModule.InferenceSession.SessionOptions = {
+      executionProviders: gpuDevice
+        ? [{ name: 'webgpu', device: gpuDevice } as unknown as string, 'wasm']
+        : ['webgpu', 'wasm'],
+    };
+    if (gpuDevice) {
+      options.preferredOutputLocation = 'gpu-buffer';
+      this._gpuOutputEnabled = true;
+    }
+    this.session = await ort.InferenceSession.create(url, options);
     this._inputNames = [...this.session.inputNames];
     this._outputNames = [...this.session.outputNames];
   }
@@ -74,6 +95,7 @@ export class OnnxInferenceSession {
     this.session?.release();
     await this.createSession(this._buffer, ['wasm']);
     this._isWasm = true;
+    this._gpuOutputEnabled = false;
     console.warn('[onnx] Fell back to WASM backend');
   }
 
@@ -101,14 +123,30 @@ export class OnnxInferenceSession {
     }
   }
 
-  /** Run inference with a single float32 input tensor. */
+  /** Run inference with a single float32 input tensor. Returns CPU data. */
   async run(input: Float32Array, shape: number[]): Promise<Float32Array> {
     if (!this.session) throw new Error('OnnxInferenceSession not loaded');
     const tensor = new ort.Tensor('float32', input, shape);
     const feeds: Record<string, OrtModule.Tensor> = { [this._inputNames[0]]: tensor };
     const results = await this.session.run(feeds);
     const output = results[this._outputNames[0]];
+    if (output.location === 'gpu-buffer') {
+      // getData() triggers GPU→CPU download
+      return await output.getData(true) as Float32Array;
+    }
     return output.data as Float32Array;
+  }
+
+  /**
+   * Run inference and return the raw ORT output tensor (may be on GPU).
+   * Caller can inspect `tensor.location` and use `tensor.gpuBuffer` directly.
+   */
+  async runRaw(input: Float32Array, shape: number[]): Promise<OrtModule.Tensor> {
+    if (!this.session) throw new Error('OnnxInferenceSession not loaded');
+    const tensor = new ort.Tensor('float32', input, shape);
+    const feeds: Record<string, OrtModule.Tensor> = { [this._inputNames[0]]: tensor };
+    const results = await this.session.run(feeds);
+    return results[this._outputNames[0]];
   }
 
   /** Run inference returning full result map (for multi-output models). */
@@ -123,7 +161,11 @@ export class OnnxInferenceSession {
     const results = await this.session.run(ortFeeds);
     const out: Record<string, { data: Float32Array; dims: readonly number[] }> = {};
     for (const [name, tensor] of Object.entries(results)) {
-      out[name] = { data: tensor.data as Float32Array, dims: tensor.dims };
+      if (tensor.location === 'gpu-buffer') {
+        out[name] = { data: await tensor.getData(true) as Float32Array, dims: tensor.dims };
+      } else {
+        out[name] = { data: tensor.data as Float32Array, dims: tensor.dims };
+      }
     }
     return out;
   }
@@ -132,15 +174,26 @@ export class OnnxInferenceSession {
     this.session?.release();
     this.session = null;
     this._buffer = null;
+    this._gpuDevice = null;
+    this._gpuOutputEnabled = false;
     this._inputNames = [];
     this._outputNames = [];
   }
 
-  private async createSession(buffer: ArrayBuffer, providers: string[]): Promise<void> {
+  private async createSession(
+    buffer: ArrayBuffer,
+    providers: (string | Record<string, unknown>)[],
+    outputLocation?: OrtModule.Tensor.DataLocation,
+  ): Promise<void> {
     await ensureOrtLoaded();
-    this.session = await ort.InferenceSession.create(buffer, {
-      executionProviders: providers,
-    });
+    const options: OrtModule.InferenceSession.SessionOptions = {
+      executionProviders: providers as OrtModule.InferenceSession.SessionOptions['executionProviders'],
+    };
+    if (outputLocation) {
+      options.preferredOutputLocation = outputLocation as 'gpu-buffer';
+      this._gpuOutputEnabled = true;
+    }
+    this.session = await ort.InferenceSession.create(buffer, options);
     this._inputNames = [...this.session.inputNames];
     this._outputNames = [...this.session.outputNames];
   }

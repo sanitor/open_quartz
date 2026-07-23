@@ -154,9 +154,9 @@ The current pipeline uses WebGL for shaders and WebGPU for ONNX inference — tw
 | Phase | What | Status |
 |-------|------|--------|
 | **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript, remove `rust/crates/`, `wasm-pack` | ✅ Done |
-| **2. WebGPU rendering layer** | Three.js `WebGPURenderer` + custom 2D shader pipeline (WGSL), shared `GPUDevice` | 🔜 Next |
-| **3. WGSL migration** | 31 shader presets → WGSL, parser/compiler adapted, CodeMirror WGSL highlighting | Planned |
-| **4. ORT I/O binding** | ONNX inference reads/writes `GPUBuffer` directly via `io_binding` — zero CPU readback | Planned |
+| **2. WebGPU rendering layer** | Pure WebGPU 2D shader pipeline (WGSL), `GPUDevice` shared with ORT | ✅ Done |
+| **3. WGSL migration** | 31 shader presets → WGSL, parser/compiler adapted, CodeMirror WGSL highlighting | ✅ Done |
+| **4. ORT I/O binding** | ONNX inference shares `GPUDevice`, `preferredOutputLocation: 'gpu-buffer'`, ONNX nodes wired into render pipeline | ✅ Done |
 | **5. Compute shader post-processing** | Decode/NMS/argmax as compute shaders + `tensor` data type | Planned |
 | **6. Post-processing nodes** | Decode/NMS as composable graph nodes, detection pipeline user-configurable | Planned |
 | **7. 3D scene nodes** | GLTF/OBJ loading, PBR materials, lights, camera — Quartz Composer 3D patch parity | Planned |
