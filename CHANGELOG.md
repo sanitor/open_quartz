@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.15.0b] -- 2026-07-23
+
+### Features
+
+- **Full WebGPU pipeline (Phases 2–4)** — replaced the dual WebGL+WebGPU architecture with a single-GPUDevice zero-copy datapath. Pure WebGPU 2D shader rendering layer, WGSL shader compiler, all 34 shader presets migrated to WGSL, ORT inference sharing the GPUDevice with `preferredOutputLocation: 'gpu-buffer'`.
+- **WGSL shader parser + compiler** — new `wgslParser` extracts uniform/sampler bindings from user WGSL; `wgslCompiler` injects system preamble (bindings, fullscreen vertex shader) and compiles to `GPURenderPipeline`. CodeMirror switched to WGSL syntax highlighting.
+- **Video texture upload** — `WebGPUBackend.uploadVideoFrame` uploads `HTMLVideoElement` frames to GPU textures per-frame via `copyExternalImageToTexture`, with zero-allocation texture reuse.
+- **ONNX nodes wired into render pipeline** — `WebGPUExecutionEngine.runOnnxInference` was dead code (TODO); now fully implemented for all 6 tasks (super-resolution, background-removal, depth-estimation, detection, segmentation, generic). Async per-frame inference with result caching; video inputs trigger per-frame re-inference.
+- **GPU I/O binding** — `OnnxInferenceSession.loadFromBuffer(buffer, gpuDevice)` shares the render pipeline's GPUDevice with ORT's WebGPU EP. `preferredOutputLocation: 'gpu-buffer'` keeps ORT outputs on GPU. Compute shader converts planar float32 `[1,C,H,W]` GPUBuffer → `rgba8unorm` texture without CPU readback.
+
+### Fixes
+
+- **`isUpstreamVideo` key/value bug** — `for (const [sourceId] of bindings.entries())` destructured the Map key (uniform name) instead of value (node id), causing video upstream detection to always fail. ONNX cached the first frame's black result and never re-inferred. Fixed to iterate `.values()`.
+- **`drawDetectionOverlay` argument order** — was called as `(detections, width, height, classes)` but signature expects `(sourceCanvas, width, height, detections)`.
+- **Detection field mapping** — `Detection.classId` → `OnnxDetection.class_id` + `class_name` mapping was missing.
+
+### Tests
+
+- **Integration tests for ONNX data flow** — `executionEngineOnnx.test.ts` (fake GPU backend + mock ORT): verifies upstream texture RGBA is read and passed to inference; verifies video inputs trigger per-frame re-inference (no black cache). `detectionOverlayIntegration.test.ts`: field mapping and overlay call contracts.
+- **YOLOv8n functional test** — real model download + inference + `detectPostprocess` decode validation. 3 tests added to `tests/functional/onnx.test.ts`.
+- **884 unit tests**, all passing.
+
 ## [0.14.0b] -- 2026-07-22
 
 ### Architecture Refactoring

@@ -123,8 +123,8 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 1124 unit tests (fast, CI gate)
-npm run test:models    # 15 ONNX functional tests (real models, real inference)
+npm test               # 884 unit tests (fast, CI gate)
+npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 6 WebGL2 bit-true tests (system browser, real GPU)
 ```
 
@@ -143,13 +143,13 @@ npm run build          # output to dist/
 
 ## Tech Stack
 
-React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Three.js · Zustand 5 · Immer · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
+React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · Immer · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
 
 ## Roadmap
 
 ### Full GPU Pipeline (primary focus)
 
-The current pipeline uses WebGL for shaders and WebGPU for ONNX inference — two separate GPU APIs that can't share textures, forcing CPU roundtrips. The goal is a **single-GPUDevice, zero-copy datapath**: all shaders (WGSL), ONNX inference, compute post-processing, and 3D rendering share one `GPUDevice`, with data never leaving VRAM.
+The current pipeline uses a single shared `GPUDevice` for all shaders (WGSL), ONNX inference, and video texture upload. Phases 1–4 are complete. The goal is a **zero-copy datapath**: compute post-processing and 3D rendering all share one `GPUDevice`, with data never leaving VRAM.
 
 | Phase | What | Status |
 |-------|------|--------|
