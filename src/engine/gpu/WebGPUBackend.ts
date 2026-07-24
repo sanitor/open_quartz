@@ -94,6 +94,7 @@ export class WebGPUBackend {
   // Caches
   private targets = new Map<string, RenderTarget>();
   private imageTextures = new Map<string, TextureHandle>();
+  private videoTextures = new Map<string, TextureHandle>();
   private pipelineCache = new Map<string, GPURenderPipeline>();
 
   // Blit pipeline (for renderSampler2DInput / renderToScreen)
@@ -223,6 +224,56 @@ export class WebGPUBackend {
       texture, view, width: img.naturalWidth, height: img.naturalHeight, sampler,
     };
     this.imageTextures.set(id, handle);
+    return handle;
+  }
+
+  /**
+   * Upload the current frame of an HTMLVideoElement to a GPU texture.
+   * Creates a texture on first call (or when video dimensions change),
+   * reuses it on subsequent calls (zero-allocation per-frame update).
+   * Must be called every frame for animated video.
+   */
+  uploadVideoFrame(nodeId: string, video: HTMLVideoElement): TextureHandle | null {
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (w === 0 || h === 0) return null;
+
+    const device = this.device;
+    const existing = this.videoTextures.get(nodeId);
+
+    // Recreate if dimensions changed (e.g. video metadata loaded, resolution switch)
+    if (existing && (existing.width !== w || existing.height !== h)) {
+      existing.texture.destroy();
+      this.videoTextures.delete(nodeId);
+    }
+
+    let handle = this.videoTextures.get(nodeId);
+    if (!handle) {
+      const texture = device.createTexture({
+        size: { width: w, height: h },
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      const view = texture.createView();
+      const sampler = device.createSampler({
+        minFilter: 'linear',
+        magFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+      handle = { texture, view, width: w, height: h, sampler };
+      this.videoTextures.set(nodeId, handle);
+    }
+
+    device.pushErrorScope('validation');
+    device.queue.copyExternalImageToTexture(
+      { source: video, flipY: false },
+      { texture: handle.texture, premultipliedAlpha: true },
+      { width: w, height: h },
+    );
+    device.popErrorScope().then((err) => {
+      if (err) console.error(`[gpu] video upload error for ${nodeId}:`, err.message);
+    });
     return handle;
   }
 
@@ -608,6 +659,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     this.targets.clear();
     for (const t of this.imageTextures.values()) t.texture.destroy();
     this.imageTextures.clear();
+    for (const t of this.videoTextures.values()) t.texture.destroy();
+    this.videoTextures.clear();
     this.pipelineCache.clear();
   }
 

@@ -371,3 +371,70 @@ describe('Custom ONNX model (using SR-3x as stand-in)', () => {
     await session?.release();
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// Detection: YOLOv8n
+// ---------------------------------------------------------------------------
+
+import { detectPostprocess } from '../../src/engine/onnx/yoloDetectionPostprocess';
+import type { Detection } from '../../src/engine/onnx/yoloDetectionPostprocess';
+
+describe('YOLOv8n (detection)', () => {
+  let session: ort.InferenceSession;
+
+  beforeAll(async () => {
+    const modelPath = await ensureModel('yolov8n');
+    session = await ort.InferenceSession.create(modelPath);
+  });
+
+  afterAll(async () => {
+    await session?.release();
+  });
+
+  it('has single input and at least one output', () => {
+    expect(session.inputNames.length).toBe(1);
+    expect(session.outputNames.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('produces raw output tensor from 640×640 RGB input', async () => {
+    const w = 640, h = 640;
+    const rgba = makeTestRgba(w, h);
+    const input = rgbaToNchw(rgba, w, h);
+    const tensor = new ort.Tensor('float32', input, [1, 3, h, w]);
+    const results = await session.run({ [session.inputNames[0]]: tensor });
+
+    const output = results[session.outputNames[0]];
+    // YOLOv8 output: [1, 84, 8400] = 4 bbox + 80 class scores, 8400 boxes
+    expect(output.dims.length).toBe(3);
+    expect(output.dims[0]).toBe(1);
+    expect(output.data.length).toBeGreaterThan(0);
+  });
+
+  it('detectPostprocess decodes valid detections from raw output', async () => {
+    const w = 640, h = 640;
+    const rgba = makeTestRgba(w, h);
+    const input = rgbaToNchw(rgba, w, h);
+    const tensor = new ort.Tensor('float32', input, [1, 3, h, w]);
+    const results = await session.run({ [session.inputNames[0]]: tensor });
+    const raw = results[session.outputNames[0]].data as Float32Array;
+
+    // Use very low threshold to catch even weak detections
+    const detections: Detection[] = detectPostprocess(raw, w, h, 1, 0, 0, 0.001, 0.45);
+
+    // Verify bbox format: normalized [0,1] coordinates
+    for (const d of detections) {
+      expect(d.bbox[0]).toBeGreaterThanOrEqual(0);
+      expect(d.bbox[1]).toBeGreaterThanOrEqual(0);
+      expect(d.bbox[2]).toBeLessThanOrEqual(1);
+      expect(d.bbox[3]).toBeLessThanOrEqual(1);
+      expect(d.score).toBeGreaterThan(0);
+      expect(d.classId).toBeGreaterThanOrEqual(0);
+      expect(d.classId).toBeLessThan(80);
+    }
+
+    // Log detection counts at various thresholds for diagnostics
+    const at25 = detectPostprocess(raw, w, h, 1, 0, 0, 0.25, 0.45);
+    console.log(`[yolov8n] detections at threshold 0.001: ${detections.length}, at 0.25: ${at25.length}`);
+  });
+});

@@ -157,7 +157,7 @@ The current pipeline uses WebGL for shaders and WebGPU for ONNX inference — tw
 | **2. WebGPU rendering layer** | Pure WebGPU 2D shader pipeline (WGSL), `GPUDevice` shared with ORT | ✅ Done |
 | **3. WGSL migration** | 31 shader presets → WGSL, parser/compiler adapted, CodeMirror WGSL highlighting | ✅ Done |
 | **4. ORT I/O binding** | ONNX inference shares `GPUDevice`, `preferredOutputLocation: 'gpu-buffer'`, ONNX nodes wired into render pipeline | ✅ Done |
-| **5. Compute shader post-processing** | Decode/NMS/argmax as compute shaders + `tensor` data type | Planned |
+| **5. Compute shader post-processing** | Decode/NMS/argmax as compute shaders + `tensor` data type | ⏸ Paused — CPU post-processing works, GPU compute is perf-only |
 | **6. Post-processing nodes** | Decode/NMS as composable graph nodes, detection pipeline user-configurable | Planned |
 | **7. 3D scene nodes** | GLTF/OBJ loading, PBR materials, lights, camera — Quartz Composer 3D patch parity | Planned |
 

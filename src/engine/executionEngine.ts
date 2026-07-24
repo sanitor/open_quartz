@@ -61,11 +61,35 @@ export interface WebGPUExecutionPlan {
 }
 
 // ---------------------------------------------------------------------------
+// Backend interface — enables testing without a real GPU
+// ---------------------------------------------------------------------------
+
+/** The subset of WebGPUBackend that the engine depends on. */
+export interface BackendInterface {
+  readonly device: GPUDevice;
+  readonly canvas: HTMLCanvasElement;
+  setSize(width: number, height: number): void;
+  createTarget(id: string, width: number, height: number, float?: boolean): RenderTarget;
+  loadImageTexture(id: string, dataUrl: string): Promise<TextureHandle>;
+  uploadVideoFrame(nodeId: string, video: HTMLVideoElement): TextureHandle | null;
+  readTargetToRgba(target: RenderTarget): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }>;
+  writeRgbaToTarget(rgba: Uint8ClampedArray, target: RenderTarget): void;
+  renderPass(pipeline: GPURenderPipeline, bindGroup: GPUBindGroup, target: RenderTarget | null): void;
+  blitTexture(src: TextureHandle | RenderTarget, target: RenderTarget | null): void;
+  renderToScreen(src: TextureHandle | RenderTarget): void;
+  clearTarget(target: RenderTarget, color?: readonly [number, number, number, number]): void;
+  readTargetToDataURL(target: RenderTarget, maxDimension?: number): Promise<string>;
+  createShaderPipeline(fragmentCode: string, bindGroupLayout: GPUBindGroupLayout, targetFormat?: GPUTextureFormat, label?: string): GPURenderPipeline;
+  clearResources(): void;
+  dispose(): void;
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
 export class WebGPUExecutionEngine {
-  private backend: WebGPUBackend | null = null;
+  private backend: BackendInterface | null = null;
   private running = false;
   private onnxInFlight = new Set<string>();
   private onnxOutputCache = new Map<string, TextureSource>();
@@ -84,6 +108,11 @@ export class WebGPUExecutionEngine {
     await this.backend.init();
   }
 
+  /** Initialize with a pre-built backend — for testing. */
+  initWithBackend(backend: BackendInterface): void {
+    this.backend = backend;
+  }
+
   get device(): GPUDevice | null {
     return this.backend?.device ?? null;
   }
@@ -91,6 +120,7 @@ export class WebGPUExecutionEngine {
   get canvas(): HTMLCanvasElement | null {
     return this.backend?.canvas ?? null;
   }
+
 
   isRunning(): boolean {
     return this.running;
@@ -329,8 +359,16 @@ export class WebGPUExecutionEngine {
       }
     }
 
-    // Inject video textures
-    // TODO: video textures need WebGPU texture upload
+    // Upload current video frames to GPU textures
+    if (builtins.videoElements) {
+      for (const [nodeId, video] of builtins.videoElements) {
+        if (video.readyState < 2) continue;
+        const handle = this.backend.uploadVideoFrame(nodeId, video);
+        if (handle) {
+          plan.textureSources.set(nodeId, { kind: 'image', handle });
+        }
+      }
+    }
 
     for (const nodeId of plan.sortedIds) {
       const node = plan.nodeMap.get(nodeId);
@@ -376,8 +414,14 @@ export class WebGPUExecutionEngine {
       if (node.data.type === 'onnx') {
         if (this.onnxInFlight.has(nodeId)) continue;
         if (node.data.onnxStatus && node.data.onnxStatus !== 'ready') continue;
-        const hasVideo = builtins.videoTextures && builtins.videoTextures.size > 0;
-        if (!hasVideo && plan.textureSources.has(nodeId)) continue;
+        // Check if any upstream source is a video — video needs per-frame re-inference
+        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
+        const upstreamIsVideo = upstreamMap && builtins.videoElements
+          ? [...upstreamMap.values()].some((sid) => builtins.videoElements!.has(sid) || this.isUpstreamVideo(plan, sid, builtins))
+          : false;
+        ;
+        // Static input: skip if already cached. Video: always re-infer.
+        if (!upstreamIsVideo && plan.textureSources.has(nodeId)) continue;
 
         // Kick off async inference — result cached for subsequent frames
         this.onnxInFlight.add(nodeId);
@@ -491,10 +535,13 @@ export class WebGPUExecutionEngine {
       const src = plan.textureSources.get(sourceId);
       if (!src) return;
 
-      // Read upstream texture to CPU RGBA for preprocessing
-      const inputTarget = src.kind === 'target' ? src.target : null;
-      if (!inputTarget) return;
-      const { rgba, width, height } = await this.backend.readTargetToRgba(inputTarget);
+      // Read upstream texture to CPU RGBA for preprocessing.
+      // readTargetToRgba needs a RenderTarget, but video/image textures are TextureHandle.
+      // Both have {texture, width, height} — cast since the read only accesses those fields.
+      const tex = src.kind === 'target' ? src.target : src.handle;
+      const { rgba, width, height } = await this.backend.readTargetToRgba(
+        tex as unknown as RenderTarget,
+      );
 
       const entry = node.data.onnxCatalogId ? ONNX_CATALOG[node.data.onnxCatalogId] : null;
       const task = entry?.task ?? 'generic';
@@ -527,10 +574,32 @@ export class WebGPUExecutionEngine {
       this.onnxCallbacks.onOnnxComplete?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[onnx:${nodeId}] inference failed:`, e);
       this.onnxCallbacks.onNodeError?.(nodeId, msg);
     } finally {
       this.onnxInFlight.delete(nodeId);
     }
+  }
+
+  /**
+   * Walk the upstream edge chain from a node to find any video input source.
+   * Needed because ONNX's direct upstream may be a shader node (e.g. Resample)
+   * that itself feeds from a Video input.
+   */
+  private isUpstreamVideo(plan: WebGPUExecutionPlan, nodeId: string, builtins: FrameInputs): boolean {
+    const visited = new Set<string>([nodeId]);
+    const queue = [nodeId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const sourceId of plan.upstreamSamplerBindings.get(current)?.values() ?? []) {
+        if (builtins.videoElements?.has(sourceId)) return true;
+        if (!visited.has(sourceId)) {
+          visited.add(sourceId);
+          queue.push(sourceId);
+        }
+      }
+    }
+    return false;
   }
 
   /** Get or lazily create an ORT session for a node, sharing the GPU device. */
@@ -602,14 +671,26 @@ export class WebGPUExecutionEngine {
         const scoreThreshold = params.scoreThreshold ?? node.data.onnxScoreThreshold ?? 0.25;
         const iouThreshold = params.iouThreshold ?? node.data.onnxIouThreshold ?? 0.45;
         const result = await runDetection(session, rgba, width, height, targetSize, scoreThreshold, iouThreshold);
-        const overlayCanvas = drawDetectionOverlay(result.detections, width, height, COCO_CLASSES);
+        // Build overlay on a canvas from the source RGBA
+        const srcCanvas = rgbaToCanvas(rgba, width, height);
+        const overlayDetections = result.detections.map((d) => ({
+          bbox: d.bbox,
+          score: d.score,
+          class_id: d.classId,
+          class_name: d.classId < COCO_CLASSES.length ? COCO_CLASSES[d.classId] : `class_${d.classId}`,
+        }));
+        const { canvas: overlayCanvas } = drawDetectionOverlay(srcCanvas, width, height, overlayDetections);
         const overlayRgba = overlayCanvas.getContext('2d')!.getImageData(0, 0, width, height).data;
         return { rgba: overlayRgba as Uint8ClampedArray, width, height, detections: result.detections };
       }
       case 'segmentation': {
         const targetSize = node.data.onnxTargetSize ?? 640;
         const result = await runSegmentation(session, rgba, width, height, targetSize);
-        const overlayCanvas = drawSegmentationOverlay(result.segmentation, width, height);
+        const srcCanvas = rgbaToCanvas(rgba, width, height);
+        const { canvas: overlayCanvas } = drawSegmentationOverlay(
+          srcCanvas, width, height,
+          result.segmentation.maskRgba, result.segmentation.maskW, result.segmentation.maskH,
+        );
         const overlayRgba = overlayCanvas.getContext('2d')!.getImageData(0, 0, width, height).data;
         return { rgba: overlayRgba as Uint8ClampedArray, width, height };
       }
@@ -683,4 +764,14 @@ export class WebGPUExecutionEngine {
     this.backend?.dispose();
     this.backend = null;
   }
+}
+
+/** Convert RGBA pixel data to a canvas element (for overlay drawing). */
+function rgbaToCanvas(rgba: Uint8ClampedArray, width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+  return canvas;
 }
