@@ -132,7 +132,17 @@ export function makeNode(
       templateName: labelOverride,
       shaderCode,
       inputs: parsed.inputs,
-      outputs: parsed.outputs,
+      // Input/constant nodes produce a typed value, not a generic vec4 fragment color.
+      // Override the output port type to match the node's logical data type.
+      outputs: (type === 'input' || type === 'constant')
+        ? parsed.outputs.map((p) => ({
+            ...p,
+            dataType: (type === 'input'
+              ? (inputDataType ?? 'float')
+              : (parsed.inputs[0]?.dataType ?? 'vec4')
+            ),
+          }))
+        : parsed.outputs,
       uniforms: {},
       inputDataType: type === 'input' ? (inputDataType ?? 'float') : undefined,
       inputMode: type === 'input' ? (inputMode ?? (inputDataType === 'sampler2D' ? 'image' : undefined)) : undefined,

@@ -7,7 +7,7 @@ import {
 import { generatorShaders } from '../../src/catalog/shaders/generator';
 import { feedbackShaders } from '../../src/catalog/shaders/feedback';
 import { parseWgslShader } from '../../src/engine/gpu/wgslParser';
-import { createDefaultShaderCode, createInputShader } from '../../src/store/helpers';
+import { createDefaultShaderCode, createInputShader, makeNode } from '../../src/store/helpers';
 
 // ---------------------------------------------------------------------------
 // Expected parse results per shader — exact labels, types, and counts
@@ -155,5 +155,37 @@ describe('createDefaultShaderCode / createInputShader', () => {
       ['color', 'vec4'],
     ]);
     expect(result.outputs).toHaveLength(1);
+  });
+});
+
+describe('makeNode output port types', () => {
+  it('input node (float): output port is float, not vec4', () => {
+    const node = makeNode('input', undefined, 'float');
+    expect(node.data.outputs).toHaveLength(1);
+    expect(node.data.outputs[0].dataType).toBe('float');
+  });
+
+  it('input node (sampler2D): output port is sampler2D', () => {
+    const node = makeNode('input', undefined, 'sampler2D');
+    expect(node.data.outputs).toHaveLength(1);
+    expect(node.data.outputs[0].dataType).toBe('sampler2D');
+  });
+
+  it('input node (vec3): output port is vec3', () => {
+    const node = makeNode('input', undefined, 'vec3');
+    expect(node.data.outputs).toHaveLength(1);
+    expect(node.data.outputs[0].dataType).toBe('vec3');
+  });
+
+  it('constant node: output port matches uniform type (vec4)', () => {
+    const node = makeNode('constant');
+    expect(node.data.outputs).toHaveLength(1);
+    expect(node.data.outputs[0].dataType).toBe('vec4');
+  });
+
+  it('shader node: output port stays vec4 (fragment color)', () => {
+    const node = makeNode('shader');
+    expect(node.data.outputs).toHaveLength(1);
+    expect(node.data.outputs[0].dataType).toBe('vec4');
   });
 });

@@ -357,7 +357,7 @@ export function graphSlice(
         node.data.shaderCode = shaderCode;
         node.data.inputDataType = dataType;
         node.data.inputs = parsed.inputs;
-        node.data.outputs = parsed.outputs;
+        node.data.outputs = parsed.outputs.map((p) => ({ ...p, dataType: dataType }));
         node.data.uniforms = {};
       });
     },
