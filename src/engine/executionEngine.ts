@@ -13,7 +13,7 @@ import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import type { FrameInputs } from './compositor';
 import { WebGPUBackend, type RenderTarget, type TextureHandle } from './gpu/WebGPUBackend';
-import { compileWgslShader, type CompiledShader } from './gpu/wgslCompiler';
+import { compileWgslShader, validateWgslShader, type CompiledShader } from './gpu/wgslCompiler';
 import { topologicalSort } from './graphExecutor';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
@@ -319,9 +319,23 @@ export class WebGPUExecutionEngine {
         builtinPorts.set(nodeId, builtin);
         preambleLines.set(nodeId, compiled.preambleLines);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`Shader error for node ${nodeId}:`, msg);
-        onNodeError?.(nodeId, msg);
+        const rawMsg = e instanceof Error ? e.message : String(e);
+        // Try to get detailed compilation errors with line numbers
+        const shaderCode = node.data.shaderTemplateId
+          ? (SHADER_TEMPLATES.get(node.data.shaderTemplateId)?.code ?? node.data.shaderCode)
+          : node.data.shaderCode;
+        const pl = preambleLines.get(nodeId) ?? 0;
+        validateWgslShader(device, shaderCode, pl).then((errors) => {
+          if (errors.length > 0) {
+            const detail = errors.map((err) => `Line ${err.line}: ${err.message}`).join('\n');
+            onNodeError?.(nodeId, detail);
+          } else {
+            onNodeError?.(nodeId, rawMsg);
+          }
+        }).catch(() => {
+          onNodeError?.(nodeId, rawMsg);
+        });
+        console.warn(`Shader error for node ${nodeId}:`, rawMsg);
       }
     }
 

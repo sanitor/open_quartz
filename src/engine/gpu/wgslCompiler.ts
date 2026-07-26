@@ -220,20 +220,53 @@ function glslToWgslType(dataType: string): string {
 // Shader validation (compile check)
 // ---------------------------------------------------------------------------
 
+export interface WgslCompilationError {
+  message: string;
+  /** 1-based line in the full (preamble + user) code. */
+  line: number;
+  /** 0-based column offset. */
+  column: number;
+  /** Byte offset into the source. */
+  offset: number;
+  /** Length of the error span in bytes. */
+  length: number;
+}
+
 /**
- * Validate a WGSL shader by attempting to create a GPUShaderModule.
- * Returns null on success, or the error message on failure.
+ * Validate a WGSL shader via GPUShaderModule.getCompilationInfo().
+ * Returns an array of errors (empty on success).
+ *
+ * @param preambleLines  Number of lines the compiler injected before user code,
+ *                       used to map error lines back to user source.
  */
-export function validateWgslShader(device: GPUDevice, code: string): string | null {
+export async function validateWgslShader(
+  device: GPUDevice,
+  code: string,
+  preambleLines = 0,
+): Promise<WgslCompilationError[]> {
   try {
     const module = device.createShaderModule({ code });
-    // WebGPU shader compilation is synchronous in the module creation
-    // but errors are reported via getCompilationInfo
-    // For now, createShaderModule doesn't throw — errors surface at pipeline creation
-    // Return null (success) and let pipeline creation catch real errors
-    void module;
-    return null;
+    const info = await module.getCompilationInfo();
+    const errors: WgslCompilationError[] = [];
+    for (const msg of info.messages) {
+      if (msg.type === 'error') {
+        errors.push({
+          message: msg.message,
+          line: Math.max(1, msg.lineNum - preambleLines),
+          column: msg.linePos,
+          offset: msg.offset,
+          length: msg.length,
+        });
+      }
+    }
+    return errors;
   } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    return [{
+      message: e instanceof Error ? e.message : String(e),
+      line: 1,
+      column: 0,
+      offset: 0,
+      length: 0,
+    }];
   }
 }

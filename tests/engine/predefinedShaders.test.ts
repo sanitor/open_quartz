@@ -7,117 +7,153 @@ import {
 import { generatorShaders } from '../../src/catalog/shaders/generator';
 import { feedbackShaders } from '../../src/catalog/shaders/feedback';
 import { parseWgslShader } from '../../src/engine/gpu/wgslParser';
+import { createDefaultShaderCode, createInputShader } from '../../src/store/helpers';
+
+// ---------------------------------------------------------------------------
+// Expected parse results per shader — exact labels, types, and counts
+// ---------------------------------------------------------------------------
+
+const EXPECTED: Record<string, { inputs: [string, string][]; outputs: [string, string][] }> = {
+  // Filters
+  'Resample':              { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Sobel Edge Detection':  { inputs: [['inputImage', 'sampler2D'], ['intensity', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Gaussian Blur 3x3':     { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Box Blur':              { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Sharpen':               { inputs: [['inputImage', 'sampler2D'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Emboss':                { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Pixelate':              { inputs: [['inputImage', 'sampler2D'], ['blockSize', 'float']], outputs: [['fragColor', 'vec4']] },
+  // Color
+  'Invert':                { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Grayscale':             { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Brightness/Contrast':   { inputs: [['inputImage', 'sampler2D'], ['contrast', 'float'], ['brightness', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Hue Rotate':            { inputs: [['inputImage', 'sampler2D'], ['angle', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Threshold':             { inputs: [['inputImage', 'sampler2D'], ['threshold', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Sepia':                 { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Field Color Map':       { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  // Generators
+  'Solid Color':           { inputs: [['color', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Gradient':              { inputs: [['colorA', 'float'], ['colorB', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Checkerboard':          { inputs: [['gridSize', 'float'], ['color1', 'float'], ['color2', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Noise':                 { inputs: [['scale', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Circle':                { inputs: [['circle', 'float']], outputs: [['fragColor', 'vec4']] },
+  // Blend
+  'Add':                   { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Multiply':              { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Screen':                { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Overlay':               { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Difference':            { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Exclusion':             { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  'Soft Light':            { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
+  // Distortion
+  'Twirl':                 { inputs: [['inputImage', 'sampler2D'], ['radius', 'float'], ['angle', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Ripple':                { inputs: [['inputImage', 'sampler2D'], ['frequency', 'float'], ['amplitude', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Displacement':          { inputs: [['displaceMap', 'sampler2D'], ['inputImage', 'sampler2D'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Barrel':                { inputs: [['inputImage', 'sampler2D'], ['k1', 'float'], ['k2', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Pinch':                 { inputs: [['inputImage', 'sampler2D'], ['radius', 'float'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
+  // Feedback
+  'Gray-Scott Reaction-Diffusion': { inputs: [['dA', 'float'], ['feedRate', 'float'], ['timestep', 'float'], ['dB', 'float'], ['killRate', 'float']], outputs: [['fragColor', 'vec4']] },
+};
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe('predefinedShaders', () => {
-  it('is a non-empty array', () => {
-    expect(Array.isArray(predefinedShaders)).toBe(true);
+  it('is a non-empty array with unique labels', () => {
     expect(predefinedShaders.length).toBeGreaterThan(0);
-  });
-
-  it('each entry has a label (string) and code (string)', () => {
-    for (const shader of predefinedShaders) {
-      expect(typeof shader.label).toBe('string');
-      expect(shader.label.length).toBeGreaterThan(0);
-      expect(typeof shader.code).toBe('string');
-      expect(shader.code.length).toBeGreaterThan(0);
-    }
-  });
-
-  it('has unique labels', () => {
     const labels = predefinedShaders.map(s => s.label);
-    const unique = new Set(labels);
-    expect(unique.size).toBe(labels.length);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 
-  it('each shader template can be parsed by parseWgslShader', () => {
+  it('every predefined shader has an expected parse spec', () => {
     for (const shader of predefinedShaders) {
+      expect(EXPECTED).toHaveProperty(shader.label);
+    }
+  });
+
+  for (const shader of predefinedShaders) {
+    it(`${shader.label}: exact inputs and outputs`, () => {
       const result = parseWgslShader(shader.code);
-      // Every predefined shader should have at least one output
-      expect(result.outputs.length).toBeGreaterThanOrEqual(1);
+      const spec = EXPECTED[shader.label];
+
+      expect(result.parseError).toBeUndefined();
       expect(result.raw).toBe(shader.code);
-    }
-  });
 
-  it('each non-generator shader has at least one texture_2d input', () => {
-    const generatorLabels = new Set(generatorShaders.map((s) => s.label));
-    const feedbackLabels = new Set(feedbackShaders.map((s) => s.label));
-    for (const shader of predefinedShaders) {
-      if (generatorLabels.has(shader.label) || feedbackLabels.has(shader.label)) continue;
-      const result = parseWgslShader(shader.code);
-      const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
-      expect(hasSampler).toBe(true);
-    }
-  });
+      // Exact input count, labels, and types
+      const actualInputs = result.inputs.map(p => [p.label, p.dataType]);
+      expect(actualInputs).toEqual(spec.inputs);
 
-  it('generator shaders have no texture_2d input', () => {
-    for (const shader of generatorShaders) {
-      const result = parseWgslShader(shader.code);
-      const hasSampler = result.inputs.some(p => p.dataType === 'sampler2D');
-      expect(hasSampler).toBe(false);
-    }
-  });
+      // Exact output count, labels, and types
+      const actualOutputs = result.outputs.map(p => [p.label, p.dataType]);
+      expect(actualOutputs).toEqual(spec.outputs);
+    });
+  }
 });
 
 describe('CUSTOM_SHADER_CODE', () => {
-  it('is a non-empty string', () => {
-    expect(typeof CUSTOM_SHADER_CODE).toBe('string');
-    expect(CUSTOM_SHADER_CODE.length).toBeGreaterThan(0);
-  });
-
-  it('contains a textureSample call', () => {
-    expect(CUSTOM_SHADER_CODE).toMatch(/textureSample/);
-  });
-
-  it('contains an @fragment fn main', () => {
-    expect(CUSTOM_SHADER_CODE).toMatch(/@fragment/);
-  });
-
-  it('can be parsed by parseWgslShader', () => {
+  it('exact parse: inputImage (sampler2D) + intensity (float), 1 output', () => {
     const result = parseWgslShader(CUSTOM_SHADER_CODE);
-    expect(result.inputs.length).toBeGreaterThanOrEqual(1);
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['inputImage', 'sampler2D'],
+      ['intensity', 'float'],
+    ]);
     expect(result.outputs).toHaveLength(1);
     expect(result.outputs[0].label).toBe('fragColor');
-  });
-
-  it('has a sampler2D input and a float input', () => {
-    const result = parseWgslShader(CUSTOM_SHADER_CODE);
-    const types = new Map(result.inputs.map(p => [p.label, p.dataType]));
-    expect(types.get('inputImage')).toBe('sampler2D');
-    expect(types.get('intensity')).toBe('float');
+    expect(result.outputs[0].dataType).toBe('vec4');
   });
 });
 
 describe('CUSTOM_2IN1_SHADER', () => {
-  it('is a non-empty string', () => {
-    expect(typeof CUSTOM_2IN1_SHADER).toBe('string');
-    expect(CUSTOM_2IN1_SHADER.length).toBeGreaterThan(0);
-  });
-
-  it('contains two textureSample calls (inputA + inputB)', () => {
-    const matches = CUSTOM_2IN1_SHADER.match(/textureSample\s*\(/g);
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBe(2);
-  });
-
-  it('can be parsed by parseWgslShader', () => {
+  it('exact parse: inputA + inputB (sampler2D) + mixFactor (float), 1 output', () => {
     const result = parseWgslShader(CUSTOM_2IN1_SHADER);
-    const samplers = result.inputs.filter(p => p.dataType === 'sampler2D');
-    expect(samplers).toHaveLength(2);
-    expect(samplers.map(s => s.label)).toContain('inputA');
-    expect(samplers.map(s => s.label)).toContain('inputB');
-  });
-
-  it('has a mixFactor float uniform', () => {
-    const result = parseWgslShader(CUSTOM_2IN1_SHADER);
-    const mixPort = result.inputs.find(p => p.label === 'mixFactor');
-    expect(mixPort).toBeDefined();
-    expect(mixPort!.dataType).toBe('float');
-  });
-
-  it('has a fragColor output', () => {
-    const result = parseWgslShader(CUSTOM_2IN1_SHADER);
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['inputA', 'sampler2D'],
+      ['inputB', 'sampler2D'],
+      ['mixFactor', 'float'],
+    ]);
     expect(result.outputs).toHaveLength(1);
     expect(result.outputs[0].label).toBe('fragColor');
     expect(result.outputs[0].dataType).toBe('vec4');
+  });
+});
+
+describe('createDefaultShaderCode / createInputShader', () => {
+  it('default shader: inputImage (sampler2D) + intensity (float)', () => {
+    const result = parseWgslShader(createDefaultShaderCode('shader'));
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['inputImage', 'sampler2D'],
+      ['intensity', 'float'],
+    ]);
+    expect(result.outputs).toHaveLength(1);
+  });
+
+  it('input shader sampler2D: value (sampler2D)', () => {
+    const result = parseWgslShader(createInputShader('sampler2D'));
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['value', 'sampler2D'],
+    ]);
+    expect(result.outputs).toHaveLength(1);
+  });
+
+  it('input shader float: value (float)', () => {
+    const result = parseWgslShader(createInputShader('float'));
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['value', 'float'],
+    ]);
+    expect(result.outputs).toHaveLength(1);
+  });
+
+  it('constant shader: color (vec4)', () => {
+    const result = parseWgslShader(createDefaultShaderCode('constant'));
+    expect(result.parseError).toBeUndefined();
+    expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
+      ['color', 'vec4'],
+    ]);
+    expect(result.outputs).toHaveLength(1);
   });
 });

@@ -4,6 +4,8 @@ export interface ParsedShader {
   inputs: Port[];
   outputs: Port[];
   raw: string;
+  /** Syntax error from wgsl_reflect, if any. */
+  parseError?: string;
 }
 
 export interface CompiledNode {
