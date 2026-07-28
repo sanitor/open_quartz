@@ -495,8 +495,51 @@ export class WebGPUExecutionEngine {
         entries.push({ binding: compiled.previousFrameBinding + 1, resource: fbTargets[fbReadIdx].sampler });
       }
 
-      // Uniform bindings (scalar values)
-      // TODO: create uniform buffers for scalar values and builtins
+      // Uniform bindings — create GPU buffers for scalar values and builtins
+      const uniformBuffers: GPUBuffer[] = [];
+      const selfUnis = plan.selfUniforms.get(nodeId) ?? {};
+      const scalarVals = plan.scalarBindings.get(nodeId);
+      const builtinSet = plan.builtinPorts.get(nodeId);
+
+      for (const [uniformName, bindingIdx] of compiled.uniformBindings) {
+        // Resolve value: builtins → upstream scalars → self uniforms → 0
+        let value: number | number[];
+        if (builtinSet?.has(uniformName)) {
+          switch (uniformName) {
+            case 'iTime': value = builtins.time; break;
+            case 'iTimeDelta': value = builtins.delta; break;
+            case 'iFrame': value = builtins.frame; break;
+            case 'iMouse': value = [builtins.mouse[0], builtins.mouse[1], builtins.mouse[2], builtins.mouse[3]]; break;
+            case 'iDate': value = [builtins.date[0], builtins.date[1], builtins.date[2], builtins.date[3]]; break;
+            case 'iResolution': {
+              const res = plan.resolutionUniforms.get(nodeId);
+              value = res ? [res[0], res[1], res[2]] : [512, 512, 1];
+              break;
+            }
+            default: value = 0; break;
+          }
+        } else if (scalarVals?.has(uniformName)) {
+          const upstream = scalarVals.get(uniformName);
+          // Check if the upstream is a math node whose value we already computed
+          const srcNodeId = plan.scalarUpstream.get(nodeId)?.get(uniformName);
+          const mathVal = srcNodeId ? plan.mathValues.get(srcNodeId) : undefined;
+          value = mathVal !== undefined ? Number(mathVal) : Number(upstream) || 0;
+        } else {
+          const raw = selfUnis[uniformName];
+          value = Array.isArray(raw) ? raw.map(Number) : (Number(raw) || 0);
+        }
+
+        // Write to a correctly-sized float32 buffer (WebGPU minimum uniform buffer = 16 bytes)
+        const data = Array.isArray(value) ? new Float32Array(value) : new Float32Array([value]);
+        const bufSize = Math.max(data.byteLength, 16);  // WebGPU min uniform buffer alignment
+        const buf = device.createBuffer({
+          size: bufSize,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(buf, 0, data);
+        entries.push({ binding: bindingIdx, resource: { buffer: buf } });
+        uniformBuffers.push(buf);
+      }
 
       // Render
       const bindGroup = device.createBindGroup({
@@ -505,6 +548,9 @@ export class WebGPUExecutionEngine {
       });
       this.backend.renderPass(compiled.pipeline, bindGroup, renderTarget);
       plan.textureSources.set(nodeId, { kind: 'target', target: renderTarget });
+
+      // Destroy per-frame uniform buffers (data already submitted to queue)
+      for (const buf of uniformBuffers) buf.destroy();
 
       // Swap feedback
       if (isFeedback) {
