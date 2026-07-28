@@ -190,6 +190,15 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
     expect(result.inputs).toHaveLength(0);
     expect(result.outputs).toHaveLength(1);
   });
+
+  it('2g. REGRESSION: @doraemon must not appear as a port', () => {
+    const code = `@doraemon fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return vec4f(1.0);
+}`;
+    const result = parseWgslShader(code);
+    const labels = result.inputs.map((p) => p.label);
+    expect(labels).not.toContain('doraemon');
+  });
 });
 
 // =============================================================================

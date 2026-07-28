@@ -274,6 +274,8 @@ export function parseWgslShader(
     while ((m = IDENT_RE.exec(cleanCode)) !== null) {
       // Skip member access: if char before match is '.', this is a field/swizzle
       if (m.index > 0 && cleanCode[m.index - 1] === '.') continue;
+      // Skip attribute names: if char before match is '@', this is an attribute
+      if (m.index > 0 && cleanCode[m.index - 1] === '@') continue;
       const name = m[1];
       if (WGSL_KEYWORDS.has(name)) continue;
       if (WGSL_BUILTINS.has(name)) continue;
