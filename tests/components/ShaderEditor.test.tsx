@@ -54,6 +54,17 @@ vi.mock('@codemirror/state', () => ({
 vi.mock('@iizukak/codemirror-lang-wgsl', () => ({
   wgsl: vi.fn(() => Symbol('wgsl')),
 }));
+vi.mock('@codemirror/lint', () => ({
+  linter: vi.fn(() => Symbol('linter')),
+}));
+
+vi.mock('../../src/engine/gpu/wgslParser', () => ({
+  parseWgslShader: vi.fn(() => ({ inputs: [], outputs: [], raw: '', parseError: undefined })),
+}));
+
+vi.mock('../../src/engine/gpu/wgslCompiler', () => ({
+  validateWgslEdit: vi.fn(async () => []),
+}));
 
 
 import { ShaderEditor } from '../../src/components/SidePanel/ShaderEditor';
@@ -82,7 +93,8 @@ describe('ShaderEditor', () => {
     expect(mockEditorViewDestroy).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onChange when document changes via update listener', () => {
+  it('calls onChange when document changes via update listener (debounced)', () => {
+    vi.useFakeTimers();
     const onChange = vi.fn();
     render(<ShaderEditor code="void main() {}" onChange={onChange} />);
     expect(getCapturedUpdateListener()).toBeTruthy();
@@ -93,7 +105,12 @@ describe('ShaderEditor', () => {
         state: { doc: { toString: () => 'modified code' } },
       });
     }
+    // Not called immediately — debounced
+    expect(onChange).not.toHaveBeenCalled();
+    // Advance past the debounce delay (400ms)
+    vi.advanceTimersByTime(500);
     expect(onChange).toHaveBeenCalledWith('modified code');
+    vi.useRealTimers();
   });
 
   it('does not call onChange when doc not changed', () => {

@@ -6,7 +6,6 @@ import {
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseWgslShader } from '../engine/gpu/wgslParser';
-import { validateWgslEdit } from '../engine/gpu/wgslCompiler';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
@@ -341,18 +340,6 @@ export function graphSlice(
             state.nodeErrors[id] = parsed.parseError;
           } else {
             delete state.nodeErrors[id];
-          }
-          // Async GPU-level validation (catches @doraemon, missing entry points, type errors)
-          if (!parsed.parseError) {
-            const ports = parsed.inputs;
-            const code = data.shaderCode;
-            const nodeId = id;
-            void validateWgslEdit(code, ports).then((errors) => {
-              if (errors.length > 0) {
-                const detail = errors.map((e) => `Line ${e.line}: ${e.message}`).join('\n');
-                set((s) => { s.nodeErrors[nodeId] = detail; });
-              }
-            });
           }
         } else {
           Object.assign(node.data, data);
