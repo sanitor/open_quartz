@@ -4,7 +4,6 @@ import { EditorState } from '@codemirror/state';
 import { linter, type Diagnostic } from '@codemirror/lint';
 import { wgsl } from '@iizukak/codemirror-lang-wgsl';
 import { parseWgslShader } from '../../engine/gpu/wgslParser';
-import { validateWgslEdit } from '../../engine/gpu/wgslCompiler';
 
 interface ShaderEditorProps {
   code: string;
@@ -16,34 +15,19 @@ interface ShaderEditorProps {
 const COMMIT_DELAY_MS = 400;
 
 /**
- * WGSL linter that runs async GPU validation via createShaderModule +
- * getCompilationInfo.  Errors appear as red squiggly underlines in the editor.
- * CodeMirror's linter extension already debounces internally (~750ms default).
+ * Lightweight WGSL linter — only reports wgsl_reflect parse errors.
+ * GPU-level validation (missing @fragment, undeclared vars) is deferred to
+ * the compile step at runtime to avoid noisy errors while typing.
  */
-const wgslLinter = linter(async (view): Promise<Diagnostic[]> => {
+const wgslLinter = linter((view): Diagnostic[] => {
   const code = view.state.doc.toString();
   if (!code.trim()) return [];
 
-  // Parse to extract ports (needed for preamble generation)
   const parsed = parseWgslShader(code);
-  if (parsed.parseError) {
-    // wgsl_reflect caught a syntax error — show on line 1
-    return [{ from: 0, to: Math.min(code.length, 1), severity: 'error', message: parsed.parseError }];
-  }
+  if (!parsed.parseError) return [];
 
-  const errors = await validateWgslEdit(code, parsed.inputs);
-  const diagnostics: Diagnostic[] = [];
-  for (const err of errors) {
-    // Map 1-based line to CodeMirror offset
-    const lineNum = Math.min(err.line, view.state.doc.lines);
-    const line = view.state.doc.line(lineNum);
-    const from = line.from + Math.min(err.column, line.length);
-    const to = err.length > 0
-      ? Math.min(from + err.length, line.to)
-      : line.to; // underline to end of line if no span
-    diagnostics.push({ from, to, severity: 'error', message: err.message });
-  }
-  return diagnostics;
+  // wgsl_reflect errors don't include line info — underline the whole source
+  return [{ from: 0, to: code.length, severity: 'error', message: parsed.parseError }];
 }, { delay: 500 });
 
 export function ShaderEditor({ code, onChange, readOnly }: ShaderEditorProps) {
