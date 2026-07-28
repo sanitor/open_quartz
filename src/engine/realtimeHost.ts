@@ -85,6 +85,10 @@ export class RealtimeHost {
     this.callbacks = callbacks;
   }
 
+  get device(): GPUDevice | null {
+    return this.compositor.device;
+  }
+
   async play(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void> {
     this.nodes = nodes;
     this.edges = edges;

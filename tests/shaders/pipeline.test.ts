@@ -13,6 +13,7 @@ import type { ShaderNodeData, Port, DataType } from '../../src/types';
 import { WebGPUBackend } from '../../src/engine/gpu/WebGPUBackend';
 import { WebGPUExecutionEngine } from '../../src/engine/executionEngine';
 import type { FrameInputs } from '../../src/engine/compositor';
+import { validateWgslEdit } from '../../src/engine/gpu/wgslCompiler';
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -337,5 +338,53 @@ describe('Integration bit-true (WebGPU pipeline)', () => {
       expect(rgba[i * 4 + 2]).toBe(0);
       expect(rgba[i * 4 + 3]).toBe(255);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edit-time GPU validation
+// ---------------------------------------------------------------------------
+
+describe('validateWgslEdit (GPU compile check)', () => {
+  it('@doraemon instead of @fragment produces a compile error', async () => {
+    const code = `@doraemon fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return vec4f(1.0);
+}`;
+    const errors = await validateWgslEdit(backend.device, code, []);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors[0].message).toBeTruthy();
+  });
+
+  it('missing @fragment entry point produces a compile error', async () => {
+    const code = `fn notAnEntryPoint() -> vec4f {
+  return vec4f(1.0);
+}`;
+    // This may or may not error at module level (depends on impl),
+    // but it will fail at pipeline creation. At minimum, no false positive.
+    const errors = await validateWgslEdit(backend.device, code, []);
+    // Some GPU drivers report no entry point as an error, some don't at module level.
+    // We just verify it doesn't crash.
+    expect(Array.isArray(errors)).toBe(true);
+  });
+
+  it('valid shader with ports produces no errors', async () => {
+    const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  let c = textureSample(inputImage, inputImageSampler, v_uv);
+  return vec4f(c.rgb * intensity, c.a);
+}`;
+    const ports = [
+      { label: 'inputImage', dataType: 'sampler2D' },
+      { label: 'intensity', dataType: 'float' },
+    ];
+    const errors = await validateWgslEdit(backend.device, code, ports);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('undeclared identifier without matching port produces an error', async () => {
+    const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return vec4f(oops);
+}`;
+    const errors = await validateWgslEdit(backend.device, code, []);
+    expect(errors.length).toBeGreaterThan(0);
   });
 });

@@ -270,3 +270,56 @@ export async function validateWgslShader(
     }];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Edit-time validation (no pipeline, just shader compile check)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate user-edited WGSL code by building the same preamble the compiler
+ * would inject and running it through createShaderModule + getCompilationInfo.
+ *
+ * Returns an array of errors (empty on success). Error line numbers are mapped
+ * back to the user's source (preamble lines subtracted).
+ */
+export async function validateWgslEdit(
+  device: GPUDevice,
+  userCode: string,
+  inputPorts: ReadonlyArray<{ label: string; dataType: string }>,
+): Promise<WgslCompilationError[]> {
+  let bindingIndex = 0;
+  let preamble = '';
+
+  // Strip user binding declarations (same regex as compileWgslShader)
+  let processedCode = userCode
+    .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*texture_2d\s*<\s*f32\s*>\s*;/g, '')
+    .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*sampler\s*;/g, '')
+    .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s*<\s*uniform\s*>\s*\w+\s*:\s*[\w<>]+\s*;/g, '');
+
+  // Build preamble from parsed ports (mirrors compileWgslShader logic)
+  for (const port of inputPorts) {
+    if (port.dataType === 'sampler2D') {
+      preamble += `@group(0) @binding(${bindingIndex}) var ${port.label}: texture_2d<f32>;\n`;
+      bindingIndex++;
+      preamble += `@group(0) @binding(${bindingIndex}) var ${port.label}Sampler: sampler;\n`;
+      bindingIndex++;
+    } else if (port.dataType !== 'samplerCube') {
+      const wgslType = glslToWgslType(port.dataType);
+      preamble += `@group(0) @binding(${bindingIndex}) var<uniform> ${port.label}: ${wgslType};\n`;
+      bindingIndex++;
+    }
+  }
+
+  // Inject previousFrame if referenced
+  if (/\bpreviousFrame\b/.test(userCode)) {
+    preamble += `@group(0) @binding(${bindingIndex}) var previousFrame: texture_2d<f32>;\n`;
+    bindingIndex++;
+    preamble += `@group(0) @binding(${bindingIndex}) var previousFrameSampler: sampler;\n`;
+    bindingIndex++;
+  }
+
+  const preambleLines = preamble.split('\n').filter(Boolean).length;
+  const fullCode = preamble + '\n' + processedCode;
+
+  return validateWgslShader(device, fullCode, preambleLines);
+}

@@ -6,6 +6,7 @@ import {
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { parseWgslShader } from '../engine/gpu/wgslParser';
+import { validateWgslEdit } from '../engine/gpu/wgslCompiler';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
@@ -335,11 +336,24 @@ export function graphSlice(
         if (data.shaderCode !== undefined) {
           const parsed = parseWgslShader(data.shaderCode, node.data.inputs, node.data.outputs);
           node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
-          // Surface WGSL syntax errors via nodeErrors
+          // Surface wgsl_reflect syntax errors immediately
           if (parsed.parseError) {
             state.nodeErrors[id] = parsed.parseError;
           } else {
             delete state.nodeErrors[id];
+          }
+          // Async GPU-level validation (catches @doraemon, missing entry points, type errors)
+          const device = state.gpuDevice as GPUDevice | null;
+          if (device && !parsed.parseError) {
+            const ports = parsed.inputs;
+            const code = data.shaderCode;
+            const nodeId = id;
+            void validateWgslEdit(device, code, ports).then((errors) => {
+              if (errors.length > 0) {
+                const detail = errors.map((e) => `Line ${e.line}: ${e.message}`).join('\n');
+                set((s) => { s.nodeErrors[nodeId] = detail; });
+              }
+            });
           }
         } else {
           Object.assign(node.data, data);

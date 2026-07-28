@@ -73,7 +73,10 @@ export class PipelineService {
         setTimeout(() => {
           const s = useGraphStore.getState();
           this.host?.setPreviewNode(s.selectedNodeId);
-          void this.host?.play(s.nodes, s.edges);
+          void this.host?.play(s.nodes, s.edges)?.then(() => {
+            // Expose GPU device to the store for edit-time shader validation
+            useGraphStore.getState().setGpuDevice(this.host?.device ?? null);
+          });
         }, 0);
       }
 
@@ -90,6 +93,7 @@ export class PipelineService {
       // Stop
       if (state.loopState === 'stopped' && prev.loopState !== 'stopped') {
         this.host?.stop();
+        useGraphStore.getState().setGpuDevice(null);
       }
 
       // Hot-update graph while playing
