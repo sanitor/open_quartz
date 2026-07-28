@@ -343,12 +343,11 @@ export function graphSlice(
             delete state.nodeErrors[id];
           }
           // Async GPU-level validation (catches @doraemon, missing entry points, type errors)
-          const device = state.gpuDevice as GPUDevice | null;
-          if (device && !parsed.parseError) {
+          if (!parsed.parseError) {
             const ports = parsed.inputs;
             const code = data.shaderCode;
             const nodeId = id;
-            void validateWgslEdit(device, code, ports).then((errors) => {
+            void validateWgslEdit(code, ports).then((errors) => {
               if (errors.length > 0) {
                 const detail = errors.map((e) => `Line ${e.line}: ${e.message}`).join('\n');
                 set((s) => { s.nodeErrors[nodeId] = detail; });

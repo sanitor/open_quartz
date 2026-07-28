@@ -350,7 +350,7 @@ describe('validateWgslEdit (GPU compile check)', () => {
     const code = `@doraemon fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   return vec4f(1.0);
 }`;
-    const errors = await validateWgslEdit(backend.device, code, []);
+    const errors = await validateWgslEdit(code, [], backend.device);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors[0].message).toBeTruthy();
   });
@@ -361,7 +361,7 @@ describe('validateWgslEdit (GPU compile check)', () => {
 }`;
     // This may or may not error at module level (depends on impl),
     // but it will fail at pipeline creation. At minimum, no false positive.
-    const errors = await validateWgslEdit(backend.device, code, []);
+    const errors = await validateWgslEdit(code, [], backend.device);
     // Some GPU drivers report no entry point as an error, some don't at module level.
     // We just verify it doesn't crash.
     expect(Array.isArray(errors)).toBe(true);
@@ -376,7 +376,7 @@ describe('validateWgslEdit (GPU compile check)', () => {
       { label: 'inputImage', dataType: 'sampler2D' },
       { label: 'intensity', dataType: 'float' },
     ];
-    const errors = await validateWgslEdit(backend.device, code, ports);
+    const errors = await validateWgslEdit(code, ports, backend.device);
     expect(errors).toHaveLength(0);
   });
 
@@ -384,7 +384,7 @@ describe('validateWgslEdit (GPU compile check)', () => {
     const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   return vec4f(oops);
 }`;
-    const errors = await validateWgslEdit(backend.device, code, []);
+    const errors = await validateWgslEdit(code, [], backend.device);
     expect(errors.length).toBeGreaterThan(0);
   });
 });

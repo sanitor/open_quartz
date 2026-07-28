@@ -275,23 +275,52 @@ export async function validateWgslShader(
 // Edit-time validation (no pipeline, just shader compile check)
 // ---------------------------------------------------------------------------
 
+/** Lazy-initialized lightweight GPUDevice for edit-time validation only. */
+let validationDevice: GPUDevice | null = null;
+let validationDevicePromise: Promise<GPUDevice | null> | null = null;
+
+async function getValidationDevice(): Promise<GPUDevice | null> {
+  if (validationDevice) return validationDevice;
+  if (validationDevicePromise) return validationDevicePromise;
+  validationDevicePromise = (async () => {
+    try {
+      if (!navigator.gpu) return null;
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return null;
+      validationDevice = await adapter.requestDevice();
+      validationDevice.lost.then(() => {
+        validationDevice = null;
+        validationDevicePromise = null;
+      });
+      return validationDevice;
+    } catch {
+      return null;
+    }
+  })();
+  return validationDevicePromise;
+}
+
 /**
  * Validate user-edited WGSL code by building the same preamble the compiler
  * would inject and running it through createShaderModule + getCompilationInfo.
  *
+ * Uses a dedicated lightweight GPUDevice — no dependency on the render engine.
  * Returns an array of errors (empty on success). Error line numbers are mapped
  * back to the user's source (preamble lines subtracted).
  */
 export async function validateWgslEdit(
-  device: GPUDevice,
   userCode: string,
   inputPorts: ReadonlyArray<{ label: string; dataType: string }>,
+  device?: GPUDevice,
 ): Promise<WgslCompilationError[]> {
+  const dev = device ?? await getValidationDevice();
+  if (!dev) return []; // No WebGPU — can't validate, degrade gracefully
+
   let bindingIndex = 0;
   let preamble = '';
 
   // Strip user binding declarations (same regex as compileWgslShader)
-  let processedCode = userCode
+  const processedCode = userCode
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*texture_2d\s*<\s*f32\s*>\s*;/g, '')
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*sampler\s*;/g, '')
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s*<\s*uniform\s*>\s*\w+\s*:\s*[\w<>]+\s*;/g, '');
@@ -321,5 +350,5 @@ export async function validateWgslEdit(
   const preambleLines = preamble.split('\n').filter(Boolean).length;
   const fullCode = preamble + '\n' + processedCode;
 
-  return validateWgslShader(device, fullCode, preambleLines);
+  return validateWgslShader(dev, fullCode, preambleLines);
 }
