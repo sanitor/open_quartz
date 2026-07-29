@@ -83,28 +83,28 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
             return (
               <div
                 key={port.id}
-                className="flex items-center text-[10px] text-[#1d1d1f] pl-2 pr-1"
+                className="flex items-center text-[10px] text-[#1d1d1f] px-3"
                 style={{ height: ROW_H, position: 'relative' }}
               >
                 <Handle
                   type="target"
                   position={Position.Left}
                   id={port.id}
-                  className="!w-2.5 !h-2.5 !border-2"
+                  className="!w-3 !h-3 !border-2"
                   style={{
                     borderColor: color,
                     backgroundColor: connected ? color : 'transparent',
                   }}
                 />
-                <span className="ml-3 text-[#6e6e73]">{port.label}</span>
+                <span className="ml-4 text-[#6e6e73]">{port.label}</span>
               </div>
             );
           })}
         </div>
 
         {/* Center symbol */}
-        <div className="flex items-center justify-center px-2" style={{ minHeight: ROW_H }}>
-          <span className="text-[16px] font-bold text-[#f59e0b] select-none">{symbol}</span>
+        <div className="flex items-center justify-center flex-1 px-2" style={{ minHeight: ROW_H }}>
+          <span className="text-[22px] font-bold text-[#1e293b] select-none">{symbol}</span>
         </div>
 
         {/* Output ports column */}
@@ -114,7 +114,7 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
             return (
               <div
                 key={port.id}
-                className="flex items-center justify-end text-[10px] text-[#1d1d1f] pr-2 pl-1"
+                className="flex items-center justify-end text-[10px] text-[#1d1d1f] px-3"
                 style={{ height: ROW_H, position: 'relative' }}
               >
                 <span className="mr-3 text-[#6e6e73]">{port.label}</span>
@@ -122,7 +122,7 @@ export function MathNode({ data, selected }: NodeProps<MathNodeType>) {
                   type="source"
                   position={Position.Right}
                   id={port.id}
-                  className="!w-2.5 !h-2.5 !border-2 !border-white"
+                  className="!w-3 !h-3 !border-2 !border-white"
                   style={{ backgroundColor: color }}
                 />
               </div>
