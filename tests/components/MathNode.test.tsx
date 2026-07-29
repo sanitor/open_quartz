@@ -263,3 +263,58 @@ describe('MathNode', () => {
     expect(screen.getByText('fallback_1')).toBeInTheDocument();
   });
 });
+
+describe('MathNode status determination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows green LED when all inputs are connected', () => {
+    const props = makeMathProps({}, {
+      edges: [
+        { source: 'n1', sourceHandle: 'o1', targetHandle: 'in_a' },
+        { source: 'n2', sourceHandle: 'o2', targetHandle: 'in_b' },
+      ],
+    });
+    const { container } = render(<MathNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('shows gray LED when some inputs are unconnected', () => {
+    const props = makeMathProps({}, {
+      edges: [
+        { source: 'n1', sourceHandle: 'o1', targetHandle: 'in_a' },
+      ],
+    });
+    const { container } = render(<MathNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+
+  it('shows gray LED when no inputs are connected', () => {
+    const props = makeMathProps({}, { edges: [] });
+    const { container } = render(<MathNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+
+  it('ignores nodeErrors — status stays green when all connected even with error', () => {
+    const props = makeMathProps({}, {
+      edges: [
+        { source: 'n1', sourceHandle: 'o1', targetHandle: 'in_a' },
+        { source: 'n2', sourceHandle: 'o2', targetHandle: 'in_b' },
+      ],
+      nodeErrors: { 'math-1': 'some error' },
+    } as Partial<StoreState> & { nodeErrors?: Record<string, string> });
+    const { container } = render(<MathNode {...props} />);
+    // MathNode has NO error handling — status is purely connection-based
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('ignores nodeErrors — status stays gray when unconnected even with error', () => {
+    const props = makeMathProps({}, {
+      edges: [],
+      nodeErrors: { 'math-1': 'some error' },
+    } as Partial<StoreState> & { nodeErrors?: Record<string, string> });
+    const { container } = render(<MathNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+});

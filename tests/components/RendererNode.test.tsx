@@ -323,3 +323,67 @@ describe('RendererNode', () => {
     expect(label.className).not.toContain('text-[#ff3b30]');
   });
 });
+
+describe('RendererNode status determination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.assign(defaultStoreState, { edges: [], nodeErrors: {}, loopState: 'stopped' });
+  });
+
+  it('input connected + no error → green (ready)', () => {
+    const props = makeProps({}, { edges: [{ targetHandle: 'r1-input' }] });
+    const { container } = render(<RendererNode {...props} />);
+    const led = container.querySelector('[style*="background-color: rgb(52, 199, 89)"]');
+    expect(led).toBeTruthy();
+  });
+
+  it('input unconnected + no error → gray (not-ready)', () => {
+    const props = makeProps({}, { edges: [] });
+    const { container } = render(<RendererNode {...props} />);
+    const led = container.querySelector('[style*="background-color: rgb(142, 142, 147)"]');
+    expect(led).toBeTruthy();
+  });
+
+  it('input connected + nodeError set → red (error)', () => {
+    const props = makeProps(
+      {},
+      { edges: [{ targetHandle: 'r1-input' }], nodeErrors: { 'renderer-1': 'GPU error' } },
+    );
+    const { container } = render(<RendererNode {...props} />);
+    const led = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
+    expect(led).toBeTruthy();
+  });
+
+  it('input unconnected + nodeError set → red (error takes priority)', () => {
+    const props = makeProps(
+      {},
+      { edges: [], nodeErrors: { 'renderer-1': 'compile fail' } },
+    );
+    const { container } = render(<RendererNode {...props} />);
+    const led = container.querySelector('[style*="background-color: rgb(255, 59, 48)"]');
+    expect(led).toBeTruthy();
+  });
+
+  it('error + connected: port row has red border/text styling', () => {
+    const props = makeProps(
+      {},
+      { edges: [{ targetHandle: 'r1-input' }], nodeErrors: { 'renderer-1': 'GPU error' } },
+    );
+    const { container } = render(<RendererNode {...props} />);
+    const portLabel = screen.getByText('inputTexture');
+    expect(portLabel.className).toContain('text-[#ff3b30]');
+    const handle = container.querySelector('[data-testid="handle-target-r1-input"]');
+    expect(handle).toBeTruthy();
+    expect((handle as HTMLElement).style.borderColor).toBe('rgb(255, 59, 48)');
+  });
+
+  it('no error + unconnected: port row has normal styling (no red)', () => {
+    const props = makeProps({}, { edges: [] });
+    const { container } = render(<RendererNode {...props} />);
+    const portLabel = screen.getByText('inputTexture');
+    expect(portLabel.className).not.toContain('text-[#ff3b30]');
+    const handle = container.querySelector('[data-testid="handle-target-r1-input"]');
+    expect(handle).toBeTruthy();
+    expect((handle as HTMLElement).style.borderColor).not.toBe('rgb(255, 59, 48)');
+  });
+});

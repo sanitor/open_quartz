@@ -176,4 +176,97 @@ describe('ShaderNode', () => {
     const { container } = render(<ShaderNode {...props} />);
     expect(container.querySelector('.border-\\[\\#007aff\\]')).toBeTruthy();
   });
+
+  describe('status determination', () => {
+    it('all inputs connected + no error → green (ready)', () => {
+      const props = makeShaderProps(
+        { inputs: [makePort({ id: 'in-1', direction: 'input' })] },
+        { edges: [{ targetHandle: 'in-1' }] },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+    });
+
+    it('one input unconnected + no error → gray (not-ready)', () => {
+      const props = makeShaderProps(
+        { inputs: [makePort({ id: 'in-1', direction: 'input' })] },
+        { edges: [] },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+    });
+
+    it('all inputs connected + nodeError set → red (error)', () => {
+      const props = makeShaderProps(
+        { inputs: [makePort({ id: 'in-1', direction: 'input' })] },
+        { edges: [{ targetHandle: 'in-1' }], nodeErrors: { 'shader-1': 'compile error' } },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(255, 59, 48)"]')).toBeTruthy();
+    });
+
+    it('input unconnected + nodeError set → red (error takes priority)', () => {
+      const props = makeShaderProps(
+        { inputs: [makePort({ id: 'in-1', direction: 'input' })] },
+        { edges: [], nodeErrors: { 'shader-1': 'type mismatch' } },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(255, 59, 48)"]')).toBeTruthy();
+    });
+
+    it('no inputs at all + no error → green (ready) — generator shader', () => {
+      const props = makeShaderProps(
+        { inputs: [] },
+        { edges: [] },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+    });
+
+    it('multiple inputs, only some connected → gray (not-ready)', () => {
+      const props = makeShaderProps(
+        {
+          inputs: [
+            makePort({ id: 'in-1', direction: 'input' }),
+            makePort({ id: 'in-2', direction: 'input' }),
+            makePort({ id: 'in-3', direction: 'input' }),
+          ],
+        },
+        { edges: [{ targetHandle: 'in-1' }] },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+      expect(container.querySelector('[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+    });
+
+    it('error + unconnected: each unconnected port row has red border/text, connected ports do not', () => {
+      const props = makeShaderProps(
+        {
+          inputs: [
+            makePort({ id: 'in-1', label: 'texA', direction: 'input' }),
+            makePort({ id: 'in-2', label: 'texB', direction: 'input' }),
+          ],
+        },
+        { edges: [{ targetHandle: 'in-1' }], nodeErrors: { 'shader-1': 'compile error' } },
+      );
+      const { container } = render(<ShaderNode {...props} />);
+
+      // Unconnected port (in-2): handle should have red border/bg
+      const handleUnconnected = screen.getByTestId('handle-target-in-2');
+      expect(handleUnconnected.style.borderColor).toBe('rgb(255, 59, 48)');
+      expect(handleUnconnected.style.backgroundColor).toBe('rgb(255, 59, 48)');
+
+      // Connected port (in-1): handle should NOT have red border/bg
+      const handleConnected = screen.getByTestId('handle-target-in-1');
+      expect(handleConnected.style.borderColor).not.toBe('rgb(255, 59, 48)');
+      expect(handleConnected.style.backgroundColor).not.toBe('rgb(255, 59, 48)');
+
+      // Unconnected port label should have red text class
+      const labelUnconnected = screen.getByText('texB');
+      expect(labelUnconnected.className).toContain('text-[#ff3b30]');
+
+      // Connected port label should NOT have red text class
+      const labelConnected = screen.getByText('texA');
+      expect(labelConnected.className).not.toContain('text-[#ff3b30]');
+    });
+  });
 });

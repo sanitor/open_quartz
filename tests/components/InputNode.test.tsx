@@ -296,3 +296,66 @@ describe('InputNode', () => {
     expect(screen.getByText('photo.png')).toBeInTheDocument();
   });
 });
+
+describe('InputNode status determination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows green LED for sampler2D with imageDataUrl', () => {
+    const props = makeNodeProps({
+      inputDataType: 'sampler2D',
+      imageDataUrl: 'data:image/png;base64,abc',
+      inputs: [],
+      outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
+    });
+    const { container } = render(<InputNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('shows gray LED for sampler2D with no imageDataUrl/rawDataUrl/videoUrl', () => {
+    const props = makeNodeProps({
+      inputDataType: 'sampler2D',
+      inputs: [],
+      outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
+    });
+    const { container } = render(<InputNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+
+  it('shows green LED for float type (constant, no image needed)', () => {
+    const props = makeNodeProps({
+      inputDataType: 'float',
+    });
+    const { container } = render(<InputNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('shows green LED for system input regardless of value', () => {
+    const props = makeNodeProps({
+      inputMode: 'system',
+      systemSource: 'time',
+      inputDataType: 'float',
+    });
+    const { container } = render(<InputNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('shows red LED when nodeError is set', () => {
+    vi.mocked(useGraphStore).mockImplementation(
+      (selector: unknown) => {
+        if (typeof selector === 'function') {
+          const state = {
+            updateNodeData: mockUpdateNodeData,
+            nodeErrors: { 'node-1': 'bad input' } as Record<string, string>,
+          };
+          return (selector as (s: typeof state) => unknown)(state);
+        }
+        return {};
+      },
+    );
+    const props = makeNodeProps({ inputDataType: 'float' });
+    const { container } = render(<InputNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(255, 59, 48)"]')).toBeTruthy();
+  });
+});

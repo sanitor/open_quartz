@@ -216,3 +216,55 @@ describe('OnnxNode', () => {
     expect(container.querySelector('.border-\\[\\#007aff\\]')).toBeTruthy();
   });
 });
+
+describe('OnnxNode status determination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows green LED when onnxStatus=ready, all inputs connected, no error', () => {
+    const props = makeOnnxProps(
+      { onnxStatus: 'ready' },
+      { edges: [{ targetHandle: 'onnx_1_image' }] },
+    );
+    const { container } = render(<OnnxNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(52, 199, 89)"]')).toBeTruthy();
+  });
+
+  it('shows gray LED when onnxStatus=ready, input unconnected, no error', () => {
+    const props = makeOnnxProps(
+      { onnxStatus: 'ready' },
+      { edges: [] },
+    );
+    const { container } = render(<OnnxNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+
+  it('shows gray LED when onnxStatus=not-downloaded, all inputs connected', () => {
+    const props = makeOnnxProps(
+      { onnxStatus: 'not-downloaded' },
+      { edges: [{ targetHandle: 'onnx_1_image' }] },
+    );
+    const { container } = render(<OnnxNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(142, 142, 147)"]')).toBeTruthy();
+  });
+
+  it('shows red LED when nodeError is set', () => {
+    const props = makeOnnxProps(
+      { onnxStatus: 'ready' },
+      { edges: [{ targetHandle: 'onnx_1_image' }], nodeErrors: { 'onnx-1': 'model failed' } },
+    );
+    const { container } = render(<OnnxNode {...props} />);
+    expect(container.querySelector('.rounded-full[style*="background-color: rgb(255, 59, 48)"]')).toBeTruthy();
+  });
+
+  it('marks unconnected input port with red styling when error is set', () => {
+    const props = makeOnnxProps(
+      { onnxStatus: 'ready' },
+      { edges: [], nodeErrors: { 'onnx-1': 'model failed' } },
+    );
+    const { container } = render(<OnnxNode {...props} />);
+    // Port label gets red text class
+    expect(container.querySelector('.text-\\[\\#ff3b30\\]')).toBeTruthy();
+  });
+});

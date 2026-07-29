@@ -184,6 +184,20 @@ export class WebGPUExecutionEngine {
       const node = nodeMap.get(nodeId);
       if (!node) continue;
 
+      // --- Dependency check: report unconnected required inputs ---
+      if (node.data.type !== 'input') {
+        const connectedHandles = new Set(
+          edges.filter((e) => e.target === nodeId).map((e) => e.targetHandle),
+        );
+        const missing = node.data.inputs.filter(
+          (p) => !connectedHandles.has(p.id) && !BUILTIN_UNIFORMS.has(p.label),
+        );
+        if (missing.length > 0) {
+          const names = missing.map((p) => p.label).join(', ');
+          onNodeError?.(nodeId, `Missing input: ${names}`);
+        }
+      }
+
       // Input nodes
       if (node.data.type === 'input' && node.data.inputMode !== 'system') {
         if (node.data.inputDataType === 'sampler2D' && node.data.imageDataUrl) {
