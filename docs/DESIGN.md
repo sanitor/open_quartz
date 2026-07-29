@@ -1117,3 +1117,291 @@ interface TensorDescriptor {
 | **Phase 7：3D 节点** | Three.js 3D 场景节点（GLTF 加载、PBR、灯光），对标 QC 3D patch | Phase 2 后 |
 
 Phase 2 和 Phase 3 是核心：建立 WebGPU 渲染基础 + WGSL shader 体系。Phase 4 接入 ORT 零拷贝。Phase 5-7 在基础上渐进扩展。
+
+---
+
+## 17. Rust SDK 架构（open_quartz crate）
+
+### 17.1 动机
+
+当前所有业务逻辑（图引擎、WGSL 解析/编译、GPU 渲染、ONNX 推理、项目 I/O）都在 TypeScript 中实现。这带来几个问题：
+
+| 问题 | 后果 |
+|------|------|
+| **JS 单线程** | WGSL 解析、图拓扑排序、uniform 序列化全在主线程，帧内 CPU 开销挤占 rAF 预算 |
+| **GC 压力** | 每帧创建大量临时对象（Float32Array、Map、Set），V8 GC pause 导致偶发掉帧 |
+| **GPU 资源生命周期** | GPUBuffer/GPUTexture 需精确释放，JS 没有 RAII，靠手动 `.destroy()` 容易泄漏 |
+| **类型安全** | TypeScript 对 WebGPU 类型的覆盖不完整（需要 `@webgpu/types`），Immer draft 与 `GPUDevice` 类型冲突 |
+| **双平台** | Tauri 桌面端的 Rust 后端和浏览器端的 TS 引擎是两套独立实现，模型下载/文件 I/O 逻辑重复 |
+| **ONNX 绑定** | `onnxruntime-web` 是 JS binding，序列化开销大；`ort` crate 是官方 Rust binding，零开销 FFI |
+
+### 17.2 目标架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         TypeScript UI                          │
+│  React 19 · React Flow · CodeMirror · Zustand · Tailwind       │
+│  components/ · store/ · services/PipelineService.ts             │
+│                              │                                  │
+│                    wasm-bindgen FFI                              │
+│                              │                                  │
+├──────────────────────────────┼──────────────────────────────────┤
+│                              ▼                                  │
+│                    open_quartz (Rust SDK)                        │
+│                                                                 │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐   │
+│  │  graph   │  │  wgsl    │  │   gpu    │  │     onnx       │   │
+│  │         │  │          │  │          │  │                │   │
+│  │ Node    │  │ parser   │  │ Backend  │  │ Session        │   │
+│  │ Edge    │  │ compiler │  │ Target   │  │ Preprocess     │   │
+│  │ TopoSort│  │ validate │  │ Pipeline │  │ Postprocess    │   │
+│  │ DirtySet│  │ (naga)   │  │ BindGroup│  │ (ort crate)    │   │
+│  └────┬────┘  └────┬─────┘  └────┬─────┘  └───────┬────────┘   │
+│       │            │             │                 │            │
+│  ┌────┴────────────┴─────────────┴─────────────────┴──────┐     │
+│  │                    engine (Executor)                    │     │
+│  │  prepare() · run_frame() · feedback · uniforms          │     │
+│  └────────────────────────┬───────────────────────────────┘     │
+│                           │                                     │
+│  ┌────────────────────────┴───────────────────────────────┐     │
+│  │                    platform                             │     │
+│  │  wgpu (WebGPU/Vulkan/Metal/DX12) · clock · project_io  │     │
+│  └─────────────────────────────────────────────────────────┘     │
+│                                                                 │
+│  编译目标:                                                       │
+│    wasm32-unknown-unknown → 浏览器 (wasm-bindgen)                │
+│    x86_64 / aarch64       → Tauri 桌面端 (tauri::command)        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 17.3 分层职责
+
+| 层 | crate 模块 | 职责 | 关键依赖 |
+|---|---|---|---|
+| **types** | `open_quartz::types` | Port、DataType、NodeData、ProjectFile — 全 `#[derive(Serialize, Deserialize)]` | `serde` |
+| **graph** | `open_quartz::graph` | 拓扑排序、dirty-set 增量执行、节点/边 CRUD | — |
+| **wgsl** | `open_quartz::wgsl` | WGSL 解析（提取 ports + description）、preamble 注入、编译校验 | `naga` |
+| **gpu** | `open_quartz::gpu` | Render target 生命周期、纹理管理、fullscreen triangle、readback | `wgpu` |
+| **onnx** | `open_quartz::onnx` | ORT session 管理、预处理 compute shader、后处理 decode/NMS | `ort`, `wgpu` |
+| **engine** | `open_quartz::engine` | Executor：prepare graph → execution plan → run_frame → feedback swap | 依赖以上全部 |
+| **catalog** | `open_quartz::catalog` | 28 shader presets、29 math ops、7 ONNX model entries — 静态数据 | `types` |
+| **platform** | `open_quartz::platform` | Clock、project I/O、平台抽象（文件系统、模型缓存路径） | `serde_json` |
+
+### 17.4 FFI 边界设计
+
+TypeScript UI 通过 `wasm-bindgen` 调用 Rust SDK。边界原则：
+
+1. **复杂结构走 JSON**：graph nodes/edges、parsed ports、compilation errors — `serde_json` 序列化
+2. **高频标量走原生**：time、delta、frame — 直接 `f64` / `u64` 参数
+3. **大块数据走零拷贝**：纹理数据 — `wasm_bindgen::memory()` 共享 `ArrayBuffer`，JS 侧 `Uint8Array` view
+4. **GPU 对象不跨边界**：`GPUDevice`、`GPUTexture` 由 Rust 侧 `wgpu` 持有，JS 只拿 opaque handle
+5. **Canvas 由 JS 提供**：`wgpu::Instance::create_surface_from_canvas()` 接收 JS canvas 元素
+
+```rust
+// open_quartz/src/ffi.rs — wasm-bindgen 导出
+
+#[wasm_bindgen]
+pub struct Engine { /* opaque */ }
+
+#[wasm_bindgen]
+impl Engine {
+    /// 初始化：JS 传入 canvas 元素，Rust 创建 wgpu::Surface + Device
+    #[wasm_bindgen(constructor)]
+    pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Engine, JsValue>;
+
+    /// 设置图：JS 序列化 nodes + edges 为 JSON
+    pub fn set_graph(&mut self, nodes_json: &str, edges_json: &str) -> Result<(), JsValue>;
+
+    /// 解析 WGSL：返回 ParsedShader JSON（ports + description + errors）
+    pub fn parse_shader(&self, code: &str) -> String;
+
+    /// 校验 WGSL：用 naga 编译检查，返回 errors JSON
+    pub fn validate_shader(&self, code: &str, ports_json: &str) -> String;
+
+    /// 每帧执行：JS 传入时间参数，Rust 执行整个 graph
+    pub fn run_frame(&mut self, time: f64, delta: f64, frame: u64);
+
+    /// 读取节点输出：返回 RGBA 像素数据（零拷贝 view into WASM memory）
+    pub fn read_output(&self, node_id: &str) -> Result<js_sys::Uint8Array, JsValue>;
+
+    /// 上传图片纹理：JS 传入 RGBA 字节
+    pub fn upload_image(&mut self, node_id: &str, rgba: &[u8], width: u32, height: u32);
+
+    /// 导入视频帧：JS 传入 HTMLVideoElement，Rust 用 wgpu 零拷贝导入
+    pub fn import_video_frame(&mut self, node_id: &str, video: &web_sys::HtmlVideoElement);
+
+    /// 释放资源
+    pub fn dispose(&mut self);
+}
+```
+
+### 17.5 TypeScript UI 层（瘦壳）
+
+迁移后 TypeScript 只保留：
+
+```
+src/
+├── components/           ← React UI 组件（不变）
+│   ├── Header.tsx
+│   ├── SidePanel/
+│   │   ├── ShaderEditor.tsx   CodeMirror WGSL 编辑器
+│   │   ├── PortInspector.tsx  端口列表 + uniform 控件
+│   │   └── index.tsx          SidePanel 容器
+│   ├── NodeGraph/
+│   │   ├── nodes/             ShaderNode, InputNode, OnnxNode, ...
+│   │   └── index.tsx          React Flow 画布
+│   └── ImageLightbox.tsx
+│
+├── store/                ← Zustand 状态（瘦化）
+│   ├── graphSlice.ts     nodes/edges CRUD — 调用 engine.set_graph()
+│   ├── uiSlice.ts        选中、预览、错误 — 纯 UI 状态
+│   ├── transportSlice.ts play/pause/stop — 驱动 rAF 循环
+│   └── index.ts
+│
+├── services/
+│   └── PipelineService.ts  唯一桥接：
+│                            - subscribe(store) → engine.set_graph()
+│                            - rAF loop → engine.run_frame()
+│                            - engine callbacks → store.setNodeError()
+│
+├── sdk/                  ← Rust SDK 的 WASM binding 包装
+│   └── index.ts          import init, { Engine } from 'open_quartz_wasm'
+│                          类型安全的 TS wrapper over wasm-bindgen exports
+│
+└── App.tsx
+```
+
+### 17.6 关键 crate 选型
+
+| 领域 | crate | 理由 |
+|------|-------|------|
+| GPU | `wgpu` | 官方 WebGPU 实现，浏览器编译到 WebGPU，桌面端编译到 Vulkan/Metal/DX12 |
+| WGSL 解析 | `naga` | wgpu 的 shader 编译器，支持 WGSL→SPIR-V→GLSL 全链路，比 wgsl_reflect 快 10× |
+| ONNX | `ort` | ONNX Runtime 官方 Rust binding，支持 GPU EP，零开销 FFI |
+| 序列化 | `serde` + `serde_json` | 标准，FFI 边界 JSON 交换 |
+| WASM | `wasm-bindgen` + `web-sys` | 标准 Rust→WASM 工具链 |
+| 异步 | `wgpu` 内置 async | `wgpu::Device` 的 async 操作映射到浏览器 Promise |
+| 日志 | `log` + `console_log` | WASM 环境日志输出到浏览器 console |
+
+### 17.7 迁移路径
+
+渐进式迁移，每个 phase 独立可交付，TS 和 Rust 共存期间通过 FFI 桥接：
+
+| Phase | 内容 | TS 侧变化 | 验证 |
+|-------|------|----------|------|
+| **1. Scaffold** | 创建 `crates/open_quartz` workspace，定义 `types` 模块，`wasm-bindgen` 导出 hello-world | 无 | `cargo test` + WASM 加载 |
+| **2. WGSL parser** | `naga` 解析 WGSL，提取 ports + description，替换 `wgsl_reflect` + regex fallback | `wgslParser.ts` → 调用 `engine.parse_shader()` | parser 单元测试 21 个迁移 |
+| **3. Graph engine** | 拓扑排序、dirty-set、execution plan 在 Rust 中实现 | `graphExecutor.ts` 删除 | 图排序测试迁移 |
+| **4. GPU backend** | `wgpu` 渲染层：render target、纹理管理、fullscreen triangle、blit | `WebGPUBackend.ts` 删除 | bittrue 测试 7 个迁移 |
+| **5. Compiler** | WGSL preamble 注入 + pipeline 创建，用 `naga` 做编译校验 | `wgslCompiler.ts` 删除 | compiler 测试迁移 |
+| **6. Executor** | `run_frame()` 完整实现：uniform upload、texture binding、feedback、video import | `executionEngine.ts` 删除 | pipeline 集成测试 14 个迁移 |
+| **7. ONNX** | `ort` crate 集成，共享 `wgpu::Device`，预/后处理 compute shader | `engine/onnx/` 删除 | ONNX 测试迁移 |
+| **8. Full SDK** | catalog、project I/O、clock 全部 Rust 化。TS 只剩 UI 壳 | `engine/` 目录清空 | 全量测试通过 |
+
+### 17.8 Crate workspace 结构
+
+```
+crates/
+└── open_quartz/
+    ├── Cargo.toml           ← workspace root
+    ├── src/
+    │   ├── lib.rs           ← pub mod 声明
+    │   ├── types/
+    │   │   ├── mod.rs
+    │   │   ├── port.rs      Port, DataType
+    │   │   ├── node.rs      NodeData, NodeType
+    │   │   └── project.rs   ProjectFile
+    │   ├── graph/
+    │   │   ├── mod.rs
+    │   │   ├── topo.rs      拓扑排序
+    │   │   └── dirty.rs     dirty-set 增量执行
+    │   ├── wgsl/
+    │   │   ├── mod.rs
+    │   │   ├── parser.rs    naga 解析 → ports + description
+    │   │   ├── compiler.rs  preamble 注入 + pipeline 创建
+    │   │   └── validate.rs  编译校验
+    │   ├── gpu/
+    │   │   ├── mod.rs
+    │   │   ├── backend.rs   wgpu::Device + Surface 管理
+    │   │   ├── target.rs    RenderTarget 生命周期
+    │   │   ├── texture.rs   纹理加载/上传
+    │   │   └── readback.rs  GPU→CPU 像素读回
+    │   ├── onnx/
+    │   │   ├── mod.rs
+    │   │   ├── session.rs   ort::Session 管理
+    │   │   ├── preprocess.rs  compute shader 预处理
+    │   │   └── postprocess.rs decode/NMS/overlay
+    │   ├── engine/
+    │   │   ├── mod.rs
+    │   │   ├── executor.rs  per-node executor trait
+    │   │   ├── plan.rs      ExecutionPlan 构建
+    │   │   └── frame.rs     run_frame() 主循环
+    │   ├── catalog/
+    │   │   ├── mod.rs
+    │   │   ├── shaders.rs   28 preset shader codes
+    │   │   ├── math.rs      29 math ops
+    │   │   └── onnx.rs      7 model entries
+    │   ├── platform/
+    │   │   ├── mod.rs
+    │   │   ├── clock.rs
+    │   │   └── project_io.rs
+    │   └── ffi.rs           ← wasm-bindgen 导出层
+    ├── tests/
+    │   ├── types_test.rs
+    │   ├── parser_test.rs
+    │   ├── graph_test.rs
+    │   └── ...
+    └── examples/
+        └── headless.rs      ← 无 UI 的命令行管线执行器
+
+src-tauri/
+├── Cargo.toml              ← depends on open_quartz (native target)
+└── src/
+    ├── main.rs
+    └── lib.rs               ← tauri::command wrapping open_quartz API
+```
+
+### 17.9 数据流：一帧的生命周期
+
+```
+TypeScript (rAF)                     Rust SDK (WASM)
+────────────────                     ──────────────────
+PipelineService.tick(now)
+  │
+  ├── clock.tick(now) ─────────────→ engine.run_frame(time, delta, frame)
+  │                                    │
+  │                                    ├── for node in topo_order:
+  │                                    │     match node.type:
+  │                                    │       Input  → upload_texture / import_video
+  │                                    │       Shader → compile (if dirty) → render_pass
+  │                                    │       Math   → cpu_eval → write_uniform
+  │                                    │       ONNX   → session.run (async, GPU buffer)
+  │                                    │       Renderer → blit_to_surface
+  │                                    │
+  │                                    └── return FrameResult { errors, dirty_nodes }
+  │
+  ├── engine.read_output("node_id") → GPU readback → Uint8Array (zero-copy view)
+  │
+  └── store.setOutputPreview(dataUrl)
+```
+
+### 17.10 性能预期
+
+| 操作 | 当前 (TypeScript) | 目标 (Rust WASM) | 提升 |
+|------|------------------|-----------------|------|
+| WGSL 解析 | ~2ms (wgsl_reflect + regex) | ~0.1ms (naga) | 20× |
+| 图拓扑排序 | ~0.1ms (JS BFS) | ~0.01ms (Rust BFS) | 10× |
+| Uniform 序列化 | ~0.5ms (Float32Array 创建) | ~0.05ms (栈上 [f32; 4]) | 10× |
+| GC pause | 1-3ms 偶发 | 0ms (无 GC) | ∞ |
+| 帧间临时分配 | ~50 对象/帧 | 0 (arena/pool) | ∞ |
+| ONNX 预处理 | ~5ms CPU (JS typed array) | ~0.5ms GPU (compute shader) | 10× |
+
+### 17.11 风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| **WASM 二进制体积** | wasm-opt + tree shaking；naga 和 ort 按 feature 裁剪；初始包 < 2MB gzip |
+| **wgpu WASM 兼容性** | wgpu 的 WebGPU 后端已生产级；Safari 支持 WebGPU 自 17.4 |
+| **ort WASM 编译** | ort 支持 `wasm32` target；预编译 ONNX Runtime 静态库避免编译时间 |
+| **调试困难** | `console_log` crate + source maps；关键路径保留 TS fallback 直到 Rust 稳定 |
+| **迁移期 TS/Rust 共存** | FFI 边界设计为渐进替换——每个 phase 替换一个 TS 模块，其余不动 |
