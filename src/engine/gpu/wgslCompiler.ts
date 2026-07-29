@@ -85,7 +85,7 @@ export function compileWgslShader(
       upstreamSamplers.set(uniformName, sourceNodeId);
 
       if (videoInputs.has(uniformName)) {
-        // Zero-copy video: texture_external — single binding, no sampler
+        // Zero-copy video: texture_external + sampler
         preamble += `@group(0) @binding(${bindingIndex}) var ${uniformName}: texture_external;\n`;
         layoutEntries.push({
           binding: bindingIndex,
@@ -95,9 +95,19 @@ export function compileWgslShader(
         externalTextureBindings.set(uniformName, bindingIndex);
         bindingIndex++;
 
-        // Rewrite textureSample(name, nameSampler, uv) → textureSampleBaseClampToEdge(name, uv)
+        // Sampler still required for textureSampleBaseClampToEdge
+        const samplerName = `${uniformName}Sampler`;
+        preamble += `@group(0) @binding(${bindingIndex}) var ${samplerName}: sampler;\n`;
+        layoutEntries.push({
+          binding: bindingIndex,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: 'filtering' },
+        });
+        bindingIndex++;
+
+        // Rewrite textureSample → textureSampleBaseClampToEdge (sampler arg stays)
         const sampleRe = new RegExp(
-          `textureSample\\s*\\(\\s*${uniformName}\\s*,\\s*${uniformName}Sampler\\s*,`,
+          `textureSample\\s*\\(\\s*${uniformName}\\s*,`,
           'g',
         );
         processedCode = processedCode.replace(

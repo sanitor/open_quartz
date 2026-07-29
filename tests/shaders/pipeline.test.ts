@@ -410,7 +410,7 @@ describe('compileWgslShader — video external texture', () => {
     expect(compiled.externalTextureBindings.has('inputImage')).toBe(true);
     // Regular texture binding does NOT exist for this input
     expect(compiled.textureBindings.has('inputImage')).toBe(false);
-    // Only 1 binding slot used (no sampler needed)
+    // External texture at binding 0, sampler at binding 1
     expect(compiled.externalTextureBindings.get('inputImage')).toBe(0);
   });
 
@@ -457,5 +457,161 @@ describe('compileWgslShader — video external texture', () => {
     // imageIn → texture_2d + sampler (2 bindings)
     expect(compiled.textureBindings.has('imageIn')).toBe(true);
     expect(compiled.externalTextureBindings.has('imageIn')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Video zero-copy integration (importExternalTexture end-to-end)
+// ---------------------------------------------------------------------------
+
+describe('Video zero-copy pipeline (importExternalTexture)', () => {
+  const VW = 64;
+  const VH = 64;
+
+  /** Load a test video and wait until it has a decoded frame ready. */
+  async function loadVideo(src: string): Promise<HTMLVideoElement> {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = src;
+    await new Promise<void>((resolve, reject) => {
+      video.oncanplay = () => resolve();
+      video.onerror = () => reject(new Error('video load failed'));
+    });
+    await video.play();
+    // Wait for at least one decoded frame
+    await new Promise<void>((resolve) => {
+      if ('requestVideoFrameCallback' in video) {
+        (video as HTMLVideoElement & { requestVideoFrameCallback: (cb: () => void) => void })
+          .requestVideoFrameCallback(() => resolve());
+      } else {
+        setTimeout(resolve, 100);
+      }
+    });
+    return video;
+  }
+
+  function makeVideoNode(id: string): Node<ShaderNodeData> {
+    return {
+      id,
+      type: 'custom',
+      position: { x: 0, y: 0 },
+      data: {
+        type: 'input',
+        label: 'Video',
+        shaderCode: '',
+        inputs: [makePort('inputImage', 'sampler2D', 'input')],
+        outputs: [makePort('output', 'sampler2D', 'output')],
+        uniforms: {},
+        inputDataType: 'sampler2D',
+        inputMode: 'video',
+        imageWidth: VW,
+        imageHeight: VH,
+      },
+    };
+  }
+
+  it('white video → identity shader: pixels are white (±2)', async () => {
+    const video = await loadVideo('/tests/fixtures/white_64x64.mp4');
+    // Verify video is ready
+    expect(video.videoWidth).toBe(VW);
+    expect(video.videoHeight).toBe(VH);
+    expect(video.readyState).toBeGreaterThanOrEqual(2);
+
+    // Verify importExternalTexture works with this video
+    const extTex = backend.device.importExternalTexture({ source: video });
+    expect(extTex).toBeTruthy();
+
+    const videoNode = makeVideoNode('vid');
+    const shaderNode = makeShaderNode(
+      'shader',
+      `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return textureSample(inputImage, inputImageSampler, v_uv);
+}`,
+      [makePort('inputImage', 'sampler2D', 'input')],
+      [makePort('fragColor', 'vec4', 'output')],
+    );
+
+    const errors: string[] = [];
+    const plan = engine.prepare(
+      [videoNode, shaderNode],
+      [edge('vid', 'shader', shaderNode.data.inputs[0].id)],
+      (_id, msg) => errors.push(msg),
+    );
+    expect(plan).not.toBeNull();
+    if (errors.length > 0) throw new Error(`Compile errors: ${errors.join('; ')}`);
+
+    // Run with the real video element
+    engine.runFrame(plan!, {
+      time: 0, delta: 0.016, frame: 1,
+      date: new Float32Array([2026, 1, 1, 0]),
+      mouse: new Float32Array(4),
+      resolution: new Float32Array([VW, VH, 1]),
+      videoElements: new Map([['vid', video]]),
+    });
+
+    const target = plan!.targets.get('shader');
+    expect(target).toBeTruthy();
+    const { rgba } = await backend.readTargetToRgba(target!);
+
+    // White video → all pixels should be near (255, 255, 255, 255)
+    for (let i = 0; i < VW * VH; i++) {
+      expect(rgba[i * 4]).toBeGreaterThanOrEqual(253);
+      expect(rgba[i * 4 + 1]).toBeGreaterThanOrEqual(253);
+      expect(rgba[i * 4 + 2]).toBeGreaterThanOrEqual(253);
+      expect(rgba[i * 4 + 3]).toBe(255);
+    }
+
+    video.pause();
+  });
+
+  it('gray video → invert shader: pixels are near (127, 127, 127)', async () => {
+    const video = await loadVideo('/tests/fixtures/gray_64x64.mp4');
+
+    const videoNode = makeVideoNode('vid');
+    const shaderNode = makeShaderNode(
+      'shader',
+      `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  let c = textureSample(inputImage, inputImageSampler, v_uv);
+  return vec4f(1.0 - c.rgb, c.a);
+}`,
+      [makePort('inputImage', 'sampler2D', 'input')],
+      [makePort('fragColor', 'vec4', 'output')],
+    );
+
+    const errors: string[] = [];
+    const plan = engine.prepare(
+      [videoNode, shaderNode],
+      [edge('vid', 'shader', shaderNode.data.inputs[0].id)],
+      (_id, msg) => errors.push(msg),
+    );
+    expect(plan).not.toBeNull();
+    expect(errors).toHaveLength(0);
+
+    engine.runFrame(plan!, {
+      time: 0, delta: 0.016, frame: 1,
+      date: new Float32Array([2026, 1, 1, 0]),
+      mouse: new Float32Array(4),
+      resolution: new Float32Array([VW, VH, 1]),
+      videoElements: new Map([['vid', video]]),
+    });
+
+    const target = plan!.targets.get('shader');
+    expect(target).toBeTruthy();
+    const { rgba } = await backend.readTargetToRgba(target!);
+
+    // Gray (128,128,128) inverted → (127,127,127) ± YUV rounding
+    for (let i = 0; i < VW * VH; i++) {
+      expect(rgba[i * 4]).toBeGreaterThanOrEqual(125);
+      expect(rgba[i * 4]).toBeLessThanOrEqual(129);
+      expect(rgba[i * 4 + 1]).toBeGreaterThanOrEqual(125);
+      expect(rgba[i * 4 + 1]).toBeLessThanOrEqual(129);
+      expect(rgba[i * 4 + 2]).toBeGreaterThanOrEqual(125);
+      expect(rgba[i * 4 + 2]).toBeLessThanOrEqual(129);
+      expect(rgba[i * 4 + 3]).toBe(255);
+    }
+
+    video.pause();
   });
 });

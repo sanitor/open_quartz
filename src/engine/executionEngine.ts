@@ -501,7 +501,7 @@ export class WebGPUExecutionEngine {
         }
       }
 
-      // External texture bindings (texture_external — zero-copy video)
+      // External texture bindings (texture_external — zero-copy video) + sampler
       if (upstreamSamplers && builtins.videoElements) {
         for (const [uniformName, bindingIdx] of compiled.externalTextureBindings) {
           const sourceNodeId = upstreamSamplers.get(uniformName);
@@ -510,6 +510,12 @@ export class WebGPUExecutionEngine {
           if (!video || video.readyState < 2) continue;
           const externalTex = device.importExternalTexture({ source: video });
           entries.push({ binding: bindingIdx, resource: externalTex });
+          // Sampler at next binding (needed by textureSampleBaseClampToEdge)
+          const fallbackSrc = plan.textureSources.get(sourceNodeId);
+          const sampler = fallbackSrc
+            ? (fallbackSrc.kind === 'target' ? fallbackSrc.target.sampler : fallbackSrc.handle.sampler)
+            : device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+          entries.push({ binding: bindingIdx + 1, resource: sampler });
         }
       }
 
