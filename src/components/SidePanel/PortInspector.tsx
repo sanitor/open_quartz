@@ -16,9 +16,11 @@ interface PortInspectorProps {
   uniforms: Record<string, unknown>;
   onUniformChange: (label: string, value: unknown) => void;
   showOutputs?: boolean;
+  /** Extra content rendered below the output ports (e.g. output config). */
+  outputExtra?: React.ReactNode;
 }
 
-export function PortInspector({ inputs, outputs, uniforms, onUniformChange, showOutputs = true }: PortInspectorProps) {
+export function PortInspector({ inputs, outputs, uniforms, onUniformChange, showOutputs = true, outputExtra }: PortInspectorProps) {
   return (
     <div className="space-y-4">
       {/* Inputs */}
@@ -58,6 +60,7 @@ export function PortInspector({ inputs, outputs, uniforms, onUniformChange, show
               </div>
             ))}
           </div>
+          {outputExtra && <div className="mt-3 pt-2 border-t border-[#f0f0f0]">{outputExtra}</div>}
         </div>
       )}
     </div>

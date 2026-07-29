@@ -12,9 +12,10 @@ vi.mock('../../src/components/SidePanel/ShaderEditor', () => ({
 }));
 
 vi.mock('../../src/components/SidePanel/PortInspector', () => ({
-  PortInspector: ({ inputs, outputs }: { inputs: Port[]; outputs: Port[] }) => (
+  PortInspector: ({ inputs, outputs, outputExtra }: { inputs: Port[]; outputs: Port[]; outputExtra?: React.ReactNode }) => (
     <div data-testid="port-inspector" data-inputs={inputs.length} data-outputs={outputs.length}>
       PortInspector
+      {outputExtra}
     </div>
   ),
 }));
@@ -201,13 +202,16 @@ describe('SidePanel', () => {
 
   // --- Leaf shader node output config ---
 
-  it('renders OUTPUT CONFIG for leaf shader node', () => {
+  it('renders output config (format/size/sampling) inside PORTS for shader node', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       edges: [],
     });
-    expect(screen.getByText('OUTPUT CONFIG')).toBeInTheDocument();
+    // Output config elements are now inline in PORTS, not a separate section
+    expect(screen.getByText('Format')).toBeInTheDocument();
+    expect(screen.getByText('Auto')).toBeInTheDocument();
+    expect(screen.getByText('Sampling')).toBeInTheDocument();
   });
 
   it('renders PREVIEW label for leaf shader node', () => {
@@ -241,32 +245,6 @@ describe('SidePanel', () => {
     expect(img.getAttribute('src')).toBe('data:image/png;base64,abc123');
   });
 
-  it('renders format select for leaf shader node', () => {
-    renderSidePanel({
-      selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
-      edges: [],
-    });
-    expect(screen.getByText('Format')).toBeInTheDocument();
-  });
-
-  it('renders Auto Size checkbox for leaf shader node', () => {
-    renderSidePanel({
-      selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
-      edges: [],
-    });
-    expect(screen.getByText('Auto')).toBeInTheDocument();
-  });
-
-  it('renders sampling config for leaf shader node', () => {
-    renderSidePanel({
-      selectedNodeId: 'n1',
-      nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
-      edges: [],
-    });
-    expect(screen.getByText('Sampling')).toBeInTheDocument();
-  });
 
   it('renders Width/Height inputs for leaf shader node when autoSize is false', () => {
     renderSidePanel({
@@ -289,7 +267,7 @@ describe('SidePanel', () => {
     expect(widthInputs[0]).toBeDisabled();
   });
 
-  it('renders OUTPUT CONFIG for non-leaf shader node too', () => {
+  it('renders output config for non-leaf shader node too', () => {
     renderSidePanel({
       selectedNodeId: 'n1',
       nodes: [
@@ -298,7 +276,7 @@ describe('SidePanel', () => {
       ],
       edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
     });
-    expect(screen.queryByText('OUTPUT CONFIG')).toBeInTheDocument();
+    expect(screen.getByText('Format')).toBeInTheDocument();
   });
 
   // --- Error display ---

@@ -194,6 +194,73 @@ export function SidePanel() {
           outputs={data.outputs}
           uniforms={data.uniforms}
           onUniformChange={handleUniformChange}
+          outputExtra={(data.type === 'shader' || data.type === 'constant') ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Format</span>
+                <select
+                  value={data.outFormat ?? 'rgba8'}
+                  onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
+                  className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+                >
+                  {OUT_FORMATS.map((f) => (
+                    <option key={f.value} value={f.value}>{f.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] text-[#86868b] font-medium">Size</span>
+                  <label className="flex items-center gap-1 text-[10px] text-[#86868b] cursor-pointer ml-auto">
+                    <input
+                      type="checkbox"
+                      checked={data.autoSize !== false}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
+                        } else {
+                          updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
+                        }
+                      }}
+                      className="accent-[#007aff]"
+                    />
+                    Auto
+                  </label>
+                </div>
+                <div className="flex items-center gap-1">
+                  <input type="number" min={1} max={8192}
+                    disabled={data.autoSize !== false}
+                    value={data.autoSize === false ? (data.width ?? 512) : (data.resolvedWidth ?? '')}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { width: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                    onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { width: 512 }); }}
+                    placeholder="—"
+                    className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
+                  <span className="text-[10px] text-[#aeaeb2]">×</span>
+                  <input type="number" min={1} max={8192}
+                    disabled={data.autoSize !== false}
+                    value={data.autoSize === false ? (data.height ?? 512) : (data.resolvedHeight ?? '')}
+                    onChange={(e) => updateNodeData(selectedNodeId!, { height: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                    onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { height: 512 }); }}
+                    placeholder="—"
+                    className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Sampling</span>
+                <select value={data.texFilter ?? 'linear'} onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
+                  className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
+                  <option value="linear">Linear</option>
+                  <option value="nearest">Nearest</option>
+                </select>
+                <select value={data.texWrap ?? 'clamp'} onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
+                  className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
+                  <option value="clamp">Clamp</option>
+                  <option value="repeat">Repeat</option>
+                  <option value="mirror">Mirror</option>
+                </select>
+              </div>
+            </div>
+          ) : undefined}
         />
       </div>
     ),
@@ -332,83 +399,6 @@ export function SidePanel() {
     });
   }
 
-  // --- OUTPUT CONFIG (shader / constant) ---
-  if (data.type === 'shader' || data.type === 'constant') {
-    sections.push({
-      id: 'output',
-      title: 'OUTPUT CONFIG',
-      content: (
-        <div className="px-4 py-2 overflow-y-auto space-y-2">
-          {/* Format — label and select on same row */}
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Format</span>
-            <select
-              value={data.outFormat ?? 'rgba8'}
-              onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
-              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
-            >
-              {OUT_FORMATS.map((f) => (
-                <option key={f.value} value={f.value}>{f.label}</option>
-              ))}
-            </select>
-          </div>
-          {/* Size — auto checkbox inline, then W x H */}
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] text-[#86868b] font-medium">Size</span>
-              <label className="flex items-center gap-1 text-[10px] text-[#86868b] cursor-pointer ml-auto">
-                <input
-                  type="checkbox"
-                  checked={data.autoSize !== false}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
-                    } else {
-                      updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
-                    }
-                  }}
-                  className="accent-[#007aff]"
-                />
-                Auto
-              </label>
-            </div>
-            <div className="flex items-center gap-1">
-              <input type="number" min={1} max={8192}
-                disabled={data.autoSize !== false}
-                value={data.autoSize === false ? (data.width ?? 512) : (data.resolvedWidth ?? '')}
-                onChange={(e) => updateNodeData(selectedNodeId!, { width: e.target.value === '' ? undefined : parseInt(e.target.value) })}
-                onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { width: 512 }); }}
-                placeholder="—"
-                className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
-              <span className="text-[10px] text-[#aeaeb2]">×</span>
-              <input type="number" min={1} max={8192}
-                disabled={data.autoSize !== false}
-                value={data.autoSize === false ? (data.height ?? 512) : (data.resolvedHeight ?? '')}
-                onChange={(e) => updateNodeData(selectedNodeId!, { height: e.target.value === '' ? undefined : parseInt(e.target.value) })}
-                onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { height: 512 }); }}
-                placeholder="—"
-                className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
-            </div>
-          </div>
-          {/* Sampling — two selects side by side, no labels */}
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Sampling</span>
-            <select value={data.texFilter ?? 'linear'} onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
-              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
-              <option value="linear">Linear</option>
-              <option value="nearest">Nearest</option>
-            </select>
-            <select value={data.texWrap ?? 'clamp'} onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
-              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
-              <option value="clamp">Clamp</option>
-              <option value="repeat">Repeat</option>
-              <option value="mirror">Mirror</option>
-            </select>
-          </div>
-        </div>
-      ),
-    });
-  }
 
   // --- FEEDBACK CONFIG (shader / constant) ---
   if (data.type === 'shader' || data.type === 'constant') {
