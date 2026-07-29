@@ -7,6 +7,7 @@ import type { DataType, InputMode, ShaderNodeData } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../catalog/shaders'
 import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../catalog/onnxCatalog';
 import { MATH_CATEGORIES, MATH_OPS } from '../catalog/mathOps';
+import { parseWgslShader } from '../engine/gpu/wgslParser';
 
 const isMac = navigator.platform.startsWith('Mac');
 
@@ -422,18 +423,22 @@ export function Header() {
               className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[160px]"
               onMouseLeave={() => setShaderHoveredGroup(null)}
             >
-              {templateItems.map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => {
-                    useGraphStore.getState().addShaderNode(item.code, item.label);
-                    setShaderOpen(false);
-                  }}
-                  className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
-                >
-                  {item.label}
-                </button>
-              ))}
+              {templateItems.map((item) => {
+                const parsed = parseWgslShader(item.code);
+                return (
+                  <button
+                    key={item.label}
+                    title={parsed.description}
+                    onClick={() => {
+                      useGraphStore.getState().addShaderNode(item.code, item.label);
+                      setShaderOpen(false);
+                    }}
+                    className="block w-full text-left px-3 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] transition-colors cursor-default"
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
               <div className="mx-2 my-1 border-t border-[#e8e8ed]" />
               {shaderGroups.map((group) => (
                 <div
@@ -451,6 +456,7 @@ export function Header() {
                         {group.items.map((item) => (
                           <button
                             key={item.label}
+                            title={parseWgslShader(item.code).description}
                             onClick={() => {
                               useGraphStore.getState().addShaderNode(item.code, item.label);
                               setShaderOpen(false);

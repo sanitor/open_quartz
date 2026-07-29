@@ -7,6 +7,7 @@ import { ImageLightbox } from '../ImageLightbox';
 import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '../../types';
 import { generateRawPreview } from '../../utils/rawPreview';
 import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
+import { parseWgslShader } from '../../engine/gpu/wgslParser';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },
@@ -133,6 +134,16 @@ export function SidePanel() {
   // --- SHADER EDITOR (editable for custom, read-only for prebuilt) ---
   if (data.type === 'shader') {
     const isPrebuilt = !!data.shaderTemplateId;
+    const shaderDescription = parseWgslShader(data.shaderCode).description;
+    if (shaderDescription) {
+      sections.push({
+        id: 'description',
+        title: 'DESCRIPTION',
+        content: (
+          <div className="px-4 py-2 text-[11px] text-[#6e6e73] leading-snug border-b border-[#f0f0f0]">{shaderDescription}</div>
+        ),
+      });
+    }
     sections.push({
       id: 'editor',
       title: isPrebuilt ? 'SHADER (READ-ONLY)' : 'SHADER EDITOR',

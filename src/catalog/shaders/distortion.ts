@@ -3,10 +3,11 @@ import type { ShaderEntry } from './filter';
 export const distortionShaders: ShaderEntry[] = [
   {
     label: 'Twirl',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Twirls the image around the center.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> radius: f32;
-@group(0) @binding(3) var<uniform> angle: f32;
+@group(0) @binding(2) var<uniform> radius: f32; // Twirl radius. 0 to 1, default 0.5
+@group(0) @binding(3) var<uniform> angle: f32; // Twirl angle in radians. -10 to 10, default 3
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let center = vec2f(0.5);
@@ -22,10 +23,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Ripple',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Applies a sinusoidal wave distortion.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> frequency: f32;
-@group(0) @binding(3) var<uniform> amplitude: f32;
+@group(0) @binding(2) var<uniform> frequency: f32; // Wave frequency. 1 to 50, default 10
+@group(0) @binding(3) var<uniform> amplitude: f32; // Wave amplitude. 0 to 0.1, default 0.02
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   var uv = v_uv;
@@ -36,11 +38,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Displacement',
-    code: `@group(0) @binding(0) var displaceMap: texture_2d<f32>;
+    code: `// Displaces pixels using a displacement map.
+@group(0) @binding(0) var displaceMap: texture_2d<f32>;
 @group(0) @binding(1) var displaceMapSampler: sampler;
 @group(0) @binding(2) var inputImage: texture_2d<f32>;
 @group(0) @binding(3) var inputImageSampler: sampler;
-@group(0) @binding(4) var<uniform> strength: f32;
+@group(0) @binding(4) var<uniform> strength: f32; // Displacement strength. 0 to 1, default 0.1
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let disp = textureSample(displaceMap, displaceMapSampler, v_uv);
@@ -50,10 +53,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Barrel',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Applies barrel/pincushion lens distortion.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> k1: f32;
-@group(0) @binding(3) var<uniform> k2: f32;
+@group(0) @binding(2) var<uniform> k1: f32; // Quadratic distortion coefficient. -1 to 1
+@group(0) @binding(3) var<uniform> k2: f32; // Quartic distortion coefficient. -1 to 1
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let uv = v_uv * 2.0 - vec2f(1.0);
@@ -68,10 +72,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Pinch',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Pinches or expands the image radially.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> radius: f32;
-@group(0) @binding(3) var<uniform> strength: f32;
+@group(0) @binding(2) var<uniform> radius: f32; // Effect radius. 0 to 1, default 0.5
+@group(0) @binding(3) var<uniform> strength: f32; // Pinch strength. -2 to 2, default 0.5
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let center = vec2f(0.5);

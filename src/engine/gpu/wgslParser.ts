@@ -149,6 +149,37 @@ export function parseWgslShader(
   const seenInputs = new Set<string>();
 
   // -----------------------------------------------------------------------
+  // Extract comments: shader description + per-port descriptions
+  // -----------------------------------------------------------------------
+  let shaderDescription: string | undefined;
+  const portDescriptions = new Map<string, string>();
+
+  {
+    const lines = code.split('\n');
+    // Leading // lines (before first declaration or @) → shader description
+    const descLines: string[] = [];
+    let foundCode = false;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) { if (descLines.length > 0) break; continue; }
+      if (trimmed.startsWith('//')) {
+        if (!foundCode) descLines.push(trimmed.replace(/^\/\/\s?/, ''));
+      } else {
+        foundCode = true;
+        break;
+      }
+    }
+    if (descLines.length > 0) shaderDescription = descLines.join(' ');
+
+    // Inline // after var declarations → port description
+    const VAR_COMMENT_RE = /var(?:<\w+>)?\s+(\w+)\s*:.*\/\/\s*(.+)$/;
+    for (const line of lines) {
+      const mc = VAR_COMMENT_RE.exec(line);
+      if (mc) portDescriptions.set(mc[1], mc[2].trim());
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Try AST-based extraction with wgsl_reflect
   // -----------------------------------------------------------------------
   let hasBindings = false;
@@ -171,6 +202,7 @@ export function parseWgslShader(
         label: tex.name,
         dataType: 'sampler2D',
         direction: 'input',
+        description: portDescriptions.get(tex.name),
       });
     }
 
@@ -186,6 +218,7 @@ export function parseWgslShader(
         label: u.name,
         dataType: mapWgslType(u.type.name),
         direction: 'input',
+        description: portDescriptions.get(u.name),
       });
     }
 
@@ -333,5 +366,5 @@ export function parseWgslShader(
     }
   }
 
-  return { inputs, outputs, raw: code, parseError: parseError ?? undefined };
+  return { inputs, outputs, raw: code, parseError: parseError ?? undefined, description: shaderDescription };
 }

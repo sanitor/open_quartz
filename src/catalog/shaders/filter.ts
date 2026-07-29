@@ -7,6 +7,7 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Resample',
     code: `
+// Passes the input image through unchanged (identity/resample).
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
@@ -17,9 +18,10 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Sobel Edge Detection',
     code: `
+// Detects edges using the Sobel operator.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> intensity: f32;
+@group(0) @binding(2) var<uniform> intensity: f32; // Edge strength multiplier. 0–5, default 1
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let px = 1.0 / vec2f(textureDimensions(inputImage));
@@ -43,6 +45,7 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Gaussian Blur 3x3',
     code: `
+// Applies a 3×3 Gaussian blur kernel.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
@@ -66,6 +69,7 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Box Blur',
     code: `
+// Applies a 3×3 box (mean) blur.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
@@ -88,9 +92,10 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Sharpen',
     code: `
+// Sharpens the image using unsharp masking.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> strength: f32;
+@group(0) @binding(2) var<uniform> strength: f32; // Sharpening intensity. 0–10, default 1
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let px = 1.0 / vec2f(textureDimensions(inputImage));
@@ -113,6 +118,7 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Emboss',
     code: `
+// Applies an emboss (relief) effect.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
@@ -130,9 +136,10 @@ export const filterShaders: ShaderEntry[] = [
   {
     label: 'Pixelate',
     code: `
+// Reduces resolution into blocky pixels.
 @group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> blockSize: vec2f;
+@group(0) @binding(2) var<uniform> blockSize: vec2f; // Block size in pixels (width, height). Default (8, 8)
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let size = vec2f(textureDimensions(inputImage));

@@ -81,7 +81,7 @@ function PortRow({
           className="w-2 h-2 rounded-full inline-block flex-shrink-0"
           style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
         />
-        <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
+        <span title={port.description} className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
         <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
         {isBuiltin && <span className="text-[8px] text-[#007aff] bg-[#e8f2ff] rounded px-1">AUTO</span>}
         <span className="flex-1 text-[10px] text-[#aeaeb2] italic text-right">
@@ -97,7 +97,7 @@ function PortRow({
         className="w-2 h-2 rounded-full inline-block flex-shrink-0"
         style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
       />
-      <span className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
+      <span title={port.description} className="text-[#1d1d1f] font-medium w-20 truncate">{port.label}</span>
       {isBuiltin && <span className="text-[8px] text-[#007aff] bg-[#e8f2ff] rounded px-1">AUTO</span>}
       <span className="text-[9px] text-[#aeaeb2] w-12">{port.dataType}</span>
       <VectorInput dataType={port.dataType} value={value} onChange={onChange} />

@@ -6,6 +6,8 @@ export interface ParsedShader {
   raw: string;
   /** Syntax error from wgsl_reflect, if any. */
   parseError?: string;
+  /** Shader-level description extracted from leading WGSL comments. */
+  description?: string;
 }
 
 export interface CompiledNode {

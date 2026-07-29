@@ -26,6 +26,8 @@ export interface Port {
   dataType: DataType;
   direction: 'input' | 'output';
   defaultValue?: unknown;
+  /** Human-readable description extracted from WGSL comments. */
+  description?: string;
 }
 
 export type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | 'math';

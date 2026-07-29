@@ -3,11 +3,12 @@ import type { ShaderEntry } from './filter';
 export const feedbackShaders: ShaderEntry[] = [
   {
     label: 'Gray-Scott Reaction-Diffusion',
-    code: `@group(0) @binding(0) var<uniform> dA: f32;
-@group(0) @binding(1) var<uniform> dB: f32;
-@group(0) @binding(2) var<uniform> feedRate: f32;
-@group(0) @binding(3) var<uniform> killRate: f32;
-@group(0) @binding(4) var<uniform> timestep: f32;
+    code: `// Simulates Gray-Scott reaction-diffusion patterns.
+@group(0) @binding(0) var<uniform> dA: f32; // Diffusion rate of chemical A. Default 0.21
+@group(0) @binding(1) var<uniform> dB: f32; // Diffusion rate of chemical B. Default 0.105
+@group(0) @binding(2) var<uniform> feedRate: f32; // Feed rate (F). Default 0.055
+@group(0) @binding(3) var<uniform> killRate: f32; // Kill rate (k). Default 0.062
+@group(0) @binding(4) var<uniform> timestep: f32; // Simulation time step. Default 1.0
 @fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
     let uv = v_uv;

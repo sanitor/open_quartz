@@ -3,7 +3,8 @@ import type { ShaderEntry } from './filter';
 export const colorShaders: ShaderEntry[] = [
   {
     label: 'Invert',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Inverts RGB channels (negative image).
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
@@ -13,7 +14,8 @@ export const colorShaders: ShaderEntry[] = [
   },
   {
     label: 'Grayscale',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Converts to grayscale using luminance weights.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
@@ -24,10 +26,11 @@ export const colorShaders: ShaderEntry[] = [
   },
   {
     label: 'Brightness/Contrast',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Adjusts brightness and contrast.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> brightness: f32;
-@group(0) @binding(3) var<uniform> contrast: f32;
+@group(0) @binding(2) var<uniform> brightness: f32; // Additive brightness. -1 to 1, default 0
+@group(0) @binding(3) var<uniform> contrast: f32; // Contrast multiplier. 0 to 4, default 1
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let c = textureSample(inputImage, inputImageSampler, v_uv);
@@ -37,9 +40,10 @@ export const colorShaders: ShaderEntry[] = [
   },
   {
     label: 'Hue Rotate',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Rotates hue in HSV color space.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> angle: f32;
+@group(0) @binding(2) var<uniform> angle: f32; // Rotation angle in radians. 0 to 2π
 
 fn rgb2hsv(c: vec3f) -> vec3f {
   let K = vec4f(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -65,9 +69,10 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Threshold',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Converts to black/white at a luminance threshold.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
-@group(0) @binding(2) var<uniform> threshold: f32;
+@group(0) @binding(2) var<uniform> threshold: f32; // Luminance cutoff. 0 to 1, default 0.5
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let col = textureSample(inputImage, inputImageSampler, v_uv);
@@ -78,7 +83,8 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Sepia',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Applies a warm sepia tone.
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
 @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
@@ -91,7 +97,8 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Field Color Map',
-    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+    code: `// Maps luminance to a turbo colormap (scientific visualization).
+@group(0) @binding(0) var inputImage: texture_2d<f32>;
 @group(0) @binding(1) var inputImageSampler: sampler;
 
 fn turbo(t: f32) -> vec3f {

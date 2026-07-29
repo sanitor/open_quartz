@@ -304,3 +304,71 @@ describe('parseWgslShader — type mapping', () => {
     expect(result.outputs[0].dataType).toBe('vec4');
   });
 });
+
+// =============================================================================
+// 6. Comment extraction — shader description + per-port descriptions
+// =============================================================================
+
+describe('parseWgslShader — comment extraction', () => {
+  it('shader with leading comment → result.description equals the comment text', () => {
+    const code = `\
+// Adjusts brightness.
+@group(0) @binding(0) var<uniform> brightness: f32;
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(brightness); }`;
+    const result = parseWgslShader(code);
+    expect(result.description).toBe('Adjusts brightness.');
+  });
+
+  it('shader with multi-line leading comment → result.description joins lines with space', () => {
+    const code = `\
+// Applies a color transform
+// using a matrix multiply.
+@group(0) @binding(0) var<uniform> gain: f32;
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(gain); }`;
+    const result = parseWgslShader(code);
+    expect(result.description).toBe('Applies a color transform using a matrix multiply.');
+  });
+
+  it('shader with no comment → result.description is undefined', () => {
+    const code = `\
+@group(0) @binding(0) var<uniform> alpha: f32;
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(alpha); }`;
+    const result = parseWgslShader(code);
+    expect(result.description).toBeUndefined();
+  });
+
+  it('uniform with inline comment → result.inputs[N].description equals the comment text', () => {
+    const code = `\
+// Adjusts brightness.
+@group(0) @binding(0) var<uniform> brightness: f32; // Additive offset. -1 to 1
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(brightness); }`;
+    const result = parseWgslShader(code);
+    expect(result.description).toBe('Adjusts brightness.');
+    expect(result.inputs).toHaveLength(1);
+    expect(result.inputs[0].label).toBe('brightness');
+    expect(result.inputs[0].description).toBe('Additive offset. -1 to 1');
+  });
+
+  it('texture with inline comment → result.inputs[N].description equals the comment text', () => {
+    const code = `\
+@group(0) @binding(0) var inputImage: texture_2d<f32>; // Source image
+@group(0) @binding(1) var inputImageSampler: sampler;
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return textureSample(inputImage, inputImageSampler, v_uv);
+}`;
+    const result = parseWgslShader(code);
+    expect(result.inputs).toHaveLength(1);
+    expect(result.inputs[0].label).toBe('inputImage');
+    expect(result.inputs[0].description).toBe('Source image');
+  });
+
+  it('uniform without inline comment → result.inputs[N].description is undefined', () => {
+    const code = `\
+@group(0) @binding(0) var<uniform> opacity: f32;
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return vec4f(opacity); }`;
+    const result = parseWgslShader(code);
+    expect(result.inputs).toHaveLength(1);
+    expect(result.inputs[0].label).toBe('opacity');
+    expect(result.inputs[0].description).toBeUndefined();
+  });
+});

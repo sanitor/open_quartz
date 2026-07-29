@@ -3,7 +3,8 @@ import type { ShaderEntry } from './filter';
 export const blendShaders: ShaderEntry[] = [
   {
     label: 'Add',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Adds two images (clamped to white).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -17,7 +18,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Multiply',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Multiplies two images (darkens).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -31,7 +33,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Screen',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Screen blend (brightens, opposite of multiply).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -45,7 +48,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Overlay',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Overlay blend (combines multiply and screen).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -67,7 +71,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Difference',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Absolute difference between two images.
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -81,7 +86,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Exclusion',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Exclusion blend (similar to difference, lower contrast).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
@@ -95,7 +101,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Soft Light',
-    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+    code: `// Soft light blend (gentle dodging/burning).
+@group(0) @binding(0) var inputA: texture_2d<f32>;
 @group(0) @binding(1) var inputASampler: sampler;
 @group(0) @binding(2) var inputB: texture_2d<f32>;
 @group(0) @binding(3) var inputBSampler: sampler;
