@@ -3,7 +3,12 @@ import type { ShaderEntry } from './filter';
 export const blendShaders: ShaderEntry[] = [
   {
     label: 'Add',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let a = textureSample(inputA, inputASampler, v_uv);
   let b = textureSample(inputB, inputBSampler, v_uv);
@@ -12,7 +17,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Multiply',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let a = textureSample(inputA, inputASampler, v_uv);
   let b = textureSample(inputB, inputBSampler, v_uv);
@@ -21,7 +31,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Screen',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let a = textureSample(inputA, inputASampler, v_uv);
   let b = textureSample(inputB, inputBSampler, v_uv);
@@ -30,7 +45,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Overlay',
-    code: `fn overlay(base: vec3f, blend: vec3f) -> vec3f {
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+fn overlay(base: vec3f, blend: vec3f) -> vec3f {
   return mix(
     2.0 * base * blend,
     vec3f(1.0) - 2.0 * (vec3f(1.0) - base) * (vec3f(1.0) - blend),
@@ -47,7 +67,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Difference',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let a = textureSample(inputA, inputASampler, v_uv);
   let b = textureSample(inputB, inputBSampler, v_uv);
@@ -56,7 +81,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Exclusion',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let a = textureSample(inputA, inputASampler, v_uv);
   let b = textureSample(inputB, inputBSampler, v_uv);
@@ -65,7 +95,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Soft Light',
-    code: `fn softLight(base: vec3f, blend: vec3f) -> vec3f {
+    code: `@group(0) @binding(0) var inputA: texture_2d<f32>;
+@group(0) @binding(1) var inputASampler: sampler;
+@group(0) @binding(2) var inputB: texture_2d<f32>;
+@group(0) @binding(3) var inputBSampler: sampler;
+
+fn softLight(base: vec3f, blend: vec3f) -> vec3f {
   let lo = 2.0 * base * blend + base * base * (vec3f(1.0) - 2.0 * blend);
   let hi = 2.0 * base * (vec3f(1.0) - blend) + sqrt(base) * (2.0 * blend - vec3f(1.0));
   return mix(lo, hi, step(vec3f(0.5), blend));

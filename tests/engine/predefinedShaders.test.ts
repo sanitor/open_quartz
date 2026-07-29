@@ -21,22 +21,22 @@ const EXPECTED: Record<string, { inputs: [string, string][]; outputs: [string, s
   'Box Blur':              { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
   'Sharpen':               { inputs: [['inputImage', 'sampler2D'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
   'Emboss':                { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
-  'Pixelate':              { inputs: [['inputImage', 'sampler2D'], ['blockSize', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Pixelate':              { inputs: [['inputImage', 'sampler2D'], ['blockSize', 'vec2']], outputs: [['fragColor', 'vec4']] },
   // Color
   'Invert':                { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
   'Grayscale':             { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
-  'Brightness/Contrast':   { inputs: [['inputImage', 'sampler2D'], ['contrast', 'float'], ['brightness', 'float']], outputs: [['fragColor', 'vec4']] },
+  'Brightness/Contrast':   { inputs: [['inputImage', 'sampler2D'], ['brightness', 'float'], ['contrast', 'float']], outputs: [['fragColor', 'vec4']] },
   'Hue Rotate':            { inputs: [['inputImage', 'sampler2D'], ['angle', 'float']], outputs: [['fragColor', 'vec4']] },
   'Threshold':             { inputs: [['inputImage', 'sampler2D'], ['threshold', 'float']], outputs: [['fragColor', 'vec4']] },
   'Sepia':                 { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
   'Field Color Map':       { inputs: [['inputImage', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
-  // Generators
-  'Solid Color':           { inputs: [['color', 'float']], outputs: [['fragColor', 'vec4']] },
-  'Gradient':              { inputs: [['colorA', 'float'], ['colorB', 'float']], outputs: [['fragColor', 'vec4']] },
-  'Checkerboard':          { inputs: [['gridSize', 'float'], ['color1', 'float'], ['color2', 'float']], outputs: [['fragColor', 'vec4']] },
+  // Generators (no textures — uniform only)
+  'Solid Color':           { inputs: [['color', 'vec4']], outputs: [['fragColor', 'vec4']] },
+  'Gradient':              { inputs: [['colorA', 'vec4'], ['colorB', 'vec4']], outputs: [['fragColor', 'vec4']] },
+  'Checkerboard':          { inputs: [['gridSize', 'vec2'], ['color1', 'vec4'], ['color2', 'vec4']], outputs: [['fragColor', 'vec4']] },
   'Noise':                 { inputs: [['scale', 'float']], outputs: [['fragColor', 'vec4']] },
-  'Circle':                { inputs: [['circle', 'float']], outputs: [['fragColor', 'vec4']] },
-  // Blend
+  'Circle':                { inputs: [['circle', 'vec4']], outputs: [['fragColor', 'vec4']] },
+  // Blend (two textures, no uniforms)
   'Add':                   { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
   'Multiply':              { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
   'Screen':                { inputs: [['inputA', 'sampler2D'], ['inputB', 'sampler2D']], outputs: [['fragColor', 'vec4']] },
@@ -50,8 +50,8 @@ const EXPECTED: Record<string, { inputs: [string, string][]; outputs: [string, s
   'Displacement':          { inputs: [['displaceMap', 'sampler2D'], ['inputImage', 'sampler2D'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
   'Barrel':                { inputs: [['inputImage', 'sampler2D'], ['k1', 'float'], ['k2', 'float']], outputs: [['fragColor', 'vec4']] },
   'Pinch':                 { inputs: [['inputImage', 'sampler2D'], ['radius', 'float'], ['strength', 'float']], outputs: [['fragColor', 'vec4']] },
-  // Feedback
-  'Gray-Scott Reaction-Diffusion': { inputs: [['dA', 'float'], ['feedRate', 'float'], ['timestep', 'float'], ['dB', 'float'], ['killRate', 'float']], outputs: [['fragColor', 'vec4']] },
+  // Feedback (scalar uniforms only — builtins iFrame/previousFrame not declared)
+  'Gray-Scott Reaction-Diffusion': { inputs: [['dA', 'float'], ['dB', 'float'], ['feedRate', 'float'], ['killRate', 'float'], ['timestep', 'float']], outputs: [['fragColor', 'vec4']] },
 };
 
 // ---------------------------------------------------------------------------

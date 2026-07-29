@@ -3,7 +3,12 @@ import type { ShaderEntry } from './filter';
 export const feedbackShaders: ShaderEntry[] = [
   {
     label: 'Gray-Scott Reaction-Diffusion',
-    code: `@fragment
+    code: `@group(0) @binding(0) var<uniform> dA: f32;
+@group(0) @binding(1) var<uniform> dB: f32;
+@group(0) @binding(2) var<uniform> feedRate: f32;
+@group(0) @binding(3) var<uniform> killRate: f32;
+@group(0) @binding(4) var<uniform> timestep: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
     let uv = v_uv;
 

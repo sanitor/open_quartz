@@ -3,14 +3,20 @@ import type { ShaderEntry } from './filter';
 export const colorShaders: ShaderEntry[] = [
   {
     label: 'Invert',
-    code: `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let col = textureSample(inputImage, inputImageSampler, v_uv);
   return vec4f(1.0 - col.rgb, col.a);
 }`,
   },
   {
     label: 'Grayscale',
-    code: `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let col = textureSample(inputImage, inputImageSampler, v_uv);
   let gray = dot(col.rgb, vec3f(0.299, 0.587, 0.114));
   return vec4f(vec3f(gray), col.a);
@@ -18,7 +24,12 @@ export const colorShaders: ShaderEntry[] = [
   },
   {
     label: 'Brightness/Contrast',
-    code: `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> brightness: f32;
+@group(0) @binding(3) var<uniform> contrast: f32;
+
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let c = textureSample(inputImage, inputImageSampler, v_uv);
   let adjusted = (c.rgb - vec3f(0.5)) * max(contrast, 0.0) + vec3f(0.5) + vec3f(brightness);
   return vec4f(clamp(adjusted, vec3f(0.0), vec3f(1.0)), c.a);
@@ -26,7 +37,11 @@ export const colorShaders: ShaderEntry[] = [
   },
   {
     label: 'Hue Rotate',
-    code: `fn rgb2hsv(c: vec3f) -> vec3f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> angle: f32;
+
+fn rgb2hsv(c: vec3f) -> vec3f {
   let K = vec4f(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
   let p = mix(vec4f(c.bg, K.wz), vec4f(c.gb, K.xy), step(c.b, c.g));
   let q = mix(vec4f(p.xyw, c.r), vec4f(c.r, p.yzx), step(p.x, c.r));
@@ -50,7 +65,11 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Threshold',
-    code: `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> threshold: f32;
+
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let col = textureSample(inputImage, inputImageSampler, v_uv);
   let lum = dot(col.rgb, vec3f(0.299, 0.587, 0.114));
   let bw = step(threshold, lum);
@@ -59,7 +78,10 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Sepia',
-    code: `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+
+@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let col = textureSample(inputImage, inputImageSampler, v_uv);
   let r = dot(col.rgb, vec3f(0.393, 0.769, 0.189));
   let g = dot(col.rgb, vec3f(0.349, 0.686, 0.168));
@@ -69,7 +91,10 @@ fn hsv2rgb(c: vec3f) -> vec3f {
   },
   {
     label: 'Field Color Map',
-    code: `fn turbo(t: f32) -> vec3f {
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+
+fn turbo(t: f32) -> vec3f {
   let a = vec3f(0.114, 0.056, 0.566);
   let b = vec3f(0.376, 0.763, 0.843);
   let c = vec3f(0.267, 0.472, 0.090);

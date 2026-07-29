@@ -3,7 +3,11 @@ import type { ShaderEntry } from './filter';
 export const distortionShaders: ShaderEntry[] = [
   {
     label: 'Twirl',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> radius: f32;
+@group(0) @binding(3) var<uniform> angle: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let center = vec2f(0.5);
   var uv = v_uv - center;
@@ -18,7 +22,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Ripple',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> frequency: f32;
+@group(0) @binding(3) var<uniform> amplitude: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   var uv = v_uv;
   uv.x += sin(uv.y * frequency) * amplitude;
@@ -28,7 +36,12 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Displacement',
-    code: `@fragment
+    code: `@group(0) @binding(0) var displaceMap: texture_2d<f32>;
+@group(0) @binding(1) var displaceMapSampler: sampler;
+@group(0) @binding(2) var inputImage: texture_2d<f32>;
+@group(0) @binding(3) var inputImageSampler: sampler;
+@group(0) @binding(4) var<uniform> strength: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let disp = textureSample(displaceMap, displaceMapSampler, v_uv);
   let offset = (disp.rg - vec2f(0.5)) * 2.0 * strength;
@@ -37,7 +50,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Barrel',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> k1: f32;
+@group(0) @binding(3) var<uniform> k2: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let uv = v_uv * 2.0 - vec2f(1.0);
   let r2 = dot(uv, uv);
@@ -51,7 +68,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   },
   {
     label: 'Pinch',
-    code: `@fragment
+    code: `@group(0) @binding(0) var inputImage: texture_2d<f32>;
+@group(0) @binding(1) var inputImageSampler: sampler;
+@group(0) @binding(2) var<uniform> radius: f32;
+@group(0) @binding(3) var<uniform> strength: f32;
+@fragment
 fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
   let center = vec2f(0.5);
   var uv = v_uv - center;
