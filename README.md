@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses WebGPU/WebGL shader execution, ONNX neural-network inference, and CPU-side math into a single heterogeneous graph that runs at interactive frame rates. Connect source nodes (camera, video files, images, raw framebuffers), processing nodes (31 GLSL shader presets, 29 math ops, 7 ONNX models + custom), and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer, Shadertoy, and chaiNNer.
+Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses WebGPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph that runs at interactive frame rates. Connect source nodes (camera, video files, images, raw framebuffers), processing nodes (28 WGSL shader presets, 29 math ops, 7 ONNX models + custom), and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer, Shadertoy, and chaiNNer.
 
 ## Node Catalog
 
@@ -30,7 +30,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 | **Resolution** | System | `vec3` | Canvas resolution and pixel ratio. |
 | **float / int / vec2-4 / mat2-4** | Constant | Various | Editable scalar, vector, and matrix values. |
 
-### Shader Nodes (31 presets + custom)
+### Shader Nodes (28 presets + custom)
 
 | Category | Shaders |
 |----------|---------|
@@ -39,7 +39,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 | **Generator** | Solid Color, Gradient, Checkerboard, Noise, Circle |
 | **Blend** | Add, Multiply, Screen, Overlay, Difference, Exclusion, Soft Light |
 | **Distortion** | Twirl, Ripple, Displacement, Barrel, Pinch |
-| **Custom** | Custom Shader (1 input), Custom 2-in-1 (2 inputs). Full GLSL 300 es editor with syntax highlighting, linting, and autocompletion. |
+| **Custom** | Custom Shader (1 input), Custom 2-in-1 (2 inputs). Full WGSL editor with syntax highlighting, GPU validation linting, and shader/port documentation tooltips. |
 
 ### Math Nodes (29 operations)
 
@@ -86,11 +86,11 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 
 ### Node Graph Editor
 - Drag, connect, and arrange nodes on an infinite canvas (React Flow)
-- Bezier curve edges with type-safe connections — ports carry GLSL type metadata
+- Bezier curve edges with type-safe connections — ports carry WGSL type metadata
 - MiniMap, box selection, fit-to-view
 
 ### Node Inspector (Side Panel)
-- CodeMirror 6 shader editor with GLSL syntax highlighting, error linting, and autocompletion
+- CodeMirror 6 shader editor with WGSL syntax highlighting, GPU validation (red squiggly lines via `createShaderModule`), and debounced port reparse
 - Read-only shader viewer for prebuilt catalog shaders (code visible for learning, not editable)
 - Port inspector with color-coded type indicators and inline uniform editing
 - Per-component vector editing (x/y/z/w) for vec2-4 uniforms
@@ -123,9 +123,9 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 884 unit tests (fast, CI gate)
+npm test               # 959 unit tests (fast, CI gate)
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
-npm run test:shaders   # 6 WebGL2 bit-true tests (system browser, real GPU)
+npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```
 
 ## Desktop app (Tauri)

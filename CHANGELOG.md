@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.16.0b] -- 2026-07-29
+
+### Features
+
+- **Zero-copy video input** — video nodes now use `importExternalTexture` for zero-copy GPU sampling. The video decoder's output buffer is referenced directly without any GPU-to-GPU copy. Compiler rewrites `textureSample` → `textureSampleBaseClampToEdge` + `texture_external` transparently. Image/framebuffer inputs unchanged.
+- **Shader & port documentation** — WGSL `//` comments are parsed into shader descriptions and per-port tooltips. All 28 predefined shaders and 27 uniforms annotated with purpose and value ranges. SidePanel shows shader description in header; port labels show tooltip on hover; menu items show tooltip.
+- **Edit-time GPU validation** — CodeMirror linter runs `createShaderModule` + `getCompilationInfo` (debounced 750ms) for red squiggly underlines on WGSL errors. Lazy-inits its own `GPUDevice` — works without pressing Play.
+- **Correct uniform types** — all predefined shaders now declare `@group/@binding` with correct WGSL types (vec4f for colors, vec2f for sizes). Parser walks AST path instead of defaulting everything to float. 8 wrong uniform types fixed.
+- **Node status tests** — 28 new tests across all 5 node types (ShaderNode, RendererNode, OnnxNode, InputNode, MathNode) covering every status factor and combination.
+
+### Fixes
+
+- **Uniform values never uploaded to GPU** — `runFrame()` had a `// TODO` where scalar uniform buffers were never created. All uniforms (self-owned, upstream, builtins like `iTime`) now correctly written to `GPUBuffer` and bound. This was the root cause of "always black output" with `intensity` slider.
+- **`@doraemon` leaks as a port** — regex fallback scanner now skips identifiers preceded by `@` (attribute names). Regression test added.
+- **Preamble line offset** — extra `\n` between preamble and user code caused GPU error line numbers to be off by 1. Fixed in both `compileWgslShader` and `validateWgslEdit`.
+- **Debounced shader editing** — port reparse debounced to 400ms (was every keystroke). No more UI thrashing while typing.
+
+### UI
+
+- **SidePanel cleanup** — header follows node card format (icon + type + label + delete icon). Output config moved inline under output ports with grid layout. Feedback badge in header instead of separate section.
+- **MathNode** — symbol enlarged (16→22px), color muted to match caption, port handles aligned to card edges.
+
+### Tests
+
+- **WebGPU bittrue tests** — upgraded from WebGL2/GLSL to WebGPU/WGSL pipeline. 7 shader-level tests + 7 integration pipeline tests (passthrough, uniform, cascade, generator, builtins, video zero-copy). All run on real GPU in browser mode.
+- **WGSL parser** — 21 tests covering AST path, regex fallback, error handling, port ID preservation, type mapping, comment extraction, `@doraemon` regression.
+- **Predefined shaders** — exact input/output spec for all 28 shaders + 2 custom templates.
+- **959 unit tests + 56 shader/pipeline tests**, all passing.
+
 ## [0.15.0b] -- 2026-07-23
 
 ### Features
