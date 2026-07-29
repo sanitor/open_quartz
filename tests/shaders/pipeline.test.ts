@@ -13,7 +13,7 @@ import type { ShaderNodeData, Port, DataType } from '../../src/types';
 import { WebGPUBackend } from '../../src/engine/gpu/WebGPUBackend';
 import { WebGPUExecutionEngine } from '../../src/engine/executionEngine';
 import type { FrameInputs } from '../../src/engine/compositor';
-import { validateWgslEdit } from '../../src/engine/gpu/wgslCompiler';
+import { validateWgslEdit, compileWgslShader } from '../../src/engine/gpu/wgslCompiler';
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -386,5 +386,76 @@ describe('validateWgslEdit (GPU compile check)', () => {
 }`;
     const errors = await validateWgslEdit(code, [], backend.device);
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Video zero-copy (importExternalTexture) compiler tests
+// ---------------------------------------------------------------------------
+
+describe('compileWgslShader — video external texture', () => {
+  it('video input generates texture_external binding, not texture_2d', () => {
+    const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return textureSample(inputImage, inputImageSampler, v_uv);
+}`;
+    const ports = [{ label: 'inputImage', dataType: 'sampler2D' }];
+    const upstreamMap = new Map([['inputImage', 'video-node-1']]);
+    const videoInputs = new Set(['inputImage']);
+
+    const compiled = compileWgslShader(
+      backend.device, code, ports, upstreamMap, 'rgba8unorm', videoInputs,
+    );
+
+    // External texture binding exists
+    expect(compiled.externalTextureBindings.has('inputImage')).toBe(true);
+    // Regular texture binding does NOT exist for this input
+    expect(compiled.textureBindings.has('inputImage')).toBe(false);
+    // Only 1 binding slot used (no sampler needed)
+    expect(compiled.externalTextureBindings.get('inputImage')).toBe(0);
+  });
+
+  it('non-video input still generates texture_2d + sampler (2 bindings)', () => {
+    const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  return textureSample(inputImage, inputImageSampler, v_uv);
+}`;
+    const ports = [{ label: 'inputImage', dataType: 'sampler2D' }];
+    const upstreamMap = new Map([['inputImage', 'image-node-1']]);
+
+    const compiled = compileWgslShader(
+      backend.device, code, ports, upstreamMap, 'rgba8unorm',
+    );
+
+    expect(compiled.textureBindings.has('inputImage')).toBe(true);
+    expect(compiled.externalTextureBindings.has('inputImage')).toBe(false);
+    // texture at binding 0, sampler at binding 1
+    expect(compiled.textureBindings.get('inputImage')).toBe(0);
+  });
+
+  it('mixed inputs: video gets texture_external, image gets texture_2d', () => {
+    const code = `@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
+  let a = textureSample(videoIn, videoInSampler, v_uv);
+  let b = textureSample(imageIn, imageInSampler, v_uv);
+  return mix(a, b, 0.5);
+}`;
+    const ports = [
+      { label: 'videoIn', dataType: 'sampler2D' },
+      { label: 'imageIn', dataType: 'sampler2D' },
+    ];
+    const upstreamMap = new Map([
+      ['videoIn', 'video-1'],
+      ['imageIn', 'image-1'],
+    ]);
+    const videoInputs = new Set(['videoIn']);
+
+    const compiled = compileWgslShader(
+      backend.device, code, ports, upstreamMap, 'rgba8unorm', videoInputs,
+    );
+
+    // videoIn → external texture (1 binding)
+    expect(compiled.externalTextureBindings.has('videoIn')).toBe(true);
+    expect(compiled.textureBindings.has('videoIn')).toBe(false);
+    // imageIn → texture_2d + sampler (2 bindings)
+    expect(compiled.textureBindings.has('imageIn')).toBe(true);
+    expect(compiled.externalTextureBindings.has('imageIn')).toBe(false);
   });
 });
