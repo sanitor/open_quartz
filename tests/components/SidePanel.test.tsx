@@ -104,7 +104,7 @@ describe('SidePanel', () => {
       selectedNodeId: 'n1',
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
     });
-    expect(screen.getByText('SHADER')).toBeInTheDocument();
+    expect(screen.getByText('shader')).toBeInTheDocument();
   });
 
   it('renders label input for selected node', () => {
@@ -121,7 +121,7 @@ describe('SidePanel', () => {
       selectedNodeId: 'n1',
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData() }],
     });
-    expect(screen.getByText('Delete')).toBeInTheDocument();
+    expect(screen.getByTitle('Delete node')).toBeInTheDocument();
   });
 
   it('Delete button calls removeNode', () => {
@@ -129,7 +129,7 @@ describe('SidePanel', () => {
       selectedNodeId: 'n1',
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData() }],
     });
-    const deleteBtn = screen.getByText('Delete');
+    const deleteBtn = screen.getByTitle('Delete node');
     fireEvent.click(deleteBtn);
     expect(mockRemoveNode).toHaveBeenCalledWith('n1');
   });
@@ -176,7 +176,7 @@ describe('SidePanel', () => {
       selectedNodeId: 'n1',
       nodes: [{ id: 'n1', type: 'input', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'input', inputDataType: 'float' }) }],
     });
-    expect(screen.getByText('INPUT')).toBeInTheDocument();
+    expect(screen.getByText('input')).toBeInTheDocument();
   });
 
   it('renders PortInspector for input nodes', () => {
@@ -256,7 +256,7 @@ describe('SidePanel', () => {
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       edges: [],
     });
-    expect(screen.getByText('Auto Size')).toBeInTheDocument();
+    expect(screen.getByText('Auto')).toBeInTheDocument();
   });
 
   it('renders sampling config for leaf shader node', () => {
@@ -265,9 +265,7 @@ describe('SidePanel', () => {
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       edges: [],
     });
-    expect(screen.getByText('SAMPLING')).toBeInTheDocument();
-    expect(screen.getByText('Filter')).toBeInTheDocument();
-    expect(screen.getByText('Wrap')).toBeInTheDocument();
+    expect(screen.getByText('Sampling')).toBeInTheDocument();
   });
 
   it('renders Width/Height inputs for leaf shader node when autoSize is false', () => {
@@ -488,8 +486,8 @@ describe('SidePanel', () => {
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       edges: [],
     });
-    expect(screen.getByText('LINEAR')).toBeInTheDocument();
-    expect(screen.getByText('NEAREST')).toBeInTheDocument();
+    expect(screen.getByText('Linear')).toBeInTheDocument();
+    expect(screen.getByText('Nearest')).toBeInTheDocument();
   });
 
   it('wrap select defaults to clamp', () => {
@@ -498,8 +496,8 @@ describe('SidePanel', () => {
       nodes: [{ id: 'n1', type: 'shader', position: { x: 0, y: 0 }, data: makeShaderNodeData({ type: 'shader' }) }],
       edges: [],
     });
-    expect(screen.getByText('CLAMP')).toBeInTheDocument();
-    expect(screen.getByText('REPEAT')).toBeInTheDocument();
-    expect(screen.getByText('MIRROR')).toBeInTheDocument();
+    expect(screen.getByText('Clamp')).toBeInTheDocument();
+    expect(screen.getByText('Repeat')).toBeInTheDocument();
+    expect(screen.getByText('Mirror')).toBeInTheDocument();
   });
 });

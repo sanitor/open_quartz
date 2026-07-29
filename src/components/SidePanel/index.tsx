@@ -8,6 +8,7 @@ import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '..
 import { generateRawPreview } from '../../utils/rawPreview';
 import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
 import { parseWgslShader } from '../../engine/gpu/wgslParser';
+import { MENU_ICONS } from '../NodeGraph/nodes/NodeShell';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },
@@ -129,21 +130,12 @@ export function SidePanel() {
   if (!selectedNode || !data) return null;
 
   // Build sections array based on node type
+  const shaderDescription = data.type === 'shader' ? parseWgslShader(data.shaderCode).description : undefined;
   const sections: { id: string; title: string; content: React.ReactNode; extra?: React.ReactNode; flexFill?: boolean }[] = [];
 
   // --- SHADER EDITOR (editable for custom, read-only for prebuilt) ---
   if (data.type === 'shader') {
     const isPrebuilt = !!data.shaderTemplateId;
-    const shaderDescription = parseWgslShader(data.shaderCode).description;
-    if (shaderDescription) {
-      sections.push({
-        id: 'description',
-        title: 'DESCRIPTION',
-        content: (
-          <div className="px-4 py-2 text-[11px] text-[#6e6e73] leading-snug border-b border-[#f0f0f0]">{shaderDescription}</div>
-        ),
-      });
-    }
     sections.push({
       id: 'editor',
       title: isPrebuilt ? 'SHADER (READ-ONLY)' : 'SHADER EDITOR',
@@ -346,88 +338,72 @@ export function SidePanel() {
       id: 'output',
       title: 'OUTPUT CONFIG',
       content: (
-        <div className="px-4 py-3 overflow-y-auto">
-          <div className="mb-3">
-            <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Format</label>
+        <div className="px-4 py-2 overflow-y-auto space-y-2">
+          {/* Format — label and select on same row */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Format</span>
             <select
               value={data.outFormat ?? 'rgba8'}
               onChange={(e) => updateNodeData(selectedNodeId!, { outFormat: e.target.value as FramebufferFormat })}
-              className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
+              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]"
             >
               {OUT_FORMATS.map((f) => (
                 <option key={f.value} value={f.value}>{f.label}</option>
               ))}
             </select>
           </div>
-          <div className="mb-3">
-            <label className="flex items-center gap-1.5 text-[10px] text-[#86868b] font-medium mb-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={data.autoSize !== false}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
-                  } else {
-                    updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
-                  }
-                }}
-                className="accent-[#007aff]"
-              />
-              Auto Size
-            </label>
-            {data.autoSize === false ? (
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
-                  <input type="number" min={1} max={8192} value={data.width ?? 512}
-                    onChange={(e) => updateNodeData(selectedNodeId!, { width: e.target.value === '' ? undefined : parseInt(e.target.value) })}
-                    onBlur={(e) => { if (!e.target.value) updateNodeData(selectedNodeId!, { width: 512 }); }}
-                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]" />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
-                  <input type="number" min={1} max={8192} value={data.height ?? 512}
-                    onChange={(e) => updateNodeData(selectedNodeId!, { height: e.target.value === '' ? undefined : parseInt(e.target.value) })}
-                    onBlur={(e) => { if (!e.target.value) updateNodeData(selectedNodeId!, { height: 512 }); }}
-                    className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]" />
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Width</label>
-                  <input type="number" disabled value={String(data.resolvedWidth ?? '')}
-                    className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default" placeholder="—" />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Height</label>
-                  <input type="number" disabled value={String(data.resolvedHeight ?? '')}
-                    className="w-full text-[12px] text-[#aeaeb2] bg-[#f5f5f7] rounded px-2 py-1 border border-[#e8e8ed] cursor-default" placeholder="—" />
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Size — auto checkbox inline, then W x H */}
           <div>
-            <div className="text-[10px] text-[#86868b] font-medium mb-2">SAMPLING</div>
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Filter</label>
-                <select value={data.texFilter ?? 'linear'} onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
-                  className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
-                  <option value="linear">LINEAR</option>
-                  <option value="nearest">NEAREST</option>
-                </select>
-              </div>
-              <div className="flex-1">
-                <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Wrap</label>
-                <select value={data.texWrap ?? 'clamp'} onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
-                  className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
-                  <option value="clamp">CLAMP</option>
-                  <option value="repeat">REPEAT</option>
-                  <option value="mirror">MIRROR</option>
-                </select>
-              </div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] text-[#86868b] font-medium">Size</span>
+              <label className="flex items-center gap-1 text-[10px] text-[#86868b] cursor-pointer ml-auto">
+                <input
+                  type="checkbox"
+                  checked={data.autoSize !== false}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      updateNodeData(selectedNodeId!, { autoSize: true, width: undefined, height: undefined });
+                    } else {
+                      updateNodeData(selectedNodeId!, { autoSize: false, width: 512, height: 512 });
+                    }
+                  }}
+                  className="accent-[#007aff]"
+                />
+                Auto
+              </label>
             </div>
+            <div className="flex items-center gap-1">
+              <input type="number" min={1} max={8192}
+                disabled={data.autoSize !== false}
+                value={data.autoSize === false ? (data.width ?? 512) : (data.resolvedWidth ?? '')}
+                onChange={(e) => updateNodeData(selectedNodeId!, { width: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { width: 512 }); }}
+                placeholder="—"
+                className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
+              <span className="text-[10px] text-[#aeaeb2]">×</span>
+              <input type="number" min={1} max={8192}
+                disabled={data.autoSize !== false}
+                value={data.autoSize === false ? (data.height ?? 512) : (data.resolvedHeight ?? '')}
+                onChange={(e) => updateNodeData(selectedNodeId!, { height: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                onBlur={(e) => { if (!e.target.value && data.autoSize === false) updateNodeData(selectedNodeId!, { height: 512 }); }}
+                placeholder="—"
+                className={`flex-1 min-w-0 text-[11px] ${data.autoSize === false ? 'text-[#1d1d1f]' : 'text-[#aeaeb2]'} bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff] text-center`} />
+            </div>
+          </div>
+          {/* Sampling — two selects side by side, no labels */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[#86868b] font-medium flex-shrink-0">Sampling</span>
+            <select value={data.texFilter ?? 'linear'} onChange={(e) => updateNodeData(selectedNodeId!, { texFilter: e.target.value as TextureFilter })}
+              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
+              <option value="linear">Linear</option>
+              <option value="nearest">Nearest</option>
+            </select>
+            <select value={data.texWrap ?? 'clamp'} onChange={(e) => updateNodeData(selectedNodeId!, { texWrap: e.target.value as TextureWrap })}
+              className="flex-1 text-[11px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-1.5 py-0.5 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
+              <option value="clamp">Clamp</option>
+              <option value="repeat">Repeat</option>
+              <option value="mirror">Mirror</option>
+            </select>
           </div>
         </div>
       ),
@@ -690,23 +666,37 @@ export function SidePanel() {
         onMouseDown={handleResizeStart}
         className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[#007aff]/30 z-10"
       />
-      {/* Node header — always visible */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-[#e8e8ed]">
-        <div>
-          <label className="text-[10px] text-[#86868b] font-medium">{data.type.toUpperCase()}</label>
+      {/* Node header — follows node card format: icon + type + label + delete */}
+      <div className="px-3 py-2 border-b border-[#e8e8ed]">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[#86868b] flex-shrink-0">
+            {data.type === 'input' ? MENU_ICONS.source
+              : data.type === 'math' ? MENU_ICONS.math
+              : data.type === 'onnx' ? MENU_ICONS.onnx
+              : data.type === 'renderer' ? MENU_ICONS.renderer
+              : MENU_ICONS.shader}
+          </span>
+          <span className="text-[10px] text-[#86868b] font-bold uppercase">{data.templateName ?? data.type}</span>
           <input
             type="text"
             value={data.label}
             onChange={handleLabelChange}
-            className="block w-full text-[13px] font-semibold text-[#1d1d1f] bg-transparent outline-none border-b border-transparent focus:border-[#007aff]"
+            className="flex-1 min-w-0 text-[12px] text-[#1d1d1f] bg-transparent outline-none border-b border-transparent focus:border-[#007aff] ml-1"
           />
+          <button
+            onClick={() => { if (selectedNodeId) removeNode(selectedNodeId); }}
+            className="text-[#aeaeb2] hover:text-[#ff3b30] flex-shrink-0 ml-1"
+            title="Delete node"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+              <polyline points="3,5 3,14 13,14 13,5" /><line x1="1" y1="5" x2="15" y2="5" /><line x1="6" y1="2" x2="10" y2="2" />
+              <line x1="6" y1="7.5" x2="6" y2="11.5" /><line x1="10" y1="7.5" x2="10" y2="11.5" />
+            </svg>
+          </button>
         </div>
-        <button
-          onClick={() => { if (selectedNodeId) removeNode(selectedNodeId); }}
-          className="text-[11px] text-[#ff3b30] hover:text-[#d70015]"
-        >
-          Delete
-        </button>
+        {shaderDescription && (
+          <div className="text-[10px] text-[#aeaeb2] leading-snug mt-1 ml-5">{shaderDescription}</div>
+        )}
       </div>
 
       {/* Error — always visible when present */}
