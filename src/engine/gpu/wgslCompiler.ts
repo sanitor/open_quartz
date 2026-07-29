@@ -149,7 +149,7 @@ export function compileWgslShader(
   }
 
   const preambleLines = preamble.split('\n').filter(Boolean).length;
-  const fullFragCode = preamble + '\n' + processedCode;
+  const fullFragCode = preamble + processedCode;
 
   // Create bind group layout
   const bindGroupLayout = device.createBindGroupLayout({ entries: layoutEntries });
@@ -348,7 +348,7 @@ export async function validateWgslEdit(
   }
 
   const preambleLines = preamble.split('\n').filter(Boolean).length;
-  const fullCode = preamble + '\n' + processedCode;
+  const fullCode = preamble + processedCode;
 
   return validateWgslShader(dev, fullCode, preambleLines);
 }

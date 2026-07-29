@@ -4,6 +4,7 @@ import { EditorState } from '@codemirror/state';
 import { linter, type Diagnostic } from '@codemirror/lint';
 import { wgsl } from '@iizukak/codemirror-lang-wgsl';
 import { parseWgslShader } from '../../engine/gpu/wgslParser';
+import { validateWgslEdit } from '../../engine/gpu/wgslCompiler';
 
 interface ShaderEditorProps {
   code: string;
@@ -15,20 +16,34 @@ interface ShaderEditorProps {
 const COMMIT_DELAY_MS = 400;
 
 /**
- * Lightweight WGSL linter — only reports wgsl_reflect parse errors.
- * GPU-level validation (missing @fragment, undeclared vars) is deferred to
- * the compile step at runtime to avoid noisy errors while typing.
+ * WGSL linter — parse check (sync) + GPU compile check (async).
+ * CodeMirror debounces at 750ms by default; we add 500ms minimum.
+ * Errors show as red squiggly underlines on the exact line.
  */
-const wgslLinter = linter((view): Diagnostic[] => {
+const wgslLinter = linter(async (view): Promise<Diagnostic[]> => {
   const code = view.state.doc.toString();
   if (!code.trim()) return [];
 
+  // 1. wgsl_reflect parse — catches gross syntax errors immediately
   const parsed = parseWgslShader(code);
-  if (!parsed.parseError) return [];
+  if (parsed.parseError) {
+    return [{ from: 0, to: code.length, severity: 'error', message: parsed.parseError }];
+  }
 
-  // wgsl_reflect errors don't include line info — underline the whole source
-  return [{ from: 0, to: code.length, severity: 'error', message: parsed.parseError }];
-}, { delay: 500 });
+  // 2. GPU compile — catches @doraemon, undeclared vars, type errors
+  const errors = await validateWgslEdit(code, parsed.inputs);
+  const diagnostics: Diagnostic[] = [];
+  for (const err of errors) {
+    const lineNum = Math.min(err.line, view.state.doc.lines);
+    const line = view.state.doc.line(lineNum);
+    const from = line.from + Math.min(err.column, line.length);
+    const to = err.length > 0
+      ? Math.min(from + err.length, line.to)
+      : line.to;
+    diagnostics.push({ from, to, severity: 'error', message: err.message });
+  }
+  return diagnostics;
+}, { delay: 750 });
 
 export function ShaderEditor({ code, onChange, readOnly }: ShaderEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
