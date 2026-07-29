@@ -26,8 +26,10 @@ export interface CompiledShader {
   preambleLines: number;
   /** Whether the shader references `previousFrame` (feedback/accumulator). */
   needsFeedback: boolean;
-  /** Binding index for each texture input (for creating bind groups). */
+  /** Binding index for each texture_2d input (for creating bind groups). */
   textureBindings: Map<string, number>;
+  /** Binding index for each texture_external input (zero-copy video). */
+  externalTextureBindings: Map<string, number>;
   /** Binding index for each uniform (for creating bind groups). */
   uniformBindings: Map<string, number>;
   /** Binding index for previousFrame texture, if needed. */
@@ -41,14 +43,12 @@ export interface CompiledShader {
 /**
  * Compile a user WGSL fragment shader into a GPURenderPipeline.
  *
- * The compiler injects system bindings (upstream textures + samplers,
- * scalar uniforms, previousFrame) and wraps the user code.
- *
  * @param device         The GPUDevice to create the pipeline on.
- * @param userCode       The user's WGSL fragment code (just the @fragment fn body).
+ * @param userCode       The user's WGSL fragment code.
  * @param inputPorts     Declared input ports from the parser.
  * @param upstreamMap    Map of uniform name → upstream node ID.
  * @param targetFormat   The render target format (default: rgba8unorm).
+ * @param videoInputs    Set of texture input names from video nodes (use texture_external for zero-copy).
  */
 export function compileWgslShader(
   device: GPUDevice,
@@ -56,9 +56,11 @@ export function compileWgslShader(
   inputPorts: ReadonlyArray<{ label: string; dataType: string }>,
   upstreamMap: Map<string, string>,
   targetFormat: GPUTextureFormat = 'rgba8unorm',
+  videoInputs: ReadonlySet<string> = new Set(),
 ): CompiledShader {
   const upstreamSamplers = new Map<string, string>();
   const textureBindings = new Map<string, number>();
+  const externalTextureBindings = new Map<string, number>();
   const uniformBindings = new Map<string, number>();
   const layoutEntries: GPUBindGroupLayoutEntry[] = [];
 
@@ -72,6 +74,7 @@ export function compileWgslShader(
   // Strip user binding declarations — we'll inject our own
   let processedCode = userCode
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*texture_2d\s*<\s*f32\s*>\s*;/g, '')
+    .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*texture_external\s*;/g, '')
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*sampler\s*;/g, '')
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s*<\s*uniform\s*>\s*\w+\s*:\s*[\w<>]+\s*;/g, '');
 
@@ -79,28 +82,49 @@ export function compileWgslShader(
   for (const [uniformName, sourceNodeId] of upstreamMap) {
     const port = inputPorts.find((p) => p.label === uniformName);
     if (port?.dataType === 'sampler2D') {
-      // texture
-      preamble += `@group(0) @binding(${bindingIndex}) var ${uniformName}: texture_2d<f32>;\n`;
-      layoutEntries.push({
-        binding: bindingIndex,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: 'float' },
-      });
-      textureBindings.set(uniformName, bindingIndex);
       upstreamSamplers.set(uniformName, sourceNodeId);
-      bindingIndex++;
 
-      // sampler
-      const samplerName = `${uniformName}Sampler`;
-      preamble += `@group(0) @binding(${bindingIndex}) var ${samplerName}: sampler;\n`;
-      layoutEntries.push({
-        binding: bindingIndex,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: 'filtering' },
-      });
-      bindingIndex++;
+      if (videoInputs.has(uniformName)) {
+        // Zero-copy video: texture_external — single binding, no sampler
+        preamble += `@group(0) @binding(${bindingIndex}) var ${uniformName}: texture_external;\n`;
+        layoutEntries.push({
+          binding: bindingIndex,
+          visibility: GPUShaderStage.FRAGMENT,
+          externalTexture: {},
+        });
+        externalTextureBindings.set(uniformName, bindingIndex);
+        bindingIndex++;
+
+        // Rewrite textureSample(name, nameSampler, uv) → textureSampleBaseClampToEdge(name, uv)
+        const sampleRe = new RegExp(
+          `textureSample\\s*\\(\\s*${uniformName}\\s*,\\s*${uniformName}Sampler\\s*,`,
+          'g',
+        );
+        processedCode = processedCode.replace(
+          sampleRe,
+          `textureSampleBaseClampToEdge(${uniformName},`,
+        );
+      } else {
+        // Image / render target: texture_2d<f32> + sampler (2 bindings)
+        preamble += `@group(0) @binding(${bindingIndex}) var ${uniformName}: texture_2d<f32>;\n`;
+        layoutEntries.push({
+          binding: bindingIndex,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: 'float' },
+        });
+        textureBindings.set(uniformName, bindingIndex);
+        bindingIndex++;
+
+        const samplerName = `${uniformName}Sampler`;
+        preamble += `@group(0) @binding(${bindingIndex}) var ${samplerName}: sampler;\n`;
+        layoutEntries.push({
+          binding: bindingIndex,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: 'filtering' },
+        });
+        bindingIndex++;
+      }
     } else if (port) {
-      // Scalar/vector uniform
       const wgslType = glslToWgslType(port.dataType);
       preamble += `@group(0) @binding(${bindingIndex}) var<uniform> ${uniformName}: ${wgslType};\n`;
       layoutEntries.push({
@@ -128,7 +152,7 @@ export function compileWgslShader(
     }
   }
 
-  // 3. Inject previousFrame if needed
+  // 3. Inject previousFrame if needed (always texture_2d, never video)
   if (needsFeedback) {
     preamble += `@group(0) @binding(${bindingIndex}) var previousFrame: texture_2d<f32>;\n`;
     layoutEntries.push({
@@ -151,42 +175,21 @@ export function compileWgslShader(
   const preambleLines = preamble.split('\n').filter(Boolean).length;
   const fullFragCode = preamble + processedCode;
 
-  // Create bind group layout
   const bindGroupLayout = device.createBindGroupLayout({ entries: layoutEntries });
-
-  // Create pipeline
   const vertModule = device.createShaderModule({ code: FULLSCREEN_VERT_WITH_UV });
   const fragModule = device.createShaderModule({ code: fullFragCode });
-
-  const pipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [bindGroupLayout],
-  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
 
   const pipeline = device.createRenderPipeline({
     layout: pipelineLayout,
-    vertex: {
-      module: vertModule,
-      entryPoint: 'main',
-    },
-    fragment: {
-      module: fragModule,
-      entryPoint: 'main',
-      targets: [{ format: targetFormat }],
-    },
-    primitive: {
-      topology: 'triangle-list',
-    },
+    vertex: { module: vertModule, entryPoint: 'main' },
+    fragment: { module: fragModule, entryPoint: 'main', targets: [{ format: targetFormat }] },
+    primitive: { topology: 'triangle-list' },
   });
 
   return {
-    pipeline,
-    bindGroupLayout,
-    upstreamSamplers,
-    preambleLines,
-    needsFeedback,
-    textureBindings,
-    uniformBindings,
-    previousFrameBinding,
+    pipeline, bindGroupLayout, upstreamSamplers, preambleLines, needsFeedback,
+    textureBindings, externalTextureBindings, uniformBindings, previousFrameBinding,
   };
 }
 

@@ -278,6 +278,15 @@ export class WebGPUExecutionEngine {
         }
       }
 
+      // Detect which texture inputs come from video nodes (for zero-copy external textures)
+      const videoInputs = new Set<string>();
+      for (const [portLabel, srcId] of upstreamMap) {
+        const srcNode = nodeMap.get(srcId);
+        if (srcNode?.data.type === 'input' && srcNode.data.inputMode === 'video') {
+          videoInputs.add(portLabel);
+        }
+      }
+
       try {
         const outW = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
         const outH = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
@@ -287,7 +296,7 @@ export class WebGPUExecutionEngine {
           ? (SHADER_TEMPLATES.get(node.data.shaderTemplateId)?.code ?? node.data.shaderCode)
           : node.data.shaderCode;
 
-        const compiled = compileWgslShader(device, shaderCode, node.data.inputs, upstreamMap);
+        const compiled = compileWgslShader(device, shaderCode, node.data.inputs, upstreamMap, 'rgba8unorm', videoInputs);
 
         if (compiled.needsFeedback) {
           const prevFb = prevPlan?.feedbackTargets.get(nodeId);
@@ -374,7 +383,9 @@ export class WebGPUExecutionEngine {
       }
     }
 
-    // Upload current video frames to GPU textures
+    // Video frames: still upload via copyExternalImageToTexture as a fallback texture source
+    // for ONNX nodes (which need texture_2d). Shader nodes with externalTextureBindings
+    // will import directly at bind-group time below.
     if (builtins.videoElements) {
       for (const [nodeId, video] of builtins.videoElements) {
         if (video.readyState < 2) continue;
@@ -474,9 +485,11 @@ export class WebGPUExecutionEngine {
       const entries: GPUBindGroupEntry[] = [];
       const upstreamSamplers = plan.upstreamSamplerBindings.get(nodeId);
 
-      // Texture bindings
+      // Texture bindings (texture_2d<f32> — images and render targets)
       if (upstreamSamplers) {
         for (const [uniformName, sourceNodeId] of upstreamSamplers) {
+          // Skip if this input uses texture_external (handled below)
+          if (compiled.externalTextureBindings.has(uniformName)) continue;
           const texBinding = compiled.textureBindings.get(uniformName);
           if (texBinding === undefined) continue;
           const src = plan.textureSources.get(sourceNodeId);
@@ -485,6 +498,18 @@ export class WebGPUExecutionEngine {
           const sampler = src.kind === 'target' ? src.target.sampler : src.handle.sampler;
           entries.push({ binding: texBinding, resource: view });
           entries.push({ binding: texBinding + 1, resource: sampler });
+        }
+      }
+
+      // External texture bindings (texture_external — zero-copy video)
+      if (upstreamSamplers && builtins.videoElements) {
+        for (const [uniformName, bindingIdx] of compiled.externalTextureBindings) {
+          const sourceNodeId = upstreamSamplers.get(uniformName);
+          if (!sourceNodeId) continue;
+          const video = builtins.videoElements.get(sourceNodeId);
+          if (!video || video.readyState < 2) continue;
+          const externalTex = device.importExternalTexture({ source: video });
+          entries.push({ binding: bindingIdx, resource: externalTex });
         }
       }
 
