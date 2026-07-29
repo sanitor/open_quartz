@@ -9,8 +9,8 @@
  */
 
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
-import type { Port, DataType } from '../types';
-import type { ParsedShader } from './types';
+import type { Port, DataType } from '../../types';
+import type { ParsedShader } from '../types';
 
 // ---------------------------------------------------------------------------
 // WGSL type → internal DataType mapping

@@ -72,11 +72,16 @@ export interface GraphState {
   setCaptureScreenshot: (fn: ((rendererId: string) => string | null) | null) => void;
 }
 
+type SliceSet = (fn: (state: GraphState) => void) => void;
+
 export const useGraphStore = create<GraphState>()(
-  immer((set, get) => ({
-    ...graphSlice(set, get),
-    ...transportSlice(set, get),
-    ...projectSlice(set, get),
-    ...uiSlice(set, get),
-  })),
+  immer((set, get) => {
+    const s = set as unknown as SliceSet;
+    return {
+      ...graphSlice(s, get),
+      ...transportSlice(s, get),
+      ...projectSlice(s, get),
+      ...uiSlice(s, get),
+    };
+  }),
 );

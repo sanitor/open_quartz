@@ -16,7 +16,7 @@ import { WebGPUBackend, type RenderTarget, type TextureHandle } from './gpu/WebG
 import { compileWgslShader, validateWgslShader, type CompiledShader } from './gpu/wgslCompiler';
 import { topologicalSort } from './graphExecutor';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
-import { DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
+import { DEFAULT_ONNX_MODEL_ID as _DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
 import { modelManager } from '../store/helpers';
 import { MATH_OPS } from '../catalog/mathOps';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
@@ -68,6 +68,7 @@ export interface WebGPUExecutionPlan {
 export interface BackendInterface {
   readonly device: GPUDevice;
   readonly canvas: HTMLCanvasElement;
+  init(): Promise<void>;
   setSize(width: number, height: number): void;
   createTarget(id: string, width: number, height: number, float?: boolean): RenderTarget;
   loadImageTexture(id: string, dataUrl: string): Promise<TextureHandle>;
@@ -607,7 +608,7 @@ export class WebGPUExecutionEngine {
   private async runOnnxInference(
     plan: WebGPUExecutionPlan,
     nodeId: string,
-    builtins: FrameInputs,
+    _builtins: FrameInputs,
   ): Promise<void> {
     const node = plan.nodeMap.get(nodeId);
     if (!node || !this.backend) return;
@@ -762,7 +763,7 @@ export class WebGPUExecutionEngine {
         const targetSize = node.data.onnxTargetSize ?? 640;
         const scoreThreshold = params.scoreThreshold ?? node.data.onnxScoreThreshold ?? 0.25;
         const iouThreshold = params.iouThreshold ?? node.data.onnxIouThreshold ?? 0.45;
-        const result = await runDetection(session, rgba, width, height, targetSize, scoreThreshold, iouThreshold);
+        const result = await runDetection(session, rgba, width, height, targetSize, Number(scoreThreshold), Number(iouThreshold));
         // Build overlay on a canvas from the source RGBA
         const srcCanvas = rgbaToCanvas(rgba, width, height);
         const overlayDetections = result.detections.map((d) => ({
@@ -864,6 +865,6 @@ function rgbaToCanvas(rgba: Uint8ClampedArray, width: number, height: number): H
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
-  ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+  ctx.putImageData(new ImageData(rgba as unknown as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
   return canvas;
 }

@@ -4,7 +4,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode } from '../types';
+import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
 import { parseWgslShader } from '../engine/gpu/wgslParser';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
@@ -357,7 +357,7 @@ export function graphSlice(
         node.data.shaderCode = shaderCode;
         node.data.inputDataType = dataType;
         node.data.inputs = parsed.inputs;
-        node.data.outputs = parsed.outputs.map((p) => ({ ...p, dataType: dataType }));
+        node.data.outputs = parsed.outputs.map((p: Port) => ({ ...p, dataType: dataType }));
         node.data.uniforms = {};
       });
     },

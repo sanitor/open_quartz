@@ -41,16 +41,6 @@ export type WrapMode = 'clamp' | 'repeat' | 'mirror';
 // Fullscreen triangle vertex shader (shared by all fragment shaders)
 // ---------------------------------------------------------------------------
 
-const FULLSCREEN_VERT = /* wgsl */ `
-@vertex
-fn main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4f {
-  // Fullscreen triangle: 3 vertices cover the entire clip space
-  let x = f32(i32(vertexIndex) / 2) * 4.0 - 1.0;
-  let y = f32(i32(vertexIndex) % 2) * 4.0 - 1.0;
-  return vec4f(x, y, 0.0, 1.0);
-}
-`;
-
 // With v_uv output for fragment shaders:
 export const FULLSCREEN_VERT_WITH_UV = /* wgsl */ `
 struct VertexOutput {

@@ -100,8 +100,6 @@ export class VideoSource {
 
   dispose(): void {
     this.video.pause();
-    this.texture?.dispose();
-    this.texture = null;
     if (this.stream) {
       for (const track of this.stream.getTracks()) track.stop();
       this.stream = null;

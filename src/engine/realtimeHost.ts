@@ -40,6 +40,7 @@ export function isStaticPipeline(nodes: Node<ShaderNodeData>[]): boolean {
 
 export class RealtimeHost {
   private compositor: Compositor;
+  private readonly canvas: HTMLCanvasElement;
   private clock = new Clock();
   private mouse = new MouseState();
   private rafId: number | null = null;
@@ -80,7 +81,8 @@ export class RealtimeHost {
     });
   };
 
-  constructor(private readonly canvas: HTMLCanvasElement, callbacks: HostCallbacks) {
+  constructor(canvas: HTMLCanvasElement, callbacks: HostCallbacks) {
+    this.canvas = canvas;
     this.compositor = new Compositor();
     this.callbacks = callbacks;
   }

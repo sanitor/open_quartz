@@ -25,7 +25,6 @@ export class OnnxInferenceSession {
   private _outputNames: string[] = [];
   private _buffer: ArrayBuffer | null = null;
   private _isWasm = false;
-  private _gpuDevice: GPUDevice | null = null;
   private _gpuOutputEnabled = false;
 
   get inputNames(): readonly string[] { return this._inputNames; }
@@ -59,7 +58,6 @@ export class OnnxInferenceSession {
    */
   async loadFromBuffer(buffer: ArrayBuffer, gpuDevice?: GPUDevice): Promise<void> {
     this._buffer = buffer;
-    this._gpuDevice = gpuDevice ?? null;
     if (gpuDevice) {
       await this.createSession(buffer, [{ name: 'webgpu', device: gpuDevice } as unknown as string, 'wasm'], 'gpu-buffer');
     } else {
@@ -70,7 +68,6 @@ export class OnnxInferenceSession {
   /** Load a model from a URL (blob URL or network URL). */
   async loadFromUrl(url: string, gpuDevice?: GPUDevice): Promise<void> {
     await ensureOrtLoaded();
-    this._gpuDevice = gpuDevice ?? null;
     const options: OrtModule.InferenceSession.SessionOptions = {
       executionProviders: gpuDevice
         ? [{ name: 'webgpu', device: gpuDevice } as unknown as string, 'wasm']
@@ -174,7 +171,6 @@ export class OnnxInferenceSession {
     this.session?.release();
     this.session = null;
     this._buffer = null;
-    this._gpuDevice = null;
     this._gpuOutputEnabled = false;
     this._inputNames = [];
     this._outputNames = [];
@@ -742,7 +738,7 @@ function letterboxPreprocess(
   srcCanvas.width = srcW;
   srcCanvas.height = srcH;
   const srcCtx = srcCanvas.getContext('2d')!;
-  srcCtx.putImageData(new ImageData(rgba, srcW, srcH), 0, 0);
+  srcCtx.putImageData(new ImageData(rgba as unknown as Uint8ClampedArray<ArrayBuffer>, srcW, srcH), 0, 0);
 
   ctx.drawImage(srcCanvas, Math.round(padX), Math.round(padY), newW, newH);
 

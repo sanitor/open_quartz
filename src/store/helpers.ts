@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode } from '../types';
+import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
 import { parseWgslShader } from '../engine/gpu/wgslParser';
 import type { CatalogEntry } from '../catalog/onnxCatalog';
 import { OnnxModelManager } from '../engine/onnx/modelManager';
@@ -135,7 +135,7 @@ export function makeNode(
       // Input/constant nodes produce a typed value, not a generic vec4 fragment color.
       // Override the output port type to match the node's logical data type.
       outputs: (type === 'input' || type === 'constant')
-        ? parsed.outputs.map((p) => ({
+        ? parsed.outputs.map((p: Port) => ({
             ...p,
             dataType: (type === 'input'
               ? (inputDataType ?? 'float')

@@ -67,7 +67,7 @@ export class Compositor {
     });
   }
 
-  async captureScreenshot(rendererNodeId: string): Promise<string | null> {
+  async captureScreenshot(_rendererNodeId: string): Promise<string | null> {
     // TODO: implement proper screenshot capture via WebGPU readback
     return null;
   }
