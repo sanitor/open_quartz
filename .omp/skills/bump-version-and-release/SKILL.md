@@ -107,11 +107,10 @@ gh release create v0.X.0b \
 ## Stats
 - NNNN unit tests, all passing
 - NN test files" \
-  --prerelease \
   --latest
 ```
 
-- Use `--prerelease` for beta versions (suffix `b`)
+- Do not pass `--prerelease`: GitHub cannot mark a prerelease as Latest, even when `--latest` is supplied; the `b` suffix remains the beta-version indicator
 - Always pass `--latest` so the newly published version is explicitly marked as the repository's Latest release
 - Release notes use GitHub Markdown (## headings, bold, backticks)
 - Include a Stats section with test count
@@ -127,4 +126,4 @@ gh release create v0.X.0b \
 - [ ] Annotated tag `v0.X.0b` created
 - [ ] Pushed to origin with tags
 - [ ] GitHub release created with release notes
-- [ ] GitHub release explicitly marked as Latest (`--latest`)
+- [ ] GitHub release is not a prerelease and is explicitly marked as Latest (`--latest`)
