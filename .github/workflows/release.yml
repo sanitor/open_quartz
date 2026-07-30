@@ -29,6 +29,13 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
 
       - name: Build and upload
         uses: tauri-apps/tauri-action@v1
@@ -40,4 +47,4 @@ jobs:
           releaseBody: |
             See [CHANGELOG.md](https://github.com/sanitor/open_quartz/blob/master/CHANGELOG.md) for full release notes.
           releaseDraft: false
-          prerelease: true
+          prerelease: false
