@@ -3,7 +3,7 @@ import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
 import { linter, type Diagnostic } from '@codemirror/lint';
 import { wgsl } from '@iizukak/codemirror-lang-wgsl';
-import { parseWgslShader } from '../../engine/gpu/wgslParser';
+import { parseWgslShader } from '../../sdk/wgslParser';
 import { validateWgslEdit } from '../../engine/gpu/wgslCompiler';
 
 interface ShaderEditorProps {
@@ -24,7 +24,7 @@ const wgslLinter = linter(async (view): Promise<Diagnostic[]> => {
   const code = view.state.doc.toString();
   if (!code.trim()) return [];
 
-  // 1. wgsl_reflect parse — catches gross syntax errors immediately
+  // 1. Rust/naga parse — catches gross syntax errors immediately
   const parsed = parseWgslShader(code);
   if (parsed.parseError) {
     return [{ from: 0, to: code.length, severity: 'error', message: parsed.parseError }];

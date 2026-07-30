@@ -5,7 +5,7 @@ import {
   addEdge,
 } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
-import { parseWgslShader } from '../engine/gpu/wgslParser';
+import { parseWgslShader } from '../sdk/wgslParser';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
@@ -335,7 +335,7 @@ export function graphSlice(
         if (data.shaderCode !== undefined) {
           const parsed = parseWgslShader(data.shaderCode, node.data.inputs, node.data.outputs);
           node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
-          // Surface wgsl_reflect syntax errors immediately
+          // Surface Rust/naga syntax errors immediately
           if (parsed.parseError) {
             state.nodeErrors[id] = parsed.parseError;
           } else {

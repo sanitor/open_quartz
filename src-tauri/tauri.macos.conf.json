@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "runtime/ffmpeg": "runtime/ffmpeg",
+      "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt"
+    }
+  }
+}

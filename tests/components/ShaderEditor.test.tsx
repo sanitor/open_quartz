@@ -58,7 +58,7 @@ vi.mock('@codemirror/lint', () => ({
   linter: vi.fn(() => Symbol('linter')),
 }));
 
-vi.mock('../../src/engine/gpu/wgslParser', () => ({
+vi.mock('../../src/sdk/wgslParser', () => ({
   parseWgslShader: vi.fn(() => ({ inputs: [], outputs: [], raw: '', parseError: undefined })),
 }));
 

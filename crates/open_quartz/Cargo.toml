@@ -1,0 +1,32 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "open_quartz"
+version = "0.17.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Rust SDK for the OpenQuartz realtime heterogeneous video pipeline"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+naga = { version = "27", features = ["wgsl-in"] }
+regex = "1.12"
+futures-channel = "0.3"
+wgpu = { version = "27", default-features = false, features = ["wgsl", "webgpu", "gles", "vulkan", "dx12", "metal"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray", "load-dynamic"] }
+ort-sys = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
+
+[dev-dependencies]
+pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.121"

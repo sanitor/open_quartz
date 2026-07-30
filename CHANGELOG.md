@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.17.0b] -- 2026-07-29
+
+### Features
+
+- **Dual-target Rust SDK** — added the `open_quartz` crate for native and WASM with shared graph types, topology/dirty planning, WGSL parsing/compilation, typed frame planning, resource generations, structured lifecycle events, GPU resource primitives, and ONNX pre/postprocessing.
+- **Rust-backed production WGSL parser** — `naga` now powers Header catalog parsing, Shader Editor diagnostics, SidePanel descriptions, graph updates, and node creation through the synchronous WASM SDK adapter; the legacy TypeScript parser and `wgsl_reflect` dependency were removed.
+- **Native GPU runtime capability** — added a Rust `GpuExecutor`, dedicated Tauri output window/surface, DX12/Metal/Vulkan selection, retained pipelines/targets/feedback resources, and a Rust-owned render thread with low-frequency control IPC. The production `PipelineService` still uses the browser `RealtimeHost`; native cutover remains a later stage.
+- **Native resource/output parity** — image/video payloads are separated from graph metadata, native RGBA textures are uploaded and reused by descriptor, selected previews and screenshots use explicit readback, and frame events carry metadata rather than pixels.
+- **Native ONNX provider layer** — native ORT sessions support CPU and Windows DirectML with explicit fallback policy, model-ID loading from app data, and capability reporting that correctly leaves shared wgpu/ORT device interop disabled.
+- **Bundled native video runtime** — Tauri packages FFmpeg and its notice; native threads decode file/camera sources with loop, rate, pause/resume, camera discovery, generation-tagged frame slots, and no decoded-frame WebView IPC.
+- **Deterministic SDK startup and packaging** — the generated WASM SDK initializes before React, Vitest loads the real Node binding in global setup, and Windows bundles include ORT, DirectML, FFmpeg, and license resources.
+
+### Fixes
+
+- **Vite generated SDK loading** — load the generated public WASM package through a fully qualified runtime URL so Vite does not treat it as a source dependency.
+- **Native video frame reuse** — restore the fixed-size decoder buffer after every swap so later generations cannot publish zero-byte frames.
+- **Video-to-image resource replacement** — detach stale native video before replacement image upload so cleanup cannot remove the new texture.
+
+### Documentation
+
+- **Architecture baseline** — rewrote `docs/DESIGN.md` top-down around the editor/runtime/host boundaries, current browser production path, native capability path, ownership rules, FFI/resource contracts, migration gaps, and Stage F/G gates.
+- **Release automation** — GitHub releases are explicitly created with `--latest`, and the shared Rust SDK version is included in the synchronized version checklist.
+
+### Tests
+
+- **976 unit tests + 56 shader/pipeline tests**, all passing.
+- **Rust/native contracts** — 48 core tests plus 3 Tauri media tests cover graph/FFI lifecycle, GPU execution, feedback preservation, native ONNX, multi-frame FFmpeg decode, resource replacement, and camera metadata parsing.
+- **Runtime smoke** — generated WASM loads in Node/Chromium; native DX12 image and video pipelines validate output pixels; bundled DirectML identity returns `7`; Windows MSI and NSIS bundles include all runtime assets.
+
 ## [0.16.0b] -- 2026-07-29
 
 ### Features

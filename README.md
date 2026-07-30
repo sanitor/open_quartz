@@ -21,7 +21,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 | Node | Type | Output | Description |
 |------|------|--------|-------------|
 | **Image** | Input | `sampler2D` | Load images as GPU textures. Drag-and-drop or file picker. |
-| **Video** | Input | `sampler2D` | Camera or video file input via `VideoTexture`. Auto-updates each frame. |
+| **Video** | Input | `sampler2D` | Camera or video file input via browser HTML media; native FFmpeg decoding is available in the Tauri capability runtime. |
 | **Framebuffer** | Input | `sampler2D` | Raw binary dump files with configurable format (RGBA8/RGBA32F/RG8/RG32F/R8/R32F/NV12), width, height, stride. |
 | **Time** | System | `float` | Elapsed time in seconds since Play. |
 | **Time Delta** | System | `float` | Frame delta time. |
@@ -72,7 +72,7 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 
 | Node | Input | Description |
 |------|-------|-------------|
-| **Renderer** | `sampler2D` | Explicit output viewer (Quartz Composer QCView equivalent). In-place preview, fullscreen live view, frame capture as PNG. |
+| **Renderer** | `sampler2D` | Explicit output viewer (Quartz Composer QCView equivalent) with in-place preview and fullscreen output mirror. |
 
 ## Features
 
@@ -81,7 +81,7 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 - **Host/Compositor architecture** inspired by Quartz Composer's QCRenderer
 - **Shadertoy-compatible builtin uniforms**: `iTime`, `iTimeDelta`, `iFrame`, `iDate`, `iMouse`, `iResolution`
 - **Static pipeline optimization** — graphs without time-varying inputs render one frame then stop; async texture loads awaited before first render
-- **GPU-only output path** — no `readPixels` in the realtime loop; preview via mirror canvas blit
+- **GPU-first output path** — the main realtime output stays on GPU; only the selected preview or an explicit screenshot/output request performs readback
 - **Feedback / Accumulator** — per-node ping-pong render targets with `previousFrame` uniform for temporal effects (reaction-diffusion, trails, fluid sim)
 
 ### Node Graph Editor
@@ -110,6 +110,16 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 - Native desktop application via Tauri 2
 - Custom titlebar (macOS traffic lights, Windows min/max/close)
 - Video file persistence via asset protocol
+- Native Rust GPU capability runtime with a dedicated output window, DX12/Metal/Vulkan backend selection, FFmpeg media decoding, and CPU/DirectML ONNX sessions
+- Native resource and model payloads are separated from graph metadata; decoded video frames and per-frame render commands never cross WebView IPC
+- Production UI currently remains on the browser `RealtimeHost`; native graph cutover is gated on ONNX execution parity
+
+### Rust SDK and Structured Runtime
+- Dual-target `open_quartz` crate for native and WASM graph semantics
+- Rust-backed production WGSL parser/compiler validation via `naga`
+- Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, and feedback state preservation
+- Native `wgpu` pipeline/target/readback primitives and a Tauri-owned render thread
+- Structured SDK capabilities, errors, lifecycle, and bounded events
 
 ## Getting Started
 
@@ -123,7 +133,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 959 unit tests (fast, CI gate)
+npm test               # 976 unit tests (fast, CI gate)
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```
@@ -143,23 +153,23 @@ npm run build          # output to dist/
 
 ## Tech Stack
 
-React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · Immer · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
+React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · Rust · wgpu 27 · naga · ort · FFmpeg · onnxruntime-web/node
 
 ## Roadmap
 
-### Full GPU Pipeline (primary focus)
+### Rust SDK and native runtime
 
-The current pipeline uses a single shared `GPUDevice` for all shaders (WGSL), ONNX inference, and video texture upload. Phases 1–4 are complete. The goal is a **zero-copy datapath**: compute post-processing and 3D rendering all share one `GPUDevice`, with data never leaving VRAM.
+Open Quartz is migrating shared graph semantics into Rust while retaining host-specific browser and Tauri GPU/media implementations. The current production UI still uses the browser runtime; native cutover is explicit rather than an invisible fallback.
 
-| Phase | What | Status |
+| Stage | What | Status |
 |-------|------|--------|
-| **1. Delete Rust WASM** | Rewrite YOLO decode + NMS in TypeScript, remove `rust/crates/`, `wasm-pack` | ✅ Done |
-| **2. WebGPU rendering layer** | Pure WebGPU 2D shader pipeline (WGSL), `GPUDevice` shared with ORT | ✅ Done |
-| **3. WGSL migration** | 31 shader presets → WGSL, parser/compiler adapted, CodeMirror WGSL highlighting | ✅ Done |
-| **4. ORT I/O binding** | ONNX inference shares `GPUDevice`, `preferredOutputLocation: 'gpu-buffer'`, ONNX nodes wired into render pipeline | ✅ Done |
-| **5. Compute shader post-processing** | Decode/NMS/argmax as compute shaders + `tensor` data type | ⏸ Paused — CPU post-processing works, GPU compute is perf-only |
-| **6. Post-processing nodes** | Decode/NMS as composable graph nodes, detection pipeline user-configurable | Planned |
-| **7. 3D scene nodes** | GLTF/OBJ loading, PBR materials, lights, camera — Quartz Composer 3D patch parity | Planned |
+| **A. Structured FFI contract** | API version/capabilities, typed errors/events, WASM package | Done |
+| **B. Stateless cutover** | Rust `naga` parser used by production UI | Done |
+| **C. Stateful Engine core** | Revisions, generations, dirty execution, typed frames, lifecycle | Done |
+| **D. Native GPU runtime** | Rust render thread, `GpuExecutor`, native surface/output window | Done |
+| **E. Native resource/output parity** | Image/video resources, FFmpeg, preview/screenshot readback, packaging | Done |
+| **F. Native ONNX graph cutover** | Texture/tensor execution, async completion, six-task parity | In progress |
+| **G. Production switch** | `PipelineService` selects one explicit runtime per host | Planned |
 
 ### Quartz Composer parity
 

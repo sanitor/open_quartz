@@ -7,7 +7,7 @@ import { ImageLightbox } from '../ImageLightbox';
 import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '../../types';
 import { generateRawPreview } from '../../utils/rawPreview';
 import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
-import { parseWgslShader } from '../../engine/gpu/wgslParser';
+import { parseWgslShader } from '../../sdk/wgslParser';
 import { MENU_ICONS } from '../NodeGraph/nodes/NodeShell';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [

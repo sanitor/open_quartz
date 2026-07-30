@@ -7,7 +7,7 @@ import type { DataType, InputMode, ShaderNodeData } from '../types';
 import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../catalog/shaders'
 import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../catalog/onnxCatalog';
 import { MATH_CATEGORIES, MATH_OPS } from '../catalog/mathOps';
-import { parseWgslShader } from '../engine/gpu/wgslParser';
+import { parseWgslShader } from '../sdk/wgslParser';
 
 const isMac = navigator.platform.startsWith('Mac');
 

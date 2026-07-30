@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
-import { parseWgslShader } from '../engine/gpu/wgslParser';
+import { parseWgslShader } from '../sdk/wgslParser';
 import type { CatalogEntry } from '../catalog/onnxCatalog';
 import { OnnxModelManager } from '../engine/onnx/modelManager';
 import { OnnxInferenceSession } from '../engine/onnx/inference';

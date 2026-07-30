@@ -1,1407 +1,1136 @@
-# OpenQuartz — 实时异构视频管线编辑框架
+# Open Quartz 架构设计
 
-> Version 0.11.0b — GPU shaders, neural networks, and CPU math in one reactive graph
+> 面向实时异构视频管线的图编辑器与双宿主运行时
+>
+> 文档状态：架构基线（2026-07-30）
+>
+> 本文描述**当前真实实现、目标边界和迁移缺口**。`已实现`、`迁移中`、`目标`三种状态必须显式区分；目标设计不能被误读为已接入生产路径。
 
----
-
-## 1. 项目概述
-
-OpenQuartz 是一个基于 Web 的实时异构视频管线编辑框架，受 Apple Quartz Composer、Shadertoy 和 chaiNNer 启发。
-
-- **异构计算**：GPU shader（WebGL2）、ONNX 神经网络推理（WebGPU/WASM）、CPU 数学运算，三种执行后端统一在一个可视化节点图（DAG）中
-- **实时管线**：rAF 驱动的 Host/Compositor 架构，60fps interactive frame rate
-- **Shader 即接口声明**：解析 GLSL `uniform` 自动生成输入端口，`out` 生成输出端口
-- **Feedback/Accumulator**：shader 通过 `previousFrame` 隐式声明式读取自身上一帧输出，引擎自动启用 ping-pong 双缓冲
-- 支持摄像头/视频文件/图片/原始 framebuffer 作为输入源
-- 支持**工程文件保存/载入**：`.quartz.json` 格式
-- Tauri 2 桌面端（macOS/Windows）+ 纯 Web 浏览器模式
----
-
-## 2. 交互设计原则
-
-- **macOS 菜单栏风格**：顶部工具栏全大写粗体小字，无边文字按钮，hover 变蓝
-- **极简白底**：纯白背景 #ffffff，深灰主文字 #1d1d1f，辅助灰 #86868b/#aeaeb2
-- **节点卡片式**：白底圆角 + 薄灰边框 + 顶部彩色 header 标识类型（紫=shader，蓝=input，红=output）
-- **节点图区**：浅灰底 #e0e0e0 + 十字交叉网格，与右侧白底面板区分
-- **实时反馈**：选中节点蓝框 + 阴影，连线贝塞尔曲线，右侧面板即时编辑
+**阅读顺序**：0–3 给出系统结论、上下文和边界；4–7 定义数据、生命周期、执行和资源；8–11 分解两个宿主、SDK 与 ONNX；12–17 描述应用、运维和验证；18–19 记录迁移状态与架构治理规则。
 
 ---
 
-## 3. 技术栈
+## 0. 设计结论
 
-| 层 | 选型 | 版本 |
+Open Quartz 是一个以有向无环图（DAG）表达实时媒体处理逻辑的编辑器。一个图可以包含：
+
+- WGSL shader：纹理、标量、向量和系统 uniform；
+- image、framebuffer、video、system input；
+- CPU math 节点；
+- ONNX 推理节点；
+- renderer terminal 节点；
+- feedback/accumulator 跨帧状态。
+
+系统由三个边界组成：
+
+1. **编辑器边界**：React、React Flow、Zustand 只负责图编辑、项目管理、控制状态和结果展示。
+2. **运行时边界**：`PipelineService` 把 Store 状态翻译成 runtime 生命周期、graph 更新、resource 操作和结果事件。
+3. **宿主边界**：browser 与 Tauri 使用不同的时钟、媒体、GPU 和 ONNX 实现，但共享 graph、WGSL、计划、状态和错误语义。
+
+当前生产路径仍是 browser runtime：
+
+```text
+React UI
+  -> Zustand Store
+  -> PipelineService
+  -> RealtimeHost
+  -> Compositor
+  -> WebGPUExecutionEngine / browser ONNX
+```
+
+Tauri native runtime 已经具备真实 DX12 GPU surface、Rust render thread、native video、native resource readback 和 native ONNX session，但尚未由 `PipelineService` 选择为生产路径：
+
+```text
+Tauri WebView UI
+  -> NativePipelineRuntime
+  -> Tauri commands/events
+  -> Rust render thread
+  -> Engine / ExecutionPlan / GpuExecutor
+  -> native wgpu surface + native ORT
+```
+
+这不是两个独立产品。目标是共享语义、分离宿主实现，而不是强迫两个宿主共享不可移植的 GPU 对象。
+
+---
+
+## 1. 目标、非目标与约束
+
+### 1.1 目标
+
+1. 让用户以图的方式组合 shader、媒体、数学运算和 AI 推理。
+2. 让静态图只执行必要的 render pass，让动态图按宿主时钟连续执行。
+3. 让 graph metadata、GPU resource、媒体解码器和 ONNX session 具有清晰的所有权。
+4. 让 browser 和 Tauri 共享 graph contract、WGSL contract、执行计划和可观察事件。
+5. 让高频 frame path 保持宿主本地：不把每帧 command、JSON 或像素发送到 WebView。
+6. 让 graph hot update 尽可能保留未变化的 pipeline、target、feedback 和媒体资源。
+7. 让失败可定位到 node、revision、resource generation 或宿主 capability。
+
+### 1.2 非目标
+
+- 不把 Tauri WebView 当作 native GPU canvas。native 最终输出使用独立 output window。
+- 不把 browser `GPUTexture`、Tauri `wgpu::Texture`、ONNX session 或 FFmpeg child process 序列化到项目文件。
+- 不把 native wgpu device 与 DirectML device interop 描述成已完成的零拷贝能力；当前 capability 明确为不共享。
+- 不为未来 3D patch、分布式渲染或多进程图执行提前设计协议。Three.js 依赖存在，但不是当前 2D pipeline 的执行核心。
+- 不在 browser 与 native 之间共享宿主对象；只共享可序列化的 graph、plan、输入和事件语义。
+
+### 1.3 硬约束
+
+| 约束 | 规则 |
+|---|---|
+| 高频路径 | browser 使用 `requestAnimationFrame`；native 使用 Rust render thread；两者都不发送每帧 JSON command |
+| 大资源 | image 使用 raw RGBA upload；video 使用宿主 decoder；model 使用 model ID/path；禁止把 bytes 放入 graph snapshot |
+| GPU 所有权 | 一个 runtime 独占自己的 GPU object；Store 不应保存 native GPU object |
+| Graph | 节点 ID 稳定；edge handle 决定端口连接；拓扑和 node data 变化才触发 plan rebuild |
+| Feedback | shader 声明 `previousFrame` 才启用 ping-pong；位置变化不能清空反馈状态 |
+| Output | 最终输出不逐帧经过 WebView；preview/screenshot 是显式、按需的 readback |
+| 协议 | FFI/Tauri 错误必须保留结构化 code、message、nodeId/details |
+
+---
+
+## 2. 系统上下文
+
+### 2.1 用户可见系统
+
+```mermaid
+flowchart LR
+    User[用户] --> Editor[React 图编辑器]
+    Editor --> Store[Zustand GraphState]
+    Store --> Service[PipelineService]
+    Service --> Browser[Browser Runtime]
+    Service --> Native[Native Runtime]
+    Browser --> BrowserOutput[隐藏 WebGPU canvas / preview]
+    Native --> NativeOutput[独立 native output window]
+```
+
+编辑器的主窗口是控制面：节点、连线、参数、项目文件、播放状态和 preview 选择。运行时是数据面：graph 编译、GPU submission、媒体解码、推理和 output 资源。
+
+### 2.2 两种宿主拓扑
+
+#### Browser：当前生产路径
+
+```text
+Browser document
+  ├── React UI
+  │     ├── Header
+  │     ├── NodeGraph
+  │     └── SidePanel
+  ├── Zustand GraphState
+  ├── PipelineService
+  ├── RealtimeHost
+  │     ├── Clock
+  │     ├── MouseState
+  │     ├── HTMLVideoElement / VideoSource
+  │     └── Compositor
+  │           └── WebGPUExecutionEngine
+  └── browser ONNX session
+        ├── onnxruntime-web WebGPU EP
+        └── onnxruntime-web WASM fallback
+```
+
+browser runtime 在隐藏 canvas 上执行 WebGPU，renderer mirror/preview 由 `RealtimeHost` 转发到 UI。browser 的最终 screenshot 仍未完成真正的异步 WebGPU readback：`Compositor.captureScreenshot()` 当前返回 `null`，不能写成已实现能力。
+
+#### Tauri：native capability path
+
+```text
+Tauri main window / WebView
+  ├── React UI
+  ├── NativePipelineRuntime
+  │     ├── graph metadata command
+  │     ├── image raw-byte command
+  │     ├── video resource command
+  │     ├── preview/readback command
+  │     └── frame/error event listener
+  └── Tauri command/event bridge
+          │
+          ▼
+Rust native render thread
+  ├── NativeGpuRuntime
+  │     ├── Engine::new_native()
+  │     ├── ExecutionPlan
+  │     ├── GpuExecutor
+  │     ├── native video sources / FFmpeg
+  │     └── SurfacePresenter
+  ├── wgpu Device + Queue
+  ├── native output Window / Surface
+  └── NativeOnnxState
+        └── ort CPU / DirectML sessions
+```
+
+native output window与 WebView 解耦。WebView 不需要持有 `wgpu::Surface`、`wgpu::Texture` 或 decoder frame。
+
+---
+
+## 3. 分层架构与依赖规则
+
+### 3.1 分层
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Presentation                                                │
+│ React components / React Flow / CSS                         │
+├──────────────────────────────────────────────────────────────┤
+│ Application state                                            │
+│ Zustand GraphState / slices / project persistence            │
+├──────────────────────────────────────────────────────────────┤
+│ Application orchestration                                    │
+│ PipelineService                                              │
+├──────────────────────────────────────────────────────────────┤
+│ Runtime adapters                                             │
+│ RealtimeHost adapter     NativePipelineRuntime adapter       │
+├──────────────────────────────────────────────────────────────┤
+│ Shared semantics                                             │
+│ Rust graph / plan / WGSL / FFI contract / error / events     │
+├──────────────────────────────────────────────────────────────┤
+│ Host implementations                                         │
+│ WebGPU + HTML media + browser ORT    wgpu + FFmpeg + ort     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 目录职责
+
+| 目录 | 责任 | 不应负责 |
 |---|---|---|
-| UI 框架 | React | 19 |
-| 节点图 | @xyflow/react | 12 |
-| Shader 编辑器 | CodeMirror | 6 |
-| WebGL 渲染 | Three.js | 最新 |
-| State 管理 | Zustand | 最新 |
-| 构建 | Vite | 8 |
-| TypeScript | — | 6 |
-| CSS | Tailwind CSS | 4 |
+| `src/components` | UI 展示、用户输入、节点编辑 | 直接创建 runtime、直接读 GPU texture |
+| `src/store` | graph、项目、播放、UI 选择、错误和 preview 状态 | 执行 shader、拥有 native resource |
+| `src/services` | Store 与 runtime 的唯一 orchestration 层 | 编译 shader 或实现 GPU backend |
+| `src/engine` | browser runtime 的 clock、video、Compositor、WebGPU、browser ONNX | 读取 Tauri state；反向 import Store |
+| `src/sdk` | WASM parser/client、native Tauri adapter、边界类型 | 业务 UI 状态管理 |
+| `src/catalog` | shader、math、ONNX 静态注册表 | 持有 GPU/session 生命周期 |
+| `crates/open_quartz/src/types` | Rust graph/project/node/port schema | 宿主 UI 状态 |
+| `crates/open_quartz/src/graph` | 拓扑、dirty set、graph plan 原语 | GPU submission |
+| `crates/open_quartz/src/wgsl` | WGSL parse、compile、validate | React/UI 状态 |
+| `crates/open_quartz/src/engine` | typed frame、execution plan、dirty execution、feedback state | native surface 生命周期 |
+| `crates/open_quartz/src/gpu` | wgpu device/backend、targets、pipelines、upload/readback | Tauri command registration |
+| `crates/open_quartz/src/onnx` | native ORT provider、tensor preprocess/postprocess | Tauri WebView events |
+| `src-tauri/src` | window、IPC、native render thread、FFmpeg process、resource packaging | React graph editing |
+
+### 3.3 依赖方向
+
+允许的方向：
+
+```text
+components -> store / services / catalog
+store      -> types / catalog / utils / sdk parser
+services   -> store + runtime host
+engine     -> types / catalog / sdk parser contract
+sdk        -> types / contract / Tauri bridge
+Rust       -> Rust types / graph / wgsl / engine / gpu / onnx
+Tauri      -> open_quartz + Tauri APIs + native media
+```
+
+禁止的方向：
+
+- `executionEngine.ts`、`RealtimeHost`、Rust engine 直接 import Zustand store；
+- component 直接调用 `invoke()`；
+- Store 保存 `wgpu`/WebGPU pipeline、texture、surface、FFmpeg child 或 ONNX session；
+- Rust render thread通过 React callback 直接更新 UI；
+- runtime 用字符串匹配错误替代结构化错误码。
+
+### 3.4 当前迁移债务
+
+当前代码仍存在两个需要收敛的边界：
+
+1. `PipelineService` 直接持有 `RealtimeHost`，尚未根据宿主 capability 选择 `NativePipelineRuntime`。
+2. `src/sdk/PipelineRuntime.ts` 定义的早期 `PipelineRuntime` 形状与 `RealtimeHost`、`NativePipelineRuntime` 的实际异步资源 API 尚未完全统一。
+
+后续应建立一个真实可实现的 runtime facade，而不是继续让两个 adapter 各自扩展不兼容的方法集合。
 
 ---
 
 ## 4. 核心数据模型
 
+### 4.1 GraphState
+
+Zustand `GraphState` 当前包含：
+
+- `nodes: Node<ShaderNodeData>[]`；
+- `edges: Edge[]`；
+- `selectedNodeId`、`activeRendererId`；
+- project name/path；
+- output preview/data、node errors；
+- `loopState`、fps、current time/frame；
+- undo/redo history；
+- screenshot callback。
+
+`gpuDevice` 目前仍用于 browser edit-time shader validation；它不是 graph serialization 的一部分，也不是 native runtime 状态。长期目标是把 validation device 从 Store 移到 validation service，删除 UI state 对 GPU object 的依赖。
+
+### 4.2 节点与端口
+
+当前 `ShaderNodeData` 的主要节点类型：
+
 ```typescript
-type GlslDataType =
-  | 'float' | 'int' | 'uint' | 'bool'
-  | 'vec2' | 'vec3' | 'vec4'
-  | 'ivec2' | 'ivec3' | 'ivec4'
-  | 'uvec2' | 'uvec3' | 'uvec4'
-  | 'bvec2' | 'bvec3' | 'bvec4'
-  | 'mat2' | 'mat3' | 'mat4'
-  | 'sampler2D' | 'samplerCube';
+type NodeType =
+  | 'shader'
+  | 'input'
+  | 'constant'
+  | 'onnx'
+  | 'renderer'
+  | 'math';
+```
 
-// 非 GLSL 逻辑类型，可在 DAG 中流动但不能被 GLSL 采样
-type LogicalDataType = 'roi' | 'mesh' | 'json';
+端口 data type 分为：
 
-type DataType = GlslDataType | LogicalDataType | 'auto';
+- GPU/WGSL 类型：`float`、`int`、`uint`、`bool`、`vec*`、`mat*`、`sampler2D` 等；
+- 逻辑类型：`roi`、`mesh`、`json`；
+- `auto`：Math 节点用于宽类型连接。
 
-type InputMode = 'image' | 'framebuffer' | 'video' | 'system';
+输入 mode：
 
-interface Port {
-  id: string;
-  label: string;
-  dataType: DataType;
-  direction: 'input' | 'output';
-  defaultValue?: unknown;
+- `image`：image resource；
+- `framebuffer`：指定尺寸/格式的 GPU target；
+- `video`：browser HTML video 或 native FFmpeg source；
+- `system`：time、delta、frame、mouse、resolution。
+
+### 4.3 Graph semantics
+
+- graph 是节点和 edge 的有向图；
+- execution plan 对 graph 做拓扑排序；
+- cycle 被记录为 `cycle`，不能假设循环图拥有完整拓扑序；
+- input/constant/shader/onnx/renderer/math 对应不同执行命令；
+- renderer 是优先输出节点；若没有 renderer，则使用没有 downstream edge 的 terminal node；
+- 未连接的 builtin port 从 frame inputs 填充；已连接的 port 优先使用 upstream texture/value；
+- `previousFrame` 是 feedback 声明，不是普通输入 port。
+
+### 4.4 Graph snapshot 与 resource descriptor
+
+graph snapshot 只应保存可持久化 metadata：
+
+```text
+node id/type/position
+node data: shader template、ports、uniform values、resource key/path、尺寸/格式
+edges: source/sourceHandle/target/targetHandle
+```
+
+不允许保存：
+
+```text
+GPUTexture / GPUBuffer / wgpu::Texture / wgpu::Buffer
+HTMLVideoElement / FFmpeg Child / ORT Session
+raw decoded pixels / output readback bytes
+```
+
+Native adapter 在 `setGraph` 前调用 `stripGraphResourcePayloads()`，把 image/video 大 payload 从 graph JSON 中移除；resource bytes 和 decoder descriptor 随后通过独立命令提交。browser 当前仍直接从 browser graph metadata 建立 HTML/WebGPU resource，未来应统一为相同的 resource descriptor API。
+
+---
+
+## 5. 生命周期与状态机
+
+### 5.1 Application 生命周期
+
+```text
+App mount
+  -> PipelineService.attach(canvas)
+  -> subscribe GraphState
+  -> user PLAY
+  -> create runtime / initialize GPU
+  -> setGraph + reconcile resources
+  -> play / render
+  -> graph hot update, preview selection, pause/resume
+  -> STOP
+  -> release video, GPU plan, callbacks, device references
+  -> App unmount -> detach
+```
+
+`App.tsx` 当前只创建 `PipelineService`、挂载 hidden canvas、渲染 UI。服务必须在 unmount 时取消 Store subscription；runtime 必须在 stop/close 时停止 frame loop 和异步 resource listener。
+
+### 5.2 Shared Engine state
+
+Rust `Engine` 状态：
+
+```text
+empty -> ready -> running -> paused -> stopped -> disposed
+```
+
+主要操作：
+
+- `setGraph`：解析 graph、建立 execution plan、增加 revision、更新 node generations；
+- `markDirty`：标记节点及其 downstream；
+- `runFrame`：接收 typed frame inputs，生成内部 execution commands；
+- `pause/resume/stop`：只改变合法生命周期状态和执行策略；
+- `drainEvents`：取出结构化 engine events；
+- `dispose`：终止后续执行和旧 generation 的事件。
+
+### 5.3 Graph revision 与 node generation
+
+- `revision` 表示 graph snapshot 版本；
+- `node generation` 表示 node resource/semantic contract 的版本；
+- position-only graph update 不应增加需要重建 GPU resource 的 generation；
+- shader code、ports、edges、尺寸、格式或 source descriptor 改变时，相关 node 及 downstream 变 dirty；
+- 删除 node 必须释放其 texture、target、video source、session 和 pending async work。
+
+### 5.4 Browser scheduling
+
+`RealtimeHost` 根据图判断 static/dynamic：
+
+- video、动态 system source、`iTime`/`iFrame`/`iMouse` 或 feedback 会使 pipeline dynamic；
+- static pipeline 在资源加载完成后执行单帧，并在 async ONNX 完成时安排补帧；
+- dynamic pipeline 使用 `requestAnimationFrame` 连续执行；
+- `Clock` 提供 time、delta、frame、date；`MouseState` 提供 mouse；
+- pause 会冻结 clock 和 video；resume 恢复；stop 取消 RAF、销毁 video 和 compositor。
+
+### 5.5 Native scheduling
+
+Tauri native render worker：
+
+- Rust thread 约 16 ms tick；
+- `playing=true` 时调用 `NativeGpuRuntime::render_next()`；
+- video frames 在 render thread 内从 decoder slot 上传到 GPU；
+- `Engine::run_frame` 生成命令；`GpuExecutor::execute_commands` 消费命令；
+- `SurfacePresenter` 把最终 texture呈现到 native output window；
+- 每 6 帧发送一次 `native-runtime-frame` metadata event；错误发送 `native-runtime-error` 并停止播放；
+- frame command 不通过 Tauri IPC 返回给 WebView。
+
+---
+
+## 6. 图编译与执行
+
+### 6.1 统一计划生成
+
+Rust `build_execution_plan_with_options()` 执行：
+
+```text
+ProjectNode[] + Edge[]
+  -> graph node/edge representation
+  -> topological sort
+  -> upstream port map
+  -> connected builtin detection
+  -> target size/format resolution
+  -> WGSL compile
+  -> WGSL validation
+  -> feedback detection
+  -> output node selection
+  -> ExecutionPlan
+```
+
+`ExecutionPlan` 包含：
+
+- `sorted_ids`；
+- `NodeExecutionPlan[]`；
+- upstream mapping；
+- builtin ports；
+- target dimensions/format；
+- compiled shader and validation errors；
+- feedback flag；
+- output nodes；
+- default size；
+- cycle flag。
+
+browser 当前还保留独立的 `WebGPUExecutionEngine.prepare()` 逻辑；Rust plan 已用于 WASM contract 和 native runtime。Stage F/G 前应继续消除 browser/native 的计划语义漂移，但不能让 browser GPU object 进入 Rust。
+
+### 6.2 Dirty execution
+
+Rust `ExecutionEngine` 保持：
+
+- `DirtySet`；
+- feedback read/write index；
+- first-frame clear 标记；
+- math scalar cache；
+- node list 和 execution plan。
+
+每帧只取按拓扑序排列的 dirty nodes。动态节点自动 dirty；上游 resource upload 会显式 `mark_dirty`。shader、math、onnx、renderer 生成不同的 `ExecutionCommand`。
+
+### 6.3 Shader execution
+
+WGSL compile contract 负责：
+
+1. 从用户 code 和 ports 建立 binding plan；
+2. 注入 system uniforms、sampler、texture、feedback bindings；
+3. 对 native video 输入选择普通 sampled texture；
+4. 对 browser video 保留 `texture_external` 语义；
+5. 去除冲突的用户声明；
+6. 通过 `naga` 验证并返回 source mapping/diagnostics。
+
+Rust parser 已由 `src/sdk/wgslParser.ts` 作为同步 production parser 使用：`main.tsx` 在 React mount 前调用 `initializeSdk()`，后续 `parseWgslShader()` 通过 `requireSdk()` 使用 WASM binding。
+
+### 6.4 Feedback
+
+feedback shader 通过引用 `previousFrame` 声明跨帧状态：
+
+```text
+frame N:
+  feedback[read] -> shader -> feedback[write]
+  swap(read, write)
+```
+
+首帧清空由 `feedbackClearColor`/plan 决定。position-only graph update 必须保留 feedback indices 和 GPU ping-pong texture；shader contract、尺寸、格式改变时才重建。
+
+### 6.5 Math、input、ONNX、renderer
+
+| 节点 | 计划阶段 | 执行阶段 |
+|---|---|---|
+| input | resource/constant descriptor | 标记 resource ready；不产生 shader command |
+| math | 保留 upstream scalar mapping | CPU 计算，缓存 scalar output |
+| shader/constant | compile、bindings、target、feedback | GPU render pass |
+| ONNX | 计划 input/output contract | browser 已接入；native session 已接入但尚未接入 graph texture/tensor path |
+| renderer | 选择 output target | browser mirror/native surface present |
+
+---
+
+## 7. 资源架构
+
+### 7.1 Resource registry
+
+runtime 逻辑上维护以下资源集合：
+
+```text
+images[nodeId]    -> image texture + descriptor
+videos[nodeId]    -> browser VideoSource 或 native NativeVideoSource
+models[nodeId]    -> browser model/session 或 native ORT session
+pipelines[key]    -> compiled pipeline/bind group layout
+renderTargets[id] -> target + feedback ping-pong
+outputs[nodeId]   -> readable output texture descriptor
+```
+
+Store 只保存 descriptor/key/path，不保存以上对象。
+
+### 7.2 Image
+
+Browser：
+
+- `imageDataUrl` 通过 `Image.decode()`、canvas 2D 转 RGBA；
+- `rawDataUrl` 通过 fetch bytes，按 `fbWidth`/`fbHeight`/`fbFormat` 解码；
+- `WebGPUExecutionEngine` 将 image 作为 texture source。
+
+Native：
+
+- TS adapter 校验 `width * height * 4`；
+- 以 raw `Uint8Array` body 发送到 `native_gpu_upload_image`；
+- node/width/height 通过 headers 发送；
+- Rust 直接 `queue.write_texture` 或对应 backend upload；
+- descriptor 未变化时不重复发送；
+- 删除或切换 source 时调用 `native_gpu_remove_texture`。
+
+### 7.3 Video
+
+Browser：
+
+- `VideoSource` 管理 HTMLVideoElement、camera stream 或 file URL；
+- 每帧将 video element 传给 browser WebGPU path；
+- `copyExternalImageToTexture`/external texture 是 browser 宿主行为。
+
+Native：
+
+- `NativeVideoSource` 通过 FFmpeg probe 输入尺寸和 fps；
+- decoder child 输出 raw RGBA；
+- reader thread 写入 generation-tagged frame slot；
+- render thread 调用 `upload_latest()`，只上传新 generation；
+- `GpuExecutor` 使用普通 sampled texture；
+- pause 停 decoder，resume 重启 decoder，file source 保存 position；
+- `NativeVideoDevice` 通过平台 backend discovery 返回 id/label。
+
+必须满足：decoder frame 不通过 Tauri IPC 传输；同一个 frame 只允许一个 native upload owner；同 node 的 video descriptor 替换会丢弃旧 decoder并由后续 frame 更新/复用 texture；从 video 切换到非 video 时必须在同步 replacement image 前 detach source并移除旧 texture。
+
+### 7.4 Render targets 与 output
+
+每个 shader/renderer target descriptor 至少包含：
+
+```text
+width, height, texture format, filter/wrap, feedback flag
+```
+
+target 重建条件：
+
+- 尺寸改变；
+- format 改变；
+- shader binding/output contract 改变；
+- feedback layout 改变。
+
+output readback payload 当前格式：
+
+```text
+u32 width little-endian
+u32 height little-endian
+width * height * 4 RGBA8 bytes
+```
+
+Native `read_output` 只接受 `rgba8unorm` output。Browser output readback仍由 `Compositor.readNodeOutput()`负责；真正的 browser screenshot API 尚未完成。
+
+### 7.5 Resource reconciliation
+
+每次 native graph update 的实际同步顺序：
+
+```text
+1. set graph metadata
+2. reconcile video resources
+     2.1 attach/update wanted descriptors
+     2.2 detach stale descriptors
+3. reconcile image resources
+     3.1 upload/update wanted descriptors
+     3.2 remove stale descriptors
+4. changed resource nodes become dirty
+5. render on next host tick
+```
+
+顺序不是实现细节：从 video 切换到 image 时，stale video detach 会移除 node texture，因此必须在 replacement image upload 前完成。反方向切换时，video descriptor 先建立，随后 image reconciliation 删除旧 image texture；首个 decoder frame再上传新的 video texture。
+
+---
+
+## 8. 浏览器运行时
+
+### 8.1 组件关系
+
+```text
+RealtimeHost
+  ├── Clock
+  ├── MouseState
+  ├── VideoSource map
+  └── Compositor
+        ├── WebGPUExecutionEngine
+        ├── WebGPUBackend
+        ├── RenderTarget / TextureHandle
+        └── browser ONNX inference
+```
+
+`RealtimeHost` 负责 lifecycle、static/dynamic scheduling、video reconciliation、preview selection 和回调；`Compositor` 负责 plan preparation、render、readback 和 renderer mirror；`WebGPUExecutionEngine` 负责 shader/target/uniform/binding/execution。
+
+### 8.2 Browser ONNX
+
+browser ONNX 当前支持：
+
+- catalog model 与 custom model；
+- `onnxruntime-web` WebGPU/WASM backend；
+- super-resolution、background removal、depth、generic image-to-image、detection、segmentation；
+- preprocessing、postprocessing、overlay 和 backend reporting；
+- async completion 后 static pipeline 补帧；
+- video/upstream dynamic input 触发 per-frame inference。
+
+browser ONNX 与 Rust native ORT 是两套 session host；它们共享 model/task semantics，但不共享 session object。
+
+### 8.3 Browser 当前限制
+
+- `PipelineService` 是 browser-only；
+- `captureScreenshot()` 仍是 TODO；
+- browser 与 native 的统一 `PipelineRuntime` contract 尚未完成；
+- Store 仍能看到 browser `GPUDevice`；
+- browser path 的大 resource lifecycle 尚未完全复用 native descriptor reconciliation 模型。
+
+---
+
+## 9. 原生运行时
+
+### 9.1 NativeGpuRuntime 所有权
+
+`NativeGpuRuntime` 独占：
+
+- output `Window` 和 `wgpu::Surface`；
+- `SurfaceConfiguration`；
+- shared `GpuBackend`；
+- `GpuExecutor`；
+- native `Engine`；
+- output node id、clock/frame counters、mouse；
+- `HashMap<String, NativeVideoSource>`。
+
+`NativeRuntimeState` 负责跨 command 共享 runtime mutex、render worker、alive/playing flags，并在 Drop 时 shutdown worker。
+
+### 9.2 Native frame
+
+```text
+render_next()
+  -> compute time/delta/frame
+  -> upload latest video frames
+  -> Engine::run_frame()
+  -> borrow pending internal commands
+  -> GpuExecutor::execute_commands()
+  -> resolve output texture
+  -> resize/configure surface if necessary
+  -> SurfacePresenter::present()
+  -> emit metadata event every 6 frames
+```
+
+`Engine::pending_commands()` 只在 Rust 内部给 `GpuExecutor` 使用。它不是 Tauri response，也不是 WebView payload。
+
+### 9.3 Native command categories
+
+| 类别 | 当前命令 | 传输内容 |
+|---|---|---|
+| 初始化 | `native_gpu_initialize` | capability/runtime info |
+| graph | `native_gpu_set_graph` | graph JSON metadata |
+| image | `native_gpu_upload_image` / `native_gpu_remove_texture` | raw RGBA 或 node descriptor |
+| video | `native_gpu_attach_video` / `native_gpu_detach_video` | source kind/path/config |
+| control | play/pause/resume/stop/mouse | small scalar/control data |
+| output | `native_gpu_render_once` / `native_gpu_read_output` | metadata或显式 RGBA readback |
+| events | `native_gpu_drain_events` | structured Engine event batch |
+| model | native ONNX capabilities/load/unload | model ID、provider options |
+| close | `native_gpu_close` | no payload |
+
+### 9.4 Native output event
+
+`native-runtime-frame` 只包含：
+
+```typescript
+interface NativeFrameRendered {
+  frame: number;
+  revision: number;
+  outputNodeId: string;
+  width: number;
+  height: number;
 }
+```
 
-type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | 'math';
+`NativePipelineRuntime` 收到该事件后：
 
-interface ShaderNodeData {
-  type: NodeType;
-  label: string;
-  shaderCode: string;
-  inputs: Port[];
-  outputs: Port[];
-  uniforms: Record<string, unknown>;
-  collapsed?: boolean;
-  inputDataType?: DataType;
-  inputMode?: InputMode;            // input 节点专用：image / framebuffer / video
-  imageDataUrl?: string;            // sampler2D 输入图片
-  imageFileName?: string;
-  imageWidth?: number;
-  imageHeight?: number;
-  expanded?: boolean;               // 节点展开/折叠
-  // 视频字段
-  videoSourceType?: 'camera' | 'file';
-  videoUrl?: string;
-  videoFileName?: string;
-  videoFilePath?: string;           // Tauri: 绝对路径 + convertFileSrc
-  videoDeviceId?: string;
-  videoLoop?: boolean;
-  videoPlaybackRate?: number;
-  // ONNX 节点字段
-  onnxModelId?: string;
-  onnxScoreThreshold?: number;
-  onnxIouThreshold?: number;
-  onnxTargetSize?: number;
-  width?: number;
-  height?: number;
-  autoSize?: boolean;
-  resolvedWidth?: number;
-  resolvedHeight?: number;
-  // Math 节点字段
-  mathOp?: string;                // 运算标识：'add' | 'sin' | 'clamp' | ...
-  systemSource?: string;          // system 源：'time' | 'timeDelta' | 'frame' | 'mouse' | 'resolution'
-  // Feedback / Accumulator 字段
-  feedbackClearColor?: [number, number, number, number]; // ping-pong 缓冲区初始化颜色
-}
+1. 更新 frame/output size callback；
+2. 若设置 preview node，合并 pending readback 请求；
+3. 调用 `native_gpu_read_output`；
+4. 校验 8-byte header、尺寸和 RGBA payload；
+5. 转成 data URL 或 callback data。
 
+---
+
+## 10. Rust SDK 与 FFI
+
+### 10.1 Crate 模块
+
+```text
+crates/open_quartz/src/
+  types/       Rust graph/project/node/port schema
+  graph/       topo sort、dirty set、graph planning
+  wgsl/        parser、compiler、validation
+  engine/      plan、typed frame、execution commands、feedback
+  gpu/         backend、targets、executor、readback
+  onnx/        ort session、providers、pre/postprocessing
+  ffi/         Engine、events、errors、JSON/WASM exports
+```
+
+crate 可构建 `rlib`/`cdylib`，WASM 目标不启用 native ORT，native target启用动态加载的 `ort`/`ort-sys`。
+
+### 10.2 WASM public contract
+
+Rust FFI 暴露：
+
+- `api_version()`、`capabilities_json()`；
+- `Engine` constructor、`setGraph`、`markDirty`、`runFrame`、`setVideoNodes`；
+- lifecycle：pause、resume、stop、dispose；
+- revision、lastFrame、pendingCommandCount、engineState；
+- `drainEvents`；
+- parser/compiler/validator/plan/preprocess/postprocess helpers。
+
+WASM `runFrame()` 返回 `void`。execution commands 保持 Rust 内部，只暴露 command count 和 events；这条规则适用于未来 native/browser 统一的高频 path。
+
+### 10.3 Tauri adapter contract
+
+`NativePipelineRuntime` 是低频 control/resource adapter，不是每帧 client scheduler：
+
+- initialize 时注册 frame/error listeners；
+- graph update 发送 metadata；
+- image bytes 通过 raw body；
+- video/model 发送 descriptor/ID；
+- preview/screenshot 显式 readback；
+- `close()` 清理 listeners、resource maps 和 native runtime。
+
+### 10.4 JSON 与 bytes 规则
+
+| 数据 | 允许的边界编码 |
+|---|---|
+| graph snapshot | JSON，低频 |
+| shader source/diagnostics | JSON，编辑或编译时 |
+| time/delta/frame | numeric arguments，禁止 JSON frame blob |
+| mouse/date/resolution | 固定长度 typed array/array |
+| image | raw `Uint8Array`，禁止 base64 graph payload |
+| video | path/device/config，frame bytes 留在 native thread |
+| model | model ID/path；native 从 app data 加载 |
+| output | metadata event；显式 readback 才传 RGBA |
+| errors/events | structured JSON/typed union |
+
+---
+
+## 11. ONNX 架构
+
+### 11.1 Browser session path
+
+```text
+Input GPU texture
+  -> RGBA/tensor preprocessing
+  -> onnxruntime-web WebGPU/WASM session
+  -> task-specific postprocess
+  -> output texture / overlay / logical result
+```
+
+browser path 可以使用 WebGPU EP；其目标是维持 shader → ONNX → shader 的单 JS `GPUDevice` 语义，避免不必要的 CPU readback。
+
+### 11.2 Native session path
+
+```text
+Tauri model ID
+  -> app-data model path
+  -> NativeOnnxState.sessions[nodeId]
+  -> ort Session
+  -> CPU 或 DirectML (+ optional CPU fallback)
+  -> TensorOutput
+```
+
+native capability 当前明确：
+
+```text
+cpu: true
+DirectML: Windows capability
+sharedWgpuDevice: false
+```
+
+native session 已能加载模型并运行 identity/CPU/DirectML contract，但 `ExecutionCommand::onnx` 尚未连接 native GPU texture/tensor resource、异步完成事件和 graph-level six-task execution。因此 Stage F 仍是未完成的主线。
+
+### 11.3 Model ownership
+
+- catalog model：由 registry/catalog 提供 ID、URL、task metadata；
+- custom model：项目保存 path/name metadata；
+- browser model manager：负责下载、缓存、introspection、session；
+- native model state：按 node ID 持有 ORT session；
+- graph snapshot 不包含 model bytes；
+- node 删除或 stop 时必须卸载 session/取消 pending task。
+
+---
+
+## 12. 项目文件与资源持久化
+
+### 12.1 文件格式
+
+当前 project file version：`0.4.0`。
+
+```typescript
 interface ProjectFile {
   version: string;
   name: string;
   createdAt: string;
   updatedAt: string;
   graph: {
-    nodes: Array<{ id: string; type: string; position: { x: number; y: number }; data: ShaderNodeData }>;
-    edges: Array<{ id: string; source: string; sourceHandle: string; target: string; targetHandle: string }>;
+    nodes: ProjectNode[];
+    edges: ProjectEdge[];
   };
 }
 ```
 
----
+保存规则：
 
-## 5. 组件架构
+- video 的 `videoUrl` 不写入项目文件；保留 `videoFilePath`/device metadata；
+- prebuilt shader 的 `shaderCode` 清空，只保存 `shaderTemplateId`；
+- image/resource path 和 dimensions 保存为 metadata；
+- runtime GPU objects、decoded bytes、sessions 不保存。
 
-```
-<App>
-  <Header />
-    ├── OPENQUARTZ v0.11.0b
-    ├── 工程名输入框
-    ├── 添加节点：SOURCE / MATH / +SHADER / +ONNX / +RENDERER
-    ├── 文件：SAVE / LOAD
-    ├── 运行：▶ PLAY / ⏸ PAUSE / ■ STOP / CLEAR
-    └── FPS / TIME / FRAME 实时显示
-  <main className="flex">
-    <NodeGraph />                  ← React Flow 画布 (bg #e0e0e0 + cross grid)
-      ├── <ShaderNode />           ← 紫 header，input/output 端口，叶子节点显示输出预览
-      ├── <InputNode />            ← 蓝 header，类型选择 + 值输入/图片加载/视频输入
-      ├── <OnnxNode />             ← 黄 header，模型选择 + 参数配置
-      ├── <RendererNode />         ← 绿 header，显示上游 FBO 预览（mirror canvas blit）
-      ├── <MathNode />             ← 橙 header，CPU 运算节点，auto 类型端口
-      └── 贝塞尔曲线连线
-    <SidePanel />                  ← 白底右侧面板
-      ├── 节点信息（类型 + label + Delete）
-      ├── <ShaderEditor />         ← CodeMirror 浅色主题
-      ├── <PortInspector />        ← 端口列表 + uniform 值编辑 + builtin AUTO 徽章
-      └── <OnnxPanel />            ← ONNX 模型参数面板
-  </main>
-  <canvas ref={canvasRef} />       ← 隐藏的 WebGL 后端画布
-</App>
-```
+加载规则：
+
+- 严格检查 version；
+- 根据 `shaderTemplateId` 从 catalog 恢复 code；
+- Tauri 根据 `videoFilePath` 生成 WebView asset URL供 browser preview 使用；
+- native adapter 使用 native path，不依赖 `videoUrl` 作为 FFmpeg source；
+- 资源文件被移动时保留 node，但通过 node error 报告不可用 source。
+
+### 12.2 兼容策略
+
+项目版本升级必须提供显式 migration；禁止静默把未知版本当当前版本解析。新增 node data 字段应允许缺省，改变端口/edge semantics 时必须增加版本或 migration test。
 
 ---
 
-## 6. Shader 端口自动生成
+## 13. UI 与应用编排
 
-用户写 GLSL 后实时正则解析：
+### 13.1 UI 组件
 
-```glsl
-uniform float intensity;       →  Port(float, "intensity")
-uniform vec2 resolution;       →  Port(vec2, "resolution")
-uniform sampler2D image;       →  Port(sampler2D, "image")
-uniform vec4 tint;             →  Port(vec4, "tint")
-
-out vec4 fragColor;            →  Port(vec4, "fragColor")
+```text
+App
+  └── ReactFlowProvider
+        ├── Header
+        ├── NodeGraph
+        │     └── node components / handles / canvas
+        └── SidePanel
+              └── selected node editors / preview / errors
 ```
 
-端口颜色按数据类型区分（蓝=float，绿=vec2，红=vec4，黄=sampler2D 等）。
+UI 只通过 Store action 修改 graph。节点组件不应直接触碰 WebGPU、Tauri invoke 或 Rust Engine。
+
+### 13.2 Store slices
+
+Store 当前由以下 slice 组合：
+
+- `graphSlice`：nodes、edges、node factories、connect/remove/update、undo/redo、load/clear graph；
+- `transportSlice`：play/pause/resume/stop、fps/time/frame；
+- `projectSlice`：project name 与 saved file path；
+- `uiSlice`：selection、preview、errors、screenshot callback、browser GPU device。
+
+`helpers.ts` 提供 node factory、system source、catalog/model helper 和共享 counters。catalog 是静态数据，不应成为 runtime singleton 的替代品。
+
+### 13.3 PipelineService
+
+`PipelineService` 订阅 Store，并处理：
+
+- stopped → playing：创建/初始化 runtime，设置 preview，提交 graph；
+- playing ↔ paused：转发 lifecycle；
+- playing 状态下 nodes/edges 改变：调用 graph hot update；
+- selected node 改变：同步 preview node；
+- runtime callbacks：写回 fps/time/frame、output preview/data、size、backend、errors；
+- stop/detach：取消 callback/subscription、释放 runtime。
+
+目标实现应将 `RealtimeHost` 与 `NativePipelineRuntime` 放在同一 adapter selection 后面：
+
+```text
+PipelineService
+  -> RuntimeFactory(capabilities, host)
+       -> BrowserPipelineRuntime
+       -> NativePipelineRuntime
+```
+
+选择逻辑必须显式、可测试、可观测；不得创建两个 runtime 后用隐藏 fallback 运行。
 
 ---
 
-## 7. 时间系统
+## 14. 错误、事件与可观察性
 
-OpenQuartz 的时间管理是**多层正交**的：物理时钟驱动循环调度，循环调度控制帧执行，帧内按节点类型分路径处理。
+### 14.1 Structured SDK errors
 
-### 7.1 物理时钟 — `Clock`
+Rust SDK 使用 `SdkErrorCode`：
 
-**文件**：`src/engine/clock.ts`
-
-```
-start() → 清零所有计数器
-tick(now) → 产出 TimeState { time, delta, frame, date, fps }
-pause()  → 冻结时间
-resume() → 补偿暂停时长，保持 time 连续
-seek(t)  → 跳转到指定时间点
-```
-
-关键语义：
-- **`time`**（=`iTime`）：`(now − startTime) / 1000 − pauseElapsed`，连续累计，pause 自动补偿暂停时间，保证 resume 后不跳变
-- **`delta`**（=`iTimeDelta`）：raw delta clamped to 0.1s，防止浏览器 tab 休眠后 delta 爆炸导致物理模拟爆炸（spiral-of-death）
-- **`frame`**（=`iFrame`）：单调递增整数，每 `tick()` 一次，无论 delta 大小
-- FPS 通过 60 样本环形缓冲区滑动平均计算
-- `TimeState` 是**单例可复用对象**（mutated in place），每帧零分配
-
-### 7.2 循环调度 — `RealtimeHost`
-
-**文件**：`src/engine/realtimeHost.ts`
-
-```
-play()
-  → compositor.prepare()   编译 shader、分配 FBO
-  → clock.start()          重置时钟
-  → mouse.attach()         开始追踪鼠标
-  → rAF(tick)              启动渲染循环
-
-tick(now)
-  → [编译标志? compositor.prepare() 热更新]
-  → clock.tick(now)        推进时钟
-  → 收集 video textures
-  → 组装 FrameInputs
-  → compositor.render()    执行一帧
-  → renderToScreen()       mirror canvas blit
-  → [动态? rAF(tick) : 停止]
+```text
+disposed
+invalid-frame
+invalid-graph
+invalid-resource
+invalid-state
+not-prepared
+unknown-node
+protocol-mismatch
+invalid-response
 ```
 
-三态控制：
-| 操作 | Clock | Video | 管线 |
-|------|-------|-------|------|
-| PLAY | `start()` | 启动采集 | rAF 循环 |
-| PAUSE | `pause()` | `pause()` | 冻结 delta=0，buffer 不释放 |
-| RESUME | `resume()` | `play()` | 时间连续，buffer 状态保持 |
-| STOP | `reset()` | `dispose()` | `clearResources()` 销毁所有 FBO |
-
-### 7.3 Static vs Dynamic 管线
-
-**检测函数**：`isStaticPipeline()` 
-
-扫描所有节点：
-- 含有 `iTime` / `iTimeDelta` / `iFrame` / `iMouse` 引用 → **dynamic**
-- 含有 `previousFrame` 引用（feedback） → **dynamic**
-- 含有 `video` 输入节点 → **dynamic**
-- 没有任何动态源 → **static**
-
-| 模式 | 行为 |
-|------|------|
-| **Static** | 单帧渲染。`rAF` 跑一次即停。适合静态图片处理、纯 shader 链 |
-| **Dynamic** | 连续 rAF 循环。每帧 clock 前进，渲染结果不断更新 |
-
-### 7.4 帧内执行 — `ExecutionEngine.runFrame()`
-
-每帧严格按照拓扑序遍历所有节点：
-
-```
-tick() 内的时间线 (单帧):
-clock → math(CPU同步) → shader/render(同步) → onnx?(跳过/异步) → renderToScreen
-                          ↑ feedback: 读 ping-pong A，写 B，swap
-```
-
-各节点类型在帧内的时间行为：
-
-| 节点类型 | 执行时机 | 语义 |
-|----------|----------|------|
-| **Math** | 同步，当前帧 | CPU 运算，结果即时用于下游 scalar uniform |
-| **Shader** | 同步，当前帧 | GPU 渲染到 FBO，结果即时用于下游 sampler2D |
-| **Feedback** | 同步，当前帧 | 读 ping-pong 读端，写另一端，帧尾 swap |
-| **Renderer** | 同步，当前帧末 | blit 上游 FBO 到 mirror canvas |
-| **ONNX** | 异步，跨帧 | 跳过 in-flight，1-2 帧后结果可用（见 7.6） |
-
-### 7.5 Feedback / Accumulator 时间语义
-
-**原理**：shader 通过引用 `previousFrame` 标识符隐式声明需要反馈。编译器自动检测，引擎自动创建 ping-pong 双缓冲，每帧自动换手。
-
-```
-prepare():
-  → 检测 compiled.needsFeedback
-  → 分配两个 WebGLRenderTarget: targetA, targetB
-  → 存入 feedbackTargets[nodeId] = [targetA, targetB]
-  → feedbackReadIndex[nodeId] = 0
-
-第一帧 (feedbackFirstFrame):
-  → clearColor 清空双缓冲 ← 初始化状态
-  → previousFrame = targetA (刚清空)
-  → shader 执行，渲染到 targetB
-  → swap: readIndex = 1
-
-第二帧:
-  → previousFrame = targetB (有上一帧结果)
-  → shader 执行，渲染到 targetA
-  → swap: readIndex = 0
-
-后续:         每帧交替读写，互不干扰
-暂停:         缓冲区冻结，恢复后从暂停点继续
-停止:         clearResources() 销毁双缓冲，下次 play 重新初始化
-```
-
-### 7.6 ONNX 异步执行
-
-**当前策略**：best-effort 延迟（非阻塞）
-
-```
-Frame N:     ONNX 无 in-flight
-             → 读 upstream(shader FBO / image)
-             → blit 到 scratch FBO
-             → readPixels 回 CPU canvas
-             → 启动 async inference
-             → this.onnxInFlight.add(nodeId)
-             → textureSources 保留旧结果（初始帧无结果时跳过）
-
-Frame N+1:   in-flight → 跳过，下游继续消费旧结果
-
-Frame N+K:   ONNX 完成
-             → 更新 textureSources[nodeId] = { kind: 'image', texture: result }
-             → 下次 tick 下游节点自动读到新结果
-             → 如果 pipeline 是 static，触发 scheduleRerender() 追回
-```
-
-**已知问题**：当前 ONNX 启动 inference 后需要等待异步 Promise 完成。由于 JavaScript 的单线程事件循环，inference 至少跨越 1 个 rAF 间隔（~16ms），导致下游至少有 1 帧的 stale 输出。对于大模型（Real-ESRGAN、MiDaS）这个延迟可能扩展到多个帧。
-
-**远期优化方向**：
-- ONNX 结果就绪后，在不等待下一帧 tick 的前提下，立即触发一次增量 render pass，仅更新受影响的下游子图
-- 当前 `scheduleRerender()` 在 static 模式下已实现了基本版本，但 dynamic 模式下尚未做增量更新
-
-### 7.7 热更新（Playing 中编辑）
+错误最少包含：
 
 ```typescript
-updateGraph(nodes, edges):
-  → this.needsRecompile = true
-
-下一次 tick():
-  → if (needsRecompile) compositor.prepare()
-  → 重新编译所有 shader，重新分配所有 FBO
-  → feedbackFirstFrame 重新填充 → ping-pong 双缓冲从 Clear Color 重新开始
-  → ONNX 输出缓存 (onnxOutputCache) 保留，避免模型重新推理
-```
-
----
-
-## 8. 渲染管线
-
-1. **PLAY** — App 创建 `RealtimeHost`，传入隐藏 `<canvas>` 和回调
-2. **RealtimeHost** 持有 `Clock`、`MouseState`、`VideoSource` 集合，启动 `requestAnimationFrame` 循环
-3. **每帧 tick**：
-   - `Clock.tick(now)` → 产生 `TimeState`（iTime, iTimeDelta, iFrame, iDate, fps）
-   - 遍历 `VideoSource` 取最新 `THREE.VideoTexture`
-   - 组装 `FrameInputs { time, delta, frame, date, mouse, resolution, videoTextures }`
-   - 调用 `Compositor.render(inputs)`
-4. **Compositor** 包装 `ExecutionEngine`：
-   - `prepare(nodes, edges)` — 拓扑排序，编译 shader，分配 FBO
-   - `render(inputs)` — 执行 `engine.runFrame(plan, inputs)`
-   - 按拓扑序逐节点渲染到各自 FBO；上游纹理自动绑定到 uniform
-   - Feedback 节点：自动创建双缓冲，每帧 `previousFrame` + swap
-   - ONNX 节点：异步推理，非阻塞，best-effort 延迟
-5. **Renderer 节点**（绿色 header，QC 的 QCView 等价物）：
-   - 不创建额外 FBO，直接读取上游 shader 的 FBO 纹理
-   - `renderRendererToScreen(nodeId)` 将上游 FBO blit 到主画布
-   - 通过 mirror canvas（`<canvas id="renderer-mirror-{nodeId}">`）GPU→GPU blit 显示
-   - 多个 Renderer 节点各自拥有独立的 mirror canvas
-6. **GPU-only 输出** — 实时路径不调用 `readPixels`/`toDataURL`，零 GPU→CPU readback
-7. **暂停/恢复** — `Clock` 支持 pause/resume/seek，暂停时冻结 `iTime`
-8. **热更新** — 播放中修改节点/连线，`updateGraph()` 标记 `needsRecompile`，下帧重编译
-
----
-
-## 9. 工程文件保存/载入
-
-### 保存
-```
-用户点击 SAVE
-  → 序列化 graph (nodes, edges, projectName)
-  → 收集所有 sampler2D 图片 dataUrl
-  → 格式化 ProjectFile JSON
-  → 触发下载 .quartz.json
-```
-
-### 载入
-```
-用户点击 LOAD → 选择 .quartz.json
-  → FileReader 读取 + JSON.parse
-  → 恢复 graph (nodes + edges)
-  → 恢复图片数据
-  → React Flow 自动重建
-```
-
----
-
-## 10. 软件架构
-
-### 10.1 现状问题
-
-当前代码库 10,320 行 / 54 文件，存在以下架构问题：
-
-| 问题 | 症状 |
-|------|------|
-| **God Store** | `useGraphStore.ts`（756 行）混合图 CRUD、ONNX 模型管理、undo/redo、播放控制、项目 I/O、UI 选中状态。直接 import 8 个 engine 模块 |
-| **God Engine** | `executionEngine.ts`（1,266 行）单体类：shader 编译、4 种 ONNX 推理路径、math 求值、纹理管理、feedback buffer、preview readback、renderer 输出 |
-| **Engine → Store 反向依赖** | `executionEngine.ts` import `useGraphStore` 在异步 ONNX 推理中读写 node data（`onnxBackend`）。引擎不应知道 store 存在 |
-| **无 pipeline 抽象** | 执行是 topo-sort 后一个 `for` 循环 + `if (type === 'shader') ... else if (type === 'onnx') ...` 分支。无可插拔 executor 接口。ONNX 异步用 `Set<string>` 手动跟踪 |
-| **UI 直接 import engine** | Header → shaders/onnxCatalog/mathOps，SidePanel → onnxRegistry/onnxSession。无 service 层隔离 |
-
-### 10.2 目标架构
-
-```
-src/
-├── types/                  ← 纯类型，零运行时依赖
-│
-├── catalog/                ← 静态注册表（纯数据，无副作用）
-│   ├── shaders/            shader presets: ShaderEntry[]
-│   ├── onnx.ts             ONNX 模型目录: CatalogEntry[]
-│   └── math.ts             Math 运算库: MathOp[]
-│
-├── runtime/                ← 执行引擎（纯逻辑，禁止 import store/components）
-│   ├── pipeline/
-│   │   ├── Pipeline.ts         响应式管线：graph diff → 增量 plan → dirty-set 执行
-│   │   ├── NodeExecutor.ts     interface NodeExecutor { prepare, execute, dispose }
-│   │   ├── ShaderExecutor.ts   implements NodeExecutor — shader 编译 + FBO 渲染
-│   │   ├── OnnxExecutor.ts     implements NodeExecutor — 异步推理 + 结果缓存
-│   │   ├── MathExecutor.ts     implements NodeExecutor — CPU 运算
-│   │   └── RendererExecutor.ts implements NodeExecutor — blit to screen
-│   ├── gpu/
-│   │   ├── WebGLBackend.ts     Three.js renderer + render target 生命周期
-│   │   └── TexturePool.ts      引用计数的 FBO/texture 缓存
-│   ├── onnx/
-│   │   ├── ModelManager.ts     模型下载 + buffer 缓存
-│   │   ├── InferenceSession.ts ORT 会话管理
-│   │   ├── Introspect.ts       模型 I/O 元数据提取
-│   │   └── Overlay.ts          检测/分割结果可视化
-│   ├── Scheduler.ts            frame loop + async work tracking
-│   ├── Clock.ts
-│   └── MouseState.ts
-│
-├── store/                  ← Zustand slices，只存 UI/graph 状态
-│   ├── graphSlice.ts       nodes, edges, CRUD, undo/redo
-│   ├── transportSlice.ts   play/pause/stop, fps, currentTime
-│   ├── projectSlice.ts     projectName, savedFilePath
-│   ├── uiSlice.ts          selectedNodeId, activeRendererId, previews, nodeErrors
-│   └── index.ts            combine slices → useGraphStore
-│
-├── services/               ← 胶水层：store ↔ runtime 的唯一桥接
-│   ├── PipelineService.ts  subscribe(store) → drive Pipeline
-│   └── OnnxService.ts      model download/probe → update store
-│
-├── components/             ← 纯 UI，只 import store + catalog
-│   ├── Header.tsx
-│   ├── SidePanel/
-│   ├── NodeGraph/
-│   └── ImageLightbox.tsx
-│
-├── utils/
-└── App.tsx                 ← 挂载 PipelineService + layout
-```
-
-### 10.3 分层依赖规则
-
-```
-types  ←  catalog  ←  runtime  ←  services  ←  App
-                                      ↕
-                                    store  ←  components
-```
-
-| 层 | 可 import | 禁止 import | 职责 |
-|----|-----------|------------|------|
-| **types** | — | 任何运行时模块 | 纯 TypeScript 类型定义 |
-| **catalog** | types | runtime, store, components | 静态数据注册表：shader 预设、ONNX 目录、math 运算表 |
-| **runtime** | types, catalog | store, components, react | 管线执行引擎：编译、渲染、推理、调度。通过回调接口输出结果，不知道 store 存在 |
-| **store** | types, catalog | runtime, components | Zustand 状态切片：图数据、传输控制、项目元数据、UI 状态 |
-| **services** | types, catalog, runtime, store | components | 桥接层：订阅 store 变化驱动 runtime，将 runtime 回调写回 store |
-| **components** | types, catalog, store | runtime | React UI 组件：只读/写 store，不直接接触引擎 |
-
-### 10.4 响应式管线设计
-
-当前 `ExecutionEngine.runFrame()` 是命令式 for 循环：每帧遍历全部节点，按类型 if/else 分支。目标是改为**增量响应式管线**——只执行变脏的节点，通过可插拔 executor 接口消除类型分支。
-
-#### NodeExecutor 接口
-
-```typescript
-interface NodeExecutor {
-  /** 编译/初始化（graph 变更时调用）。返回该节点的 port 签名 */
-  prepare(node: NodeDescriptor, backend: WebGLBackend): PrepareResult;
-
-  /** 每帧执行。inputs 是上游节点的输出，按 port name 索引 */
-  execute(inputs: Map<string, TextureSource | number>, frameInputs: FrameInputs): ExecuteResult;
-
-  /** 释放 GPU 资源 */
-  dispose(): void;
-}
-
-// 每种节点类型注册一个 executor
-const EXECUTORS: Record<NodeType, () => NodeExecutor> = {
-  shader:   () => new ShaderExecutor(),
-  onnx:     () => new OnnxExecutor(),
-  math:     () => new MathExecutor(),
-  renderer: () => new RendererExecutor(),
-  input:    () => new InputExecutor(),
-  constant: () => new ConstantExecutor(),
-};
-```
-
-#### 增量执行（Dirty-Set）
-
-```typescript
-class Pipeline {
-  private executors = new Map<string, NodeExecutor>();
-  private dirty = new Set<string>();
-  private outputs = new Map<string, TextureSource>();
-  private topo: string[] = [];        // 缓存的拓扑序
-
-  /** graph 变更 → diff → 增量更新 executor 实例 */
-  updateGraph(nodes, edges): void {
-    // 1. 新增节点 → 创建 executor + prepare
-    // 2. 删除节点 → dispose executor
-    // 3. 变更节点 → re-prepare
-    // 4. 重算拓扑序
-    // 5. 标脏所有受影响节点
-  }
-
-  /** 输入变化（视频帧、uniform 编辑）→ 标脏下游 */
-  markDirty(nodeId: string): void {
-    this.dirty.add(nodeId);
-    for (const downstream of this.dependents(nodeId)) {
-      this.dirty.add(downstream);
-    }
-  }
-
-  /** 每帧：只跑 dirty 节点，按拓扑序 */
-  tick(inputs: FrameInputs): void {
-    for (const id of this.topo) {
-      if (!this.dirty.has(id)) continue;
-      const executor = this.executors.get(id)!;
-      const nodeInputs = this.gatherInputs(id);
-      const result = executor.execute(nodeInputs, inputs);
-      this.outputs.set(id, result);
-    }
-    this.dirty.clear();
-  }
+{
+  code: string;
+  message: string;
+  nodeId?: string;
+  details?: string;
 }
 ```
 
-**好处**：
-- 静态管线（无时间变量）在首帧后 dirty set 为空，零 GPU 开销
-- 编辑 uniform 只标脏该节点及其下游，上游不受影响
-- ONNX 异步完成后，`markDirty(onnxNodeId)` 触发下游增量更新
-- 新增节点类型只需实现 `NodeExecutor`，不改 Pipeline 核心
+TS 通过 `decodeSdkError()` 统一解析；UI 只展示 message，日志和测试保留 code/nodeId/details。
 
-**vs RxJS**：考虑过 RxJS Observable Graph（每个 node = `Observable<TextureSource>`，edges = `pipe`/`combineLatest`），但 60fps 实时管线中 Observable 的 per-frame allocation 和 WebGL 同步渲染语义不搭。Dirty-set 方案零外部依赖、零分配、复杂度可控。
+该结构化协议当前完整覆盖 Rust SDK/WASM `Engine` 边界；部分 Tauri commands 和 `native-runtime-error` 仍返回普通 `String`。把 Tauri host error 映射为同一 `SdkErrorPayload` 是 runtime facade 收敛的一部分，不能把现状描述为已完成。
 
-### 10.5 Store 切片设计
+### 14.2 Engine events
 
-将单体 `useGraphStore`（756 行）拆为 4 个职责单一的 slice：
+Engine events 当前包括：
 
-| Slice | 状态 | 职责 |
-|-------|------|------|
-| **graphSlice** | `nodes`, `edges`, `undoStack`, `redoStack` | 图 CRUD、undo/redo、节点工厂（addShaderNode 等）。Import catalog 获取预设数据 |
-| **transportSlice** | `loopState`, `fps`, `currentTime`, `currentFrame` | 播放控制：play/pause/resume/stop。不依赖 engine |
-| **projectSlice** | `projectName`, `savedFilePath` | 工程文件元数据。序列化/反序列化调用 utils/projectIO |
-| **uiSlice** | `selectedNodeId`, `activeRendererId`, `outputPreviews`, `nodeErrors`, `outputData` | UI 展示状态。services 层写入预览和错误 |
+- state；
+- graph-ready；
+- resource-invalidated；
+- resource-released；
+- frame-planned。
 
-合并导出：
+Native runtime frame/error events属于 Tauri host event，不能和 Engine event 混成同一字符串协议。adapter 负责把宿主 event 映射到应用可观察状态。
 
-```typescript
-// store/index.ts
-export const useGraphStore = create<GraphState>()(
-  immer((...args) => ({
-    ...graphSlice(...args),
-    ...transportSlice(...args),
-    ...projectSlice(...args),
-    ...uiSlice(...args),
-  }))
-);
-```
+### 14.3 失败边界
 
-对外接口不变——所有 `useGraphStore(s => s.xxx)` 调用无需修改。
-
-### 10.6 Service 层设计
-
-Service 层是 store 与 runtime 的**唯一桥接**，消除当前 engine→store 的反向依赖。
-
-#### PipelineService
-
-```typescript
-// services/PipelineService.ts
-class PipelineService {
-  private pipeline: Pipeline;
-  private host: RealtimeHost;
-
-  constructor(canvas: HTMLCanvasElement) {
-    this.pipeline = new Pipeline(new WebGLBackend(canvas));
-  }
-
-  /** 在 App mount 时调用，订阅 store 变化 */
-  attach(): () => void {
-    return useGraphStore.subscribe((state, prev) => {
-      // graph 变更 → pipeline.updateGraph()
-      if (state.nodes !== prev.nodes || state.edges !== prev.edges) {
-        this.pipeline.updateGraph(state.nodes, state.edges);
-      }
-      // transport 变更 → start/stop frame loop
-      if (state.loopState !== prev.loopState) {
-        this.handleTransport(state.loopState);
-      }
-    });
-  }
-
-  /** pipeline 回调 → 写回 store */
-  private onOutput = (nodeId: string, dataUrl: string) => {
-    useGraphStore.getState().setOutputPreview(nodeId, dataUrl);
-  };
-  private onError = (nodeId: string, error: string) => {
-    useGraphStore.getState().setNodeError(nodeId, error);
-  };
-}
-```
-
-#### OnnxService
-
-从 `useGraphStore` 中提取的 ONNX 模型下载/WebGPU probe 逻辑：
-
-```typescript
-// services/OnnxService.ts
-// subscribe graph changes → detect new ONNX nodes → trigger download → update store status
-// probe WebGPU compatibility → update onnxBackend in store
-```
-
-### 10.7 Catalog 抽离
-
-当前 `engine/shaders/`、`engine/onnxCatalog.ts`、`engine/mathOps.ts` 本质上是**纯数据注册表**，不包含运行时逻辑，但因为放在 `engine/` 下导致 components 必须 import engine。
-
-抽离到 `catalog/` 后：
-- `components/Header.tsx` import `catalog/shaders` 而非 `engine/shaders`
-- `components/SidePanel/OnnxPanel.tsx` import `catalog/onnx` 而非 `engine/onnxCatalog`
-- `store/graphSlice.ts` import `catalog/math` 而非 `engine/mathOps`
-- `runtime/` import `catalog/` 获取模型描述符
-
-### 10.8 实施路径
-
-| PR | 内容 | 风险 | 依赖 |
-|----|------|------|------|
-| **PR 1: Store 拆片** | `useGraphStore` → 4 slices，合并导出，外部接口不变 | 低 | — |
-| **PR 2: Catalog 抽离** | `engine/shaders/`、`onnxCatalog`、`mathOps` → `catalog/`。更新所有 import | 低 | — |
-| **PR 3: Executor 接口** | 定义 `NodeExecutor`，从 executionEngine 提取 ShaderExecutor / OnnxExecutor / MathExecutor / RendererExecutor。`Pipeline` 类替代 `ExecutionEngine` | 中 | PR 2 |
-| **PR 4: Service 层** | `PipelineService` + `OnnxService` 桥接 store↔pipeline。消除 engine→store 反向依赖。App.tsx 精简 | 中 | PR 1, PR 3 |
-
-PR 1 和 PR 2 互不依赖，可并行。PR 3 依赖 PR 2（executor 需要从 catalog 读取数据）。PR 4 依赖 PR 1 和 PR 3。
-
-## 11. 实现状态
-
-| 模块 | 状态 |
-|---|---|
-| Vite + React + TS + Tailwind 脚手架 | ✅ |
-| React Flow 节点图 + 自定义节点 | ✅ |
-| 六种节点：Shader / Input / Constant / ONNX / Renderer / Math | ✅ |
-| GLSL 正则解析（uniform / out） | ✅ |
-| Shader 编译（RawShaderMaterial + GLSL3） | ✅ |
-| WebGL FBO 渲染管线 | ✅ |
-| 拓扑排序执行引擎 | ✅ |
-| CodeMirror shader 编辑器 | ✅ |
-| PortInspector uniform 值编辑 + builtin AUTO 徽章 | ✅ |
-| InputNode 图片加载 + 缩略图 | ✅ |
-| 工程文件保存/载入 .quartz.json | ✅ |
-| macOS 极简 UI 风格 | ✅ |
-| 版本管理（version.ts） | ✅ |
-| 实时渲染循环（RealtimeHost + rAF） | ✅ |
-| Renderer 节点（mirror canvas blit） | ✅ |
-| 视频输入（摄像头 + 文件） | ✅ |
-| ONNX 推理节点（异步非阻塞，best-effort） | ✅ |
-| 时间系统（iTime/iTimeDelta/iFrame/iDate） | ✅ |
-| 多 Renderer 支持（各自独立 mirror canvas） | ✅ |
-| PLAY/PAUSE/STOP 三态传输控制 | ✅ |
-| Clock 暂停/恢复/seek | ✅ |
-| MouseState（Shadertoy iMouse 约定） | ✅ |
-| 每节点 iResolution（各 shader 独立 FBO 尺寸） | ✅ |
-| 视频尺寸向下游传播 | ✅ |
-| Tauri 桌面端支持（可选） | ✅ |
-| Math 节点（29 个 CPU 运算） | ✅ |
-| System 源节点（Time/Mouse/Resolution） | ✅ |
-| Auto 类型推定 + 宽类型连线 | ✅ |
-| SOURCE 菜单（重组 INPUT 为 SYSTEM/CONSTANTS/EXTERNAL） | ✅ |
-| Feedback/Accumulator（ping-pong 双缓冲 + previousFrame 自动注入） | ✅ |
-| 隐式声明式反馈检测（compiler 自动识别 previousFrame） | ✅ |
-| FEEDBACK 预设 shader（Gray-Scott Reaction-Diffusion） | ✅ |
-| Static/Dynamic 管线自动识别（含 feedback 检测） | ✅ |
-| ONNX 异步：最佳努力延迟（已知问题：至少 2 帧延迟，规划优化） | ⚠️ |
+- graph parse/plan error：阻止该 revision 进入运行；
+- shader validation error：node error，保留上一份可执行 plan（若宿主支持）；
+- missing image/video/model：resource error，禁止上传空 resource；
+- GPU device/surface loss：停止 host，释放 resource，发出 runtime error；
+- preview readback failure：不影响主 render loop，只更新 preview error；
+- decoder EOF：file loop 按 config 重启或保持 stopped；camera decoder error 必须停止 source。
 
 ---
 
-## 12. 关键设计决策
+## 15. 性能模型
 
-| 决策 | 选择 | 理由 |
-|---|---|---|
-| 节点渲染 | 自定义组件 + Tailwind | 完全控制外观，不依赖 React Flow 默认主题 |
-| Shader 编译 | RawShaderMaterial + GLSL3 | 避免 Three.js 自动注入与 #version 冲突 |
-| WebGL 上下文管理 | 单个隐藏 canvas + mirror blit | 避免多上下文，GPU→GPU 拷贝 |
-| Handle 定位 | position:relative 父容器 | 确保多端口各占一行，不重叠 |
-| 边类型 | bezier | 视觉效果流畅 |
-| UI 框架 | 纯 Tailwind，无组件库 | 轻量，macOS 风格自由定制 |
-| FBO 管线 | 零冗余 FBO，叶子 shader 即输出点 | 业务性能最优（见下文） |
-| 节点架构 | Renderer 节点读取上游 FBO，无额外渲染 pass | 零拷贝输出，GPU-only |
-| PixelRatio | 离屏管线固定 pixelRatio=1 | FBO 渲染不需要 DPI 缩放 |
-| Host/Compositor 分离 | RealtimeHost 驱动循环，Compositor 封装渲染 | 关注点分离：时间/输入 vs 图执行 |
-| Mirror Canvas Blit | drawImage(glCanvas) GPU→GPU | 多 Renderer 各自独立画布，无需多 WebGL 上下文 |
-| ONNX 异步推理 | async inference + 旧帧回退 | 非阻塞，不卡主渲染循环，best-effort |
-| GPU-only 输出 | 实时路径零 readPixels | 消除 GPU→CPU readback 开销 |
-| Feedback 激活方式 | **隐式声明式**：compiler 检测 `previousFrame` 标识符 | 用户不需要手动开关，shader 声明即启用 |
-| Feedback 存储 | ping-pong WebGLRenderTarget 双缓冲 | 避免读/写同一 FBO 的 undefined behavior |
-| Feedback 初始化 | clear color 清空 + shader frame 0 自举 | 灵活控制初始状态（Gray-Scott: A=1, B=0） |
+### 15.1 高频路径
+
+Browser：
+
+```text
+rAF -> Clock -> video map -> Compositor.render -> renderer mirror
+```
+
+Native：
+
+```text
+Rust worker -> video upload -> Engine.run_frame -> GpuExecutor -> present
+```
+
+两条路径都不应：
+
+- 每帧 JSON stringify graph；
+- 每帧 Tauri invoke；
+- 每帧 GPU→CPU→GPU；
+- 每帧发送 output pixels 到 WebView；
+- 重新创建未改变的 pipeline/target/video decoder。
+
+### 15.2 可测量指标
+
+任何性能结论必须使用同一 graph、同一分辨率、同一模型和同一 host 记录：
+
+- render frame time / p50 / p95；
+- GPU submission time；
+- video decode/upload time；
+- ONNX preprocessing/inference/postprocessing time；
+- graph rebuild time；
+- resource upload/reuse count；
+- preview readback count/bytes；
+- dropped/late frame count；
+- native IPC command/event count。
+
+未有 benchmark 数据前，禁止使用“零拷贝”“10x”“实时无开销”等无法验证的收益描述。native video 当前是 decoder thread → RGBA texture upload，不应称为 decoder output zero-copy。
 
 ---
 
-## 13. 渲染管线设计原则
+## 16. 安全、平台和打包
 
-**核心原则：零冗余 FBO，GPU-only 输出，业务性能最优。**
+### 16.1 Tauri 边界
 
-- 无独立 Output 节点。Renderer 节点直接读取上游 shader 的 FBO，不创建额外渲染 pass。
-- 管线中不创建任何不必要的中间 FBO。每个 FBO 的存在必须有明确的业务语义（输入纹理缓存、或多级 shader 链的中间结果、或 ping-pong 反馈对）。
-- **每节点 iResolution**：每个 shader 在其自身 FBO 尺寸下执行，分辨率不是全局的。Renderer 节点跟随上游 shader 的 FBO 尺寸。
-- 离屏渲染管线使用 `pixelRatio=1`，不受屏幕 DPI 影响。FBO 尺寸即像素尺寸，所见即所得。
-- **GPU-only 输出**：实时渲染路径不调用 `readPixels`/`toDataURL`，预览通过 mirror canvas 的 `drawImage` 实现 GPU→GPU blit。
-- **Renderer 跟随上游尺寸**：Renderer 节点不定义自己的分辨率，完全继承上游 shader FBO 的宽高。
-- 视频输入尺寸自动传播到下游 shader 的默认 FBO 大小。
-- 工程文件版本号随数据模型变更递增，LOAD 时严格校验版本，不兼容则报错拒绝加载。
+当前 Tauri 配置：
 
----
+- frontend dev/build 分别使用 Vite；
+- asset protocol enabled，scope 当前为 `**`；
+- Tauri commands 集中注册于 `src-tauri/src/lib.rs`；
+- native output window label 为 `native-output`；
+- model、image、video bytes 不应通过任意 command 直接执行 shell。
 
-## 14. Math 节点设计方案（已实现）
+当前 CSP 为 `null`，asset scope 较宽。正式发布前必须按实际 asset/model/video path 收紧 CSP 和 asset scope；不能因为本地 Tauri 环境而把路径输入视为可信。
 
-### 背景
+### 16.2 Native runtime assets
 
-QC 的 Math/Logic patch 是纯 CPU 运算节点——接收标量/向量输入，执行数学运算，输出结果。不走 GPU shader 管线。QC 的 Math patch 是宽类型的：一个 `Add` patch 既能加两个 float 也能加两个 vec3。
+平台 runtime 资源：
 
-### 设计原则
+- Windows：FFmpeg、FFmpeg notice、`onnxruntime.dll`、`DirectML.dll`；
+- macOS/Linux：FFmpeg、FFmpeg notice；
+- `npm run prepare:runtime` 构建 WASM SDK、复制 ORT、复制平台 FFmpeg；
+- Tauri bundle 通过平台 conf 文件把 runtime 资源放入 app `runtime/` 目录。
 
-1. **Math 是 CPU 节点，不是 shader** — 不编译 GLSL，不分配 FBO，不走 GPU 管线
-2. **宽类型匹配** — 端口声明为 `'auto'` 类型，实际类型从连线对端推定
-3. **类型提升规则** — 遵循 GLSL 隐式转换：`int → float`，`float → vecN`（broadcast），`vecN + vecN → vecN`（逐分量）
-4. **仅对 Math 节点放宽连线规则** — 其他节点类型仍严格匹配
+FFmpeg 是外部发行物，打包和发布必须保留对应 notice/license 文件。
 
-### 数据模型
+### 16.3 Platform capability
 
-```typescript
-type NodeType = 'shader' | 'input' | 'constant' | 'onnx' | 'renderer' | 'math';
-
-// Math 节点专用字段
-interface ShaderNodeData {
-  // ... 现有字段
-  mathOp?: string;              // 运算标识：'add' | 'multiply' | 'sin' | 'clamp' | ...
-}
-
-// 新增特殊 DataType
-type DataType = GlslDataType | LogicalDataType | 'auto';
-```
-
-### 端口类型推定
-
-Math 节点的端口声明为 `dataType: 'auto'`：
-
-```
-未连线时：          连线后：
-┌─────────┐        ┌─────────┐
-│  Add     │        │  Add     │
-│ a: auto ─┤        │ a: vec3 ─┤ ← 上游是 vec3
-│ b: auto ─┤        │ b: float─┤ ← 上游是 float
-│─ out:auto│        │─ out:vec3│ ← 提升为最宽类型
-└─────────┘        └─────────┘
-```
-
-推定规则：
-1. `prepare()` 时遍历 Math 节点的连线
-2. 输入端口类型 = 对端输出端口的 `dataType`
-3. 输出端口类型 = 所有输入类型的最宽类型（`float < vec2 < vec3 < vec4`，`int → float`）
-4. 未连线的输入用 `float` 作为默认
-
-### 连线规则放宽
-
-`onConnect` 中：
-- 如果 source 或 target 的端口是 `'auto'` 类型 → 允许任何标量/向量连接
-- 其他节点的端口仍严格类型匹配
-- sampler2D / samplerCube 不允许连到 Math 端口（Math 不处理纹理）
-
-### 引擎执行
-
-`runFrame()` 中 Math 节点的处理：
-
-```
-1. 收集输入值：
-   - 从上游 Input 节点的 uniforms 取值
-   - 从上游 System 节点的 FrameInputs 取值
-   - 从上游 Math 节点的计算结果取值
-
-2. 类型转换 + broadcast：
-   - int → float
-   - float → vecN: broadcast 到 [x, x, x, x]
-   - vecN → vecM (N < M): 用 0 补齐
-
-3. CPU 计算：
-   - 纯 JS 运算，按 mathOp 分发
-   - 结果存入 plan 的值映射表
-
-4. 下游 shader 消费时：
-   - 和消费 Input 节点标量值一样
-   - 通过 scalarBindings 注入到 shader uniform
-```
-
-### Math 运算库
-
-分类与 QC 对齐：
-
-| 类别 | 运算 | 输入 → 输出 |
-|---|---|---|
-| **算术** | Add, Subtract, Multiply, Divide, Negate | (a, b) → a⊕b |
-| **取整** | Floor, Ceil, Round, Fract, Mod | (a) → a' 或 (a, b) → a' |
-| **范围** | Min, Max, Clamp, Saturate, Step, Smoothstep | (a, b) → a' |
-| **插值** | Mix (Lerp), Map Range | (a, b, t) → a' |
-| **三角** | Sin, Cos, Tan, Asin, Acos, Atan, Atan2 | (a) → a' |
-| **指数** | Pow, Sqrt, Exp, Log, Abs, Sign | (a) → a' |
-| **向量** | Dot, Cross, Length, Normalize, Distance, Reflect | (a, b) → scalar/vector |
-
-### UI
-
-- **节点外观**：橙色 header，标题显示运算名称（如 "Add"、"Sin"）
-- **菜单**：SOURCE 和 SHADER 之间新增 MATH 按钮，按类别分组子菜单
-- **SidePanel**：显示端口列表 + 推定类型 + 常量输入编辑（未连线的输入可手动设值）
-- **节点上显示运算符号**：如 `+` `×` `sin` 等
-
-### 典型使用场景
-
-```
-Time → Math(Multiply, b=0.5) → Shader.speed     # 半速时间
-Time → Math(Sin) → Math(Add, b=0.5) → Shader.x   # 正弦振荡 0..1
-Mouse.xy → Math(Divide, b=resolution) → Shader.uv # 归一化鼠标坐标
-```
-
-### 实施阶段
-
-1. **Phase 1**：✅ 新增 `'math'` 节点类型 + `'auto'` DataType + 连线放宽 + `runFrame` CPU 执行分支 + 基础算术运算（Add/Subtract/Multiply/Divide）
-2. **Phase 2**：✅ 完整运算库（29 个运算：三角/指数/范围/插值/取整）+ MathNode UI 组件 + MathSidePanel
-3. **Phase 3**：✅ 端口类型推定 + 类型提升 + broadcast 逻辑 + System 源节点（TIME/MOUSE/RESOLUTION）
+| 能力 | Browser | Windows native | macOS/Linux native |
+|---|---:|---:|---:|
+| WebGPU shader graph | 已实现 | native wgpu 已实现 | 代码路径已配置，需目标平台 smoke |
+| HTML video input | 已实现 | 不作为 native source | 不作为 native source |
+| FFmpeg file video | browser URL | 已实现 | 配置/代码路径 |
+| FFmpeg camera | browser MediaStream | DirectShow | AVFoundation/V4L2 path |
+| native ORT CPU | browser ORT/WASM | 已实现 | native session path |
+| DirectML | 不适用 | capability-dependent | 不适用 |
+| wgpu/ORT shared device | browser 单 JS device | 未实现，显式 false | 未实现 |
 
 ---
 
-## 15. Feedback / Accumulator 设计方案（已实现）
+## 17. 构建与测试策略
 
-### 背景
+### 17.1 日常命令
 
-引擎默认每个 shader 节点是纯函数——输入进，输出出，无跨帧状态。这阻止了时间相关效果（运动模糊、反应扩散、流体模拟、递归反馈）。QC 的 **Accumulator patch** 和 **Core Image Accumulator** 提供了帧间存储。
-
-### 设计原则
-
-1. **隐式声明式** — shader 代码中引用 `previousFrame` 标识符即触发 ping-pong 双缓冲，无需用户手动开关
-2. **声明即注入** — 编译器自动注入 `uniform sampler2D previousFrame;`，无需用户在 GLSL 中声明
-3. **零额外分配** — 使用现有的 `WebGLRenderTarget` 分配器，仅增加一个额外 target
-4. **无缝集成** — 不改变 DAG 拓扑；feedback 不是图边，而是引擎自动管理的隐式关联
-
-### 数据流
-
-```
-┌─────────────────────────────────────────┐
-│            Feedback Node                 │
-│                                         │
-│  readTarget ──→ uniform previousFrame ──→│
-│                                         │
-│  writeTarget ←── render pass ───────────│
-│                                         │
-│  帧尾: swap(readIndex)                  │
-└─────────────────────────────────────────┘
+```bash
+npm run build
+npx tsc -b --noEmit
+npx vitest run
+cargo test --manifest-path crates/open_quartz/Cargo.toml --all-targets
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo clippy --manifest-path crates/open_quartz/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-### 实现架构
+### 17.2 测试层级
 
-```
-shaderCompiler.ts:  compileNodeShader()
-  → 检测 /\bpreviousFrame\b/
-  → 注入 uniform sampler2D previousFrame;
-  → 返回 needsFeedback: true
+1. **Pure contract tests**：types、serialization、error/event decoding、WGSL parser/compiler、graph topo/dirty。
+2. **Rust engine tests**：revision/generation、feedback preservation、typed frame、execution command、resource lifecycle。
+3. **GPU tests**：shader cascade、uniform、feedback、target reuse、readback。
+4. **Browser adapter tests**：RealtimeHost lifecycle、ONNX completion、video reconciliation、preview selection。
+5. **Native adapter tests**：command payload、raw image upload、video descriptor、camera discovery、event coalescing、resource replacement。
+6. **Smoke tests**：真实 Chromium/WASM、真实 native DX12 surface、FFmpeg multi-frame decode、DirectML identity、installer resource inclusion。
 
-executionEngine.ts: prepare()
-  → compiled.needsFeedback
-  → createTarget × 2 (ping-pong 对)
-  → store in feedbackTargets[nodeId]
+### 17.3 必须守护的 contract
 
-executionEngine.ts: runFrame()
-  → feedbackTargets.has(nodeId)
-  → 首次: clearTarget × 2 (clearColor)
-  → bind: setUniform(material, 'previousFrame', readTarget.texture)
-  → render: renderWithMaterial(material, writeTarget)
-  → swap: feedbackReadIndex[nodeId] ^= 1
-```
-
-### Clear Color 语义
-
-Clear Color 决定了 feedback 缓冲区的初始状态。对于 Gray-Scott 反应扩散：
-- `(R=1, G=0, B=0, A=0)` — A 化学物质浓度 1.0，B 物质浓度 0.0
-- Frame 0 shader 在这个基础上写入种子区域
-
-对于 motion blur trails：
-- `(R=0, G=0, B=0, A=0)` — 全黑首次帧，然后每帧混合
-
-### 典型使用场景
-
-| 效果 | Shader 策略 | Clear Color |
-|------|-------------|-------------|
-| Reaction-Diffusion | 存储 A/B 浓度在 RG 通道，frame 0 写种子 | (1, 0, 0, 0) |
-| Motion Blur Trails | `mix(previousFrame, currentFrame, 0.9)` | (0, 0, 0, 0) |
-| Video Feedback | 缩放/旋转/混合 previousFrame + live input | (0, 0, 0, 0) |
-| Fluid Simulation | 多 buffer（速度场/压力场）在 RG 通道 | (0, 0, 0, 0) |
-
-### 实施阶段
-
-1. **Phase 1**：✅ ping-pong 双缓冲 + `previousFrame` 自动注入 + clear/reset + GLSL 隐式声明检测
-2. **Phase 2**：✅ UI 只读指示器 + Clear Color 调色板 + Gray-Scott Reaction-Diffusion 预设
-3. **Phase 3**：⏳ Motion Blur Trails 预设
-4. **Phase 4**：⏳ Video Feedback 万花筒
-
+- port label 与 port ID preservation；
+- graph edge handle 到 upstream binding 的映射；
+- position-only update 不重置 feedback；
+- image/video descriptor 不重复 upload；
+- stale video detach 不删除 replacement image；
+- decoder 每个 generation 都是完整 RGBA frame；
+- native frame event 不带 pixels；
+- `read_output` header 与 byte length 一致；
+- disposed runtime 不再发 event；
+- DirectML 不可用时 capability 与 fallback 行为显式。
 
 ---
 
-## 16. 全 GPU 管线设计方案
+## 18. 当前状态与路线图
 
-### 16.1 现状问题：两次 CPU 往返
+### 18.1 已完成
 
-当前 ONNX 推理管线存在两处 GPU→CPU→GPU 往返，是实时性能的主要瓶颈：
+- React/React Flow/Zustand graph editor；
+- WGSL parser/compiler/validation，Rust WASM parser 已成为 production parser；
+- browser WebGPU shader/math/input/feedback/renderer pipeline；
+- browser ONNX preprocessing、inference、postprocessing 和 async static rerender；
+- Rust graph topology、dirty set、execution plan、typed frame、revision/generation/event lifecycle；
+- native wgpu `GpuBackend`、`GpuExecutor`、pipeline/target/readback；
+- Tauri native output window 和 Rust render thread；
+- native image upload/reuse、FFmpeg file/camera decoder、video texture binding、camera discovery；
+- native preview/screenshot/output readback adapter；
+- native ORT CPU/DirectML session capability和 model-ID load；
+- Windows runtime packaging及 FFmpeg/ORT/DirectML smoke。
 
-```
-Shader(WebGL)                    ONNX(WebGPU)                     Shader(WebGL)
-    │                                │                                │
-    ├── readPixels ──→ CPU Canvas ──→ texImage2D ──→ 推理 ──→ CPU Float32Array
-    │   (GPU→CPU)        (瓶颈1)                              (GPU→CPU, 瓶颈2)
-    │                                                              │
-    │                                              putImageData ──→ CanvasTexture
-    │                                                (CPU→GPU)         │
-    └──────────────────────────────────────────────────────────────────┘
-```
+### 18.2 当前未完成
 
-- **瓶颈 1**：shader 输出必须 readPixels 到 CPU canvas，才能喂给 ONNX 推理
-- **瓶颈 2**：ONNX 推理结果必须从 GPU buffer 读回 CPU，再上传为 texture
-- Detection/segmentation 的后处理（decode + NMS）也在 CPU 上执行
-- WebGL 和 WebGPU 是两套独立的 GPU API，无法共享纹理/buffer
+1. `PipelineService` 尚未根据 host/capability 选择 native runtime。
+2. browser/native 的真实 runtime facade 尚未统一，`PipelineRuntime.ts` 仍包含早期契约。
+3. native `ExecutionCommand::onnx` 尚未连接 texture/tensor resource 与 async completion。
+4. native graph 尚未覆盖完整 ONNX task set、cascade 和静态补帧语义。
+5. browser screenshot readback 尚未实现。
+6. camera device discovery 尚未接入 SidePanel 的跨平台 UI 选择流程。
+7. Tauri CSP/asset scope 尚未按发布安全要求收紧。
 
-### 16.2 目标：单 GPUDevice 全程零拷贝
+### 18.3 Stage F：ONNX graph cutover
 
-```
-┌─────────────────────── 共享 GPUDevice ───────────────────────┐
-│                                                              │
-│  2D Shader ──→ GPUTexture ──→ ONNX ──→ GPUBuffer ──→ 2D Shader
-│  (WGSL)        copyTexToBuffer  io_binding  copyBufToTex  (WGSL)
-│                 (GPU内搬运)                (GPU内搬运)       │
-│  3D Scene ──→ GPUTexture ──→ 下游 shader / ONNX             │
-│  (Three.js)                                                  │
-│                                                              │
-│  Compute ──→ GPUBuffer ──→ 下游 shader / overlay            │
-│  (Decode+NMS)                                                │
-└──────────────────────────────────────────────────────────────┘
-```
+必须完成：
 
-三个执行引擎共享同一个 `GPUDevice`，数据全程留在显存：
-- **2D shader 节点**：用户写 WGSL，直接编译成 `GPUShaderModule`，全屏 quad 渲染到 `GPUTexture`
-- **3D 场景节点**：Three.js WebGPURenderer 渲染 3D 模型（GLTF、PBR、灯光），输出到 `GPUTexture`
-- **ONNX 推理节点**：onnxruntime-web WebGPU EP，通过 IO binding 直接读写 `GPUBuffer`
-- **Compute shader 节点**：后处理（decode + NMS）在 GPU 上完成
+- native texture → tensor 和 tensor → texture contract；
+- native ONNX async completion event；
+- ONNX node dirty propagation；
+- browser/native task result parity；
+- cascaded ONNX graph；
+- video-driven per-frame ONNX；
+- DirectML/CPU fallback observability；
+- native output/preview 与 ONNX output size/data event。
 
-### 16.3 混合渲染架构
+### 18.4 Stage G：production runtime switch
 
-#### 为什么不能完全删掉 Three.js
+只有同时满足以下条件，才允许修改 `PipelineService`：
 
-Three.js WebGPURenderer 不支持 `RawShaderMaterial`（我们当前用来让用户写 GLSL 的方式）。但 Three.js 提供了 3D 场景图、GLTF 加载、PBR 材质、灯光系统——这些是未来 Quartz Composer 3D patch 对标所需要的。自己从头写 3D 渲染引擎不值得。
+- browser/native shared graph semantics contract tests 全部通过；
+- runtime facade 方法、错误、events、resource lifecycle 已统一；
+- native Stage F ONNX parity 完成；
+- Tauri window close、stop、dispose、device loss 无悬挂 worker/video/session；
+- browser path 仍保留且不会被 native fallback 静默替代；
+- Tauri 与 browser 各自的 smoke、installer、性能基线均通过。
 
-#### 混合方案
+切换应是显式 host selection：
 
-```
-Three.js WebGPURenderer
-├── 3D 节点: GLTF/OBJ、PBR 材质、灯光、相机
-│   → 用 Three.js 内置 NodeMaterial，不需要用户写 shader
-│   → 输出到 GPUTexture，下游 2D shader 节点可直接采样
-│
-├── 2D Shader 节点: 全屏 quad 图像处理
-│   → 绕过 Three.js 材质系统
-│   → 直接用 device.createRenderPipeline() + 用户写的 WGSL
-│   → 输出到 GPUTexture
-│
-├── ONNX 推理节点:
-│   → 共享同一个 GPUDevice
-│   → IO binding：输入 GPUBuffer（从上游 GPUTexture copyTexToBuffer）
-│   → 输出 GPUBuffer（copyBufToTexture 到下游 GPUTexture）
-│
-└── Compute Shader 节点:
-    → 后处理（decode, NMS, argmax）
-    → 输入输出都是 GPUBuffer / GPUTexture
+```text
+if isTauri && nativeCapabilities.gpuExecution && stageFReady:
+    use NativePipelineRuntime
+else:
+    use BrowserPipelineRuntime
 ```
 
-#### GPUDevice 共享机制
-
-```typescript
-// 1. Three.js 创建 WebGPURenderer，获取底层 GPUDevice
-const renderer = new THREE.WebGPURenderer();
-await renderer.init();
-const device: GPUDevice = renderer.backend.device;
-
-// 2. ORT 注入同一个 GPUDevice
-ort.env.webgpu.device = device;
-const session = await ort.InferenceSession.create(modelBuffer, {
-  executionProviders: ['webgpu'],
-  preferredOutputLocation: 'gpu-buffer',  // 输出留在 GPU
-});
-
-// 3. 2D shader pipeline 也用同一个 device
-const shaderModule = device.createShaderModule({ code: userWgslCode });
-const pipeline = device.createRenderPipeline({ /* ... */ });
-```
-
-#### 数据流：GPUTexture ↔ GPUBuffer（GPU 内搬运）
-
-```typescript
-// Shader 输出 GPUTexture → ONNX 输入 GPUBuffer（零拷贝）
-const encoder = device.createCommandEncoder();
-encoder.copyTextureToBuffer(
-  { texture: shaderOutputTexture },
-  { buffer: ortInputBuffer, bytesPerRow: width * 4 },
-  { width, height },
-);
-device.queue.submit([encoder.finish()]);
-
-// ONNX 输出 GPUBuffer → Shader 输入 GPUTexture（零拷贝）
-const encoder2 = device.createCommandEncoder();
-encoder2.copyBufferToTexture(
-  { buffer: ortOutputBuffer, bytesPerRow: outWidth * 4 },
-  { texture: nextShaderInputTexture },
-  { width: outWidth, height: outHeight },
-);
-device.queue.submit([encoder2.finish()]);
-
-// ORT IO Binding：直接从/向 GPUBuffer 推理
-const inputTensor = ort.Tensor.fromGpuBuffer(ortInputBuffer, {
-  dataType: 'float32',
-  dims: [1, 3, 640, 640],
-});
-const results = await session.run({ input: inputTensor });
-// results.output.gpuBuffer → 直接用于 copyBufferToTexture
-```
-
-`copyTextureToBuffer` / `copyBufferToTexture` 是 **GPU 内部搬运**，不经过 CPU，延迟在纳秒级。
-
-### 16.4 Shader 语言迁移：GLSL → WGSL
-
-WebGPU 原生支持 WGSL（WebGPU Shading Language），不支持 GLSL。WGSL 和 GLSL 语法接近：
-
-```glsl
-// GLSL 300 es (当前)
-uniform sampler2D inputImage;
-uniform float intensity;
-out vec4 fragColor;
-
-void main() {
-  vec4 color = texture(inputImage, v_uv);
-  color.rgb *= intensity;
-  fragColor = color;
-}
-```
-
-```wgsl
-// WGSL (目标)
-@group(0) @binding(0) var inputImage: texture_2d<f32>;
-@group(0) @binding(1) var inputSampler: sampler;
-@group(0) @binding(2) var<uniform> params: Params;
-struct Params { intensity: f32 }
-
-@fragment
-fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
-  let color = textureSample(inputImage, inputSampler, v_uv);
-  return vec4f(color.rgb * params.intensity, color.a);
-}
-```
-
-迁移影响：
-- 31 个 shader preset 全部转写为 WGSL
-- Custom shader 编辑器从 GLSL 切换到 WGSL
-- CodeMirror 语法高亮切换到 WGSL
-- Shader parser 适配 WGSL 语法（`@binding`、`var<uniform>`、`texture_2d` 等）
-- Shader compiler 从 `RawShaderMaterial` 改为 `device.createRenderPipeline()`
-
-### 16.5 Detection / Segmentation 后处理
-
-Phase 1（已完成）：TS 重写 decode + NMS，删除 Rust WASM。后处理步骤：
-
-**Detection (YOLOv8n)**：
-1. Letterbox 预处理 — 原图等比缩放到 640×640，短边补灰
-2. 模型推理 — 输出 `[1, 84, 8400]` raw tensor
-3. Decode — 逐候选提取 bbox，反算 letterbox padding，过 score 阈值
-4. NMS — 按 score 降序，IoU 去重
-5. Overlay 绘制 — 在原图上画框 + 标签
-
-**Segmentation (YOLO26n)**：
-1. Letterbox 预处理 — 同上
-2. 模型推理 — 输出 `[1, 19, H, W]` logits
-3. Argmax — 每像素取最大类别
-4. Resize + Colorize — 最近邻缩放 + Cityscapes 调色板
-
-Phase 2（计划）：后处理节点化 — Decode/NMS 作为独立图节点，可自由组合
-Phase 5（计划）：迁移到 compute shader — decode 并行化，NMS 用 parallel sort
-
-### 16.6 `tensor` 数据类型
-
-ONNX raw output 需要新的端口类型在图中流动：
-
-```typescript
-type DataType = WgslDataType | 'roi' | 'tensor' | 'auto';
-
-// tensor 在 GPU 管线中对应 GPUBuffer + shape 元信息
-interface TensorDescriptor {
-  buffer: GPUBuffer;
-  shape: number[];
-  dtype: 'float32' | 'float16' | 'int32';
-}
-```
-
-### 16.7 实施路径
-
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| **Phase 1：删 Rust WASM** | TS 重写 decode + NMS，去掉 `rust/crates/`、`wasm-pack` | ✅ 已完成 |
-| **Phase 2：WebGPU 渲染层** | Three.js WebGPURenderer + 自建 2D shader pipeline（WGSL），共享 GPUDevice | 🔜 下一步 |
-| **Phase 3：WGSL 迁移** | 31 个 shader preset 转 WGSL，parser/compiler 适配，CodeMirror WGSL 高亮 | Phase 2 后 |
-| **Phase 4：ORT IO binding** | ONNX 推理通过 IO binding 直接读写 GPUBuffer，消除瓶颈 1+2 | Phase 2 后 |
-| **Phase 5：Compute Shader 后处理** | Decode/NMS/argmax 迁移到 compute shader，引入 `tensor` 数据类型 | Phase 3, 4 后 |
-| **Phase 6：后处理节点化** | Decode/NMS 作为独立图节点，detection pipeline 可组合 | Phase 5 后 |
-| **Phase 7：3D 节点** | Three.js 3D 场景节点（GLTF 加载、PBR、灯光），对标 QC 3D patch | Phase 2 后 |
-
-Phase 2 和 Phase 3 是核心：建立 WebGPU 渲染基础 + WGSL shader 体系。Phase 4 接入 ORT 零拷贝。Phase 5-7 在基础上渐进扩展。
+禁止同时启动两个 runtime，再用其中一个作为隐式 fallback。
 
 ---
 
-## 17. Rust SDK 架构（open_quartz crate）
+## 19. 架构变更规则
 
-### 17.1 动机
+后续任何架构改动必须回答以下问题：
 
-当前所有业务逻辑（图引擎、WGSL 解析/编译、GPU 渲染、ONNX 推理、项目 I/O）都在 TypeScript 中实现。这带来几个问题：
+1. 这是 UI、Store、service、adapter、shared Rust 还是 host-specific 责任？
+2. 新数据是 graph metadata、低频 descriptor、typed frame input、resource bytes 还是 event？
+3. 它的所有权在哪个 runtime？谁在 stop/dispose 时释放？
+4. 它是否进入高频 frame path？如果是，为什么不会产生 JSON/IPC/pixel traffic？
+5. browser 与 native 是否共享 observable semantics，还是明确的 platform capability 差异？
+6. graph revision、node generation、dirty set 和 feedback state 如何变化？
+7. 失败如何编码、如何定位到 node/resource/revision？
+8. 是否有对应的 contract test 和 host smoke test？
+9. 文档描述的是已实现能力、迁移中的能力，还是目标能力？
 
-| 问题 | 后果 |
-|------|------|
-| **JS 单线程** | WGSL 解析、图拓扑排序、uniform 序列化全在主线程，帧内 CPU 开销挤占 rAF 预算 |
-| **GC 压力** | 每帧创建大量临时对象（Float32Array、Map、Set），V8 GC pause 导致偶发掉帧 |
-| **GPU 资源生命周期** | GPUBuffer/GPUTexture 需精确释放，JS 没有 RAII，靠手动 `.destroy()` 容易泄漏 |
-| **类型安全** | TypeScript 对 WebGPU 类型的覆盖不完整（需要 `@webgpu/types`），Immer draft 与 `GPUDevice` 类型冲突 |
-| **双平台** | Tauri 桌面端的 Rust 后端和浏览器端的 TS 引擎是两套独立实现，模型下载/文件 I/O 逻辑重复 |
-| **ONNX 绑定** | `onnxruntime-web` 是 JS binding，序列化开销大；`ort` crate 是官方 Rust binding，零开销 FFI |
+最重要的不变量：
 
-### 17.2 目标架构
-
+```text
+Graph metadata 可以跨边界。
+GPU object、decoder frame、model session 不跨边界。
+Frame clock 留在执行宿主。
+Pixels 只在显式 preview/screenshot 时跨边界。
+Rust Engine 保持 graph/execution semantics。
+Host adapter 保持 surface/media/ONNX/GPU ownership。
+Production switch 必须一次性、显式、可回滚地完成。
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         TypeScript UI                          │
-│  React 19 · React Flow · CodeMirror · Zustand · Tailwind       │
-│  components/ · store/ · services/PipelineService.ts             │
-│                              │                                  │
-│                    wasm-bindgen FFI                              │
-│                              │                                  │
-├──────────────────────────────┼──────────────────────────────────┤
-│                              ▼                                  │
-│                    open_quartz (Rust SDK)                        │
-│                                                                 │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐   │
-│  │  graph   │  │  wgsl    │  │   gpu    │  │     onnx       │   │
-│  │         │  │          │  │          │  │                │   │
-│  │ Node    │  │ parser   │  │ Backend  │  │ Session        │   │
-│  │ Edge    │  │ compiler │  │ Target   │  │ Preprocess     │   │
-│  │ TopoSort│  │ validate │  │ Pipeline │  │ Postprocess    │   │
-│  │ DirtySet│  │ (naga)   │  │ BindGroup│  │ (ort crate)    │   │
-│  └────┬────┘  └────┬─────┘  └────┬─────┘  └───────┬────────┘   │
-│       │            │             │                 │            │
-│  ┌────┴────────────┴─────────────┴─────────────────┴──────┐     │
-│  │                    engine (Executor)                    │     │
-│  │  prepare() · run_frame() · feedback · uniforms          │     │
-│  └────────────────────────┬───────────────────────────────┘     │
-│                           │                                     │
-│  ┌────────────────────────┴───────────────────────────────┐     │
-│  │                    platform                             │     │
-│  │  wgpu (WebGPU/Vulkan/Metal/DX12) · clock · project_io  │     │
-│  └─────────────────────────────────────────────────────────┘     │
-│                                                                 │
-│  编译目标:                                                       │
-│    wasm32-unknown-unknown → 浏览器 (wasm-bindgen)                │
-│    x86_64 / aarch64       → Tauri 桌面端 (tauri::command)        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 17.3 分层职责
-
-| 层 | crate 模块 | 职责 | 关键依赖 |
-|---|---|---|---|
-| **types** | `open_quartz::types` | Port、DataType、NodeData、ProjectFile — 全 `#[derive(Serialize, Deserialize)]` | `serde` |
-| **graph** | `open_quartz::graph` | 拓扑排序、dirty-set 增量执行、节点/边 CRUD | — |
-| **wgsl** | `open_quartz::wgsl` | WGSL 解析（提取 ports + description）、preamble 注入、编译校验 | `naga` |
-| **gpu** | `open_quartz::gpu` | Render target 生命周期、纹理管理、fullscreen triangle、readback | `wgpu` |
-| **onnx** | `open_quartz::onnx` | ORT session 管理、预处理 compute shader、后处理 decode/NMS | `ort`, `wgpu` |
-| **engine** | `open_quartz::engine` | Executor：prepare graph → execution plan → run_frame → feedback swap | 依赖以上全部 |
-| **catalog** | `open_quartz::catalog` | 28 shader presets、29 math ops、7 ONNX model entries — 静态数据 | `types` |
-| **platform** | `open_quartz::platform` | Clock、project I/O、平台抽象（文件系统、模型缓存路径） | `serde_json` |
-
-### 17.4 FFI 边界设计
-
-TypeScript UI 通过 `wasm-bindgen` 调用 Rust SDK。边界原则：
-
-1. **复杂结构走 JSON**：graph nodes/edges、parsed ports、compilation errors — `serde_json` 序列化
-2. **高频标量走原生**：time、delta、frame — 直接 `f64` / `u64` 参数
-3. **大块数据走零拷贝**：纹理数据 — `wasm_bindgen::memory()` 共享 `ArrayBuffer`，JS 侧 `Uint8Array` view
-4. **GPU 对象不跨边界**：`GPUDevice`、`GPUTexture` 由 Rust 侧 `wgpu` 持有，JS 只拿 opaque handle
-5. **Canvas 由 JS 提供**：`wgpu::Instance::create_surface_from_canvas()` 接收 JS canvas 元素
-
-```rust
-// open_quartz/src/ffi.rs — wasm-bindgen 导出
-
-#[wasm_bindgen]
-pub struct Engine { /* opaque */ }
-
-#[wasm_bindgen]
-impl Engine {
-    /// 初始化：JS 传入 canvas 元素，Rust 创建 wgpu::Surface + Device
-    #[wasm_bindgen(constructor)]
-    pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Engine, JsValue>;
-
-    /// 设置图：JS 序列化 nodes + edges 为 JSON
-    pub fn set_graph(&mut self, nodes_json: &str, edges_json: &str) -> Result<(), JsValue>;
-
-    /// 解析 WGSL：返回 ParsedShader JSON（ports + description + errors）
-    pub fn parse_shader(&self, code: &str) -> String;
-
-    /// 校验 WGSL：用 naga 编译检查，返回 errors JSON
-    pub fn validate_shader(&self, code: &str, ports_json: &str) -> String;
-
-    /// 每帧执行：JS 传入时间参数，Rust 执行整个 graph
-    pub fn run_frame(&mut self, time: f64, delta: f64, frame: u64);
-
-    /// 读取节点输出：返回 RGBA 像素数据（零拷贝 view into WASM memory）
-    pub fn read_output(&self, node_id: &str) -> Result<js_sys::Uint8Array, JsValue>;
-
-    /// 上传图片纹理：JS 传入 RGBA 字节
-    pub fn upload_image(&mut self, node_id: &str, rgba: &[u8], width: u32, height: u32);
-
-    /// 导入视频帧：JS 传入 HTMLVideoElement，Rust 用 wgpu 零拷贝导入
-    pub fn import_video_frame(&mut self, node_id: &str, video: &web_sys::HtmlVideoElement);
-
-    /// 释放资源
-    pub fn dispose(&mut self);
-}
-```
-
-### 17.5 TypeScript UI 层（瘦壳）
-
-迁移后 TypeScript 只保留：
-
-```
-src/
-├── components/           ← React UI 组件（不变）
-│   ├── Header.tsx
-│   ├── SidePanel/
-│   │   ├── ShaderEditor.tsx   CodeMirror WGSL 编辑器
-│   │   ├── PortInspector.tsx  端口列表 + uniform 控件
-│   │   └── index.tsx          SidePanel 容器
-│   ├── NodeGraph/
-│   │   ├── nodes/             ShaderNode, InputNode, OnnxNode, ...
-│   │   └── index.tsx          React Flow 画布
-│   └── ImageLightbox.tsx
-│
-├── store/                ← Zustand 状态（瘦化）
-│   ├── graphSlice.ts     nodes/edges CRUD — 调用 engine.set_graph()
-│   ├── uiSlice.ts        选中、预览、错误 — 纯 UI 状态
-│   ├── transportSlice.ts play/pause/stop — 驱动 rAF 循环
-│   └── index.ts
-│
-├── services/
-│   └── PipelineService.ts  唯一桥接：
-│                            - subscribe(store) → engine.set_graph()
-│                            - rAF loop → engine.run_frame()
-│                            - engine callbacks → store.setNodeError()
-│
-├── sdk/                  ← Rust SDK 的 WASM binding 包装
-│   └── index.ts          import init, { Engine } from 'open_quartz_wasm'
-│                          类型安全的 TS wrapper over wasm-bindgen exports
-│
-└── App.tsx
-```
-
-### 17.6 关键 crate 选型
-
-| 领域 | crate | 理由 |
-|------|-------|------|
-| GPU | `wgpu` | 官方 WebGPU 实现，浏览器编译到 WebGPU，桌面端编译到 Vulkan/Metal/DX12 |
-| WGSL 解析 | `naga` | wgpu 的 shader 编译器，支持 WGSL→SPIR-V→GLSL 全链路，比 wgsl_reflect 快 10× |
-| ONNX | `ort` | ONNX Runtime 官方 Rust binding，支持 GPU EP，零开销 FFI |
-| 序列化 | `serde` + `serde_json` | 标准，FFI 边界 JSON 交换 |
-| WASM | `wasm-bindgen` + `web-sys` | 标准 Rust→WASM 工具链 |
-| 异步 | `wgpu` 内置 async | `wgpu::Device` 的 async 操作映射到浏览器 Promise |
-| 日志 | `log` + `console_log` | WASM 环境日志输出到浏览器 console |
-
-### 17.7 迁移路径
-
-渐进式迁移，每个 phase 独立可交付，TS 和 Rust 共存期间通过 FFI 桥接：
-
-| Phase | 内容 | TS 侧变化 | 验证 |
-|-------|------|----------|------|
-| **1. Scaffold** | 创建 `crates/open_quartz` workspace，定义 `types` 模块，`wasm-bindgen` 导出 hello-world | 无 | `cargo test` + WASM 加载 |
-| **2. WGSL parser** | `naga` 解析 WGSL，提取 ports + description，替换 `wgsl_reflect` + regex fallback | `wgslParser.ts` → 调用 `engine.parse_shader()` | parser 单元测试 21 个迁移 |
-| **3. Graph engine** | 拓扑排序、dirty-set、execution plan 在 Rust 中实现 | `graphExecutor.ts` 删除 | 图排序测试迁移 |
-| **4. GPU backend** | `wgpu` 渲染层：render target、纹理管理、fullscreen triangle、blit | `WebGPUBackend.ts` 删除 | bittrue 测试 7 个迁移 |
-| **5. Compiler** | WGSL preamble 注入 + pipeline 创建，用 `naga` 做编译校验 | `wgslCompiler.ts` 删除 | compiler 测试迁移 |
-| **6. Executor** | `run_frame()` 完整实现：uniform upload、texture binding、feedback、video import | `executionEngine.ts` 删除 | pipeline 集成测试 14 个迁移 |
-| **7. ONNX** | `ort` crate 集成，共享 `wgpu::Device`，预/后处理 compute shader | `engine/onnx/` 删除 | ONNX 测试迁移 |
-| **8. Full SDK** | catalog、project I/O、clock 全部 Rust 化。TS 只剩 UI 壳 | `engine/` 目录清空 | 全量测试通过 |
-
-### 17.8 Crate workspace 结构
-
-```
-crates/
-└── open_quartz/
-    ├── Cargo.toml           ← workspace root
-    ├── src/
-    │   ├── lib.rs           ← pub mod 声明
-    │   ├── types/
-    │   │   ├── mod.rs
-    │   │   ├── port.rs      Port, DataType
-    │   │   ├── node.rs      NodeData, NodeType
-    │   │   └── project.rs   ProjectFile
-    │   ├── graph/
-    │   │   ├── mod.rs
-    │   │   ├── topo.rs      拓扑排序
-    │   │   └── dirty.rs     dirty-set 增量执行
-    │   ├── wgsl/
-    │   │   ├── mod.rs
-    │   │   ├── parser.rs    naga 解析 → ports + description
-    │   │   ├── compiler.rs  preamble 注入 + pipeline 创建
-    │   │   └── validate.rs  编译校验
-    │   ├── gpu/
-    │   │   ├── mod.rs
-    │   │   ├── backend.rs   wgpu::Device + Surface 管理
-    │   │   ├── target.rs    RenderTarget 生命周期
-    │   │   ├── texture.rs   纹理加载/上传
-    │   │   └── readback.rs  GPU→CPU 像素读回
-    │   ├── onnx/
-    │   │   ├── mod.rs
-    │   │   ├── session.rs   ort::Session 管理
-    │   │   ├── preprocess.rs  compute shader 预处理
-    │   │   └── postprocess.rs decode/NMS/overlay
-    │   ├── engine/
-    │   │   ├── mod.rs
-    │   │   ├── executor.rs  per-node executor trait
-    │   │   ├── plan.rs      ExecutionPlan 构建
-    │   │   └── frame.rs     run_frame() 主循环
-    │   ├── catalog/
-    │   │   ├── mod.rs
-    │   │   ├── shaders.rs   28 preset shader codes
-    │   │   ├── math.rs      29 math ops
-    │   │   └── onnx.rs      7 model entries
-    │   ├── platform/
-    │   │   ├── mod.rs
-    │   │   ├── clock.rs
-    │   │   └── project_io.rs
-    │   └── ffi.rs           ← wasm-bindgen 导出层
-    ├── tests/
-    │   ├── types_test.rs
-    │   ├── parser_test.rs
-    │   ├── graph_test.rs
-    │   └── ...
-    └── examples/
-        └── headless.rs      ← 无 UI 的命令行管线执行器
-
-src-tauri/
-├── Cargo.toml              ← depends on open_quartz (native target)
-└── src/
-    ├── main.rs
-    └── lib.rs               ← tauri::command wrapping open_quartz API
-```
-
-### 17.9 数据流：一帧的生命周期
-
-```
-TypeScript (rAF)                     Rust SDK (WASM)
-────────────────                     ──────────────────
-PipelineService.tick(now)
-  │
-  ├── clock.tick(now) ─────────────→ engine.run_frame(time, delta, frame)
-  │                                    │
-  │                                    ├── for node in topo_order:
-  │                                    │     match node.type:
-  │                                    │       Input  → upload_texture / import_video
-  │                                    │       Shader → compile (if dirty) → render_pass
-  │                                    │       Math   → cpu_eval → write_uniform
-  │                                    │       ONNX   → session.run (async, GPU buffer)
-  │                                    │       Renderer → blit_to_surface
-  │                                    │
-  │                                    └── return FrameResult { errors, dirty_nodes }
-  │
-  ├── engine.read_output("node_id") → GPU readback → Uint8Array (zero-copy view)
-  │
-  └── store.setOutputPreview(dataUrl)
-```
-
-### 17.10 性能预期
-
-| 操作 | 当前 (TypeScript) | 目标 (Rust WASM) | 提升 |
-|------|------------------|-----------------|------|
-| WGSL 解析 | ~2ms (wgsl_reflect + regex) | ~0.1ms (naga) | 20× |
-| 图拓扑排序 | ~0.1ms (JS BFS) | ~0.01ms (Rust BFS) | 10× |
-| Uniform 序列化 | ~0.5ms (Float32Array 创建) | ~0.05ms (栈上 [f32; 4]) | 10× |
-| GC pause | 1-3ms 偶发 | 0ms (无 GC) | ∞ |
-| 帧间临时分配 | ~50 对象/帧 | 0 (arena/pool) | ∞ |
-| ONNX 预处理 | ~5ms CPU (JS typed array) | ~0.5ms GPU (compute shader) | 10× |
-
-### 17.11 风险与缓解
-
-| 风险 | 缓解 |
-|------|------|
-| **WASM 二进制体积** | wasm-opt + tree shaking；naga 和 ort 按 feature 裁剪；初始包 < 2MB gzip |
-| **wgpu WASM 兼容性** | wgpu 的 WebGPU 后端已生产级；Safari 支持 WebGPU 自 17.4 |
-| **ort WASM 编译** | ort 支持 `wasm32` target；预编译 ONNX Runtime 静态库避免编译时间 |
-| **调试困难** | `console_log` crate + source maps；关键路径保留 TS fallback 直到 Rust 稳定 |
-| **迁移期 TS/Rust 共存** | FFI 边界设计为渐进替换——每个 phase 替换一个 TS 模块，其余不动 |

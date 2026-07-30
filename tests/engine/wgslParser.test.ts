@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseWgslShader } from '../../src/engine/gpu/wgslParser';
+import { parseWgslShader } from '../../src/sdk/wgslParser';
 
 // =============================================================================
 // 1. AST path — shaders WITH @group/@binding declarations

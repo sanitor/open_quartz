@@ -6,7 +6,7 @@ import {
 } from '../../src/catalog/predefinedShaders';
 import { generatorShaders } from '../../src/catalog/shaders/generator';
 import { feedbackShaders } from '../../src/catalog/shaders/feedback';
-import { parseWgslShader } from '../../src/engine/gpu/wgslParser';
+import { parseWgslShader } from '../../src/sdk/wgslParser';
 import { createDefaultShaderCode, createInputShader, makeNode } from '../../src/store/helpers';
 
 // ---------------------------------------------------------------------------

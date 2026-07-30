@@ -1,12 +1,12 @@
 {
   "name": "open-quartz",
   "private": true,
-  "version": "0.16.0b",
+  "version": "0.17.0b",
   "type": "module",
   "scripts": {
-    "predev": "npm run copy:ort",
+    "predev": "npm run prepare:runtime",
     "dev": "vite",
-    "prebuild": "npm run copy:ort",
+    "prebuild": "npm run prepare:runtime",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
@@ -16,8 +16,12 @@
     "test:coverage": "vitest run --coverage",
     "test:models": "vitest run --config vitest.functional.config.ts",
     "test:shaders": "vitest run --config vitest.shaders.config.ts",
+    "test:sdk": "npm run build:sdk && node scripts/smoke-sdk.mjs",
+    "build:sdk": "wasm-pack build crates/open_quartz --target web --release --out-dir ../../public/open_quartz-sdk --out-name open_quartz",
     "copy:ort": "node scripts/copy-ort.mjs",
-    "clean": "rm -rf dist node_modules/.vite src-tauri/target"
+    "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
+    "prepare:runtime": "npm run build:sdk && npm run copy:ort && npm run copy:ffmpeg",
+    "clean": "rm -rf dist node_modules/.vite src-tauri/target src-tauri/runtime public/open_quartz-sdk"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -40,10 +44,10 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.185.1",
-    "wgsl_reflect": "^1.5.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@tailwindcss/vite": "^4.3.2",
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^6.9.1",

@@ -7,13 +7,14 @@ description: Bump the app version, update CHANGELOG and README, create a git tag
 
 ## Version locations
 
-Bump the version string in **all 3 files** (keep them in sync):
+Bump the version string in **all 4 files** (keep them in sync):
 
 | File | Field | Format | Notes |
 |------|-------|--------|-------|
 | `package.json` | `"version"` | `"0.X.0b"` | App version, semver + `b` suffix for beta |
 | `src-tauri/tauri.conf.json` | `"version"` | `"0.X.0"` | Tauri app version (no `b` suffix) |
 | `src-tauri/Cargo.toml` | `version` | `"0.X.0"` | Rust crate version (no `b` suffix) |
+| `crates/open_quartz/Cargo.toml` | `version` | `"0.X.0"` | Shared Rust SDK version (no `b` suffix) |
 
 **Do NOT touch** `src/utils/projectIO.ts` `CURRENT_VERSION` — that is the **project file format** version, only bumped when serialization schema changes (new/removed fields in `ShaderNodeData` or `ProjectFile`).
 
@@ -25,12 +26,13 @@ Bump the version string in **all 3 files** (keep them in sync):
 - Check recent tags: `git tag --sort=-creatordate | head -5`
 - Increment minor version (e.g. `0.12.0b` -> `0.13.0b`)
 
-### 2. Bump version in all 3 files
+### 2. Bump version in all 4 files
 
 ```
 package.json          →  "version": "0.X.0b"
 src-tauri/Cargo.toml  →  version = "0.X.0"
 src-tauri/tauri.conf.json → "version": "0.X.0"
+crates/open_quartz/Cargo.toml → version = "0.X.0"
 ```
 
 ### 3. Update CHANGELOG.md
@@ -105,16 +107,18 @@ gh release create v0.X.0b \
 ## Stats
 - NNNN unit tests, all passing
 - NN test files" \
-  --prerelease
+  --prerelease \
+  --latest
 ```
 
 - Use `--prerelease` for beta versions (suffix `b`)
+- Always pass `--latest` so the newly published version is explicitly marked as the repository's Latest release
 - Release notes use GitHub Markdown (## headings, bold, backticks)
 - Include a Stats section with test count
 
 ## Checklist
 
-- [ ] Version bumped in `package.json`, `Cargo.toml`, `tauri.conf.json`
+- [ ] Version bumped in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `crates/open_quartz/Cargo.toml`
 - [ ] CHANGELOG.md updated with new section
 - [ ] README.md reviewed and updated (test count, features, roadmap)
 - [ ] All tests pass (`npm test`)
@@ -123,3 +127,4 @@ gh release create v0.X.0b \
 - [ ] Annotated tag `v0.X.0b` created
 - [ ] Pushed to origin with tags
 - [ ] GitHub release created with release notes
+- [ ] GitHub release explicitly marked as Latest (`--latest`)
