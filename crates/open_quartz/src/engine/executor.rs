@@ -119,7 +119,7 @@ impl ExecutionEngine {
             match node_plan.node_type {
                 NodeType::Input => {}
                 NodeType::Math => {
-                    let value = self.evaluate_math(&node_plan, &node);
+                    let value = self.evaluate_math(&node_plan, &node, inputs);
                     self.math_values.insert(node_id.clone(), value);
                     commands.push(command_for(
                         &node_plan,
@@ -228,7 +228,8 @@ impl ExecutionEngine {
             let value = if node_plan.builtin_ports.contains(name) {
                 builtin_value(name, node_plan, inputs)
             } else if let Some(source_id) = node_plan.upstream.get(name) {
-                self.upstream_scalar(source_id).unwrap_or_else(|| vec![0.0])
+                self.upstream_scalar(source_id, inputs)
+                    .unwrap_or_else(|| vec![0.0])
             } else {
                 node.data
                     .uniforms
@@ -241,22 +242,36 @@ impl ExecutionEngine {
         uniforms
     }
 
-    fn upstream_scalar(&self, source_id: &str) -> Option<Vec<f32>> {
+    fn upstream_scalar(&self, source_id: &str, inputs: &FrameInputs) -> Option<Vec<f32>> {
         if let Some(value) = self.math_values.get(source_id) {
             return Some(vec![*value as f32]);
         }
         let source = self.nodes.iter().find(|node| node.id == source_id)?;
+        if let Some(system_source) = source.data.system_source {
+            return Some(match system_source {
+                SystemSource::Time => vec![inputs.time as f32],
+                SystemSource::TimeDelta => vec![inputs.delta as f32],
+                SystemSource::Frame => vec![inputs.frame as f32],
+                SystemSource::Mouse => inputs.mouse.to_vec(),
+                SystemSource::Resolution => inputs.resolution.to_vec(),
+            });
+        }
         let label = source.data.inputs.first()?.label.as_str();
         source.data.uniforms.get(label).map(json_value_to_f32)
     }
 
-    fn evaluate_math(&self, plan: &NodeExecutionPlan, node: &ProjectNode) -> f64 {
+    fn evaluate_math(
+        &self,
+        plan: &NodeExecutionPlan,
+        node: &ProjectNode,
+        inputs: &FrameInputs,
+    ) -> f64 {
         let values = ["a", "b", "c"]
             .iter()
             .map(|label| {
                 plan.upstream
                     .get(*label)
-                    .and_then(|source| self.upstream_scalar(source))
+                    .and_then(|source| self.upstream_scalar(source, inputs))
                     .and_then(|value| value.first().copied())
                     .map(f64::from)
                     .or_else(|| node.data.uniforms.get(*label).and_then(Value::as_f64))
@@ -329,6 +344,7 @@ fn json_value_to_f32(value: &Value) -> Vec<f32> {
             .collect(),
         Value::Bool(value) => vec![u8::from(*value) as f32],
         Value::Number(value) => vec![value.as_f64().unwrap_or(0.0) as f32],
+        Value::String(value) => vec![value.parse::<f32>().unwrap_or(0.0)],
         _ => vec![0.0],
     }
 }

@@ -87,6 +87,22 @@ fn static_graph_executes_once_then_stays_clean() {
 }
 
 #[test]
+fn numeric_string_uniform_reaches_native_shader_command() {
+    let nodes = parse_nodes(json!([{
+        "id": "hue", "type": "shader", "position": {"x": 0.0, "y": 0.0},
+        "data": {"type": "shader", "label": "Hue Rotate",
+            "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(angle); }",
+            "inputs": [{"id": "angle", "label": "angle", "dataType": "float", "direction": "input"}],
+            "outputs": [], "uniforms": {"angle": "2.094395"}}
+    }]));
+    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+
+    let work = engine.run_frame(&frame(1));
+
+    assert_eq!(work.commands[0].uniforms["angle"], [2.094395]);
+}
+
+#[test]
 fn dynamic_builtin_reruns_each_frame_and_resolves_uniform() {
     let nodes = parse_nodes(json!([{
         "id": "shader", "type": "shader", "position": {"x": 0.0, "y": 0.0},
@@ -101,6 +117,37 @@ fn dynamic_builtin_reruns_each_frame_and_resolves_uniform() {
     let second = engine.run_frame(&frame(2));
     assert_eq!(first.commands[0].uniforms["iTime"], [1.0 / 60.0]);
     assert_eq!(second.commands[0].uniforms["iTime"], [2.0 / 60.0]);
+}
+
+#[test]
+fn connected_time_source_updates_shader_uniform_each_frame() {
+    let nodes = parse_nodes(json!([
+        {
+            "id": "time", "type": "input", "position": {"x": 0.0, "y": 0.0},
+            "data": {"type": "input", "label": "Time", "shaderCode": "",
+                "inputs": [],
+                "outputs": [{"id": "time_out", "label": "value", "dataType": "float", "direction": "output"}],
+                "uniforms": {}, "inputMode": "system", "inputDataType": "float", "systemSource": "time"}
+        },
+        {
+            "id": "hue", "type": "shader", "position": {"x": 1.0, "y": 0.0},
+            "data": {"type": "shader", "label": "Hue Rotate",
+                "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(angle); }",
+                "inputs": [{"id": "angle", "label": "angle", "dataType": "float", "direction": "input"}],
+                "outputs": [], "uniforms": {}}
+        }
+    ]));
+    let edges = parse_edges(json!([{
+        "id": "time_to_hue", "source": "time", "sourceHandle": "time_out",
+        "target": "hue", "targetHandle": "angle"
+    }]));
+    let mut engine = ExecutionEngine::prepare(nodes, edges);
+
+    let first = engine.run_frame(&frame(120));
+    let second = engine.run_frame(&frame(180));
+
+    assert_eq!(first.commands[0].uniforms["angle"], [2.0]);
+    assert_eq!(second.commands[0].uniforms["angle"], [3.0]);
 }
 
 #[test]

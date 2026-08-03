@@ -140,6 +140,15 @@ impl Runtime {
     }
 
     pub fn advance(&mut self, input: &RuntimeFrameInput) -> Result<ClockState, SdkError> {
+        crate::ffi::sdk_log(
+            "debug",
+            "runtime-advance",
+            &format!(
+                "{{\"revision\":{},\"nowNs\":{}}}",
+                self.revision(),
+                input.now_ns
+            ),
+        );
         if !matches!(self.state(), EngineState::Ready | EngineState::Running) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidState,
@@ -184,6 +193,15 @@ impl Runtime {
             )?;
         }
         self.dispatch_presentations(stamp)?;
+        crate::ffi::sdk_log(
+            "debug",
+            "runtime-work",
+            &format!(
+                "{{\"frame\":{},\"commands\":{}}}",
+                clock.frame,
+                self.engine.pending_command_count()
+            ),
+        );
         Ok(clock)
     }
 

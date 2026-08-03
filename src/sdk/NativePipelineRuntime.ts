@@ -2,6 +2,7 @@ import type { Edge, Node } from '@xyflow/react';
 import { ONNX_CATALOG, type OnnxTask } from '../catalog/onnxCatalog';
 import type { ShaderNodeData } from '../types';
 import type { EngineEvent } from './contract';
+import { runtimeLog } from './runtimeLog';
 
 export interface NativeRuntimeInfo {
   adapterName: string;
@@ -58,7 +59,6 @@ export interface NativeOutputEvent {
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
   onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
-  getRendererPreviewMaxDimension?: (nodeId: string) => number;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
@@ -111,6 +111,7 @@ export class NativePipelineRuntime {
   private lastRendererNodeId: string | null = null;
   private previewPending = false;
   private rendererReadbackPending = false;
+  private queuedRendererReadbackNodeId: string | null = null;
 
 
   constructor(
@@ -263,10 +264,20 @@ export class NativePipelineRuntime {
   }
 
   setPreviewNode(nodeId: string | null): void {
+    runtimeLog('native', 'info', 'set-preview-node', {
+      requested: nodeId,
+      lastRendererNodeId: this.lastRendererNodeId,
+      previewPending: this.previewPending,
+      rendererReadbackPending: this.rendererReadbackPending,
+    });
     this.previewNodeId = nodeId;
   }
 
   requestPreviewRefresh(): void {
+    runtimeLog('native', 'debug', 'request-preview-refresh', {
+      previewNodeId: this.previewNodeId,
+      lastRendererNodeId: this.lastRendererNodeId,
+    });
     if (this.lastRendererNodeId) this.scheduleRendererReadback(this.lastRendererNodeId);
     if (this.previewNodeId && this.previewNodeId !== this.lastRendererNodeId) {
       this.schedulePreviewReadback();
@@ -432,17 +443,17 @@ export class NativePipelineRuntime {
   }
 
   private scheduleRendererReadback(nodeId: string): void {
-    if (this.rendererReadbackPending || !this.initialized) return;
+    if (!this.initialized) return;
+    if (this.rendererReadbackPending) {
+      this.queuedRendererReadbackNodeId = nodeId;
+      runtimeLog('native', 'debug', 'renderer-readback-queued', { nodeId });
+      return;
+    }
     this.rendererReadbackPending = true;
-    const maxDimension = Math.max(
-      1,
-      Math.round(this.callbacks.getRendererPreviewMaxDimension?.(nodeId) ?? 512),
-    );
-    void this.readPreview(nodeId, maxDimension)
+    void this.readOutput(nodeId)
       .then((frame) => {
         this.callbacks.onRendererFrame?.(nodeId, frame);
         if (this.previewNodeId === nodeId) {
-          this.callbacks.onOutputSize?.(nodeId, frame.width, frame.height);
           this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(frame));
         }
       })
@@ -451,6 +462,9 @@ export class NativePipelineRuntime {
       })
       .finally(() => {
         this.rendererReadbackPending = false;
+        const queuedNodeId = this.queuedRendererReadbackNodeId;
+        this.queuedRendererReadbackNodeId = null;
+        if (queuedNodeId) this.scheduleRendererReadback(queuedNodeId);
       });
   }
 
@@ -469,7 +483,7 @@ export class NativePipelineRuntime {
   private async refreshPreview(): Promise<void> {
     const nodeId = this.previewNodeId;
     if (!nodeId) return;
-    const output = await this.readPreview(nodeId, 512);
+    const output = await this.readOutput(nodeId);
     if (this.previewNodeId !== nodeId) return;
     this.callbacks.onOutputSize?.(nodeId, output.width, output.height);
     this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(output));

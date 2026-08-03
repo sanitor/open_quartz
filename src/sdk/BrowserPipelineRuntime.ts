@@ -59,8 +59,8 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
   async stop(): Promise<void> {
     if (this.worker) await this.request({ type: 'stop' });
   }
-
   setPreviewNode(nodeId: string | null): void {
+    console.info('[oq:browser-host] set-preview-node', { nodeId });
     if (this.worker) void this.request({ type: 'set-preview', nodeId });
   }
 

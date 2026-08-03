@@ -64,6 +64,30 @@ class FakeBridge implements NativeTauriBridge {
   }
 }
 
+class DeferredOutputBridge extends FakeBridge {
+  private resolveFirstOutput: ((value: ArrayBuffer) => void) | null = null;
+  private outputCalls = 0;
+
+  override async invoke<T>(command: string, args?: NativeInvokeArgs, options?: NativeInvokeOptions): Promise<T> {
+    if (command !== 'native_gpu_read_output') return super.invoke<T>(command, args, options);
+    this.calls.push({ command, args, options });
+    this.outputCalls += 1;
+    if (this.outputCalls > 1) {
+      return new Uint8Array([1, 0, 0, 0, 1, 0, 0, 0, 10, 20, 30, 255]).buffer as T;
+    }
+    return await new Promise<T>((resolve) => {
+      this.resolveFirstOutput = (value) => resolve(value as T);
+    });
+  }
+
+  completeFirstOutput(): void {
+    this.resolveFirstOutput?.(
+      new Uint8Array([1, 0, 0, 0, 1, 0, 0, 0, 10, 20, 30, 255]).buffer,
+    );
+    this.resolveFirstOutput = null;
+  }
+}
+
 describe('NativePipelineRuntime', () => {
   it('initializes the native output runtime and reports explicit capabilities', async () => {
     const bridge = new FakeBridge();
@@ -174,17 +198,46 @@ describe('NativePipelineRuntime', () => {
       height: 540,
     };
 
+    runtime.setPreviewNode('renderer');
     bridge.emit('native-runtime-frame', frame);
     bridge.emit('native-runtime-error', 'device lost');
 
     expect(onFrame).toHaveBeenCalledWith(frame);
-    expect(onOutputSize).toHaveBeenCalledWith('renderer', 960, 540);
     expect(onError).toHaveBeenCalledWith('device lost');
     await vi.waitFor(() => expect(onRendererFrame).toHaveBeenCalledWith('renderer', {
       rgba: new Uint8Array([10, 20, 30, 255]), width: 1, height: 1,
     }));
-    expect(bridge.calls.find(({ command }) => command === 'native_gpu_read_preview')?.args)
-      .toEqual({ nodeId: 'renderer', maxDimension: 512 });
+    expect(onOutputSize).toHaveBeenCalledTimes(1);
+    expect(onOutputSize).toHaveBeenCalledWith('renderer', 960, 540);
+    expect(bridge.calls.find(({ command }) => command === 'native_gpu_read_output')?.args)
+      .toEqual({ nodeId: 'renderer' });
+    expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_preview')).toBe(false);
+  });
+
+  it('runs a queued renderer readback after selection remounts its canvas', async () => {
+    const bridge = new DeferredOutputBridge();
+    const onRendererFrame = vi.fn();
+    const runtime = new NativePipelineRuntime({ onRendererFrame }, bridge);
+    await runtime.initialize();
+
+    bridge.emit('native-runtime-frame', {
+      frame: 1,
+      revision: 1,
+      outputNodeId: 'renderer',
+      width: 640,
+      height: 360,
+    } satisfies NativeFrameRendered);
+    runtime.setPreviewNode('renderer');
+    runtime.requestPreviewRefresh();
+
+    await vi.waitFor(() => {
+      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(1);
+    });
+    bridge.completeFirstOutput();
+    await vi.waitFor(() => {
+      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(2);
+      expect(onRendererFrame).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('forwards native ONNX pixels, data, and provider events', async () => {
@@ -246,7 +299,7 @@ describe('NativePipelineRuntime', () => {
     });
   });
 
-  it('coalesces preview readback and emits a data URL on native frames', async () => {
+  it('coalesces full-resolution output readback and emits a data URL on native frames', async () => {
     const bridge = new FakeBridge();
     const output = Promise.withResolvers<string>();
     const runtime = new NativePipelineRuntime({
@@ -271,7 +324,7 @@ describe('NativePipelineRuntime', () => {
     });
 
     await expect(output.promise).resolves.toBe('data:image/png;base64,preview');
-    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_preview')).toHaveLength(1);
+    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(1);
   });
 
   it('validates mouse state and decodes engine events', async () => {

@@ -4,6 +4,7 @@ import { NativePipelineRuntime, type NativeOutputImage } from '../sdk/NativePipe
 import type { PipelineHostRuntime, PipelineRuntimeCallbacks } from '../sdk/PipelineRuntime';
 import { useGraphStore } from '../store/useGraphStore';
 import { checkIsTauri } from '../utils/tauri';
+import { runtimeLog } from '../sdk/runtimeLog';
 
 export class PipelineService {
   private runtime: PipelineHostRuntime | null = null;
@@ -58,7 +59,18 @@ export class PipelineService {
       }
 
       if (state.selectedNodeId !== previous.selectedNodeId) {
-        this.runtime?.setPreviewNode(state.selectedNodeId);
+        runtimeLog('browser-host', 'info', 'preview-selection', {
+          previous: previous.selectedNodeId,
+          selected: state.selectedNodeId,
+          playing: state.loopState,
+          runtime: this.runtime?.constructor.name ?? null,
+          runtimeReady: this.runtime !== null,
+        });
+        const runtime = this.runtime;
+        runtime?.setPreviewNode(state.selectedNodeId);
+        if (runtime?.requestPreviewRefresh) {
+          requestAnimationFrame(() => runtime.requestPreviewRefresh?.());
+        }
       }
     });
   }
@@ -115,7 +127,6 @@ export class PipelineService {
           this.lastNativeRendererFrame = { nodeId, frame };
           this.drawRendererFrame(nodeId, frame);
         },
-        getRendererPreviewMaxDimension: (nodeId) => this.rendererPreviewMaxDimension(nodeId),
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
         onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
@@ -152,15 +163,6 @@ export class PipelineService {
     );
   }
 
-  private rendererPreviewMaxDimension(nodeId: string): number {
-    const pixelRatio = window.devicePixelRatio || 1;
-    let maxDimension = 0;
-    for (const mirror of this.rendererMirrors(nodeId)) {
-      const bounds = mirror.getBoundingClientRect();
-      maxDimension = Math.max(maxDimension, bounds.width * pixelRatio, bounds.height * pixelRatio);
-    }
-    return Math.max(1, Math.ceil(maxDimension || 512));
-  }
 
   private drawRendererFrame(nodeId: string, frame: NativeOutputImage): void {
     const source = this.nativePreviewCanvas ??= document.createElement('canvas');

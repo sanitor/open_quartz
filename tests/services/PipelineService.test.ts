@@ -132,11 +132,6 @@ describe('PipelineService', () => {
     mirror.width = 2;
     mirror.height = 2;
     document.body.appendChild(mirror);
-    vi.spyOn(mirror, 'getBoundingClientRect').mockReturnValue({
-      x: 0, y: 0, width: 800, height: 450, top: 0, right: 800, bottom: 450, left: 0,
-      toJSON: () => ({}),
-    });
-    vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
     vi.stubGlobal('ImageData', class {
       constructor(_pixels: Uint8ClampedArray, _width: number, _height: number) {}
     });
@@ -156,9 +151,6 @@ describe('PipelineService', () => {
     });
     const runtime = mocks.native[0]!;
     await vi.waitFor(() => expect(runtime.play).toHaveBeenCalledOnce());
-    const previewDimension = runtime.callbacks.getRendererPreviewMaxDimension as unknown as
-      ((nodeId: string) => number);
-    expect(previewDimension('renderer')).toBe(1600);
 
     runtime.callbacks.onBackendDetected?.('onnx', 'native' as never);
     runtime.callbacks.onNativeBackendDetected?.('onnx', 'directml+cpu' as never);

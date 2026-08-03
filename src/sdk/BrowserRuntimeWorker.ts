@@ -4,6 +4,7 @@ import { Compositor, type FrameInputs } from '../engine/compositor';
 import type { RuntimeWorkCommand } from '../engine/executionEngine';
 import { initializeSdk, type WasmRuntimeContract } from './index';
 import type { BrowserWorkerRequest, BrowserWorkerResponse } from './browserWorkerProtocol';
+import { compactRuntimeText, runtimeLog } from './runtimeLog';
 
 const scope = self as DedicatedWorkerGlobalScope;
 let compositor: Compositor | null = null;
@@ -11,11 +12,17 @@ let runtime: WasmRuntimeContract | null = null;
 let frameTimer: number | null = null;
 let running = false;
 let previewNodeId: string | null = null;
+let rendererIds = new Set<string>();
 let previewPending = false;
 let resolution = new Float32Array([512, 512, 1]);
 
 function post(message: BrowserWorkerResponse): void {
   scope.postMessage(message);
+  if ('id' in message) {
+    runtimeLog('browser-worker', 'debug', 'response', { id: message.id });
+  } else {
+    runtimeLog('browser-worker', 'debug', 'event', { type: message.type });
+  }
 }
 
 function requireCompositor(): Compositor {
@@ -47,21 +54,29 @@ function runFrame(): void {
   const now = performance.now();
   const date = new Date();
   const inputs = new Float32Array([
-    date.getFullYear(),
-    date.getMonth() + 1,
-    date.getDate(),
+    date.getFullYear(), date.getMonth() + 1, date.getDate(),
     date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds(),
   ]);
-  requireRuntime().advance({
-    time: now / 1000,
-    delta: 0,
-    frame: 0,
-    date: inputs,
-    mouse: new Float32Array(4),
-    resolution,
-  });
+  try {
+    requireRuntime().advance({
+      time: now / 1000,
+      delta: 0,
+      frame: 0,
+      date: inputs,
+      mouse: new Float32Array(4),
+      resolution,
+    });
+  } catch (error) {
+    runtimeLog('browser-worker', 'error', 'frame-advance-failed', { error: compactRuntimeText(error) });
+    throw error;
+  }
   const work = requireRuntime().drainWork<RuntimeWorkCommand[]>();
   const clock = requireRuntime().lastClock;
+  if (clock.frame % 60 === 0) {
+    runtimeLog('browser-worker', 'debug', 'frame', {
+      now, frame: clock.frame, commands: work.length, previewNodeId,
+    });
+  }
   const builtins: FrameInputs = {
     time: clock.timelineNs / 1_000_000_000,
     delta: (clock.timelineNs - clock.previousTimelineNs) / 1_000_000_000,
@@ -70,28 +85,21 @@ function runFrame(): void {
     mouse: new Float32Array(4),
     resolution,
   };
-  // The migration object executor consumes one Rust-owned frame batch. Graph
-  // ordering, dirty propagation, Math, feedback indices, and ONNX launches are
-  // represented by `work`; no graph JSON crosses during a tick.
   requireCompositor().render(builtins, work);
   for (const command of work) {
-    if (command.kind === 'renderer') {
-      requireCompositor().renderRendererToScreen(command.nodeId);
-    }
+    if (command.kind === 'renderer') requireCompositor().renderRendererToScreen(command.nodeId);
   }
   if (previewNodeId && !previewPending) {
     previewPending = true;
     void requireCompositor().readNodeOutput(previewNodeId, (nodeId, dataUrl) => {
       previewPending = false;
       post({ type: 'output', nodeId, dataUrl });
-    }).catch(() => { previewPending = false; });
+    }).catch((error) => {
+      previewPending = false;
+      runtimeLog('browser-worker', 'warn', 'preview-readback-failed', { error: compactRuntimeText(error) });
+    });
   }
-  post({
-    type: 'frame',
-    frame: clock.frame,
-    time: builtins.time,
-    fps: builtins.delta > 0 ? 1 / builtins.delta : 0,
-  });
+  post({ type: 'frame', frame: clock.frame, time: builtins.time, fps: builtins.delta > 0 ? 1 / builtins.delta : 0 });
   scheduleFrame();
 }
 
@@ -108,9 +116,9 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
     case 'play': {
       const core = requireRuntime();
       core.setGraph(message.nodes, message.edges);
+      rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
       const pending = requireCompositor().prepare(
-        message.nodes,
-        message.edges,
+        message.nodes, message.edges,
         (nodeId, error) => post({ type: 'node-error', nodeId, error }),
         (nodeId, width, height) => post({ type: 'output-size', nodeId, width, height }),
         (nodeId, data) => post({ type: 'output-data', nodeId, data }),
@@ -125,6 +133,7 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
       return undefined;
     }
     case 'update-graph':
+      rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
       requireRuntime().setGraph(message.nodes, message.edges);
       await Promise.all(requireCompositor().prepare(message.nodes, message.edges));
       scheduleFrame();
@@ -143,10 +152,15 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
       stopLoop();
       requireRuntime().stop();
       return undefined;
-    case 'set-preview':
-      previewNodeId = message.nodeId;
+    case 'set-preview': {
+      const requested = message.nodeId;
+      previewNodeId = requested && !rendererIds.has(requested) ? requested : null;
       previewPending = false;
+      runtimeLog('browser-worker', 'info', 'set-preview-node', {
+        requested, effective: previewNodeId, rendererSelection: !!requested && rendererIds.has(requested),
+      });
       return undefined;
+    }
     case 'capture':
       return await requireCompositor().captureScreenshot(message.nodeId);
     case 'close':

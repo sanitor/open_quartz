@@ -214,10 +214,10 @@ pub fn validate_shader(code: &str, preamble_lines: u32) -> Vec<WgslCompilationEr
     match wgsl::parse_str(code) {
         Ok(_) => Vec::new(),
         Err(error) => {
-            let message = error.emit_to_string(code);
-            let (line, column) = first_error_position(&message, preamble_lines);
+            let raw = error.emit_to_string(code);
+            let (line, column) = first_error_position(&raw, preamble_lines);
             vec![WgslCompilationError {
-                message,
+                message: compact_diagnostic(&raw),
                 line,
                 column,
                 offset: 0,
@@ -317,4 +317,15 @@ fn first_error_position(message: &str, preamble_lines: u32) -> (u32, u32) {
 
 fn default_target_format() -> String {
     "rgba8unorm".to_owned()
+}
+
+fn compact_diagnostic(message: &str) -> String {
+    const MAX: usize = 360;
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let shortened = compact.chars().take(MAX).collect::<String>();
+    if shortened.len() == compact.len() {
+        shortened
+    } else {
+        format!("{shortened}…")
+    }
 }

@@ -777,17 +777,24 @@ export class WebGPUExecutionEngine {
     if (!this.backend) return;
     const node = plan.nodeMap.get(rendererNodeId);
     if (node?.data.type !== 'renderer') return;
-    const sourceId = plan.upstreamSamplerBindings.get(rendererNodeId)?.values().next().value;
-    if (!sourceId) return;
-    const src = plan.textureSources.get(sourceId);
-    if (!src) return;
-    if (src.kind === 'target') {
-      this.backend.renderToScreen(src.target);
-    } else {
-      this.backend.renderToScreen(src.handle);
+    const bindings = plan.upstreamSamplerBindings.get(rendererNodeId);
+    const sourceId = bindings?.values().next().value;
+    if (!sourceId) {
+      console.warn('[oq:gpu] renderer-source-missing', { rendererNodeId, bindings: bindings ? [...bindings.entries()] : [] });
+      return;
     }
+    const src = plan.textureSources.get(sourceId);
+    if (!src) {
+      console.warn('[oq:gpu] renderer-texture-missing', { rendererNodeId, sourceId, textureSources: [...plan.textureSources.keys()] });
+      return;
+    }
+    if (plan.mathValues.get(`__logged_renderer_${rendererNodeId}`) !== true) {
+      console.debug('[oq:gpu] renderer-present', { rendererNodeId, sourceId, sourceKind: src.kind });
+      plan.mathValues.set(`__logged_renderer_${rendererNodeId}`, true);
+    }
+    if (src.kind === 'target') this.backend.renderToScreen(src.target);
+    else this.backend.renderToScreen(src.handle);
   }
-
   async readOutputs(
     plan: WebGPUExecutionPlan,
     onOutput: (nodeId: string, dataUrl: string) => void,

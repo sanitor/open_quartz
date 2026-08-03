@@ -325,7 +325,7 @@ describe('Shader bit-true (WebGPU) — Color', () => {
     expectSolid(out, 100, 150, 200, 255, 1);
   });
 
-  it('Hue Rotate: angle=0 → identity', async () => {
+  it('Hue Rotate: +120° cycles RGB channels', async () => {
     const out = await runShader(`
       fn rgb2hsv(c: vec3f) -> vec3f {
         let K = vec4f(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -345,8 +345,8 @@ describe('Shader bit-true (WebGPU) — Color', () => {
         let hsv = rgb2hsv(col.rgb);
         let h = fract(hsv.x + angle / 6.28318530718);
         return vec4f(hsv2rgb(vec3f(h, hsv.y, hsv.z)), col.a);
-      }`, [IMG], [{ name: 'angle', type: 'f32', value: [0.0] }]);
-    expectSolid(out, 100, 150, 200, 255, 2);
+      }`, [IMG], [{ name: 'angle', type: 'f32', value: [2.09439510239] }]);
+    expectSolid(out, 200, 100, 150, 255, 2);
   });
 
   it('Threshold: lum > 0.5 → white', async () => {
