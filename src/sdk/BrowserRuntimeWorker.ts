@@ -73,10 +73,25 @@ function runFrame(): void {
   // ordering, dirty propagation, Math, feedback indices, and ONNX launches are
   // represented by `work`; no graph JSON crosses during a tick.
   requireCompositor().render(builtins, work);
+  for (const command of work) {
+    if (command.kind === 'renderer') {
+      requireCompositor().renderRendererToScreen(command.nodeId);
+    }
+  }
   if (previewNodeId) {
     void requireCompositor().readNodeOutput(previewNodeId, (nodeId, dataUrl) => {
       post({ type: 'output', nodeId, dataUrl });
     });
+  }
+  for (const node of work) {
+    if (node.kind === 'renderer') {
+      const source = node.nodeId;
+      // Renderer is a presentation endpoint; its source target remains on GPU.
+      // The main-thread mirror is updated through the explicit preview delivery.
+      void requireCompositor().readNodeOutput(source, (nodeId, dataUrl) => {
+        post({ type: 'output', nodeId, dataUrl });
+      });
+    }
   }
   post({
     type: 'frame',

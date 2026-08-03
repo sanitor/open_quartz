@@ -413,17 +413,15 @@ export class WebGPUBackend {
   // -------------------------------------------------------------------------
 
   /** Read a render target's pixels back to a canvas (for ONNX / preview). */
-  async readTargetToCanvas(target: RenderTarget): Promise<HTMLCanvasElement> {
+  async readTargetToCanvas(target: RenderTarget): Promise<HTMLCanvasElement | OffscreenCanvas> {
     const { width, height } = target;
     const device = this.device;
-    const bytesPerRow = Math.ceil(width * 4 / 256) * 256; // align to 256
+    const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
     const bufferSize = bytesPerRow * height;
-
     const readBuffer = device.createBuffer({
       size: bufferSize,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
-
     const encoder = device.createCommandEncoder();
     encoder.copyTextureToBuffer(
       { texture: target.texture },
@@ -433,27 +431,24 @@ export class WebGPUBackend {
     this.metrics.textureReadbacks += 1;
     this.metrics.textureReadbackBytes += width * height * 4;
     device.queue.submit([encoder.finish()]);
-
     await readBuffer.mapAsync(GPUMapMode.READ);
     const data = new Uint8Array(readBuffer.getMappedRange());
-
-    const canvas = document.createElement('canvas');
+    const canvas = typeof document !== 'undefined'
+      ? document.createElement('canvas')
+      : new OffscreenCanvas(width, height);
     canvas.width = width;
     canvas.height = height;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Cannot create 2D context for GPU readback');
     const imageData = ctx.createImageData(width, height);
-
-    // Copy with stride removal (bytesPerRow may include padding)
     for (let y = 0; y < height; y++) {
       const srcOffset = y * bytesPerRow;
       const dstOffset = y * width * 4;
       imageData.data.set(data.subarray(srcOffset, srcOffset + width * 4), dstOffset);
     }
-
     ctx.putImageData(imageData, 0, 0);
     readBuffer.unmap();
     readBuffer.destroy();
-
     return canvas;
   }
 
@@ -461,27 +456,27 @@ export class WebGPUBackend {
     return { ...this.metrics };
   }
 
-  /** Read a render target to a PNG data URL (for preview thumbnails). */
+  /** Read a render target's pixels back to a PNG data URL. */
   async readTargetToDataURL(target: RenderTarget, maxDimension?: number): Promise<string> {
-    // If downscaling needed, blit to a smaller target first
-    if (maxDimension && (target.width > maxDimension || target.height > maxDimension)) {
-      const scale = maxDimension / Math.max(target.width, target.height);
-      const w = Math.max(1, Math.round(target.width * scale));
-      const h = Math.max(1, Math.round(target.height * scale));
-      const previewTarget = this.createTarget(`_preview_${w}x${h}`, w, h);
-      this.blitTexture(target, previewTarget);
-      const canvas = await this.readTargetToCanvas(previewTarget);
-      return canvas.toDataURL('image/png');
+    const source = maxDimension && (target.width > maxDimension || target.height > maxDimension)
+      ? (() => {
+        const scale = maxDimension / Math.max(target.width, target.height);
+        const width = Math.max(1, Math.round(target.width * scale));
+        const height = Math.max(1, Math.round(target.height * scale));
+        const preview = this.createTarget(`_preview_${width}x${height}`, width, height);
+        this.blitTexture(target, preview);
+        return preview;
+      })()
+      : target;
+    const canvas = await this.readTargetToCanvas(source);
+    if (canvas instanceof OffscreenCanvas) {
+      return await blobToDataUrl(await canvas.convertToBlob({ type: 'image/png' }));
     }
-    const canvas = await this.readTargetToCanvas(target);
     return canvas.toDataURL('image/png');
   }
 
   // -------------------------------------------------------------------------
   // Pipeline creation
-  // -------------------------------------------------------------------------
-
-  /** Create a render pipeline from a WGSL fragment shader source. */
   createShaderPipeline(
     fragmentCode: string,
     bindGroupLayout: GPUBindGroupLayout,
@@ -698,4 +693,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       targetFormat,
     );
   }
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
 }

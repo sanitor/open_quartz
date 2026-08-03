@@ -105,6 +105,7 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
         this.callbacks.onFrame?.(message);
         break;
       case 'output':
+        this.drawOutputToMirrors(message.nodeId, message.dataUrl);
         this.callbacks.onOutput?.(message.nodeId, message.dataUrl);
         break;
       case 'output-size':
@@ -121,6 +122,23 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
         break;
     }
   };
+
+  private drawOutputToMirrors(nodeId: string, dataUrl: string): void {
+    if (typeof document === 'undefined') return;
+    const image = new Image();
+    image.onload = () => {
+      const mirrors = document.querySelectorAll<HTMLCanvasElement>(
+        `canvas[id^="renderer-mirror-"][id$="-${nodeId}"], canvas#renderer-mirror-${nodeId}`,
+      );
+      for (const mirror of mirrors) {
+        const context = mirror.getContext('2d');
+        if (!context) continue;
+        context.clearRect(0, 0, mirror.width, mirror.height);
+        context.drawImage(image, 0, 0, mirror.width, mirror.height);
+      }
+    };
+    image.src = dataUrl;
+  }
 
   private async request<T = void>(
     message: BrowserWorkerRequestPayload,
