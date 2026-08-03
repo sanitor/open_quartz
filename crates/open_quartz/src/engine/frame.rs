@@ -23,6 +23,7 @@ pub struct FrameInputs {
 pub struct ExecutionCommand {
     pub node_id: String,
     pub kind: String,
+    pub output_port_id: Option<String>,
     pub texture_inputs: BTreeMap<String, String>,
     pub uniforms: BTreeMap<String, Vec<f32>>,
     pub target_width: Option<u32>,

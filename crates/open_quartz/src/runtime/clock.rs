@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ffi::{EngineState, SdkError, SdkErrorCode};
+use crate::ffi::{SdkError, SdkErrorCode};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,32 +112,5 @@ impl CompositionClock {
             frame: self.frame,
             next_deadline_ns: self.next_deadline_ns.unwrap_or(0),
         }
-    }
-}
-
-pub fn transition_clock_for_engine(
-    clock: &mut CompositionClock,
-    state: EngineState,
-    now_ns: u64,
-) -> Result<(), SdkError> {
-    match state {
-        EngineState::Ready => {
-            clock.start(now_ns);
-            Ok(())
-        }
-        EngineState::Paused => clock.pause(now_ns),
-        EngineState::Running => {
-            if clock.state().frame == 0 {
-                clock.start(now_ns);
-            } else if clock.state().next_deadline_ns == 0 {
-                clock.resume(now_ns)?;
-            }
-            Ok(())
-        }
-        EngineState::Stopped | EngineState::Disposed => {
-            clock.stop();
-            Ok(())
-        }
-        EngineState::Empty => Ok(()),
     }
 }

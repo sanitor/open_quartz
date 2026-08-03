@@ -1,4 +1,4 @@
-use open_quartz::ffi::{EngineState, SdkErrorCode};
+use open_quartz::ffi::SdkErrorCode;
 use open_quartz::runtime::CompositionClock;
 
 #[test]
@@ -157,11 +157,10 @@ fn math_result_is_published_using_its_real_port_id() {
     runtime
         .subscribe_output(subscription("math", DeliveryPolicy::OnChange))
         .unwrap();
+    runtime.play(100).unwrap();
     runtime
         .advance(&RuntimeFrameInput {
-            time: 0.0,
-            delta: 0.0,
-            frame: 1,
+            now_ns: 116,
             date: [2026.0, 8.0, 3.0, 0.0],
             mouse: [0.0; 4],
             resolution: [640.0, 360.0, 1.0],
@@ -191,4 +190,51 @@ fn invalid_output_and_duplicate_subscription_are_rejected() {
     let mut missing = subscription("missing", DeliveryPolicy::Latest);
     missing.output.port_id = "absent".to_owned();
     assert!(runtime.subscribe_output(missing).is_err());
+}
+
+#[test]
+fn output_contract_changes_invalidate_subscriptions_and_reject_wrong_payloads() {
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.set_graph(&graph()).unwrap();
+    runtime
+        .subscribe_output(subscription("typed", DeliveryPolicy::Latest))
+        .unwrap();
+    let mut incompatible = subscription("preview", DeliveryPolicy::Latest);
+    incompatible.transport = OutputTransport::Preview;
+    assert!(runtime.subscribe_output(incompatible).is_err());
+    let mut wrong = state(1, 1.0);
+    wrong.payload = OutputPayload::Bool(true);
+    assert!(runtime.publish_output(wrong).is_err());
+
+    let mut changed = graph();
+    changed.nodes[0].data.outputs[0].data_type = open_quartz::types::DataType::Int;
+    runtime.set_graph(&changed).unwrap();
+    let batch = runtime.drain_deliveries();
+    assert_eq!(batch.invalidations.len(), 1);
+    assert_eq!(batch.invalidations[0].reason, "output-contract-changed");
+}
+
+#[test]
+fn draining_work_consumes_each_planned_batch_once() {
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.set_graph(&graph()).unwrap();
+    runtime.play(100).unwrap();
+    runtime
+        .advance(&RuntimeFrameInput {
+            now_ns: 116,
+            date: [0.0; 4],
+            mouse: [0.0; 4],
+            resolution: [1.0; 3],
+        })
+        .unwrap();
+    assert!(
+        !serde_json::from_str::<Vec<serde_json::Value>>(&runtime.drain_work().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&runtime.drain_work().unwrap())
+            .unwrap()
+            .is_empty()
+    );
 }

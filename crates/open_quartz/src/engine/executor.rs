@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::Value;
 
 use crate::graph::{DirtySet, GraphEdge};
-use crate::types::{Edge, NodeType, ProjectNode, SystemSource};
+use crate::types::{DataType, Edge, NodeType, ProjectNode, SystemSource};
 
 use super::frame::{ExecutionCommand, FrameInputs, FrameResult};
 use super::plan::{build_execution_plan_with_options, ExecutionPlan, NodeExecutionPlan};
@@ -124,6 +124,11 @@ impl ExecutionEngine {
                     commands.push(command_for(
                         &node_plan,
                         "math",
+                        node.data
+                            .outputs
+                            .iter()
+                            .find(|port| port.data_type == DataType::Float)
+                            .map(|port| port.id.clone()),
                         BTreeMap::new(),
                         None,
                         false,
@@ -148,6 +153,7 @@ impl ExecutionEngine {
                         } else {
                             "constant"
                         },
+                        None,
                         uniforms,
                         read_index.zip(write_index),
                         clear_feedback,
@@ -157,6 +163,7 @@ impl ExecutionEngine {
                 NodeType::Onnx => commands.push(command_for(
                     &node_plan,
                     "onnx",
+                    None,
                     BTreeMap::new(),
                     None,
                     false,
@@ -165,6 +172,7 @@ impl ExecutionEngine {
                 NodeType::Renderer => commands.push(command_for(
                     &node_plan,
                     "renderer",
+                    None,
                     BTreeMap::new(),
                     None,
                     false,
@@ -262,6 +270,7 @@ impl ExecutionEngine {
 fn command_for(
     plan: &NodeExecutionPlan,
     kind: &str,
+    output_port_id: Option<String>,
     uniforms: BTreeMap<String, Vec<f32>>,
     feedback: Option<(u8, u8)>,
     clear_feedback: bool,
@@ -284,6 +293,7 @@ fn command_for(
     ExecutionCommand {
         node_id: plan.id.clone(),
         kind: kind.to_owned(),
+        output_port_id,
         texture_inputs,
         uniforms,
         target_width: plan.target.as_ref().map(|target| target.width),

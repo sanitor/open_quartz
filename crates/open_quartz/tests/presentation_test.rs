@@ -81,6 +81,21 @@ fn planner_rejects_invalid_subscriptions_and_supports_updates() {
     assert!(planner.subscribe(subscription.clone()).is_err());
     subscription.z_index = 4;
     planner.update(subscription).unwrap();
+    subscription = PresentationSubscription {
+        subscription_id: "renderer".to_owned(),
+        output: OutputKey::new("node", "image"),
+        group_id: "main".to_owned(),
+        viewport: PresentationViewport {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 100.0,
+        },
+        fit: PresentationFit::Stretch,
+        z_index: 4,
+        resource_handle: 1,
+    };
+    assert!(planner.update(subscription).is_err());
     assert!(planner.unsubscribe("renderer"));
     assert!(!planner.unsubscribe("renderer"));
 }

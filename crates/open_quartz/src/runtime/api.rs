@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ffi::{Engine, EngineEvent, EngineState, SdkError, SdkErrorCode};
-use crate::types::Graph;
+use crate::types::{DataType, Graph};
 
 use super::{
-    ClockState, CompositionClock, ContentStamp, FrameStamp, OutputDeliveryBatch, OutputKey,
-    OutputPayload, OutputRegistry, OutputState, OutputSubscription, PresentationPlanner,
-    PresentationSet, PresentationSubscription, RuntimeCapabilities,
+    AsyncCompletionEnvelope, ClockState, CompositionClock, ContentStamp, FrameStamp,
+    OutputDeliveryBatch, OutputKey, OutputPayload, OutputRegistry, OutputState, OutputSubscription,
+    PresentationPlanner, PresentationSet, PresentationSubscription, RuntimeCapabilities,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,9 +21,7 @@ pub struct ResourceDescriptor {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeFrameInput {
-    pub time: f64,
-    pub delta: f64,
-    pub frame: u64,
+    pub now_ns: u64,
     pub date: [f32; 4],
     pub mouse: [f32; 4],
     pub resolution: [f32; 3],
@@ -53,7 +51,7 @@ struct RegisteredResource {
 pub struct Runtime {
     engine: Engine,
     resources: BTreeMap<String, RegisteredResource>,
-    output_ports: BTreeMap<String, Vec<OutputKey>>,
+    output_contracts: BTreeMap<OutputKey, DataType>,
     outputs: OutputRegistry,
     clock: CompositionClock,
     presentation: PresentationPlanner,
@@ -66,7 +64,7 @@ impl Runtime {
         Self {
             engine: Engine::new(),
             resources: BTreeMap::new(),
-            output_ports: BTreeMap::new(),
+            output_contracts: BTreeMap::new(),
             outputs: OutputRegistry::default(),
             clock: CompositionClock::new(16_666_667),
             presentation: PresentationPlanner::default(),
@@ -79,34 +77,37 @@ impl Runtime {
         self.capabilities = backend.capabilities();
         self.backend = Some(backend);
     }
-    pub fn start_at(&mut self, now_ns: u64) {
+    pub fn play(&mut self, now_ns: u64) -> Result<(), SdkError> {
+        if self.state() != EngineState::Ready {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Runtime can only play from the ready state",
+            ));
+        }
         self.clock.start(now_ns);
+        Ok(())
     }
 
-    pub fn pause_at(&mut self, now_ns: u64) -> Result<(), SdkError> {
-        self.clock.pause(now_ns)
+    pub fn pause(&mut self, now_ns: u64) -> Result<(), SdkError> {
+        if self.state() != EngineState::Running {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Runtime can only pause while running",
+            ));
+        }
+        self.clock.pause(now_ns)?;
+        self.engine.pause().map_err(decode_engine_error)
     }
 
-    pub fn resume_at(&mut self, now_ns: u64) -> Result<(), SdkError> {
-        self.clock.resume(now_ns)
-    }
-
-    pub fn tick_at(
-        &mut self,
-        now_ns: u64,
-        input: &RuntimeFrameInput,
-    ) -> Result<ClockState, SdkError> {
-        let clock = self.clock.tick(now_ns)?;
-        let mut stamped_input = input.clone();
-        stamped_input.time = clock.timeline_ns as f64 / 1_000_000_000.0;
-        stamped_input.frame = clock.frame;
-        stamped_input.delta =
-            clock.timeline_ns.saturating_sub(clock.previous_timeline_ns) as f64 / 1_000_000_000.0;
-        self.advance(&stamped_input)?;
-        Ok(clock)
-    }
-    pub fn stop_clock(&mut self) {
-        self.clock.stop();
+    pub fn resume(&mut self, now_ns: u64) -> Result<(), SdkError> {
+        if self.state() != EngineState::Paused {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Runtime can only resume while paused",
+            ));
+        }
+        self.clock.resume(now_ns)?;
+        self.engine.resume().map_err(decode_engine_error)
     }
 
     pub fn capabilities(&self) -> &RuntimeCapabilities {
@@ -122,80 +123,68 @@ impl Runtime {
             .engine
             .set_graph_json(&json)
             .map_err(decode_engine_error)?;
-        self.output_ports = graph
+        self.output_contracts = graph
             .nodes
             .iter()
-            .map(|node| {
-                let outputs = node
-                    .data
+            .flat_map(|node| {
+                node.data
                     .outputs
                     .iter()
-                    .map(|port| OutputKey::new(&node.id, &port.id))
-                    .collect::<Vec<_>>();
-                (node.id.clone(), outputs)
+                    .map(|port| (OutputKey::new(&node.id, &port.id), port.data_type))
             })
             .collect();
-        let valid_outputs = self
-            .output_ports
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        self.outputs.reconcile(revision, valid_outputs);
+        self.outputs
+            .reconcile(revision, self.output_contracts.clone());
+        self.reconcile_presentations();
         Ok(revision)
     }
 
-    pub fn advance(&mut self, input: &RuntimeFrameInput) -> Result<(), SdkError> {
+    pub fn advance(&mut self, input: &RuntimeFrameInput) -> Result<ClockState, SdkError> {
+        if !matches!(self.state(), EngineState::Ready | EngineState::Running) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Runtime cannot advance in its current state",
+            ));
+        }
+        let clock = self.clock.tick(input.now_ns)?;
+        let time = clock.timeline_ns as f64 / 1_000_000_000.0;
+        let delta =
+            clock.timeline_ns.saturating_sub(clock.previous_timeline_ns) as f64 / 1_000_000_000.0;
         self.engine
             .run_frame(
-                input.time,
-                input.delta,
-                input.frame,
+                time,
+                delta,
+                clock.frame,
                 &input.date,
                 &input.mouse,
                 &input.resolution,
             )
             .map_err(decode_engine_error)?;
-        let commands = self.engine.pending_commands().to_vec();
-        for command in commands {
-            let Some(value) = command.scalar_output else {
-                continue;
-            };
-            let Some(output) = self
-                .output_ports
-                .get(&command.node_id)
-                .and_then(|ports| ports.first())
-                .cloned()
+        let stamp = FrameStamp {
+            epoch: clock.epoch,
+            frame: clock.frame,
+            timeline_ns: clock.timeline_ns,
+            deadline_ns: clock.next_deadline_ns,
+        };
+        for command in self.engine.pending_commands().to_vec() {
+            let (Some(value), Some(port_id)) = (command.scalar_output, command.output_port_id)
             else {
                 continue;
             };
-            let generation = self
-                .outputs
-                .state(&output)
-                .map(|state| state.output_generation.saturating_add(1))
-                .unwrap_or(1);
-            let timeline_ns = seconds_to_ns(input.time);
-            let clock_state = self.clock.state();
-            let stamp = FrameStamp {
-                epoch: clock_state.epoch,
-                frame: input.frame,
-                timeline_ns,
-                deadline_ns: clock_state.next_deadline_ns,
-            };
-            self.outputs.publish(OutputState {
+            let output = OutputKey::new(command.node_id, port_id);
+            self.publish_state(
                 output,
-                graph_revision: self.revision(),
-                output_generation: generation,
-                evaluation_stamp: stamp.clone(),
-                content_stamp: ContentStamp {
+                stamp.clone(),
+                ContentStamp {
                     epoch: stamp.epoch,
                     timeline_ns: stamp.timeline_ns,
                     media_pts_ns: None,
                 },
-                payload: OutputPayload::Float(value),
-            })?;
+                OutputPayload::Float(value),
+            )?;
         }
-        Ok(())
+        self.dispatch_presentations(stamp)?;
+        Ok(clock)
     }
 
     pub fn register_resource(
@@ -227,14 +216,17 @@ impl Runtime {
     }
 
     pub fn remove_resource(&mut self, resource_id: &str) -> Result<u64, SdkError> {
-        let resource = self.resources.remove(resource_id).ok_or_else(|| {
+        let resource = self.resources.get(resource_id).ok_or_else(|| {
             SdkError::new(SdkErrorCode::InvalidResource, "Resource is not registered")
                 .with_details(resource_id)
         })?;
         if let Some(backend) = self.backend.as_mut() {
             backend.remove_resource(resource_id, resource.handle)?;
         }
-        Ok(resource.handle)
+        let handle = resource.handle;
+        self.resources.remove(resource_id);
+        self.reconcile_presentations();
+        Ok(handle)
     }
     pub fn subscribe_output(&mut self, subscription: OutputSubscription) -> Result<(), SdkError> {
         self.outputs.subscribe(subscription)
@@ -254,8 +246,11 @@ impl Runtime {
         self.outputs.unsubscribe(subscription_id)
     }
 
+    pub fn publish_output(&mut self, state: OutputState) -> Result<(), SdkError> {
+        self.outputs.publish(state)
+    }
     pub fn drain_work(&mut self) -> Result<String, SdkError> {
-        serde_json::to_string(self.engine.pending_commands()).map_err(|error| {
+        serde_json::to_string(&self.engine.drain_commands()).map_err(|error| {
             SdkError::new(
                 SdkErrorCode::InvalidResource,
                 "Cannot serialize runtime work batch",
@@ -263,8 +258,43 @@ impl Runtime {
             .with_details(error.to_string())
         })
     }
-    pub fn publish_output(&mut self, state: OutputState) -> Result<(), SdkError> {
-        self.outputs.publish(state)
+    pub fn submit_completion(
+        &mut self,
+        completion: AsyncCompletionEnvelope,
+    ) -> Result<(), SdkError> {
+        if completion.graph_revision != self.revision() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Async completion graph revision is stale",
+            )
+            .for_node(completion.node_id));
+        }
+        if completion.node_generation != self.node_generation(&completion.node_id)? {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Async completion node generation is stale",
+            )
+            .for_node(completion.node_id));
+        }
+        for (output, payload) in &completion.outputs {
+            if output.node_id != completion.node_id {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidResource,
+                    "Async completion contains an output from another node",
+                )
+                .for_node(&completion.node_id));
+            }
+            self.outputs.validate_contract(output, payload)?;
+        }
+        for (output, payload) in completion.outputs {
+            self.publish_state(
+                output,
+                completion.input_stamp.clone(),
+                completion.content_stamp.clone(),
+                payload,
+            )?;
+        }
+        self.dispatch_presentations(completion.input_stamp)
     }
 
     pub fn drain_deliveries(&mut self) -> OutputDeliveryBatch {
@@ -275,6 +305,7 @@ impl Runtime {
         &mut self,
         subscription: PresentationSubscription,
     ) -> Result<(), SdkError> {
+        self.validate_presentation_references(&subscription)?;
         self.presentation
             .subscribe(subscription)
             .map_err(|message| SdkError::new(SdkErrorCode::InvalidResource, message))
@@ -284,6 +315,7 @@ impl Runtime {
         &mut self,
         subscription: PresentationSubscription,
     ) -> Result<(), SdkError> {
+        self.validate_presentation_references(&subscription)?;
         self.presentation
             .update(subscription)
             .map_err(|message| SdkError::new(SdkErrorCode::InvalidResource, message))
@@ -305,16 +337,10 @@ impl Runtime {
         self.outputs.set_every_queue_capacity(capacity);
     }
 
-    pub fn pause(&mut self) -> Result<(), SdkError> {
-        self.engine.pause().map_err(decode_engine_error)
-    }
-
-    pub fn resume(&mut self) -> Result<(), SdkError> {
-        self.engine.resume().map_err(decode_engine_error)
-    }
-
     pub fn stop(&mut self) -> Result<(), SdkError> {
-        self.engine.stop().map_err(decode_engine_error)
+        self.engine.stop().map_err(decode_engine_error)?;
+        self.clock.stop();
+        Ok(())
     }
 
     pub fn revision(&self) -> u32 {
@@ -344,12 +370,89 @@ impl Runtime {
             .expect("Engine events always use the canonical schema")
     }
 
-    pub fn dispose(&mut self) {
+    pub fn dispose(&mut self) -> Result<(), SdkError> {
+        let resource_ids = self.resources.keys().cloned().collect::<Vec<_>>();
+        for resource_id in resource_ids {
+            self.remove_resource(&resource_id)?;
+        }
         self.engine.dispose();
-        self.resources.clear();
-        self.output_ports.clear();
+        self.output_contracts.clear();
         self.outputs = OutputRegistry::default();
         self.presentation = PresentationPlanner::default();
+        self.clock.stop();
+        Ok(())
+    }
+
+    fn publish_state(
+        &mut self,
+        output: OutputKey,
+        evaluation_stamp: FrameStamp,
+        content_stamp: ContentStamp,
+        payload: OutputPayload,
+    ) -> Result<(), SdkError> {
+        let output_generation = self
+            .outputs
+            .state(&output)
+            .map(|state| state.output_generation.saturating_add(1))
+            .unwrap_or(1);
+        self.outputs.publish(OutputState {
+            output,
+            graph_revision: self.revision(),
+            output_generation,
+            evaluation_stamp,
+            content_stamp,
+            payload,
+        })
+    }
+
+    fn validate_presentation_references(
+        &self,
+        subscription: &PresentationSubscription,
+    ) -> Result<(), SdkError> {
+        if !self.output_contracts.contains_key(&subscription.output) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Presentation references an unknown output",
+            ));
+        }
+        if !self
+            .resources
+            .values()
+            .any(|resource| resource.handle == subscription.resource_handle)
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Presentation references an unknown resource handle",
+            ));
+        }
+        Ok(())
+    }
+
+    fn reconcile_presentations(&mut self) {
+        let outputs = self
+            .output_contracts
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let handles = self
+            .resources
+            .values()
+            .map(|resource| resource.handle)
+            .collect::<BTreeSet<_>>();
+        self.presentation.reconcile(&outputs, &handles);
+    }
+
+    fn dispatch_presentations(&mut self, frame_stamp: FrameStamp) -> Result<(), SdkError> {
+        let Some(backend) = self.backend.as_mut() else {
+            return Ok(());
+        };
+        let sets = self
+            .presentation
+            .build(frame_stamp, &self.outputs.content_stamps());
+        for set in sets.values() {
+            backend.present(set)?;
+        }
+        Ok(())
     }
 }
 
@@ -357,11 +460,4 @@ fn decode_engine_error(error: String) -> SdkError {
     serde_json::from_str(&error).unwrap_or_else(|_| {
         SdkError::new(SdkErrorCode::InvalidState, "Engine operation failed").with_details(error)
     })
-}
-
-fn seconds_to_ns(seconds: f64) -> u64 {
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return 0;
-    }
-    (seconds * 1_000_000_000.0).round().min(u64::MAX as f64) as u64
 }

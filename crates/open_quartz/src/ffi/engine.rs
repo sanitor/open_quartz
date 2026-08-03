@@ -404,6 +404,10 @@ impl Engine {
     pub fn pending_commands(&self) -> &[ExecutionCommand] {
         &self.pending_commands
     }
+
+    pub fn drain_commands(&mut self) -> Vec<ExecutionCommand> {
+        std::mem::take(&mut self.pending_commands)
+    }
 }
 
 fn new_engine(external_video_textures: bool) -> Engine {

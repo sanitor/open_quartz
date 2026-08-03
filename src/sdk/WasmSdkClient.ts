@@ -13,7 +13,6 @@ import type {
   EngineEvent,
   EngineState,
   OutputDeliveryBatch,
-  OutputState,
   OutputSubscription,
   RuntimePublicSurface,
   SdkCapabilities,
@@ -49,15 +48,23 @@ interface RawEngineConstructor {
 
 interface RawRuntime {
   setGraph(graphJson: string): number;
-  advance(inputJson: string): void;
-  drainWork(): string;
+  registerResource(descriptorJson: string, handle: number): void;
+  removeResource(resourceId: string): number;
+  play(nowNs: number): void;
+  advance(inputJson: string): string;
   subscribeOutput(subscriptionJson: string): void;
   updateOutputSubscription(subscriptionJson: string): void;
   unsubscribeOutput(subscriptionId: string): void;
-  publishOutput(stateJson: string): void;
+  subscribePresentation(subscriptionJson: string): void;
+  updatePresentation(subscriptionJson: string): void;
+  unsubscribePresentation(subscriptionId: string): boolean;
+  submitCompletion(completionJson: string): void;
+  drainWork(): string;
   drainDeliveries(): string;
-  pause(): void;
-  resume(): void;
+  drainEvents(): string;
+  capabilities(): string;
+  pause(nowNs: number): void;
+  resume(nowNs: number): void;
   stop(): void;
   dispose(): void;
 }
@@ -164,9 +171,7 @@ export class WasmRuntimeContract {
 
   advance(input: FrameInput): void {
     invoke(() => this.raw.advance(JSON.stringify({
-      time: input.time,
-      delta: input.delta,
-      frame: input.frame,
+      nowNs: Math.round((performance.timeOrigin + input.time * 1000) * 1_000_000),
       date: Array.from(input.date),
       mouse: Array.from(input.mouse),
       resolution: Array.from(input.resolution),
@@ -189,18 +194,20 @@ export class WasmRuntimeContract {
     invoke(() => this.raw.unsubscribeOutput(subscriptionId));
   }
 
-  publishOutput(state: OutputState): void {
-    invoke(() => this.raw.publishOutput(JSON.stringify(state)));
-  }
-
   drainDeliveries(): OutputDeliveryBatch {
     return JSON.parse(this.raw.drainDeliveries()) as OutputDeliveryBatch;
   }
 
-  pause(): void { invoke(() => this.raw.pause()); }
-  resume(): void { invoke(() => this.raw.resume()); }
+  pause(nowNs = Math.round(performance.now() * 1_000_000)): void {
+    invoke(() => this.raw.pause(nowNs));
+  }
+
+  resume(nowNs = Math.round(performance.now() * 1_000_000)): void {
+    invoke(() => this.raw.resume(nowNs));
+  }
+
   stop(): void { invoke(() => this.raw.stop()); }
-  dispose(): void { this.raw.dispose(); }
+  dispose(): void { invoke(() => this.raw.dispose()); }
 }
 
 /** Stateful graph/frame contract. GPU commands remain internal until Stage D. */

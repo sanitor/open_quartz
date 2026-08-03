@@ -219,23 +219,22 @@ fn direct_runtime_client_drives_the_same_public_lifecycle() {
             7,
         )
         .unwrap();
+    runtime.play(100).unwrap();
     runtime
         .advance(&RuntimeFrameInput {
-            time: 0.0,
-            delta: 0.0,
-            frame: 1,
+            now_ns: 116,
             date: [2026.0, 8.0, 3.0, 0.0],
             mouse: [0.0; 4],
             resolution: [640.0, 360.0, 1.0],
         })
         .unwrap();
     assert_eq!(runtime.state(), EngineState::Running);
-    runtime.pause().unwrap();
+    runtime.pause(140).unwrap();
     assert_eq!(runtime.state(), EngineState::Paused);
-    runtime.resume().unwrap();
+    runtime.resume(1_000).unwrap();
     runtime.stop().unwrap();
     assert_eq!(runtime.remove_resource("image-1").unwrap(), 7);
-    runtime.dispose();
+    runtime.dispose().unwrap();
     assert_eq!(runtime.state(), EngineState::Disposed);
 }
 
@@ -264,4 +263,96 @@ fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
     assert_eq!(registered.borrow().as_slice(), &[99]);
     assert_eq!(runtime.remove_resource("video").unwrap(), 99);
     assert_eq!(removed.borrow().as_slice(), &[99]);
+}
+
+#[test]
+fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.set_graph(&serde_json::from_value(json!({
+        "nodes": [{
+            "id": "onnx-1",
+            "type": "onnx",
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": {
+                "type": "onnx", "label": "ONNX", "shaderCode": "", "inputs": [],
+                "outputs": [{ "id": "result", "label": "result", "dataType": "json", "direction": "output" }],
+                "uniforms": {}
+            }
+        }],
+        "edges": []
+    })).unwrap()).unwrap();
+    runtime
+        .subscribe_output(OutputSubscription {
+            subscription_id: "result".to_owned(),
+            output: OutputKey::new("onnx-1", "result"),
+            delivery: DeliveryPolicy::Latest,
+            transport: OutputTransport::Value,
+            max_width: None,
+            max_height: None,
+        })
+        .unwrap();
+    let completion = AsyncCompletionEnvelope {
+        node_id: "onnx-1".to_owned(),
+        graph_revision: runtime.revision(),
+        node_generation: runtime.node_generation("onnx-1").unwrap(),
+        input_stamp: stamp(4),
+        content_stamp: ContentStamp {
+            epoch: 3,
+            timeline_ns: 60,
+            media_pts_ns: Some(55),
+        },
+        outputs: vec![(
+            OutputKey::new("onnx-1", "result"),
+            OutputPayload::Json(json!({ "ok": true })),
+        )],
+    };
+    runtime.submit_completion(completion.clone()).unwrap();
+    let delivered = runtime.drain_deliveries().deliveries.remove(0).state;
+    assert_eq!(delivered.evaluation_stamp, completion.input_stamp);
+    assert_eq!(delivered.content_stamp, completion.content_stamp);
+    let mut stale = completion;
+    stale.graph_revision = 0;
+    assert!(runtime.submit_completion(stale).is_err());
+}
+
+struct FailingRemoveBackend;
+
+impl HostBackend for FailingRemoveBackend {
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities { data_paths: vec![] }
+    }
+    fn register_resource(
+        &mut self,
+        _: &ResourceDescriptor,
+        _: u64,
+    ) -> Result<(), open_quartz::ffi::SdkError> {
+        Ok(())
+    }
+    fn remove_resource(&mut self, _: &str, _: u64) -> Result<(), open_quartz::ffi::SdkError> {
+        Err(open_quartz::ffi::SdkError::new(
+            open_quartz::ffi::SdkErrorCode::InvalidResource,
+            "release failed",
+        ))
+    }
+    fn present(&mut self, _: &PresentationSet) -> Result<(), open_quartz::ffi::SdkError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn failed_backend_release_keeps_runtime_resource_owned() {
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.attach_backend(Box::new(FailingRemoveBackend));
+    runtime
+        .register_resource(
+            ResourceDescriptor {
+                resource_id: "owned".to_owned(),
+                kind: "texture".to_owned(),
+            },
+            7,
+        )
+        .unwrap();
+    assert!(runtime.remove_resource("owned").is_err());
+    assert!(runtime.remove_resource("owned").is_err());
+    assert!(runtime.dispose().is_err());
 }

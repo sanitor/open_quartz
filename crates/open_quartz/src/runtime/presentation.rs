@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,16 +34,7 @@ pub struct PresentationPlanner {
 
 impl PresentationPlanner {
     pub fn subscribe(&mut self, subscription: PresentationSubscription) -> Result<(), String> {
-        if subscription.subscription_id.is_empty()
-            || subscription.group_id.is_empty()
-            || subscription.output.node_id.is_empty()
-            || subscription.output.port_id.is_empty()
-            || subscription.resource_handle == 0
-            || subscription.viewport.width <= 0.0
-            || subscription.viewport.height <= 0.0
-        {
-            return Err("Invalid presentation subscription".to_owned());
-        }
+        validate_subscription(&subscription)?;
         if self
             .subscriptions
             .contains_key(&subscription.subscription_id)
@@ -62,6 +53,7 @@ impl PresentationPlanner {
         {
             return Err("Presentation subscription is not registered".to_owned());
         }
+        validate_subscription(&subscription)?;
         self.subscriptions
             .insert(subscription.subscription_id.clone(), subscription);
         Ok(())
@@ -69,6 +61,13 @@ impl PresentationPlanner {
 
     pub fn unsubscribe(&mut self, subscription_id: &str) -> bool {
         self.subscriptions.remove(subscription_id).is_some()
+    }
+
+    pub fn reconcile(&mut self, outputs: &BTreeSet<OutputKey>, resource_handles: &BTreeSet<u64>) {
+        self.subscriptions.retain(|_, subscription| {
+            outputs.contains(&subscription.output)
+                && resource_handles.contains(&subscription.resource_handle)
+        });
     }
 
     pub fn build(
@@ -114,5 +113,24 @@ impl PresentationPlanner {
             set.items.sort_by_key(|item| item.z_index);
         }
         groups
+    }
+}
+
+fn validate_subscription(subscription: &PresentationSubscription) -> Result<(), String> {
+    if subscription.subscription_id.is_empty()
+        || subscription.group_id.is_empty()
+        || subscription.output.node_id.is_empty()
+        || subscription.output.port_id.is_empty()
+        || subscription.resource_handle == 0
+        || !subscription.viewport.x.is_finite()
+        || !subscription.viewport.y.is_finite()
+        || !subscription.viewport.width.is_finite()
+        || !subscription.viewport.height.is_finite()
+        || subscription.viewport.width <= 0.0
+        || subscription.viewport.height <= 0.0
+    {
+        Err("Invalid presentation subscription".to_owned())
+    } else {
+        Ok(())
     }
 }

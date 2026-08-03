@@ -1,17 +1,18 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::ffi::{SdkError, SdkErrorCode};
+use crate::types::DataType;
 
 use super::{
-    DeliveryPolicy, FrameStamp, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputState,
-    OutputSubscription, SubscriptionInvalidation,
+    DeliveryPolicy, FrameStamp, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
+    OutputState, OutputSubscription, OutputTransport, SubscriptionInvalidation,
 };
 
 const DEFAULT_EVERY_QUEUE_CAPACITY: usize = 60;
 
 pub struct OutputRegistry {
     graph_revision: u32,
-    valid_outputs: BTreeSet<OutputKey>,
+    valid_outputs: BTreeMap<OutputKey, DataType>,
     states: BTreeMap<OutputKey, OutputState>,
     subscriptions: BTreeMap<String, OutputSubscription>,
     pending_latest: BTreeMap<String, OutputDelivery>,
@@ -26,7 +27,7 @@ impl Default for OutputRegistry {
     fn default() -> Self {
         Self {
             graph_revision: 0,
-            valid_outputs: BTreeSet::new(),
+            valid_outputs: BTreeMap::new(),
             states: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             pending_latest: BTreeMap::new(),
@@ -40,12 +41,21 @@ impl Default for OutputRegistry {
 }
 
 impl OutputRegistry {
-    pub fn reconcile(&mut self, graph_revision: u32, outputs: BTreeSet<OutputKey>) {
-        let removed = self
+    pub fn reconcile(&mut self, graph_revision: u32, outputs: BTreeMap<OutputKey, DataType>) {
+        let invalidated = self
             .subscriptions
             .iter()
-            .filter(|(_, subscription)| !outputs.contains(&subscription.output))
-            .map(|(id, subscription)| (id.clone(), subscription.output.clone()))
+            .filter_map(|(id, subscription)| {
+                let reason = match (
+                    self.valid_outputs.get(&subscription.output),
+                    outputs.get(&subscription.output),
+                ) {
+                    (_, None) => "output-removed",
+                    (Some(previous), Some(next)) if previous != next => "output-contract-changed",
+                    _ => return None,
+                };
+                Some((id.clone(), subscription.output.clone(), reason.to_owned()))
+            })
             .collect::<Vec<_>>();
         self.graph_revision = graph_revision;
         self.valid_outputs = outputs;
@@ -54,12 +64,12 @@ impl OutputRegistry {
         self.pending_every.clear();
         self.last_enqueued_generation.clear();
         self.latest_frame_stamp = None;
-        for (subscription_id, output) in removed {
+        for (subscription_id, output, reason) in invalidated {
             self.subscriptions.remove(&subscription_id);
             self.invalidations.push(SubscriptionInvalidation {
                 subscription_id,
                 output,
-                reason: "output-removed".to_owned(),
+                reason,
             });
         }
     }
@@ -70,14 +80,7 @@ impl OutputRegistry {
 
     pub fn subscribe(&mut self, subscription: OutputSubscription) -> Result<(), SdkError> {
         validate_subscription(&subscription)?;
-        if !self.valid_outputs.contains(&subscription.output) {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Output subscription references an unknown port",
-            )
-            .for_node(&subscription.output.node_id)
-            .with_details(&subscription.output.port_id));
-        }
+        self.validate_transport(&subscription)?;
         if self
             .subscriptions
             .contains_key(&subscription.subscription_id)
@@ -105,14 +108,7 @@ impl OutputRegistry {
             .with_details(subscription.subscription_id));
         }
         validate_subscription(&subscription)?;
-        if !self.valid_outputs.contains(&subscription.output) {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Output subscription references an unknown port",
-            )
-            .for_node(&subscription.output.node_id)
-            .with_details(&subscription.output.port_id));
-        }
+        self.validate_transport(&subscription)?;
         let id = subscription.subscription_id.clone();
         self.subscriptions.insert(id.clone(), subscription);
         self.pending_latest.remove(&id);
@@ -137,6 +133,30 @@ impl OutputRegistry {
         Ok(subscription)
     }
 
+    pub fn validate_contract(
+        &self,
+        output: &OutputKey,
+        payload: &OutputPayload,
+    ) -> Result<(), SdkError> {
+        let Some(data_type) = self.valid_outputs.get(output).copied() else {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Output state references an unknown port",
+            )
+            .for_node(&output.node_id)
+            .with_details(&output.port_id));
+        };
+        if !payload_matches(data_type, payload) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Output payload does not match the port contract",
+            )
+            .for_node(&output.node_id)
+            .with_details(&output.port_id));
+        }
+        Ok(())
+    }
+
     pub fn publish(&mut self, state: OutputState) -> Result<(), SdkError> {
         if state.graph_revision != self.graph_revision {
             return Err(SdkError::new(
@@ -145,14 +165,7 @@ impl OutputRegistry {
             )
             .for_node(&state.output.node_id));
         }
-        if !self.valid_outputs.contains(&state.output) {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Output state references an unknown port",
-            )
-            .for_node(&state.output.node_id)
-            .with_details(&state.output.port_id));
-        }
+        self.validate_contract(&state.output, &state.payload)?;
         if self
             .states
             .get(&state.output)
@@ -224,6 +237,41 @@ impl OutputRegistry {
         self.states.get(output)
     }
 
+    pub fn content_stamps(&self) -> BTreeMap<OutputKey, super::ContentStamp> {
+        self.states
+            .iter()
+            .map(|(output, state)| (output.clone(), state.content_stamp.clone()))
+            .collect()
+    }
+
+    fn validate_transport(&self, subscription: &OutputSubscription) -> Result<(), SdkError> {
+        let Some(data_type) = self.valid_outputs.get(&subscription.output).copied() else {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Output subscription references an unknown port",
+            )
+            .for_node(&subscription.output.node_id)
+            .with_details(&subscription.output.port_id));
+        };
+        let texture = matches!(data_type, DataType::Sampler2d | DataType::SamplerCube);
+        let compatible = match subscription.transport {
+            OutputTransport::Value => !texture,
+            OutputTransport::Preview
+            | OutputTransport::Capture
+            | OutputTransport::NativePresent => texture,
+        };
+        if compatible {
+            Ok(())
+        } else {
+            Err(SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Output transport does not match the port contract",
+            )
+            .for_node(&subscription.output.node_id)
+            .with_details(&subscription.output.port_id))
+        }
+    }
+
     pub fn drain(&mut self) -> OutputDeliveryBatch {
         let mut deliveries = self.pending_every.drain(..).collect::<Vec<_>>();
         deliveries.extend(std::mem::take(&mut self.pending_latest).into_values());
@@ -259,4 +307,35 @@ fn validate_subscription(subscription: &OutputSubscription) -> Result<(), SdkErr
         ));
     }
     Ok(())
+}
+
+fn payload_matches(data_type: DataType, payload: &OutputPayload) -> bool {
+    match data_type {
+        DataType::Bool => matches!(payload, OutputPayload::Bool(_)),
+        DataType::Int => matches!(payload, OutputPayload::Int(_)),
+        DataType::Uint => matches!(payload, OutputPayload::Uint(_)),
+        DataType::Float => matches!(payload, OutputPayload::Float(_)),
+        DataType::Vec2
+        | DataType::Vec3
+        | DataType::Vec4
+        | DataType::Ivec2
+        | DataType::Ivec3
+        | DataType::Ivec4
+        | DataType::Uvec2
+        | DataType::Uvec3
+        | DataType::Uvec4
+        | DataType::Bvec2
+        | DataType::Bvec3
+        | DataType::Bvec4
+        | DataType::Mat2
+        | DataType::Mat3
+        | DataType::Mat4 => matches!(payload, OutputPayload::FloatArray(_)),
+        DataType::Sampler2d | DataType::SamplerCube => {
+            matches!(payload, OutputPayload::Resource { .. })
+        }
+        DataType::Roi | DataType::Mesh | DataType::Json => {
+            matches!(payload, OutputPayload::Json(_))
+        }
+        DataType::Auto => true,
+    }
 }
