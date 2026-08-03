@@ -224,9 +224,8 @@ export class RealtimeHost {
   }
 
 
-  captureScreenshot(_rendererId: string): string | null {
-    // TODO: implement async screenshot via WebGPU readback
-    return null;
+  async captureScreenshot(rendererId: string): Promise<string | null> {
+    return await this.compositor.captureScreenshot(rendererId);
   }
 
   async addVideoSource(nodeId: string, config: VideoSourceConfig): Promise<void> {
@@ -327,6 +326,9 @@ export class RealtimeHost {
 
     this.lastInputs = inputs;
     this.compositor.render(inputs);
+
+    // Rust/WASM runtime owns graph policy in the converged host. The current
+    // compositor remains the migration executor until Phase 5 removes it.
     this.renderToScreen();
 
     // Read back the selected node's preview (only when side panel is showing it).

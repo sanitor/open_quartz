@@ -90,6 +90,7 @@ impl CompositionClock {
         let timeline_ns = self
             .accumulated_active_ns
             .saturating_add(now_ns.saturating_sub(running_since));
+        let previous_timeline_ns = self.previous_timeline_ns;
         let deadline_ns = self.next_deadline_ns.unwrap_or(now_ns);
         self.previous_timeline_ns = timeline_ns;
         self.frame = self.frame.saturating_add(1);
@@ -97,7 +98,7 @@ impl CompositionClock {
         Ok(ClockState {
             epoch: self.epoch,
             timeline_ns,
-            previous_timeline_ns: self.previous_timeline_ns,
+            previous_timeline_ns,
             frame: self.frame,
             next_deadline_ns: deadline_ns,
         })

@@ -91,6 +91,20 @@ impl Runtime {
         self.clock.resume(now_ns)
     }
 
+    pub fn tick_at(
+        &mut self,
+        now_ns: u64,
+        input: &RuntimeFrameInput,
+    ) -> Result<ClockState, SdkError> {
+        let clock = self.clock.tick(now_ns)?;
+        let mut stamped_input = input.clone();
+        stamped_input.time = clock.timeline_ns as f64 / 1_000_000_000.0;
+        stamped_input.frame = clock.frame;
+        stamped_input.delta =
+            clock.timeline_ns.saturating_sub(clock.previous_timeline_ns) as f64 / 1_000_000_000.0;
+        self.advance(&stamped_input)?;
+        Ok(clock)
+    }
     pub fn stop_clock(&mut self) {
         self.clock.stop();
     }
