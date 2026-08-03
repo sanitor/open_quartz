@@ -53,7 +53,6 @@ struct RegisteredResource {
 pub struct Runtime {
     engine: Engine,
     resources: BTreeMap<String, RegisteredResource>,
-    presentations: BTreeMap<String, PresentationSet>,
     output_ports: BTreeMap<String, Vec<OutputKey>>,
     outputs: OutputRegistry,
     clock: CompositionClock,
@@ -66,7 +65,6 @@ impl Runtime {
         Self {
             engine: Engine::new(),
             resources: BTreeMap::new(),
-            presentations: BTreeMap::new(),
             output_ports: BTreeMap::new(),
             outputs: OutputRegistry::default(),
             clock: CompositionClock::new(16_666_667),
@@ -214,21 +212,6 @@ impl Runtime {
             })
     }
 
-    pub fn update_presentation(&mut self, set: PresentationSet) -> Result<(), SdkError> {
-        if set.group_id.is_empty() {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Presentation group ID cannot be empty",
-            ));
-        }
-        self.presentations.insert(set.group_id.clone(), set);
-        Ok(())
-    }
-
-    pub fn presentation(&self, group_id: &str) -> Option<&PresentationSet> {
-        self.presentations.get(group_id)
-    }
-
     pub fn subscribe_output(&mut self, subscription: OutputSubscription) -> Result<(), SdkError> {
         self.outputs.subscribe(subscription)
     }
@@ -331,9 +314,9 @@ impl Runtime {
     pub fn dispose(&mut self) {
         self.engine.dispose();
         self.resources.clear();
-        self.presentations.clear();
         self.output_ports.clear();
         self.outputs = OutputRegistry::default();
+        self.presentation = PresentationPlanner::default();
     }
 }
 
