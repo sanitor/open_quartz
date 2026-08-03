@@ -1,3 +1,29 @@
+use open_quartz::ffi::{EngineState, SdkErrorCode};
+use open_quartz::runtime::CompositionClock;
+
+#[test]
+fn composition_clock_freezes_pause_and_resets_stop_without_deadline_drift() {
+    let mut clock = CompositionClock::new(16);
+    clock.start(100);
+    let first = clock.tick(116).unwrap();
+    assert_eq!(first.timeline_ns, 16);
+    assert_eq!(first.next_deadline_ns, 100);
+    clock.pause(140).unwrap();
+    assert_eq!(
+        clock.tick(1_000).unwrap_err().code,
+        SdkErrorCode::InvalidState
+    );
+    clock.resume(1_000).unwrap();
+    let resumed = clock.tick(1_016).unwrap();
+    assert_eq!(resumed.timeline_ns, 56);
+    assert_eq!(resumed.frame, 2);
+    assert_eq!(resumed.next_deadline_ns, 1_000);
+    clock.stop();
+    assert_eq!(clock.state().epoch, 2);
+    assert_eq!(clock.state().timeline_ns, 0);
+    assert_eq!(clock.state().frame, 0);
+}
+
 use open_quartz::runtime::{
     ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState,
     OutputSubscription, OutputTransport, Runtime, RuntimeCapabilities, RuntimeFrameInput,

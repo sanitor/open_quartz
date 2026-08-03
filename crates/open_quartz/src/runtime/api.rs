@@ -6,8 +6,9 @@ use crate::ffi::{Engine, EngineEvent, EngineState, SdkError, SdkErrorCode};
 use crate::types::Graph;
 
 use super::{
-    ContentStamp, FrameStamp, OutputDeliveryBatch, OutputKey, OutputPayload, OutputRegistry,
-    OutputState, OutputSubscription, PresentationSet, RuntimeCapabilities,
+    ClockState, CompositionClock, ContentStamp, FrameStamp, OutputDeliveryBatch, OutputKey,
+    OutputPayload, OutputRegistry, OutputState, OutputSubscription, PresentationSet,
+    RuntimeCapabilities,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +56,7 @@ pub struct Runtime {
     presentations: BTreeMap<String, PresentationSet>,
     output_ports: BTreeMap<String, Vec<OutputKey>>,
     outputs: OutputRegistry,
+    clock: CompositionClock,
     capabilities: RuntimeCapabilities,
 }
 
@@ -66,8 +68,29 @@ impl Runtime {
             presentations: BTreeMap::new(),
             output_ports: BTreeMap::new(),
             outputs: OutputRegistry::default(),
+            clock: CompositionClock::new(16_666_667),
             capabilities,
         }
+    }
+
+    pub fn clock_state(&self) -> ClockState {
+        self.clock.state()
+    }
+
+    pub fn start_at(&mut self, now_ns: u64) {
+        self.clock.start(now_ns);
+    }
+
+    pub fn pause_at(&mut self, now_ns: u64) -> Result<(), SdkError> {
+        self.clock.pause(now_ns)
+    }
+
+    pub fn resume_at(&mut self, now_ns: u64) -> Result<(), SdkError> {
+        self.clock.resume(now_ns)
+    }
+
+    pub fn stop_clock(&mut self) {
+        self.clock.stop();
     }
 
     pub fn capabilities(&self) -> &RuntimeCapabilities {
@@ -106,10 +129,6 @@ impl Runtime {
         Ok(revision)
     }
 
-    pub fn mark_dirty(&mut self, node_id: &str) -> Result<(), SdkError> {
-        self.engine.mark_dirty(node_id).map_err(decode_engine_error)
-    }
-
     pub fn advance(&mut self, input: &RuntimeFrameInput) -> Result<(), SdkError> {
         self.engine
             .run_frame(
@@ -140,11 +159,12 @@ impl Runtime {
                 .map(|state| state.output_generation.saturating_add(1))
                 .unwrap_or(1);
             let timeline_ns = seconds_to_ns(input.time);
+            let clock_state = self.clock.state();
             let stamp = FrameStamp {
-                epoch: 0,
+                epoch: clock_state.epoch,
                 frame: input.frame,
                 timeline_ns,
-                deadline_ns: timeline_ns,
+                deadline_ns: clock_state.next_deadline_ns,
             };
             self.outputs.publish(OutputState {
                 output,

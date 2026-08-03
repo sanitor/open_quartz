@@ -1,8 +1,10 @@
 mod api;
+mod clock;
 mod contract;
 mod output;
 
 pub use api::{FramePacer, HostBackend, ResourceDescriptor, Runtime, RuntimeFrameInput};
+pub use clock::{ClockState, CompositionClock};
 pub use output::OutputRegistry;
 
 pub use contract::{
