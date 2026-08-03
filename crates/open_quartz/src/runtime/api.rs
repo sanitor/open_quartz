@@ -1,11 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::ffi::{Engine, EngineEvent, EngineState, SdkError, SdkErrorCode};
 use crate::types::Graph;
 
-use super::{PresentationSet, RuntimeCapabilities};
+use super::{
+    ContentStamp, FrameStamp, OutputDeliveryBatch, OutputKey, OutputPayload, OutputRegistry,
+    OutputState, OutputSubscription, PresentationSet, RuntimeCapabilities,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +53,8 @@ pub struct Runtime {
     engine: Engine,
     resources: BTreeMap<String, RegisteredResource>,
     presentations: BTreeMap<String, PresentationSet>,
+    output_ports: BTreeMap<String, Vec<OutputKey>>,
+    outputs: OutputRegistry,
     capabilities: RuntimeCapabilities,
 }
 
@@ -59,6 +64,8 @@ impl Runtime {
             engine: Engine::new(),
             resources: BTreeMap::new(),
             presentations: BTreeMap::new(),
+            output_ports: BTreeMap::new(),
+            outputs: OutputRegistry::default(),
             capabilities,
         }
     }
@@ -72,9 +79,31 @@ impl Runtime {
             SdkError::new(SdkErrorCode::InvalidGraph, "Cannot serialize graph")
                 .with_details(error.to_string())
         })?;
-        self.engine
+        let revision = self
+            .engine
             .set_graph_json(&json)
-            .map_err(decode_engine_error)
+            .map_err(decode_engine_error)?;
+        self.output_ports = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                let outputs = node
+                    .data
+                    .outputs
+                    .iter()
+                    .map(|port| OutputKey::new(&node.id, &port.id))
+                    .collect::<Vec<_>>();
+                (node.id.clone(), outputs)
+            })
+            .collect();
+        let valid_outputs = self
+            .output_ports
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.outputs.reconcile(revision, valid_outputs);
+        Ok(revision)
     }
 
     pub fn mark_dirty(&mut self, node_id: &str) -> Result<(), SdkError> {
@@ -91,7 +120,46 @@ impl Runtime {
                 &input.mouse,
                 &input.resolution,
             )
-            .map_err(decode_engine_error)
+            .map_err(decode_engine_error)?;
+        let commands = self.engine.pending_commands().to_vec();
+        for command in commands {
+            let Some(value) = command.scalar_output else {
+                continue;
+            };
+            let Some(output) = self
+                .output_ports
+                .get(&command.node_id)
+                .and_then(|ports| ports.first())
+                .cloned()
+            else {
+                continue;
+            };
+            let generation = self
+                .outputs
+                .state(&output)
+                .map(|state| state.output_generation.saturating_add(1))
+                .unwrap_or(1);
+            let timeline_ns = seconds_to_ns(input.time);
+            let stamp = FrameStamp {
+                epoch: 0,
+                frame: input.frame,
+                timeline_ns,
+                deadline_ns: timeline_ns,
+            };
+            self.outputs.publish(OutputState {
+                output,
+                graph_revision: self.revision(),
+                output_generation: generation,
+                evaluation_stamp: stamp.clone(),
+                content_stamp: ContentStamp {
+                    epoch: stamp.epoch,
+                    timeline_ns: stamp.timeline_ns,
+                    media_pts_ns: None,
+                },
+                payload: OutputPayload::Float(value),
+            })?;
+        }
+        Ok(())
     }
 
     pub fn register_resource(
@@ -144,6 +212,36 @@ impl Runtime {
         self.presentations.get(group_id)
     }
 
+    pub fn subscribe_output(&mut self, subscription: OutputSubscription) -> Result<(), SdkError> {
+        self.outputs.subscribe(subscription)
+    }
+
+    pub fn update_output_subscription(
+        &mut self,
+        subscription: OutputSubscription,
+    ) -> Result<(), SdkError> {
+        self.outputs.update(subscription)
+    }
+
+    pub fn unsubscribe_output(
+        &mut self,
+        subscription_id: &str,
+    ) -> Result<OutputSubscription, SdkError> {
+        self.outputs.unsubscribe(subscription_id)
+    }
+
+    pub fn publish_output(&mut self, state: OutputState) -> Result<(), SdkError> {
+        self.outputs.publish(state)
+    }
+
+    pub fn drain_deliveries(&mut self) -> OutputDeliveryBatch {
+        self.outputs.drain()
+    }
+
+    pub fn set_every_queue_capacity(&mut self, capacity: usize) {
+        self.outputs.set_every_queue_capacity(capacity);
+    }
+
     pub fn pause(&mut self) -> Result<(), SdkError> {
         self.engine.pause().map_err(decode_engine_error)
     }
@@ -187,6 +285,8 @@ impl Runtime {
         self.engine.dispose();
         self.resources.clear();
         self.presentations.clear();
+        self.output_ports.clear();
+        self.outputs = OutputRegistry::default();
     }
 }
 
@@ -194,4 +294,11 @@ fn decode_engine_error(error: String) -> SdkError {
     serde_json::from_str(&error).unwrap_or_else(|_| {
         SdkError::new(SdkErrorCode::InvalidState, "Engine operation failed").with_details(error)
     })
+}
+
+fn seconds_to_ns(seconds: f64) -> u64 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    (seconds * 1_000_000_000.0).round().min(u64::MAX as f64) as u64
 }

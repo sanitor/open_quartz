@@ -34,6 +34,71 @@ export function decodeRuntimePublicSurface(json: string): RuntimePublicSurface {
   return value as RuntimePublicSurface;
 }
 
+export interface FrameStamp {
+  epoch: number;
+  frame: number;
+  timelineNs: number;
+  deadlineNs: number;
+}
+
+export interface ContentStamp {
+  epoch: number;
+  timelineNs: number;
+  mediaPtsNs?: number;
+}
+
+export interface OutputKey {
+  nodeId: string;
+  portId: string;
+}
+
+export type DeliveryPolicy = 'on-change' | 'latest' | 'every';
+export type OutputTransport = 'value' | 'preview' | 'capture' | 'native-present';
+
+export interface OutputSubscription {
+  subscriptionId: string;
+  output: OutputKey;
+  delivery: DeliveryPolicy;
+  transport: OutputTransport;
+  maxWidth?: number;
+  maxHeight?: number;
+}
+
+export type OutputPayload =
+  | { kind: 'bool'; value: boolean }
+  | { kind: 'int' | 'uint' | 'float'; value: number }
+  | { kind: 'float-array'; value: number[] }
+  | { kind: 'json'; value: unknown }
+  | { kind: 'resource'; value: { handle: number } }
+  | { kind: 'tensor'; value: { handle: number; dtype: string; shape: number[] } }
+  | { kind: 'bytes'; value: number[] };
+
+export interface OutputState {
+  output: OutputKey;
+  graphRevision: number;
+  outputGeneration: number;
+  evaluationStamp: FrameStamp;
+  contentStamp: ContentStamp;
+  payload: OutputPayload;
+}
+
+export interface OutputDelivery {
+  subscriptionId: string;
+  state: OutputState;
+}
+
+export interface SubscriptionInvalidation {
+  subscriptionId: string;
+  output: OutputKey;
+  reason: string;
+}
+
+export interface OutputDeliveryBatch {
+  frameStamp?: FrameStamp;
+  deliveries: OutputDelivery[];
+  invalidations: SubscriptionInvalidation[];
+}
+
 export type SdkErrorCode =
   | 'disposed'
   | 'invalid-frame'

@@ -99,10 +99,26 @@ pub struct OutputSubscription {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OutputDelivery {
+    pub subscription_id: String,
+    pub state: OutputState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionInvalidation {
+    pub subscription_id: String,
+    pub output: OutputKey,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OutputDeliveryBatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_stamp: Option<FrameStamp>,
-    pub deliveries: Vec<OutputState>,
+    pub deliveries: Vec<OutputDelivery>,
+    pub invalidations: Vec<SubscriptionInvalidation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

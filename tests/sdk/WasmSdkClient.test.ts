@@ -93,6 +93,29 @@ class FakeEngine {
   }
 }
 
+class FakeRuntime {
+  graphJson = '';
+  subscriptions: string[] = [];
+
+  setGraph(graphJson: string): number {
+    this.graphJson = graphJson;
+    return 1;
+  }
+
+  advance(_inputJson: string): void {}
+  subscribeOutput(subscriptionJson: string): void { this.subscriptions.push(subscriptionJson); }
+  updateOutputSubscription(subscriptionJson: string): void { this.subscriptions = [subscriptionJson]; }
+  unsubscribeOutput(subscriptionId: string): void {
+    this.subscriptions = this.subscriptions.filter((item) => JSON.parse(item).subscriptionId !== subscriptionId);
+  }
+  publishOutput(_stateJson: string): void {}
+  drainDeliveries(): string { return JSON.stringify({ deliveries: [], invalidations: [] }); }
+  pause(): void {}
+  resume(): void {}
+  stop(): void {}
+  dispose(): void {}
+}
+
 function fakeBindings(apiVersion = SDK_API_VERSION): RawWasmBindings {
   return {
     default: vi.fn(async () => undefined),
@@ -102,6 +125,7 @@ function fakeBindings(apiVersion = SDK_API_VERSION): RawWasmBindings {
     runtimeContract: () => JSON.stringify(runtimeContract),
     parseShader: (code) => JSON.stringify({ code }),
     planGraph: (graphJson) => graphJson,
+    Runtime: FakeRuntime,
     Engine: FakeEngine,
   };
 }
@@ -129,6 +153,19 @@ describe('WasmSdkClient', () => {
       { type: 'state', state: 'ready' },
     ]);
     expect(engine.drainEvents()).toEqual([]);
+  });
+
+  it('projects the canonical Runtime subscription API without host-specific methods', async () => {
+    const client = await WasmSdkClient.load(async () => fakeBindings());
+    const runtime = client.createRuntime();
+    expect(runtime.setGraph([], [])).toBe(1);
+    runtime.subscribeOutput({
+      subscriptionId: 'math',
+      output: { nodeId: 'math-1', portId: 'result' },
+      delivery: 'on-change',
+      transport: 'value',
+    });
+    expect(runtime.drainDeliveries()).toEqual({ deliveries: [], invalidations: [] });
   });
 
   it('forwards typed frame inputs without frame JSON serialization', async () => {

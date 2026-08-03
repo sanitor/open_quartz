@@ -1,9 +1,9 @@
 use open_quartz::ffi::EngineState;
 use open_quartz::runtime::{
     public_surface_manifest, AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy,
-    FrameStamp, OutputDeliveryBatch, OutputKey, OutputPayload, OutputState, OutputSubscription,
-    OutputTransport, PresentationFit, PresentationItem, PresentationSet, ResourceDescriptor,
-    Runtime, RuntimeCapabilities, RuntimeFrameInput, Viewport,
+    FrameStamp, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload, OutputState,
+    OutputSubscription, OutputTransport, PresentationFit, PresentationItem, PresentationSet,
+    ResourceDescriptor, Runtime, RuntimeCapabilities, RuntimeFrameInput, Viewport,
 };
 use open_quartz::types::Graph;
 use serde_json::json;
@@ -42,7 +42,11 @@ fn runtime_contract_round_trips_canonical_wire_schema() {
     };
     let batch = OutputDeliveryBatch {
         frame_stamp: Some(stamp(5)),
-        deliveries: vec![state.clone()],
+        deliveries: vec![OutputDelivery {
+            subscription_id: "inspector".to_owned(),
+            state: state.clone(),
+        }],
+        invalidations: vec![],
     };
 
     assert_eq!(

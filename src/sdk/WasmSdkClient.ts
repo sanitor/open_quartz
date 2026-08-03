@@ -9,7 +9,15 @@ import {
   decodeRuntimePublicSurface,
   decodeSdkError,
 } from './contract';
-import type { EngineEvent, EngineState, RuntimePublicSurface, SdkCapabilities } from './contract';
+import type {
+  EngineEvent,
+  EngineState,
+  OutputDeliveryBatch,
+  OutputState,
+  OutputSubscription,
+  RuntimePublicSurface,
+  SdkCapabilities,
+} from './contract';
 
 interface RawEngine {
   readonly revision: number;
@@ -39,6 +47,24 @@ interface RawEngineConstructor {
   new(): RawEngine;
 }
 
+interface RawRuntime {
+  setGraph(graphJson: string): number;
+  advance(inputJson: string): void;
+  subscribeOutput(subscriptionJson: string): void;
+  updateOutputSubscription(subscriptionJson: string): void;
+  unsubscribeOutput(subscriptionId: string): void;
+  publishOutput(stateJson: string): void;
+  drainDeliveries(): string;
+  pause(): void;
+  resume(): void;
+  stop(): void;
+  dispose(): void;
+}
+
+interface RawRuntimeConstructor {
+  new(): RawRuntime;
+}
+
 export interface RawWasmBindings {
   default(input?: unknown): Promise<unknown>;
   apiVersion(): number;
@@ -47,6 +73,7 @@ export interface RawWasmBindings {
   runtimeContract(): string;
   parseShader(code: string): string;
   planGraph(graphJson: string): string;
+  Runtime: RawRuntimeConstructor;
   Engine: RawEngineConstructor;
 }
 
@@ -110,6 +137,10 @@ export class WasmSdkClient {
     return new WasmEngineContract(new this.bindings.Engine());
   }
 
+  createRuntime(): WasmRuntimeContract {
+    return new WasmRuntimeContract(new this.bindings.Runtime());
+  }
+
   parseShader<T = unknown>(code: string): T {
     return JSON.parse(this.bindings.parseShader(code)) as T;
   }
@@ -117,6 +148,54 @@ export class WasmSdkClient {
   planGraph<T = unknown>(graph: unknown): T {
     return JSON.parse(invoke(() => this.bindings.planGraph(JSON.stringify(graph)))) as T;
   }
+}
+
+export class WasmRuntimeContract {
+  private readonly raw: RawRuntime;
+
+  constructor(raw: RawRuntime) {
+    this.raw = raw;
+  }
+
+  setGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): number {
+    return invoke(() => this.raw.setGraph(JSON.stringify({ nodes, edges })));
+  }
+
+  advance(input: FrameInput): void {
+    invoke(() => this.raw.advance(JSON.stringify({
+      time: input.time,
+      delta: input.delta,
+      frame: input.frame,
+      date: Array.from(input.date),
+      mouse: Array.from(input.mouse),
+      resolution: Array.from(input.resolution),
+    })));
+  }
+
+  subscribeOutput(subscription: OutputSubscription): void {
+    invoke(() => this.raw.subscribeOutput(JSON.stringify(subscription)));
+  }
+
+  updateOutputSubscription(subscription: OutputSubscription): void {
+    invoke(() => this.raw.updateOutputSubscription(JSON.stringify(subscription)));
+  }
+
+  unsubscribeOutput(subscriptionId: string): void {
+    invoke(() => this.raw.unsubscribeOutput(subscriptionId));
+  }
+
+  publishOutput(state: OutputState): void {
+    invoke(() => this.raw.publishOutput(JSON.stringify(state)));
+  }
+
+  drainDeliveries(): OutputDeliveryBatch {
+    return JSON.parse(this.raw.drainDeliveries()) as OutputDeliveryBatch;
+  }
+
+  pause(): void { invoke(() => this.raw.pause()); }
+  resume(): void { invoke(() => this.raw.resume()); }
+  stop(): void { invoke(() => this.raw.stop()); }
+  dispose(): void { this.raw.dispose(); }
 }
 
 /** Stateful graph/frame contract. GPU commands remain internal until Stage D. */

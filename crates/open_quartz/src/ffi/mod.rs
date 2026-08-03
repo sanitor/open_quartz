@@ -1,10 +1,12 @@
 mod engine;
 mod error;
 mod event;
+mod runtime;
 
 pub use engine::{api_version, capabilities_json, Engine, SdkCapabilities, SDK_API_VERSION};
 pub use error::{SdkError, SdkErrorCode};
 pub use event::{EngineEvent, EngineState};
+pub use runtime::RuntimeBinding;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
