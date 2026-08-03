@@ -7,8 +7,8 @@ use crate::types::Graph;
 
 use super::{
     ClockState, CompositionClock, ContentStamp, FrameStamp, OutputDeliveryBatch, OutputKey,
-    OutputPayload, OutputRegistry, OutputState, OutputSubscription, PresentationSet,
-    RuntimeCapabilities,
+    OutputPayload, OutputRegistry, OutputState, OutputSubscription, PresentationPlanner,
+    PresentationSet, PresentationSubscription, RuntimeCapabilities,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +57,7 @@ pub struct Runtime {
     output_ports: BTreeMap<String, Vec<OutputKey>>,
     outputs: OutputRegistry,
     clock: CompositionClock,
+    presentation: PresentationPlanner,
     capabilities: RuntimeCapabilities,
 }
 
@@ -69,14 +70,10 @@ impl Runtime {
             output_ports: BTreeMap::new(),
             outputs: OutputRegistry::default(),
             clock: CompositionClock::new(16_666_667),
+            presentation: PresentationPlanner::default(),
             capabilities,
         }
     }
-
-    pub fn clock_state(&self) -> ClockState {
-        self.clock.state()
-    }
-
     pub fn start_at(&mut self, now_ns: u64) {
         self.clock.start(now_ns);
     }
@@ -256,6 +253,36 @@ impl Runtime {
 
     pub fn drain_deliveries(&mut self) -> OutputDeliveryBatch {
         self.outputs.drain()
+    }
+
+    pub fn subscribe_presentation(
+        &mut self,
+        subscription: PresentationSubscription,
+    ) -> Result<(), SdkError> {
+        self.presentation
+            .subscribe(subscription)
+            .map_err(|message| SdkError::new(SdkErrorCode::InvalidResource, message))
+    }
+
+    pub fn update_presentation_subscription(
+        &mut self,
+        subscription: PresentationSubscription,
+    ) -> Result<(), SdkError> {
+        self.presentation
+            .update(subscription)
+            .map_err(|message| SdkError::new(SdkErrorCode::InvalidResource, message))
+    }
+
+    pub fn unsubscribe_presentation(&mut self, subscription_id: &str) -> bool {
+        self.presentation.unsubscribe(subscription_id)
+    }
+
+    pub fn build_presentation(
+        &self,
+        frame_stamp: FrameStamp,
+        content: &BTreeMap<OutputKey, ContentStamp>,
+    ) -> BTreeMap<String, PresentationSet> {
+        self.presentation.build(frame_stamp, content)
     }
 
     pub fn set_every_queue_capacity(&mut self, capacity: usize) {
