@@ -57,6 +57,7 @@ pub struct Runtime {
     outputs: OutputRegistry,
     clock: CompositionClock,
     presentation: PresentationPlanner,
+    backend: Option<Box<dyn HostBackend>>,
     capabilities: RuntimeCapabilities,
 }
 
@@ -69,8 +70,14 @@ impl Runtime {
             outputs: OutputRegistry::default(),
             clock: CompositionClock::new(16_666_667),
             presentation: PresentationPlanner::default(),
+            backend: None,
             capabilities,
         }
+    }
+
+    pub fn attach_backend(&mut self, backend: Box<dyn HostBackend>) {
+        self.capabilities = backend.capabilities();
+        self.backend = Some(backend);
     }
     pub fn start_at(&mut self, now_ns: u64) {
         self.clock.start(now_ns);
@@ -195,6 +202,9 @@ impl Runtime {
             )
             .with_details(descriptor.resource_id));
         }
+        if let Some(backend) = self.backend.as_mut() {
+            backend.register_resource(&descriptor, handle)?;
+        }
         self.resources.insert(
             descriptor.resource_id.clone(),
             RegisteredResource { descriptor, handle },
@@ -203,15 +213,15 @@ impl Runtime {
     }
 
     pub fn remove_resource(&mut self, resource_id: &str) -> Result<u64, SdkError> {
-        self.resources
-            .remove(resource_id)
-            .map(|resource| resource.handle)
-            .ok_or_else(|| {
-                SdkError::new(SdkErrorCode::InvalidResource, "Resource is not registered")
-                    .with_details(resource_id)
-            })
+        let resource = self.resources.remove(resource_id).ok_or_else(|| {
+            SdkError::new(SdkErrorCode::InvalidResource, "Resource is not registered")
+                .with_details(resource_id)
+        })?;
+        if let Some(backend) = self.backend.as_mut() {
+            backend.remove_resource(resource_id, resource.handle)?;
+        }
+        Ok(resource.handle)
     }
-
     pub fn subscribe_output(&mut self, subscription: OutputSubscription) -> Result<(), SdkError> {
         self.outputs.subscribe(subscription)
     }

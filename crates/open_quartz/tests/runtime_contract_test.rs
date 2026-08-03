@@ -1,9 +1,47 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+struct RecordingBackend {
+    registered: Rc<RefCell<Vec<u64>>>,
+    removed: Rc<RefCell<Vec<u64>>>,
+}
+
+impl open_quartz::runtime::HostBackend for RecordingBackend {
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            data_paths: vec![DataPathMode::NativePresent],
+        }
+    }
+
+    fn register_resource(
+        &mut self,
+        _descriptor: &ResourceDescriptor,
+        handle: u64,
+    ) -> Result<(), open_quartz::ffi::SdkError> {
+        self.registered.borrow_mut().push(handle);
+        Ok(())
+    }
+
+    fn remove_resource(
+        &mut self,
+        _resource_id: &str,
+        handle: u64,
+    ) -> Result<(), open_quartz::ffi::SdkError> {
+        self.removed.borrow_mut().push(handle);
+        Ok(())
+    }
+
+    fn present(&mut self, _set: &PresentationSet) -> Result<(), open_quartz::ffi::SdkError> {
+        Ok(())
+    }
+}
+
 use open_quartz::ffi::EngineState;
 use open_quartz::runtime::{
     public_surface_manifest, AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy,
-    FrameStamp, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload, OutputState,
-    OutputSubscription, OutputTransport, PresentationFit, PresentationItem, PresentationSet,
-    ResourceDescriptor, Runtime, RuntimeCapabilities, RuntimeFrameInput, Viewport,
+    FrameStamp, HostBackend, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
+    OutputState, OutputSubscription, OutputTransport, PresentationFit, PresentationItem,
+    PresentationSet, ResourceDescriptor, Runtime, RuntimeCapabilities, RuntimeFrameInput, Viewport,
 };
 use open_quartz::types::Graph;
 use serde_json::json;
@@ -199,4 +237,31 @@ fn direct_runtime_client_drives_the_same_public_lifecycle() {
     assert_eq!(runtime.remove_resource("image-1").unwrap(), 7);
     runtime.dispose();
     assert_eq!(runtime.state(), EngineState::Disposed);
+}
+
+#[test]
+fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
+    let registered = Rc::new(RefCell::new(Vec::new()));
+    let removed = Rc::new(RefCell::new(Vec::new()));
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.attach_backend(Box::new(RecordingBackend {
+        registered: registered.clone(),
+        removed: removed.clone(),
+    }));
+    runtime
+        .register_resource(
+            ResourceDescriptor {
+                resource_id: "video".to_owned(),
+                kind: "video".to_owned(),
+            },
+            99,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.capabilities().data_paths,
+        vec![DataPathMode::NativePresent]
+    );
+    assert_eq!(registered.borrow().as_slice(), &[99]);
+    assert_eq!(runtime.remove_resource("video").unwrap(), 99);
+    assert_eq!(removed.borrow().as_slice(), &[99]);
 }
