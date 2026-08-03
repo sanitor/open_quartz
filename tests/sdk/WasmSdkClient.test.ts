@@ -16,6 +16,11 @@ const capabilities = {
   browserOnnxSession: false,
 };
 
+const runtimeContract = {
+  apiVersion: SDK_API_VERSION,
+  methods: ['set_graph', 'subscribe_output', 'update_presentation', 'drain_deliveries'],
+};
+
 class FakeEngine {
   revision = 0;
   lastFrame?: bigint;
@@ -94,6 +99,7 @@ function fakeBindings(apiVersion = SDK_API_VERSION): RawWasmBindings {
     apiVersion: () => apiVersion,
     capabilities: () => JSON.stringify(capabilities),
     sdkVersion: () => '0.16.0',
+    runtimeContract: () => JSON.stringify(runtimeContract),
     parseShader: (code) => JSON.stringify({ code }),
     planGraph: (graphJson) => graphJson,
     Engine: FakeEngine,
@@ -108,6 +114,7 @@ describe('WasmSdkClient', () => {
     expect(bindings.default).toHaveBeenCalledOnce();
     expect(client.sdkVersion).toBe('0.16.0');
     expect(client.capabilities).toEqual(capabilities);
+    expect(client.runtimeContract).toEqual(runtimeContract);
     expect(client.parseShader<{ code: string }>('shader').code).toBe('shader');
   });
 

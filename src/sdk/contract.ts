@@ -14,6 +14,26 @@ export interface SdkCapabilities {
   browserOnnxSession: boolean;
 }
 
+export interface RuntimePublicSurface {
+  apiVersion: number;
+  methods: string[];
+}
+
+export function decodeRuntimePublicSurface(json: string): RuntimePublicSurface {
+  const value = JSON.parse(json) as Partial<RuntimePublicSurface>;
+  if (
+    value.apiVersion !== SDK_API_VERSION
+    || !Array.isArray(value.methods)
+    || value.methods.some((method) => typeof method !== 'string')
+  ) {
+    throw new SdkContractError({
+      code: 'invalid-response',
+      message: 'Rust SDK returned an invalid runtime public surface',
+    });
+  }
+  return value as RuntimePublicSurface;
+}
+
 export type SdkErrorCode =
   | 'disposed'
   | 'invalid-frame'

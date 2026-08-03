@@ -21,6 +21,12 @@ pub fn sdk_version() -> String {
     SDK_VERSION.to_owned()
 }
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = runtimeContract))]
+pub fn runtime_contract_json() -> String {
+    serde_json::to_string(&crate::runtime::public_surface_manifest())
+        .expect("Runtime public surface manifest is always serializable")
+}
+
 /// Parse WGSL and return the TypeScript-compatible ParsedShader JSON payload.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = parseShader))]
 pub fn parse_shader_json(code: &str) -> String {

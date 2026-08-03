@@ -6,9 +6,10 @@ import {
   SdkContractError,
   decodeCapabilities,
   decodeEngineEvents,
+  decodeRuntimePublicSurface,
   decodeSdkError,
 } from './contract';
-import type { EngineEvent, EngineState, SdkCapabilities } from './contract';
+import type { EngineEvent, EngineState, RuntimePublicSurface, SdkCapabilities } from './contract';
 
 interface RawEngine {
   readonly revision: number;
@@ -43,6 +44,7 @@ export interface RawWasmBindings {
   apiVersion(): number;
   capabilities(): string;
   sdkVersion(): string;
+  runtimeContract(): string;
   parseShader(code: string): string;
   planGraph(graphJson: string): string;
   Engine: RawEngineConstructor;
@@ -73,11 +75,17 @@ function invoke<T>(operation: () => T): T {
 export class WasmSdkClient {
   readonly capabilities: SdkCapabilities;
   readonly sdkVersion: string;
+  readonly runtimeContract: RuntimePublicSurface;
   private readonly bindings: RawWasmBindings;
 
-  private constructor(bindings: RawWasmBindings, capabilities: SdkCapabilities) {
+  private constructor(
+    bindings: RawWasmBindings,
+    capabilities: SdkCapabilities,
+    runtimeContract: RuntimePublicSurface,
+  ) {
     this.bindings = bindings;
     this.capabilities = capabilities;
+    this.runtimeContract = runtimeContract;
     this.sdkVersion = bindings.sdkVersion();
   }
 
@@ -91,7 +99,11 @@ export class WasmSdkClient {
         message: `Rust SDK API version ${actualVersion} does not match UI version ${SDK_API_VERSION}`,
       });
     }
-    return new WasmSdkClient(bindings, decodeCapabilities(bindings.capabilities()));
+    return new WasmSdkClient(
+      bindings,
+      decodeCapabilities(bindings.capabilities()),
+      decodeRuntimePublicSurface(bindings.runtimeContract()),
+    );
   }
 
   createEngine(): WasmEngineContract {
