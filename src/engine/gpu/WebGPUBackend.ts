@@ -91,6 +91,13 @@ export class WebGPUBackend {
   private blitPipeline: GPURenderPipeline | null = null;
   private blitBindGroupLayout: GPUBindGroupLayout | null = null;
 
+  private metrics = {
+    videoUploads: 0,
+    videoUploadBytes: 0,
+    textureReadbacks: 0,
+    textureReadbackBytes: 0,
+  };
+
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
     this._canvas = canvas;
   }
@@ -261,6 +268,8 @@ export class WebGPUBackend {
       { texture: handle.texture, premultipliedAlpha: true },
       { width: w, height: h },
     );
+    this.metrics.videoUploads += 1;
+    this.metrics.videoUploadBytes += w * h * 4;
     device.popErrorScope().then((err) => {
       if (err) console.error(`[gpu] video upload error for ${nodeId}:`, err.message);
     });
@@ -421,6 +430,8 @@ export class WebGPUBackend {
       { buffer: readBuffer, bytesPerRow },
       { width, height },
     );
+    this.metrics.textureReadbacks += 1;
+    this.metrics.textureReadbackBytes += width * height * 4;
     device.queue.submit([encoder.finish()]);
 
     await readBuffer.mapAsync(GPUMapMode.READ);
@@ -444,6 +455,10 @@ export class WebGPUBackend {
     readBuffer.destroy();
 
     return canvas;
+  }
+
+  getMetrics(): Readonly<typeof this.metrics> {
+    return { ...this.metrics };
   }
 
   /** Read a render target to a PNG data URL (for preview thumbnails). */

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,18 +8,17 @@ use crate::native_video::{
     find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoInfo,
     NativeVideoSource, NativeVideoSourceKind,
 };
-use open_quartz::gpu::{
-    GpuBackend, GpuExecutor, GpuOutput, TextureFormat, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV,
-};
+use open_quartz::engine::ExecutionCommand;
+use open_quartz::gpu::{GpuBackend, GpuExecutor, GpuOutputHandle, GpuPreviewReader, TextureFormat};
+use open_quartz::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
 use open_quartz::Engine;
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State, Window};
-
-const OUTPUT_WINDOW_LABEL: &str = "native-output";
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 pub struct NativeRuntimeState {
     runtime: Arc<Mutex<Option<NativeGpuRuntime>>>,
+    preview: Mutex<Option<GpuPreviewReader>>,
     alive: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -31,9 +30,47 @@ impl Drop for NativeRuntimeState {
     }
 }
 
-#[derive(Default)]
-pub struct NativeOnnxState {
-    sessions: Mutex<HashMap<String, open_quartz::onnx::OnnxSession>>,
+#[derive(Clone)]
+struct NativeOnnxConfig {
+    model_id: String,
+    task: OnnxTask,
+    target_size: u32,
+    score_threshold: f32,
+    iou_threshold: f32,
+}
+
+struct NativeOnnxResource {
+    session: Arc<Mutex<OnnxSession>>,
+    config: NativeOnnxConfig,
+    backend: String,
+}
+
+struct NativeOnnxCompletion {
+    node_id: String,
+    revision: u32,
+    generation: u32,
+    result: Result<NativeOnnxImageOutput, String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOutputEvent {
+    node_id: String,
+    width: u32,
+    height: u32,
+    backend: String,
+    data: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOnnxLoadOptions {
+    model_path: Option<String>,
+    task: OnnxTask,
+    target_size: u32,
+    score_threshold: f32,
+    iou_threshold: f32,
+    prefer_direct_ml: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,11 +79,13 @@ pub struct NativeRuntimeInfo {
     adapter_name: String,
     backend: String,
     device_type: String,
-    surface_format: String,
+    output_mode: String,
     native_onnx_cpu: bool,
     native_onnx_direct_ml: bool,
     shared_onnx_wgpu_device: bool,
     native_video: bool,
+    video_data_path: String,
+    tensor_data_path: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -60,12 +99,7 @@ pub struct NativeFrameRendered {
 }
 
 struct NativeGpuRuntime {
-    window: Window,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    backend: Arc<GpuBackend>,
     executor: GpuExecutor,
-    presenter: SurfacePresenter,
     engine: Engine,
     output_node_id: Option<String>,
     started_at: Instant,
@@ -73,22 +107,25 @@ struct NativeGpuRuntime {
     frame: u64,
     mouse: [f32; 4],
     videos: HashMap<String, NativeVideoSource>,
+    onnx_resources: HashMap<String, NativeOnnxResource>,
+    onnx_pending: HashSet<String>,
+    onnx_sender: mpsc::Sender<NativeOnnxCompletion>,
+    onnx_receiver: mpsc::Receiver<NativeOnnxCompletion>,
+    output_events: Vec<NativeOutputEvent>,
+    onnx_workers: Vec<JoinHandle<()>>,
 }
 
 impl NativeGpuRuntime {
-    async fn new(window: Window) -> Result<(Self, NativeRuntimeInfo), String> {
+    async fn new() -> Result<(Self, NativeRuntimeInfo), String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: native_backends(),
             ..Default::default()
         });
-        let surface = instance
-            .create_surface(Arc::new(window.clone()))
-            .map_err(|error| format!("Cannot create native GPU surface: {error}"))?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
             })
             .await
             .map_err(|error| format!("Cannot find a native GPU adapter: {error}"))?;
@@ -97,37 +134,25 @@ impl NativeGpuRuntime {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .map_err(|error| format!("Cannot create native GPU device: {error}"))?;
-        let size = window
-            .inner_size()
-            .map_err(|error| format!("Cannot query output window size: {error}"))?;
-        let surface_config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .ok_or_else(|| {
-                "Native GPU surface is unsupported by the selected adapter".to_owned()
-            })?;
-        surface.configure(&device, &surface_config);
         let backend = Arc::new(GpuBackend::from_device(device, queue));
         let executor = GpuExecutor::new(backend.clone());
-        let presenter = SurfacePresenter::new(&backend.device, surface_config.format);
         let info = NativeRuntimeInfo {
             adapter_name: adapter_info.name,
             backend: format!("{:?}", adapter_info.backend),
             device_type: format!("{:?}", adapter_info.device_type),
-            surface_format: format!("{:?}", surface_config.format),
+            output_mode: "embedded-readback".to_owned(),
             native_onnx_cpu: true,
             native_video: find_ffmpeg().is_ok(),
             native_onnx_direct_ml: cfg!(target_os = "windows"),
             shared_onnx_wgpu_device: false,
+            video_data_path: "cpu-copy".to_owned(),
+            tensor_data_path: "cpu-copy".to_owned(),
         };
+        let (onnx_sender, onnx_receiver) = mpsc::channel();
         let now = Instant::now();
         Ok((
             Self {
-                window,
-                surface,
-                surface_config,
-                backend,
                 executor,
-                presenter,
                 engine: Engine::new_native(),
                 output_node_id: None,
                 started_at: now,
@@ -135,6 +160,12 @@ impl NativeGpuRuntime {
                 frame: 0,
                 mouse: [0.0; 4],
                 videos: HashMap::new(),
+                onnx_resources: HashMap::new(),
+                onnx_pending: HashSet::new(),
+                onnx_sender,
+                onnx_receiver,
+                output_events: Vec::new(),
+                onnx_workers: Vec::new(),
             },
             info,
         ))
@@ -160,6 +191,12 @@ impl NativeGpuRuntime {
         };
         self.output_node_id = output_node_id;
         self.videos.retain(|node_id, _| node_ids.contains(node_id));
+        self.onnx_resources
+            .retain(|node_id, _| node_ids.contains(node_id));
+        self.onnx_pending
+            .retain(|node_id| node_ids.contains(node_id));
+        self.output_events
+            .retain(|event| node_ids.contains(&event.node_id));
         self.sync_video_nodes()?;
         self.started_at = Instant::now();
         self.previous_frame_at = self.started_at;
@@ -186,24 +223,46 @@ impl NativeGpuRuntime {
     }
 
     fn read_output(&self, node_id: &str) -> Result<Vec<u8>, String> {
+        let (rgba, width, height) = self.read_output_rgba(node_id)?;
+        Ok(Self::output_payload(&rgba, width, height))
+    }
+
+    fn preview_source(&self, node_id: &str) -> Result<GpuOutputHandle, String> {
+        let output = self
+            .executor
+            .output_handle(node_id)
+            .ok_or_else(|| format!("Output node {node_id} has no native GPU texture"))?;
+        if output.format != TextureFormat::Rgba8Unorm {
+            return Err(format!(
+                "Output node {node_id} uses {:?}; native preview requires rgba8unorm",
+                output.format
+            ));
+        }
+        Ok(output)
+    }
+
+    fn read_output_rgba(&self, node_id: &str) -> Result<(Vec<u8>, u32, u32), String> {
         let output = self
             .executor
             .output_texture(node_id)
             .ok_or_else(|| format!("Output node {node_id} has no native GPU texture"))?;
         if output.format != TextureFormat::Rgba8Unorm {
             return Err(format!(
-                "Output node {node_id} uses {:?}; Stage E readback currently requires rgba8unorm",
+                "Output node {node_id} uses {:?}; native readback requires rgba8unorm",
                 output.format
             ));
         }
-        let (width, height) = (output.width, output.height);
         let rgba = pollster::block_on(self.executor.read_output_rgba(node_id))
             .map_err(|error| error.to_string())?;
+        Ok((rgba, output.width, output.height))
+    }
+
+    fn output_payload(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         let mut payload = Vec::with_capacity(8 + rgba.len());
         payload.extend_from_slice(&width.to_le_bytes());
         payload.extend_from_slice(&height.to_le_bytes());
-        payload.extend_from_slice(&rgba);
-        Ok(payload)
+        payload.extend_from_slice(rgba);
+        payload
     }
 
     fn attach_video(
@@ -265,6 +324,185 @@ impl NativeGpuRuntime {
         Ok(())
     }
 
+    fn load_onnx(
+        &mut self,
+        node_id: String,
+        session: OnnxSession,
+        config: NativeOnnxConfig,
+    ) -> Result<open_quartz::onnx::OnnxSessionInfo, String> {
+        self.engine.node_generation(&node_id)?;
+        let info = session.info().clone();
+        self.onnx_resources.insert(
+            node_id.clone(),
+            NativeOnnxResource {
+                session: Arc::new(Mutex::new(session)),
+                config,
+                backend: info.backend.clone(),
+            },
+        );
+        self.engine.mark_dirty(&node_id)?;
+        Ok(info)
+    }
+
+    fn unload_onnx(&mut self, node_id: &str) {
+        self.onnx_resources.remove(node_id);
+        self.onnx_pending.remove(node_id);
+        self.executor.remove_texture(node_id);
+    }
+
+    fn drain_onnx_completions(&mut self) -> Result<(), String> {
+        let mut running = Vec::new();
+        for worker in self.onnx_workers.drain(..) {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                running.push(worker);
+            }
+        }
+        self.onnx_workers = running;
+        while let Ok(completion) = self.onnx_receiver.try_recv() {
+            self.onnx_pending.remove(&completion.node_id);
+            let current_generation = self.engine.node_generation(&completion.node_id).ok();
+            if completion.revision != self.engine.revision()
+                || current_generation != Some(completion.generation)
+            {
+                continue;
+            }
+            let output = completion.result?;
+            self.executor
+                .upload_rgba(
+                    &completion.node_id,
+                    &output.rgba,
+                    output.width,
+                    output.height,
+                )
+                .map_err(|error| error.to_string())?;
+            let backend = self
+                .onnx_resources
+                .get(&completion.node_id)
+                .map(|resource| resource.backend.clone())
+                .unwrap_or_else(|| "native".to_owned());
+            self.output_events.push(NativeOutputEvent {
+                node_id: completion.node_id.clone(),
+                width: output.width,
+                height: output.height,
+                backend,
+                data: output.data,
+            });
+            let downstream = self
+                .engine
+                .execution_plan()
+                .map(|plan| {
+                    plan.nodes
+                        .iter()
+                        .filter(|node| {
+                            node.upstream
+                                .values()
+                                .any(|source| source == &completion.node_id)
+                        })
+                        .map(|node| node.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for node_id in downstream {
+                self.engine.mark_dirty(&node_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule_onnx(&mut self, command: &ExecutionCommand) -> Result<(), String> {
+        if self.onnx_pending.contains(&command.node_id) {
+            return Ok(());
+        }
+        let Some(source_id) = command.texture_inputs.values().next() else {
+            return Ok(());
+        };
+        let Some(source) = self.executor.output_texture(source_id) else {
+            return Ok(());
+        };
+        let source_width = source.width;
+        let source_height = source.height;
+        let source_rgba = pollster::block_on(self.executor.read_output_rgba(source_id))
+            .map_err(|error| error.to_string())?;
+        let Some(resource) = self.onnx_resources.get(&command.node_id) else {
+            return Ok(());
+        };
+        let session = resource.session.clone();
+        let config = resource.config.clone();
+        let sender = self.onnx_sender.clone();
+        let node_id = command.node_id.clone();
+        let revision = self.engine.revision();
+        let generation = self.engine.node_generation(&node_id)?;
+        self.onnx_pending.insert(node_id.clone());
+        let worker = std::thread::Builder::new()
+            .name(format!("open-quartz-onnx-{node_id}"))
+            .spawn(move || {
+                let result = session
+                    .lock()
+                    .map_err(|_| "Native ONNX session lock is poisoned".to_owned())
+                    .and_then(|mut session| {
+                        open_quartz::onnx::run_native_image_task(
+                            &mut session,
+                            config.task,
+                            &config.model_id,
+                            &source_rgba,
+                            source_width,
+                            source_height,
+                            config.target_size,
+                            config.score_threshold,
+                            config.iou_threshold,
+                        )
+                    });
+                let _ = sender.send(NativeOnnxCompletion {
+                    node_id,
+                    revision,
+                    generation,
+                    result,
+                });
+            })
+            .map_err(|error| format!("Cannot start native ONNX task: {error}"))?;
+        self.onnx_workers.push(worker);
+        Ok(())
+    }
+
+    fn execute_runtime_commands(
+        &mut self,
+        plan: &open_quartz::engine::ExecutionPlan,
+        commands: &[ExecutionCommand],
+    ) -> Result<(), String> {
+        let mut batch = Vec::new();
+        for command in commands {
+            if command.kind == "onnx" {
+                if !batch.is_empty() {
+                    self.executor
+                        .execute_commands(plan, &batch)
+                        .map_err(|error| error.to_string())?;
+                    batch.clear();
+                }
+                self.schedule_onnx(command)?;
+                continue;
+            }
+            let inputs_ready = command
+                .texture_inputs
+                .values()
+                .all(|source_id| self.executor.output_texture(source_id).is_some());
+            if inputs_ready {
+                batch.push(command.clone());
+            }
+        }
+        if !batch.is_empty() {
+            self.executor
+                .execute_commands(plan, &batch)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn take_output_events(&mut self) -> Vec<NativeOutputEvent> {
+        std::mem::take(&mut self.output_events)
+    }
+
     fn render_next(&mut self) -> Result<NativeFrameRendered, String> {
         let now = Instant::now();
         let time = now.duration_since(self.started_at).as_secs_f64();
@@ -275,13 +513,13 @@ impl NativeGpuRuntime {
     }
 
     fn render(&mut self, time: f64, delta: f64, frame: u64) -> Result<NativeFrameRendered, String> {
-        let size = self
-            .window
-            .inner_size()
-            .map_err(|error| format!("Cannot query output window size: {error}"))?;
-        let width = size.width.max(1);
-        let height = size.height.max(1);
+        let (width, height) = self
+            .engine
+            .execution_plan()
+            .map(|plan| (plan.default_width.max(1), plan.default_height.max(1)))
+            .unwrap_or((960, 540));
         self.upload_video_frames()?;
+        self.drain_onnx_completions()?;
         let date = utc_date_uniform(SystemTime::now());
         self.engine.run_frame(
             time,
@@ -294,27 +532,29 @@ impl NativeGpuRuntime {
         let plan = self
             .engine
             .execution_plan()
-            .ok_or_else(|| "Native engine has no execution plan".to_owned())?;
-        self.executor
-            .execute_commands(plan, self.engine.pending_commands())
-            .map_err(|error| error.to_string())?;
+            .ok_or_else(|| "Native engine has no execution plan".to_owned())?
+            .clone();
+        let commands = self.engine.pending_commands().to_vec();
+        self.execute_runtime_commands(&plan, &commands)?;
         let output_node_id = self
             .output_node_id
             .clone()
             .or_else(|| plan.output_nodes.first().cloned())
             .ok_or_else(|| "Graph has no renderer or terminal texture output".to_owned())?;
-        let output = self
-            .executor
-            .output_texture(&output_node_id)
-            .ok_or_else(|| format!("Output node {output_node_id} has no native GPU texture"))?;
-        if self.surface_config.width != width || self.surface_config.height != height {
-            self.surface_config.width = width;
-            self.surface_config.height = height;
-            self.surface
-                .configure(&self.backend.device, &self.surface_config);
-        }
-        self.presenter
-            .present(&self.surface, &self.surface_config, &self.backend, &output)?;
+        let Some(output) = self.executor.output_texture(&output_node_id) else {
+            if !self.onnx_pending.is_empty() {
+                return Ok(NativeFrameRendered {
+                    frame,
+                    revision: self.engine.revision(),
+                    output_node_id,
+                    width: 0,
+                    height: 0,
+                });
+            }
+            return Err(format!(
+                "Output node {output_node_id} has no native GPU texture"
+            ));
+        };
         Ok(NativeFrameRendered {
             frame,
             revision: self.engine.revision(),
@@ -325,150 +565,11 @@ impl NativeGpuRuntime {
     }
 }
 
-struct SurfacePresenter {
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
-    sampler: wgpu::Sampler,
-}
-
-impl SurfacePresenter {
-    fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("open-quartz-surface-bindings"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("open-quartz-surface-pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("open-quartz-surface-vertex"),
-            source: wgpu::ShaderSource::Wgsl(FULLSCREEN_VERT_WITH_UV.into()),
-        });
-        let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("open-quartz-surface-fragment"),
-            source: wgpu::ShaderSource::Wgsl(BLIT_FRAG.into()),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("open-quartz-surface-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vertex,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fragment,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("open-quartz-surface-sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        Self {
-            bind_group_layout,
-            pipeline,
-            sampler,
+impl Drop for NativeGpuRuntime {
+    fn drop(&mut self) {
+        for worker in self.onnx_workers.drain(..) {
+            let _ = worker.join();
         }
-    }
-
-    fn present(
-        &self,
-        surface: &wgpu::Surface<'_>,
-        surface_config: &wgpu::SurfaceConfiguration,
-        backend: &GpuBackend,
-        source: &GpuOutput<'_>,
-    ) -> Result<(), String> {
-        let frame = match surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                surface.configure(&backend.device, surface_config);
-                surface
-                    .get_current_texture()
-                    .map_err(|error| format!("Cannot reacquire native output surface: {error}"))?
-            }
-            Err(error) => return Err(format!("Cannot acquire native output surface: {error}")),
-        };
-        let output_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = backend
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("open-quartz-surface-bind-group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(source.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
-        let mut encoder = backend
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("open-quartz-surface-frame"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("open-quartz-surface-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        backend.queue.submit([encoder.finish()]);
-        frame.present();
-        Ok(())
     }
 }
 
@@ -477,37 +578,23 @@ async fn initialize_runtime(
     state: &NativeRuntimeState,
 ) -> Result<NativeRuntimeInfo, String> {
     shutdown_worker(state);
-    if let Some(previous) = state
+    state
+        .preview
+        .lock()
+        .map_err(|_| "Native preview lock is poisoned".to_owned())?
+        .take();
+    state
         .runtime
         .lock()
         .map_err(|_| "Native runtime lock is poisoned".to_owned())?
-        .take()
-    {
-        let _ = previous.window.close();
-    }
-    if let Some(window) = app.get_window(OUTPUT_WINDOW_LABEL) {
-        let _ = window.close();
-    }
-    let window = tauri::window::WindowBuilder::new(app, OUTPUT_WINDOW_LABEL)
-        .title("Open Quartz Output")
-        .inner_size(960.0, 540.0)
-        .resizable(true)
-        .visible(true)
-        .build()
-        .map_err(|error| format!("Cannot create native output window: {error}"))?;
-    let (runtime, info) = NativeGpuRuntime::new(window).await?;
+        .take();
+    let (runtime, info) = NativeGpuRuntime::new().await?;
+    let preview = GpuPreviewReader::new(runtime.executor.backend().clone());
+    *state
+        .preview
+        .lock()
+        .map_err(|_| "Native preview lock is poisoned".to_owned())? = Some(preview);
     state.alive.store(true, Ordering::Release);
-    let alive = state.alive.clone();
-    let playing = state.playing.clone();
-    runtime.window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
-        ) {
-            playing.store(false, Ordering::Release);
-            alive.store(false, Ordering::Release);
-        }
-    });
     *state
         .runtime
         .lock()
@@ -573,6 +660,37 @@ pub fn native_gpu_read_output(
     state: State<'_, NativeRuntimeState>,
 ) -> Result<tauri::ipc::Response, String> {
     let payload = with_runtime(&state, |runtime| runtime.read_output(&node_id))?;
+    Ok(tauri::ipc::Response::new(payload))
+}
+
+fn read_preview_payload(
+    state: &NativeRuntimeState,
+    node_id: &str,
+    max_dimension: u32,
+) -> Result<Vec<u8>, String> {
+    let source = with_runtime(state, |runtime| runtime.preview_source(node_id))?;
+    let mut preview = state
+        .preview
+        .lock()
+        .map_err(|_| "Native preview lock is poisoned".to_owned())?;
+    let reader = preview
+        .as_mut()
+        .ok_or_else(|| "Native preview reader is not initialized".to_owned())?;
+    let image = pollster::block_on(reader.read(&source, max_dimension))?;
+    Ok(NativeGpuRuntime::output_payload(
+        &image.rgba,
+        image.width,
+        image.height,
+    ))
+}
+
+#[tauri::command]
+pub fn native_gpu_read_preview(
+    node_id: String,
+    max_dimension: u32,
+    state: State<'_, NativeRuntimeState>,
+) -> Result<tauri::ipc::Response, String> {
+    let payload = read_preview_payload(&state, &node_id, max_dimension)?;
     Ok(tauri::ipc::Response::new(payload))
 }
 
@@ -652,6 +770,20 @@ pub fn native_gpu_attach_video(
 }
 
 #[tauri::command]
+pub fn native_gpu_video_metrics(
+    node_id: String,
+    state: State<'_, NativeRuntimeState>,
+) -> Result<crate::native_video::NativeVideoMetrics, String> {
+    with_runtime(&state, |runtime| {
+        runtime
+            .videos
+            .get(&node_id)
+            .map(NativeVideoSource::metrics)
+            .ok_or_else(|| format!("Video node {node_id} is not attached"))
+    })
+}
+
+#[tauri::command]
 pub fn native_gpu_detach_video(
     node_id: String,
     state: State<'_, NativeRuntimeState>,
@@ -693,17 +825,16 @@ pub fn native_gpu_close(state: State<'_, NativeRuntimeState>) -> Result<(), Stri
 
 fn close_runtime(state: &NativeRuntimeState) -> Result<(), String> {
     shutdown_worker(state);
-    let runtime = state
+    state
+        .preview
+        .lock()
+        .map_err(|_| "Native preview lock is poisoned".to_owned())?
+        .take();
+    state
         .runtime
         .lock()
         .map_err(|_| "Native runtime lock is poisoned".to_owned())?
         .take();
-    if let Some(runtime) = runtime {
-        runtime
-            .window
-            .close()
-            .map_err(|error| format!("Cannot close native output window: {error}"))?;
-    }
     Ok(())
 }
 
@@ -717,14 +848,17 @@ pub async fn native_onnx_load_model(
     app: AppHandle,
     node_id: String,
     model_id: String,
-    prefer_direct_ml: bool,
-    state: State<'_, NativeOnnxState>,
+    options: NativeOnnxLoadOptions,
+    state: State<'_, NativeRuntimeState>,
 ) -> Result<open_quartz::onnx::OnnxSessionInfo, String> {
-    let model_path = crate::models_dir(&app)?.join(format!("{model_id}.onnx"));
+    let model_path = options
+        .model_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or(crate::models_dir(&app)?.join(format!("{model_id}.onnx")));
     let model = tokio::fs::read(&model_path)
         .await
         .map_err(|error| format!("Cannot read ONNX model {}: {error}", model_path.display()))?;
-    let provider = if prefer_direct_ml && cfg!(target_os = "windows") {
+    let provider = if options.prefer_direct_ml && cfg!(target_os = "windows") {
         open_quartz::onnx::NativeOnnxProvider::DirectMl
     } else {
         open_quartz::onnx::NativeOnnxProvider::Cpu
@@ -736,26 +870,27 @@ pub async fn native_onnx_load_model(
             allow_cpu_fallback: true,
         },
     )?;
-    let info = session.info().clone();
-    state
-        .sessions
-        .lock()
-        .map_err(|_| "Native ONNX session lock is poisoned".to_owned())?
-        .insert(node_id, session);
-    Ok(info)
+    let config = NativeOnnxConfig {
+        model_id,
+        task: options.task,
+        target_size: options.target_size,
+        score_threshold: options.score_threshold,
+        iou_threshold: options.iou_threshold,
+    };
+    with_runtime(&state, move |runtime| {
+        runtime.load_onnx(node_id, session, config)
+    })
 }
 
 #[tauri::command]
 pub fn native_onnx_unload_model(
     node_id: String,
-    state: State<'_, NativeOnnxState>,
+    state: State<'_, NativeRuntimeState>,
 ) -> Result<(), String> {
-    state
-        .sessions
-        .lock()
-        .map_err(|_| "Native ONNX session lock is poisoned".to_owned())?
-        .remove(&node_id);
-    Ok(())
+    with_runtime(&state, |runtime| {
+        runtime.unload_onnx(&node_id);
+        Ok(())
+    })
 }
 
 fn smoke_native_onnx() -> Result<(String, f32), String> {
@@ -775,6 +910,102 @@ fn smoke_native_onnx() -> Result<(String, f32), String> {
     let backend = session.info().backend.clone();
     let output = session.run_f32(vec![7.0], vec![1])?;
     Ok((backend, output.data[0]))
+}
+
+fn smoke_native_onnx_graph(runtime: &mut NativeGpuRuntime) -> Result<bool, String> {
+    let graph = r#"{
+        "nodes": [
+            {
+                "id": "image", "type": "input", "position": {"x": 0.0, "y": 0.0},
+                "data": {
+                    "type": "input", "label": "Image", "shaderCode": "", "inputs": [],
+                    "outputs": [{"id": "image_out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                    "uniforms": {}, "inputMode": "image", "inputDataType": "sampler2D",
+                    "imageWidth": 2, "imageHeight": 2
+                }
+            },
+            {
+                "id": "onnx", "type": "onnx", "position": {"x": 1.0, "y": 0.0},
+                "data": {
+                    "type": "onnx", "label": "Image identity", "shaderCode": "",
+                    "inputs": [{"id": "onnx_in", "label": "image", "dataType": "sampler2D", "direction": "input"}],
+                    "outputs": [{"id": "onnx_out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                    "uniforms": {}, "onnxCatalogId": "image-identity"
+                }
+            },
+            {
+                "id": "renderer", "type": "renderer", "position": {"x": 2.0, "y": 0.0},
+                "data": {
+                    "type": "renderer", "label": "Output", "shaderCode": "",
+                    "inputs": [{"id": "renderer_in", "label": "inputImage", "dataType": "sampler2D", "direction": "input"}],
+                    "outputs": [], "uniforms": {}
+                }
+            }
+        ],
+        "edges": [
+            {"id": "e1", "source": "image", "sourceHandle": "image_out", "target": "onnx", "targetHandle": "onnx_in"},
+            {"id": "e2", "source": "onnx", "sourceHandle": "onnx_out", "target": "renderer", "targetHandle": "renderer_in"}
+        ]
+    }"#;
+    runtime.set_graph(graph)?;
+    let pixels = [
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+    ];
+    runtime.upload_image("image", &pixels, 2, 2)?;
+    let session = open_quartz::onnx::OnnxSession::from_memory(include_bytes!(
+        "../../crates/open_quartz/tests/data/image_identity.onnx"
+    ))?;
+    runtime.load_onnx(
+        "onnx".to_owned(),
+        session,
+        NativeOnnxConfig {
+            model_id: "image-identity".to_owned(),
+            task: open_quartz::onnx::OnnxTask::Generic,
+            target_size: 2,
+            score_threshold: 0.25,
+            iou_threshold: 0.45,
+        },
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while runtime.executor.output_texture("onnx").is_none() && Instant::now() < deadline {
+        runtime.render_next()?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let readback = runtime.read_output("renderer")?;
+    let events = runtime.take_output_events();
+    Ok(readback.get(8..) == Some(pixels.as_slice())
+        && events
+            .iter()
+            .any(|event| event.node_id == "onnx" && event.backend == "cpu"))
+}
+
+fn smoke_native_preview_latency(
+    state: &NativeRuntimeState,
+    image_graph: &str,
+) -> Result<f64, String> {
+    let graph = image_graph
+        .replace(
+            "\"imageWidth\": 2, \"imageHeight\": 2",
+            "\"imageWidth\": 1920, \"imageHeight\": 1080",
+        )
+        .replace(
+            "\"width\": 2, \"height\": 2",
+            "\"width\": 1920, \"height\": 1080",
+        );
+    with_runtime(state, |runtime| {
+        runtime.set_graph(&graph)?;
+        let pixels = vec![255; 1920 * 1080 * 4];
+        runtime.upload_image("image", &pixels, 1920, 1080)?;
+        runtime.render_next()?;
+        Ok(())
+    })?;
+    let started = Instant::now();
+    let preview = read_preview_payload(state, "renderer", 960)?;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if preview.get(..8) != Some([192, 3, 0, 0, 28, 2, 0, 0].as_slice()) {
+        return Err("Native 1080p preview did not scale to 960x540".to_owned());
+    }
+    Ok(elapsed_ms)
 }
 
 fn smoke_native_video(runtime: &mut NativeGpuRuntime, image_graph: &str) -> Result<bool, String> {
@@ -884,7 +1115,7 @@ pub fn maybe_start_smoke(app: &AppHandle) {
         }"#;
         let result = async {
             let info = initialize_runtime(&app, &state).await?;
-            let (frame, readback_ok) = with_runtime(&state, |runtime| {
+            let (frame, mut readback_ok) = with_runtime(&state, |runtime| {
                 runtime.set_graph(graph)?;
                 let pixels = [
                     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
@@ -894,29 +1125,50 @@ pub fn maybe_start_smoke(app: &AppHandle) {
                 let readback = runtime.read_output("renderer")?;
                 Ok((frame, readback.get(8..) == Some(pixels.as_slice())))
             })?;
+            let preview = read_preview_payload(&state, "renderer", 1)?;
+            readback_ok &= preview.len() == 12 && preview[..8] == [1, 0, 0, 0, 1, 0, 0, 0];
+            let preview_ms = smoke_native_preview_latency(&state, graph)?;
             let video_ok = with_runtime(&state, |runtime| smoke_native_video(runtime, graph))?;
+            let onnx_graph_ok = with_runtime(&state, smoke_native_onnx_graph)?;
             let onnx = smoke_native_onnx()?;
-            Ok::<_, String>((info, frame, onnx, readback_ok, video_ok))
+            Ok::<_, String>((
+                info,
+                frame,
+                onnx,
+                readback_ok,
+                video_ok,
+                onnx_graph_ok,
+                preview_ms,
+            ))
         }
         .await;
         match result {
-            Ok((info, frame, (onnx_backend, onnx_output), readback_ok, video_ok)) => {
-                if !readback_ok || !video_ok {
+            Ok((
+                info,
+                frame,
+                (onnx_backend, onnx_output),
+                readback_ok,
+                video_ok,
+                onnx_graph_ok,
+                preview_ms,
+            )) => {
+                if !readback_ok || !video_ok || !onnx_graph_ok {
                     eprintln!(
-                        "NATIVE_GPU_SMOKE_ERROR resource mismatch image={readback_ok} video={video_ok}"
+                        "NATIVE_GPU_SMOKE_ERROR resource mismatch image={readback_ok} video={video_ok} onnx_graph={onnx_graph_ok}"
                     );
                     let _ = close_runtime(&state);
                     app.exit(1);
                     return;
                 }
                 println!(
-                    "NATIVE_GPU_SMOKE_OK adapter={} backend={} frame={} output={} size={}x{} image_readback=true video_readback=true onnx={} onnx_output={}",
+                    "NATIVE_GPU_SMOKE_OK adapter={} backend={} frame={} output={} size={}x{} image_readback=true video_readback=true onnx_graph=true preview_1080p_ms={:.2} onnx={} onnx_output={}",
                     info.adapter_name,
                     info.backend,
                     frame.frame,
                     frame.output_node_id,
                     frame.width,
                     frame.height,
+                    preview_ms,
                     onnx_backend,
                     onnx_output
                 );
@@ -961,16 +1213,21 @@ fn start_worker(app: &AppHandle, state: &NativeRuntimeState) -> Result<(), Strin
                         .lock()
                         .map_err(|_| "Native runtime lock is poisoned".to_owned())
                         .and_then(|mut guard| {
-                            guard
-                                .as_mut()
-                                .ok_or_else(|| "Native GPU runtime is not initialized".to_owned())?
-                                .render_next()
+                            let runtime = guard.as_mut().ok_or_else(|| {
+                                "Native GPU runtime is not initialized".to_owned()
+                            })?;
+                            let frame = runtime.render_next()?;
+                            Ok((frame, runtime.take_output_events()))
                         });
                     match result {
-                        Ok(frame) if frame.frame % 6 == 0 => {
-                            let _ = app.emit("native-runtime-frame", frame);
+                        Ok((frame, output_events)) => {
+                            for event in output_events {
+                                let _ = app.emit("native-runtime-output", event);
+                            }
+                            if frame.width > 0 && frame.height > 0 {
+                                let _ = app.emit("native-runtime-frame", frame);
+                            }
                         }
-                        Ok(_) => {}
                         Err(error) => {
                             playing.store(false, Ordering::Release);
                             let _ = app.emit("native-runtime-error", error);

@@ -33,6 +33,14 @@ pub struct NativeVideoInfo {
     pub decoder: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVideoMetrics {
+    pub decoded_frames: u64,
+    pub uploaded_frames: u64,
+    pub cpu_copy_bytes: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeVideoDevice {
     pub id: String,
@@ -51,6 +59,8 @@ pub struct NativeVideoSource {
     slot: Arc<Mutex<FrameSlot>>,
     alive: Arc<AtomicBool>,
     decoded_frames: Arc<AtomicU64>,
+    uploaded_frames: u64,
+    cpu_copy_bytes: u64,
     child: Option<Child>,
     reader: Option<JoinHandle<()>>,
     position_seconds: f64,
@@ -76,6 +86,8 @@ impl NativeVideoSource {
             })),
             alive: Arc::new(AtomicBool::new(false)),
             decoded_frames: Arc::new(AtomicU64::new(0)),
+            uploaded_frames: 0,
+            cpu_copy_bytes: 0,
             child: None,
             reader: None,
             position_seconds: 0.0,
@@ -103,7 +115,17 @@ impl NativeVideoSource {
         }
         upload(&slot.rgba, self.info.width, self.info.height)?;
         self.uploaded_generation = slot.generation;
+        self.uploaded_frames = self.uploaded_frames.saturating_add(1);
+        self.cpu_copy_bytes = self.cpu_copy_bytes.saturating_add(slot.rgba.len() as u64);
         Ok(true)
+    }
+
+    pub fn metrics(&self) -> NativeVideoMetrics {
+        NativeVideoMetrics {
+            decoded_frames: self.decoded_frames.load(Ordering::Acquire),
+            uploaded_frames: self.uploaded_frames,
+            cpu_copy_bytes: self.cpu_copy_bytes,
+        }
     }
 
     pub fn pause(&mut self) {
@@ -453,6 +475,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(frames >= 2, "decoder must produce multiple complete frames");
+        let metrics = source.metrics();
+        assert!(metrics.decoded_frames >= metrics.uploaded_frames);
+        assert!(metrics.cpu_copy_bytes >= metrics.uploaded_frames * 16 * 16 * 4);
         let pixel = first_pixel.expect("decoder must produce a frame");
         assert!(pixel[0] > 240 && pixel[1] < 16 && pixel[2] < 16 && pixel[3] == 255);
         drop(source);

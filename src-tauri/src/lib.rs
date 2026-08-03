@@ -152,7 +152,6 @@ pub fn run() {
     configure_ort_runtime();
     tauri::Builder::default()
         .manage(native_runtime::NativeRuntimeState::default())
-        .manage(native_runtime::NativeOnnxState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             download_model,
@@ -163,8 +162,10 @@ pub fn run() {
             native_runtime::native_gpu_upload_image,
             native_runtime::native_gpu_remove_texture,
             native_runtime::native_gpu_read_output,
+            native_runtime::native_gpu_read_preview,
             native_runtime::native_gpu_attach_video,
             native_runtime::native_gpu_detach_video,
+            native_runtime::native_gpu_video_metrics,
             native_runtime::native_video_devices,
             native_runtime::native_gpu_play,
             native_runtime::native_gpu_pause,

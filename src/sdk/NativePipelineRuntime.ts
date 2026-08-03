@@ -12,6 +12,8 @@ export interface NativeRuntimeInfo {
   nativeOnnxDirectMl: boolean;
   sharedOnnxWgpuDevice: boolean;
   nativeVideo: boolean;
+  videoDataPath: 'cpu-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
+  tensorDataPath: 'cpu-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
 }
 
 export interface NativeOnnxCapabilities {
