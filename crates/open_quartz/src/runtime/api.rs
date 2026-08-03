@@ -240,6 +240,15 @@ impl Runtime {
         self.outputs.unsubscribe(subscription_id)
     }
 
+    pub fn drain_work(&mut self) -> Result<String, SdkError> {
+        serde_json::to_string(self.engine.pending_commands()).map_err(|error| {
+            SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Cannot serialize runtime work batch",
+            )
+            .with_details(error.to_string())
+        })
+    }
     pub fn publish_output(&mut self, state: OutputState) -> Result<(), SdkError> {
         self.outputs.publish(state)
     }

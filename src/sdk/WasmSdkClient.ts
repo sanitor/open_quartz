@@ -50,6 +50,7 @@ interface RawEngineConstructor {
 interface RawRuntime {
   setGraph(graphJson: string): number;
   advance(inputJson: string): void;
+  drainWork(): string;
   subscribeOutput(subscriptionJson: string): void;
   updateOutputSubscription(subscriptionJson: string): void;
   unsubscribeOutput(subscriptionId: string): void;
@@ -170,6 +171,10 @@ export class WasmRuntimeContract {
       mouse: Array.from(input.mouse),
       resolution: Array.from(input.resolution),
     })));
+  }
+
+  drainWork<T = unknown>(): T {
+    return JSON.parse(invoke(() => this.raw.drainWork())) as T;
   }
 
   subscribeOutput(subscription: OutputSubscription): void {

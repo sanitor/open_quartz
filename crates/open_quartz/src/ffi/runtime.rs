@@ -83,6 +83,11 @@ impl RuntimeBinding {
             .expect("Output delivery batch is always serializable")
     }
 
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = drainWork))]
+    pub fn drain_work(&mut self) -> Result<String, String> {
+        self.inner.drain_work().map_err(|error| error.to_json())
+    }
+
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = pause))]
     pub fn pause(&mut self) -> Result<(), String> {
         self.inner.pause().map_err(|error| error.to_json())
