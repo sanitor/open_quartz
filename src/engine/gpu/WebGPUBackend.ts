@@ -78,7 +78,7 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 export class WebGPUBackend {
   private _device: GPUDevice | null = null;
   private _context: GPUCanvasContext | null = null;
-  private _canvas: HTMLCanvasElement;
+  private _canvas: HTMLCanvasElement | OffscreenCanvas;
   private _presentFormat: GPUTextureFormat = 'bgra8unorm';
 
   // Caches
@@ -91,7 +91,7 @@ export class WebGPUBackend {
   private blitPipeline: GPURenderPipeline | null = null;
   private blitBindGroupLayout: GPUBindGroupLayout | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
     this._canvas = canvas;
   }
 
@@ -124,7 +124,7 @@ export class WebGPUBackend {
     return this._device;
   }
 
-  get canvas(): HTMLCanvasElement {
+  get canvas(): HTMLCanvasElement | OffscreenCanvas {
     return this._canvas;
   }
 

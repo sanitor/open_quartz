@@ -25,7 +25,6 @@ export interface GraphState {
   currentTime: number;
   currentFrame: number;
   activeRendererId: string | null;
-  gpuDevice: GPUDevice | null;
 
   undoStack: HistoryEntry[];
   redoStack: HistoryEntry[];
@@ -63,13 +62,12 @@ export interface GraphState {
   setActiveRenderer: (id: string | null) => void;
   addRendererNode: (position?: { x: number; y: number }) => void;
   stop: () => void;
-  setGpuDevice: (device: GPUDevice | null) => void;
   setNodeError: (nodeId: string, error: string | null) => void;
   clearNodeErrors: () => void;
   loadGraph: (nodes: Node<ShaderNodeData>[], edges: Edge[]) => void;
   clearGraph: () => void;
-  captureScreenshot: ((rendererId: string) => string | null) | null;
-  setCaptureScreenshot: (fn: ((rendererId: string) => string | null) | null) => void;
+  captureScreenshot: ((rendererId: string) => Promise<string | null>) | null;
+  setCaptureScreenshot: (fn: ((rendererId: string) => Promise<string | null>) | null) => void;
 }
 
 type SliceSet = (fn: (state: GraphState) => void) => void;

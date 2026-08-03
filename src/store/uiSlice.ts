@@ -10,8 +10,7 @@ export function uiSlice(
     outputPreviews: {} as Record<string, string>,
     outputData: {} as Record<string, unknown>,
     nodeErrors: {} as Record<string, string>,
-    captureScreenshot: null as ((rendererId: string) => string | null) | null,
-    gpuDevice: null as GPUDevice | null,
+    captureScreenshot: null as ((rendererId: string) => Promise<string | null>) | null,
 
     setSelectedNode: (id: string | null) => set((state) => { state.selectedNodeId = id; }),
     setActiveRenderer: (id: string | null) => set((state) => { state.activeRendererId = id; }),
@@ -26,8 +25,7 @@ export function uiSlice(
       }
     }),
     clearNodeErrors: () => set((state) => { state.nodeErrors = {}; }),
-    setGpuDevice: (device: GPUDevice | null) => set((state) => { state.gpuDevice = device as never; }),
-    setCaptureScreenshot: (fn: ((rendererId: string) => string | null) | null) => set((state) => {
+    setCaptureScreenshot: (fn: ((rendererId: string) => Promise<string | null>) | null) => set((state) => {
       state.captureScreenshot = fn as never;
     }),
   };

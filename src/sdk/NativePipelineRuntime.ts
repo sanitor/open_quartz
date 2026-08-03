@@ -1,4 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
+import { ONNX_CATALOG, type OnnxTask } from '../catalog/onnxCatalog';
 import type { ShaderNodeData } from '../types';
 import type { EngineEvent } from './contract';
 
@@ -6,7 +7,7 @@ export interface NativeRuntimeInfo {
   adapterName: string;
   backend: string;
   deviceType: string;
-  surfaceFormat: string;
+  outputMode: 'embedded-readback';
   nativeOnnxCpu: boolean;
   nativeOnnxDirectMl: boolean;
   sharedOnnxWgpuDevice: boolean;
@@ -44,11 +45,24 @@ export interface NativeOutputImage {
   height: number;
 }
 
+export interface NativeOutputEvent {
+  nodeId: string;
+  width: number;
+  height: number;
+  backend: 'cpu' | 'directml' | 'directml+cpu';
+  data?: unknown;
+}
+
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
+  onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
+  getRendererPreviewMaxDimension?: (nodeId: string) => number;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
+  onOutputData?: (nodeId: string, data: unknown) => void;
+  onBackendDetected?: (nodeId: string, backend: 'native') => void;
+  onNativeBackendDetected?: (nodeId: string, backend: NativeOutputEvent['backend']) => void;
 }
 
 export type NativeInvokeArgs = Record<string, unknown> | number[] | ArrayBuffer | Uint8Array;
@@ -87,11 +101,15 @@ export class NativePipelineRuntime {
   private readonly callbacks: NativeRuntimeCallbacks;
   private readonly imageResources = new Map<string, string>();
   private readonly videoResources = new Map<string, string>();
+  private readonly onnxResources = new Map<string, string>();
   private unlisten: Array<() => void> = [];
   private initialized = false;
   private closed = false;
   private previewNodeId: string | null = null;
+  private lastRendererNodeId: string | null = null;
   private previewPending = false;
+  private rendererReadbackPending = false;
+
 
   constructor(
     callbacks: NativeRuntimeCallbacks = {},
@@ -103,7 +121,7 @@ export class NativePipelineRuntime {
     this.bridgeLoader = bridgeLoader;
   }
 
-  async initialize(): Promise<NativeRuntimeInfo> {
+  async initialize(_canvas?: HTMLCanvasElement): Promise<NativeRuntimeInfo> {
     if (this.closed) throw new Error('Native pipeline runtime is closed');
     if (this.initialized) throw new Error('Native pipeline runtime is already initialized');
     const bridge = await this.getBridge();
@@ -115,10 +133,19 @@ export class NativePipelineRuntime {
           payload.width,
           payload.height,
         );
-        this.schedulePreviewReadback();
+        this.lastRendererNodeId = payload.outputNodeId;
+        this.scheduleRendererReadback(payload.outputNodeId);
+        if (this.previewNodeId !== payload.outputNodeId) this.schedulePreviewReadback();
       }),
       bridge.listen<string>('native-runtime-error', ({ payload }) => {
         this.callbacks.onError?.(payload);
+      }),
+      bridge.listen<NativeOutputEvent>('native-runtime-output', ({ payload }) => {
+        this.callbacks.onOutputSize?.(payload.nodeId, payload.width, payload.height);
+        if (payload.data !== undefined) this.callbacks.onOutputData?.(payload.nodeId, payload.data);
+        this.callbacks.onBackendDetected?.(payload.nodeId, 'native');
+        this.callbacks.onNativeBackendDetected?.(payload.nodeId, payload.backend);
+        if (payload.nodeId === this.previewNodeId) this.schedulePreviewReadback();
       }),
     ]);
     try {
@@ -137,6 +164,7 @@ export class NativePipelineRuntime {
     });
     await this.syncVideoResources(nodes);
     await this.syncImageResources(nodes);
+    await this.syncOnnxResources(nodes);
     return revision;
   }
 
@@ -209,23 +237,23 @@ export class NativePipelineRuntime {
   }
 
   async listVideoDevices(): Promise<NativeVideoDevice[]> {
-    return this.invoke<NativeVideoDevice[]>('native_video_devices');
+    const bridge = await this.getBridge();
+    return await bridge.invoke<NativeVideoDevice[]>('native_video_devices');
   }
 
   async readOutput(nodeId: string): Promise<NativeOutputImage> {
     const response = await this.invoke<ArrayBuffer | Uint8Array>('native_gpu_read_output', {
       nodeId,
     });
-    const bytes = response instanceof Uint8Array ? response : new Uint8Array(response);
-    if (bytes.byteLength < 8) throw new Error('Native output payload is missing its header');
-    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const width = header.getUint32(0, true);
-    const height = header.getUint32(4, true);
-    const expected = 8 + width * height * 4;
-    if (bytes.byteLength !== expected) {
-      throw new Error(`Native output payload has ${bytes.byteLength} bytes; expected ${expected}`);
-    }
-    return { rgba: bytes.slice(8), width, height };
+    return decodeOutputImage(response);
+  }
+
+  async readPreview(nodeId: string, maxDimension = 960): Promise<NativeOutputImage> {
+    const response = await this.invoke<ArrayBuffer | Uint8Array>('native_gpu_read_preview', {
+      nodeId,
+      maxDimension,
+    });
+    return decodeOutputImage(response);
   }
 
   async captureScreenshot(nodeId: string): Promise<string> {
@@ -234,7 +262,13 @@ export class NativePipelineRuntime {
 
   setPreviewNode(nodeId: string | null): void {
     this.previewNodeId = nodeId;
-    this.schedulePreviewReadback();
+  }
+
+  requestPreviewRefresh(): void {
+    if (this.lastRendererNodeId) this.scheduleRendererReadback(this.lastRendererNodeId);
+    if (this.previewNodeId && this.previewNodeId !== this.lastRendererNodeId) {
+      this.schedulePreviewReadback();
+    }
   }
 
   async onnxCapabilities(): Promise<NativeOnnxCapabilities> {
@@ -244,12 +278,26 @@ export class NativePipelineRuntime {
   async loadOnnxModel(
     nodeId: string,
     modelId: string,
-    preferDirectMl = true,
+    task: OnnxTask,
+    options: {
+      modelPath?: string;
+      targetSize?: number;
+      scoreThreshold?: number;
+      iouThreshold?: number;
+      preferDirectMl?: boolean;
+    } = {},
   ): Promise<NativeOnnxSessionInfo> {
     return await this.invoke<NativeOnnxSessionInfo>('native_onnx_load_model', {
       nodeId,
       modelId,
-      preferDirectMl,
+      options: {
+        modelPath: options.modelPath,
+        task,
+        targetSize: options.targetSize ?? 640,
+        scoreThreshold: options.scoreThreshold ?? 0.25,
+        iouThreshold: options.iouThreshold ?? 0.45,
+        preferDirectMl: options.preferDirectMl ?? true,
+      },
     });
   }
 
@@ -275,9 +323,10 @@ export class NativePipelineRuntime {
       }
     } finally {
       this.initialized = false;
-      this.previewNodeId = null;
+      this.lastRendererNodeId = null;
       this.imageResources.clear();
       this.videoResources.clear();
+      this.onnxResources.clear();
       this.releaseListeners();
     }
   }
@@ -339,6 +388,70 @@ export class NativePipelineRuntime {
     }
   }
 
+  private async syncOnnxResources(nodes: Node<ShaderNodeData>[]): Promise<void> {
+    const wanted = new Set<string>();
+    for (const node of nodes) {
+      if (node.data.type !== 'onnx') continue;
+      const catalogId = node.data.onnxCatalogId ?? node.data.onnxModelId;
+      const modelId = node.data.onnxModelId ?? catalogId;
+      if (!modelId) continue;
+      const catalog = catalogId ? ONNX_CATALOG[catalogId] : undefined;
+      const task = catalog?.task ?? 'generic';
+      const params = node.data.onnxParams ?? {};
+      const targetSize = Number(params.targetSize ?? node.data.onnxTargetSize ?? 640);
+      const scoreThreshold = Number(params.scoreThreshold ?? node.data.onnxScoreThreshold ?? 0.25);
+      const iouThreshold = Number(params.iouThreshold ?? node.data.onnxIouThreshold ?? 0.45);
+      const modelPath = node.data.onnxCustomPath;
+      const resourceKey = [modelId, modelPath, task, targetSize, scoreThreshold, iouThreshold].join('|');
+      wanted.add(node.id);
+      if (this.onnxResources.get(node.id) === resourceKey) continue;
+      if (catalog && !modelPath) {
+        await this.invoke<string>('download_model', {
+          modelId,
+          url: catalog.downloadUrl,
+          expectedSize: catalog.fileSize,
+        });
+      }
+      const info = await this.loadOnnxModel(node.id, modelId, task, {
+        modelPath,
+        targetSize,
+        scoreThreshold,
+        iouThreshold,
+      });
+      this.onnxResources.set(node.id, resourceKey);
+      this.callbacks.onBackendDetected?.(node.id, 'native');
+      this.callbacks.onNativeBackendDetected?.(node.id, info.backend);
+    }
+    for (const nodeId of Array.from(this.onnxResources.keys())) {
+      if (wanted.has(nodeId)) continue;
+      await this.unloadOnnxModel(nodeId);
+      this.onnxResources.delete(nodeId);
+    }
+  }
+
+  private scheduleRendererReadback(nodeId: string): void {
+    if (this.rendererReadbackPending || !this.initialized) return;
+    this.rendererReadbackPending = true;
+    const maxDimension = Math.max(
+      1,
+      Math.round(this.callbacks.getRendererPreviewMaxDimension?.(nodeId) ?? 512),
+    );
+    void this.readPreview(nodeId, maxDimension)
+      .then((frame) => {
+        this.callbacks.onRendererFrame?.(nodeId, frame);
+        if (this.previewNodeId === nodeId) {
+          this.callbacks.onOutputSize?.(nodeId, frame.width, frame.height);
+          this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(frame));
+        }
+      })
+      .catch((error: unknown) => {
+        this.callbacks.onError?.(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        this.rendererReadbackPending = false;
+      });
+  }
+
   private schedulePreviewReadback(): void {
     if (!this.previewNodeId || this.previewPending || !this.initialized) return;
     this.previewPending = true;
@@ -354,7 +467,7 @@ export class NativePipelineRuntime {
   private async refreshPreview(): Promise<void> {
     const nodeId = this.previewNodeId;
     if (!nodeId) return;
-    const output = await this.readOutput(nodeId);
+    const output = await this.readPreview(nodeId, 512);
     if (this.previewNodeId !== nodeId) return;
     this.callbacks.onOutputSize?.(nodeId, output.width, output.height);
     this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(output));
@@ -438,6 +551,19 @@ function decodeRawRgba(
     throw new Error(`Raw RGBA byte length ${rgba.byteLength} does not match ${width}x${height}`);
   }
   return { rgba, width, height };
+}
+
+function decodeOutputImage(response: ArrayBuffer | Uint8Array): NativeOutputImage {
+  const bytes = response instanceof Uint8Array ? response : new Uint8Array(response);
+  if (bytes.byteLength < 8) throw new Error('Native output payload is missing its header');
+  const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = header.getUint32(0, true);
+  const height = header.getUint32(4, true);
+  const expected = 8 + width * height * 4;
+  if (bytes.byteLength !== expected) {
+    throw new Error(`Native output payload has ${bytes.byteLength} bytes; expected ${expected}`);
+  }
+  return { rgba: bytes.slice(8), width, height };
 }
 
 function outputImageToDataUrl(output: NativeOutputImage): string {

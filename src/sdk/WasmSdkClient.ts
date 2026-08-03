@@ -13,6 +13,7 @@ import type {
   EngineEvent,
   EngineState,
   OutputDeliveryBatch,
+  FrameStamp,
   OutputSubscription,
   RuntimePublicSurface,
   SdkCapabilities,
@@ -67,6 +68,14 @@ interface RawRuntime {
   resume(nowNs: number): void;
   stop(): void;
   dispose(): void;
+}
+
+interface RawClockState {
+  epoch: number;
+  timelineNs: number;
+  previousTimelineNs: number;
+  frame: number;
+  nextDeadlineNs: number;
 }
 
 interface RawRuntimeConstructor {
@@ -160,24 +169,35 @@ export class WasmSdkClient {
 
 export class WasmRuntimeContract {
   private readonly raw: RawRuntime;
+  private clock: RawClockState = {
+    epoch: 0, timelineNs: 0, previousTimelineNs: 0, frame: 0, nextDeadlineNs: 0,
+  };
 
   constructor(raw: RawRuntime) {
     this.raw = raw;
   }
 
+  get lastClock(): RawClockState { return this.clock; }
   setGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): number {
     return invoke(() => this.raw.setGraph(JSON.stringify({ nodes, edges })));
   }
 
-  advance(input: FrameInput): void {
-    invoke(() => this.raw.advance(JSON.stringify({
-      nowNs: Math.round((performance.timeOrigin + input.time * 1000) * 1_000_000),
+
+  play(nowNs: number): void { invoke(() => this.raw.play(nowNs)); }
+  advance(input: FrameInput): FrameStamp {
+    this.clock = JSON.parse(invoke(() => this.raw.advance(JSON.stringify({
+      nowNs: Math.round(input.time * 1_000_000_000),
       date: Array.from(input.date),
       mouse: Array.from(input.mouse),
       resolution: Array.from(input.resolution),
-    })));
+    }))));
+    return {
+      epoch: this.clock.epoch,
+      frame: this.clock.frame,
+      timelineNs: this.clock.timelineNs,
+      deadlineNs: this.clock.nextDeadlineNs,
+    };
   }
-
   drainWork<T = unknown>(): T {
     return JSON.parse(invoke(() => this.raw.drainWork())) as T;
   }

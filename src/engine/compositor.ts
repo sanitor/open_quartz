@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import { WebGPUExecutionEngine, type WebGPUExecutionPlan } from './executionEngine';
+import { WebGPUExecutionEngine, type RuntimeWorkCommand, type WebGPUExecutionPlan } from './executionEngine';
 
 export interface FrameInputs {
   time: number;
@@ -21,7 +21,7 @@ export class Compositor {
   }
 
   /** Async init — must be called before prepare/render. */
-  async init(canvas: HTMLCanvasElement): Promise<void> {
+  async init(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
     await this.engine.init(canvas);
   }
 
@@ -43,9 +43,9 @@ export class Compositor {
     return this.plan?.pendingTextures ?? [];
   }
 
-  render(inputs: FrameInputs): void {
+  render(inputs: FrameInputs, commands?: readonly RuntimeWorkCommand[]): void {
     if (!this.plan) return;
-    this.engine.runFrame(this.plan, inputs);
+    this.engine.runFrame(this.plan, inputs, commands);
   }
 
   async readOutputs(onOutput: (nodeId: string, dataUrl: string) => void): Promise<void> {
@@ -67,12 +67,15 @@ export class Compositor {
     });
   }
 
-  async captureScreenshot(_rendererNodeId: string): Promise<string | null> {
-    // TODO: implement proper screenshot capture via WebGPU readback
-    return null;
+  async captureScreenshot(rendererNodeId: string): Promise<string | null> {
+    let screenshot: string | null = null;
+    await this.readNodeOutput(rendererNodeId, (_nodeId, dataUrl) => {
+      screenshot = dataUrl;
+    });
+    return screenshot;
   }
 
-  getCanvas(): HTMLCanvasElement | null {
+  getCanvas(): HTMLCanvasElement | OffscreenCanvas | null {
     return this.engine.canvas;
   }
 

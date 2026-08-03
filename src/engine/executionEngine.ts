@@ -18,7 +18,6 @@ import { topologicalSort } from './graphExecutor';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { DEFAULT_ONNX_MODEL_ID as _DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
 import { modelManager } from '../store/helpers';
-import { MATH_OPS } from '../catalog/mathOps';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage, runDetection, runSegmentation } from './onnx/inference';
 import { COCO_CLASSES } from './onnx/yoloDetectionPostprocess';
@@ -60,6 +59,16 @@ export interface WebGPUExecutionPlan {
   pendingTextures: Promise<void>[];
 }
 
+export interface RuntimeWorkCommand {
+  nodeId: string;
+  kind: string;
+  outputPortId?: string;
+  uniforms: Record<string, number[]>;
+  feedbackReadIndex?: number;
+  feedbackWriteIndex?: number;
+  clearFeedback: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Backend interface — enables testing without a real GPU
 // ---------------------------------------------------------------------------
@@ -67,7 +76,7 @@ export interface WebGPUExecutionPlan {
 /** The subset of WebGPUBackend that the engine depends on. */
 export interface BackendInterface {
   readonly device: GPUDevice;
-  readonly canvas: HTMLCanvasElement;
+  readonly canvas: HTMLCanvasElement | OffscreenCanvas;
   init(): Promise<void>;
   setSize(width: number, height: number): void;
   createTarget(id: string, width: number, height: number, float?: boolean): RenderTarget;
@@ -104,7 +113,7 @@ export class WebGPUExecutionEngine {
     onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void;
   } = {};
 
-  async init(canvas: HTMLCanvasElement): Promise<void> {
+  async init(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
     this.backend = new WebGPUBackend(canvas);
     await this.backend.init();
   }
@@ -118,7 +127,7 @@ export class WebGPUExecutionEngine {
     return this.backend?.device ?? null;
   }
 
-  get canvas(): HTMLCanvasElement | null {
+  get canvas(): HTMLCanvasElement | OffscreenCanvas | null {
     return this.backend?.canvas ?? null;
   }
 
@@ -373,7 +382,7 @@ export class WebGPUExecutionEngine {
   // Run frame
   // -----------------------------------------------------------------------
 
-  runFrame(plan: WebGPUExecutionPlan, builtins: FrameInputs): void {
+  runFrame(plan: WebGPUExecutionPlan, builtins: FrameInputs, commands?: readonly RuntimeWorkCommand[]): void {
     if (!this.backend) return;
     const device = this.backend.device;
 
@@ -397,43 +406,18 @@ export class WebGPUExecutionEngine {
       }
     }
 
-    for (const nodeId of plan.sortedIds) {
+    const work: readonly RuntimeWorkCommand[] = commands ?? plan.sortedIds.map((nodeId) => ({
+      nodeId,
+      kind: plan.nodeMap.get(nodeId)?.data.type ?? '',
+      uniforms: {},
+      clearFeedback: false,
+    }));
+    for (const command of work) {
+      const nodeId = command.nodeId;
       const node = plan.nodeMap.get(nodeId);
       if (!node) continue;
-
-      // Math CPU eval
-      if (node.data.type === 'math') {
-        const op = MATH_OPS[node.data.mathOp ?? 'add'];
-        if (!op) continue;
-        const upstreamMap = plan.upstreamSamplerBindings.get(nodeId);
-        const inputs: number[] = [];
-        const portLabels = ['a', 'b', 'c'];
-        for (let i = 0; i < op.inputCount; i++) {
-          const label = portLabels[i];
-          const sourceId = upstreamMap?.get(label);
-          if (sourceId) {
-            const mathVal = plan.mathValues.get(sourceId);
-            if (mathVal !== undefined) { inputs.push(Number(mathVal)); continue; }
-            const srcNode = plan.nodeMap.get(sourceId);
-            if (srcNode?.data.type === 'input' && srcNode.data.inputMode === 'system') {
-              switch (srcNode.data.systemSource) {
-                case 'time': inputs.push(builtins.time); continue;
-                case 'timeDelta': inputs.push(builtins.delta); continue;
-                case 'frame': inputs.push(builtins.frame); continue;
-                default: break;
-              }
-            }
-            if (srcNode?.data.type === 'input') {
-              const srcLabel = srcNode.data.inputs[0]?.label;
-              inputs.push(Number(srcNode.data.uniforms?.[srcLabel ?? '']) || 0);
-              continue;
-            }
-          }
-          inputs.push(Number(node.data.uniforms?.[label]) || 0);
-        }
-        plan.mathValues.set(nodeId, op.compute(inputs));
-        continue;
-      }
+      // Scalar evaluation is Rust-owned and arrives in downstream command uniforms.
+      if (command.kind === 'math') continue;
 
       if (node.data.type === 'renderer') continue;
 
@@ -465,16 +449,13 @@ export class WebGPUExecutionEngine {
 
       if (isFeedback) {
         const fbTargets = plan.feedbackTargets.get(nodeId)!;
-        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
-        const fbWriteIdx = 1 - fbReadIdx;
-
-        if (plan.feedbackFirstFrame.has(nodeId)) {
+        const fbReadIdx = command.feedbackReadIndex ?? 0;
+        const fbWriteIdx = command.feedbackWriteIndex ?? (1 - fbReadIdx);
+        if (command.clearFeedback) {
           const clearColor = node.data.feedbackClearColor as [number, number, number, number] | undefined;
           this.backend.clearTarget(fbTargets[0], clearColor);
           this.backend.clearTarget(fbTargets[1], clearColor);
-          plan.feedbackFirstFrame.delete(nodeId);
         }
-
         renderTarget = fbTargets[fbWriteIdx];
       } else {
         const target = plan.targets.get(nodeId);
@@ -523,7 +504,7 @@ export class WebGPUExecutionEngine {
       // Feedback previousFrame binding
       if (isFeedback && compiled.previousFrameBinding !== null) {
         const fbTargets = plan.feedbackTargets.get(nodeId)!;
-        const fbReadIdx = plan.feedbackReadIndex.get(nodeId) ?? 0;
+        const fbReadIdx = command.feedbackReadIndex ?? 0;
         entries.push({ binding: compiled.previousFrameBinding, resource: fbTargets[fbReadIdx].view });
         entries.push({ binding: compiled.previousFrameBinding + 1, resource: fbTargets[fbReadIdx].sampler });
       }
@@ -537,7 +518,10 @@ export class WebGPUExecutionEngine {
       for (const [uniformName, bindingIdx] of compiled.uniformBindings) {
         // Resolve value: builtins → upstream scalars → self uniforms → 0
         let value: number | number[];
-        if (builtinSet?.has(uniformName)) {
+        if (command.uniforms[uniformName]) {
+          const resolved = command.uniforms[uniformName];
+          value = resolved.length === 1 ? resolved[0] : resolved;
+        } else if (builtinSet?.has(uniformName)) {
           switch (uniformName) {
             case 'iTime': value = builtins.time; break;
             case 'iTimeDelta': value = builtins.delta; break;
@@ -552,11 +536,7 @@ export class WebGPUExecutionEngine {
             default: value = 0; break;
           }
         } else if (scalarVals?.has(uniformName)) {
-          const upstream = scalarVals.get(uniformName);
-          // Check if the upstream is a math node whose value we already computed
-          const srcNodeId = plan.scalarUpstream.get(nodeId)?.get(uniformName);
-          const mathVal = srcNodeId ? plan.mathValues.get(srcNodeId) : undefined;
-          value = mathVal !== undefined ? Number(mathVal) : Number(upstream) || 0;
+          value = Number(scalarVals.get(uniformName)) || 0;
         } else {
           const raw = selfUnis[uniformName];
           value = Array.isArray(raw) ? raw.map(Number) : (Number(raw) || 0);
@@ -584,12 +564,6 @@ export class WebGPUExecutionEngine {
 
       // Destroy per-frame uniform buffers (data already submitted to queue)
       for (const buf of uniformBuffers) buf.destroy();
-
-      // Swap feedback
-      if (isFeedback) {
-        const current = plan.feedbackReadIndex.get(nodeId) ?? 0;
-        plan.feedbackReadIndex.set(nodeId, 1 - current);
-      }
     }
   }
 

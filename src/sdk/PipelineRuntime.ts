@@ -1,6 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import type { EngineEvent, EngineState, SdkCapabilities } from './contract';
+import type { EngineEvent, EngineState } from './contract';
 
 export interface FrameInput {
   time: number;
@@ -11,11 +11,6 @@ export interface FrameInput {
   resolution: Float32Array;
 }
 
-export interface ModelInfo {
-  inputNames: readonly string[];
-  outputNames: readonly string[];
-  backend: 'webgpu' | 'wasm' | 'native';
-}
 
 export interface StatefulEngineCore {
   readonly state: EngineState;
@@ -34,13 +29,39 @@ export interface StatefulEngineCore {
   dispose(): void;
 }
 
-/** Target runtime contract. Implementations become production-ready only when gpuExecution is true. */
-export interface PipelineRuntime extends StatefulEngineCore {
-  readonly capabilities: SdkCapabilities;
-  initialize(canvas: HTMLCanvasElement): Promise<void>;
+
+export interface RuntimeFrame {
+  frame: number;
+  time: number;
+  fps: number;
+}
+
+export interface RuntimeVideoDevice {
+  id: string;
+  label: string;
+}
+
+export interface PipelineRuntimeCallbacks {
+  onFrame?: (frame: RuntimeFrame) => void;
+  onOutput?: (nodeId: string, dataUrl: string) => void;
+  onNodeError?: (nodeId: string | null, error: string) => void;
+  onOutputSize?: (nodeId: string, width: number, height: number) => void;
+  onOutputData?: (nodeId: string, data: unknown) => void;
+  onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm' | 'native') => void;
+}
+
+/** Host-level runtime contract used by PipelineService for browser/native selection. */
+export interface PipelineHostRuntime {
+  readonly frameScheduling: 'client' | 'runtime';
+  initialize(canvas: HTMLCanvasElement): Promise<unknown>;
+  play(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void>;
+  updateGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<unknown> | void;
+  pause(): Promise<void> | void;
+  resume(): Promise<void> | void;
+  stop(): Promise<void> | void;
   setPreviewNode(nodeId: string | null): void;
-  uploadImage(nodeId: string, rgba: Uint8Array, width: number, height: number): void;
-  attachVideo(nodeId: string, video: HTMLVideoElement): void;
-  loadOnnxModel(nodeId: string, model: Uint8Array): Promise<ModelInfo>;
-  readOutput(nodeId: string): Promise<Uint8Array>;
+  requestPreviewRefresh?(): void;
+  captureScreenshot(nodeId: string): Promise<string | null>;
+  listVideoDevices?(): Promise<RuntimeVideoDevice[]>;
+  close(): Promise<void> | void;
 }

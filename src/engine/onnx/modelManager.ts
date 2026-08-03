@@ -36,7 +36,7 @@ function defaultState(): ModelState {
 // Tauri detection
 // ---------------------------------------------------------------------------
 
-const isTauri = '__TAURI_INTERNALS__' in window;
+const isTauri = '__TAURI_INTERNALS__' in globalThis;
 
 // ---------------------------------------------------------------------------
 // OnnxModelManager
