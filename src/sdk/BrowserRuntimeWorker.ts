@@ -11,6 +11,7 @@ let runtime: WasmRuntimeContract | null = null;
 let frameTimer: number | null = null;
 let running = false;
 let previewNodeId: string | null = null;
+let previewPending = false;
 let resolution = new Float32Array([512, 512, 1]);
 
 function post(message: BrowserWorkerResponse): void {
@@ -78,20 +79,12 @@ function runFrame(): void {
       requireCompositor().renderRendererToScreen(command.nodeId);
     }
   }
-  if (previewNodeId) {
+  if (previewNodeId && !previewPending) {
+    previewPending = true;
     void requireCompositor().readNodeOutput(previewNodeId, (nodeId, dataUrl) => {
+      previewPending = false;
       post({ type: 'output', nodeId, dataUrl });
-    });
-  }
-  for (const node of work) {
-    if (node.kind === 'renderer') {
-      const source = node.nodeId;
-      // Renderer is a presentation endpoint; its source target remains on GPU.
-      // The main-thread mirror is updated through the explicit preview delivery.
-      void requireCompositor().readNodeOutput(source, (nodeId, dataUrl) => {
-        post({ type: 'output', nodeId, dataUrl });
-      });
-    }
+    }).catch(() => { previewPending = false; });
   }
   post({
     type: 'frame',
@@ -137,6 +130,7 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
       scheduleFrame();
       return undefined;
     case 'pause':
+      previewPending = false;
       stopLoop();
       requireRuntime().pause(Math.round(performance.now() * 1_000_000));
       return undefined;
@@ -151,10 +145,10 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
       return undefined;
     case 'set-preview':
       previewNodeId = message.nodeId;
+      previewPending = false;
       return undefined;
-    case 'capture': {
+    case 'capture':
       return await requireCompositor().captureScreenshot(message.nodeId);
-    }
     case 'close':
       stopLoop();
       runtime?.dispose();
