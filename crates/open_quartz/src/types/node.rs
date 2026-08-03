@@ -75,8 +75,8 @@ pub enum OnnxStatus {
 pub enum OnnxBackend {
     Webgpu,
     Wasm,
+    Native,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoSourceType {

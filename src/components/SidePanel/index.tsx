@@ -2,13 +2,14 @@ import { useGraphStore } from '../../store/useGraphStore';
 import { ShaderEditor } from './ShaderEditor';
 import { PortInspector } from './PortInspector';
 import { OnnxPanel } from './OnnxPanel';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ImageLightbox } from '../ImageLightbox';
 import type { FramebufferFormat, TextureFilter, TextureWrap, DataType } from '../../types';
 import { generateRawPreview } from '../../utils/rawPreview';
 import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
 import { parseWgslShader } from '../../sdk/wgslParser';
 import { MENU_ICONS } from '../NodeGraph/nodes/NodeShell';
+import { listAvailableVideoDevices } from '../../services/PipelineService';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },
@@ -53,6 +54,8 @@ export function SidePanel() {
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [panelWidth, setPanelWidth] = useState(320);
+  const [videoDevices, setVideoDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [videoDeviceError, setVideoDeviceError] = useState<string | null>(null);
   const resizing = useRef(false);
   const startX = useRef(0);
   const startW = useRef(320);
@@ -75,6 +78,28 @@ export function SidePanel() {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [panelWidth]);
+
+  useEffect(() => {
+    if (data?.type !== 'input' || data.inputMode !== 'video' || data.videoSourceType !== 'camera') {
+      setVideoDevices([]);
+      setVideoDeviceError(null);
+      return;
+    }
+    let active = true;
+    setVideoDeviceError(null);
+    void listAvailableVideoDevices()
+      .then((devices) => {
+        if (!active) return;
+        setVideoDevices(devices);
+        if (!data.videoDeviceId && devices[0] && selectedNodeId) {
+          updateNodeData(selectedNodeId, { videoDeviceId: devices[0].id });
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) setVideoDeviceError(error instanceof Error ? error.message : String(error));
+      });
+    return () => { active = false; };
+  }, [data?.inputMode, data?.type, data?.videoDeviceId, data?.videoSourceType, selectedNodeId, updateNodeData]);
 
   const toggleSection = useCallback((section: string) => {
     setCollapsedSections((prev) => {
@@ -413,7 +438,10 @@ export function SidePanel() {
           </div>
           <label className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">
             <input type="checkbox" checked={data.expanded !== false}
-              onChange={(e) => updateNodeData(selectedNodeId!, { expanded: e.target.checked })} />
+              onChange={(e) => {
+                updateNodeData(selectedNodeId!, { expanded: e.target.checked });
+                requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount')));
+              }} />
             In-place preview
           </label>
         </div>
@@ -475,6 +503,18 @@ export function SidePanel() {
               <option value="camera">CAMERA</option>
             </select>
           </div>
+          {(data.videoSourceType ?? 'file') === 'camera' && (
+            <div className="mb-2">
+              <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Camera</label>
+              <select value={data.videoDeviceId ?? ''}
+                onChange={(e) => updateNodeData(selectedNodeId!, { videoDeviceId: e.target.value })}
+                className="w-full text-[12px] text-[#1d1d1f] bg-[#f5f5f7] rounded px-2 py-1 border border-[#d2d2d7] outline-none focus:border-[#007aff]">
+                {videoDevices.length === 0 && <option value="">NO CAMERA FOUND</option>}
+                {videoDevices.map((device) => <option key={device.id} value={device.id}>{device.label}</option>)}
+              </select>
+              {videoDeviceError && <div className="text-[10px] text-[#ff3b30] mt-1">{videoDeviceError}</div>}
+            </div>
+          )}
           {(data.imageWidth || data.resolvedWidth) && (data.imageHeight || data.resolvedHeight) && (
             <div className="text-[11px] text-[#86868b] mb-2">
               {(data.imageWidth ?? data.resolvedWidth)} × {(data.imageHeight ?? data.resolvedHeight)}
@@ -694,7 +734,7 @@ export function SidePanel() {
           <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center"
             onClick={() => setLightboxSrc(null)}>
             <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
-              <button onClick={(e) => { e.stopPropagation(); const capture = useGraphStore.getState().captureScreenshot; const dataUrl = capture?.(rid); if (!dataUrl) return; const a = document.createElement('a'); a.href = dataUrl; a.download = `renderer-${rid}.png`; a.click(); }}
+              <button onClick={async (e) => { e.stopPropagation(); const capture = useGraphStore.getState().captureScreenshot; const dataUrl = await capture?.(rid); if (!dataUrl) return; const a = document.createElement('a'); a.href = dataUrl; a.download = `renderer-${rid}.png`; a.click(); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">SAVE</button>
               <button onClick={(e) => { e.stopPropagation(); setLightboxSrc(null); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">CLOSE</button>

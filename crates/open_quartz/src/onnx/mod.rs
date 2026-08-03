@@ -1,3 +1,4 @@
+pub mod pipeline;
 pub mod postprocess;
 pub mod preprocess;
 pub mod session;
@@ -16,6 +17,9 @@ pub use session::{
     NativeOnnxCapabilities, NativeOnnxOptions, NativeOnnxProvider, OnnxSessionInfo, TensorOutput,
 };
 pub use types::OnnxTask;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use pipeline::{run_native_image_task, NativeOnnxImageOutput};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::native_onnx_capabilities;

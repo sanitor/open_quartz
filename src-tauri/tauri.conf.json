@@ -25,10 +25,10 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' asset:; connect-src 'self' ipc: http://ipc.localhost asset: http://localhost:* ws://localhost:*; img-src 'self' asset: data: blob:; media-src 'self' asset: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/**", "$RESOURCE/**", "$VIDEO/**", "$PICTURE/**", "$DOWNLOAD/**", "$DOCUMENT/**"]
       }
     }
   },

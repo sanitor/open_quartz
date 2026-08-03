@@ -42,6 +42,16 @@ pub struct GpuOutput<'a> {
     pub format: TextureFormat,
 }
 
+#[derive(Clone)]
+pub struct GpuOutputHandle {
+    pub texture: Arc<wgpu::Texture>,
+    pub view: Arc<wgpu::TextureView>,
+    pub sampler: Arc<wgpu::Sampler>,
+    pub width: u32,
+    pub height: u32,
+    pub format: TextureFormat,
+}
+
 struct NodeGpuResources {
     fragment_code: String,
     width: u32,
@@ -153,6 +163,33 @@ impl GpuExecutor {
             texture: texture.texture.as_ref(),
             view: texture.view.as_ref(),
             sampler: texture.sampler.as_ref(),
+            width: texture.width,
+            height: texture.height,
+            format: texture.format,
+        })
+    }
+
+    pub fn output_handle(&self, node_id: &str) -> Option<GpuOutputHandle> {
+        let resolved = self
+            .renderer_sources
+            .get(node_id)
+            .map(String::as_str)
+            .unwrap_or(node_id);
+        if let Some(resources) = self.nodes.get(resolved) {
+            let target = resources.output();
+            return Some(GpuOutputHandle {
+                texture: target.texture.clone(),
+                view: target.view.clone(),
+                sampler: resources.sampler.clone(),
+                width: target.width,
+                height: target.height,
+                format: target.format,
+            });
+        }
+        self.textures.get(resolved).map(|texture| GpuOutputHandle {
+            texture: texture.texture.clone(),
+            view: texture.view.clone(),
+            sampler: texture.sampler.clone(),
             width: texture.width,
             height: texture.height,
             format: texture.format,

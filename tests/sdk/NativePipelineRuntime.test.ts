@@ -28,7 +28,7 @@ class FakeBridge implements NativeTauriBridge {
           adapterName: 'Test Adapter',
           backend: 'Dx12',
           deviceType: 'IntegratedGpu',
-          surfaceFormat: 'Bgra8UnormSrgb',
+          outputMode: 'embedded-readback',
           nativeOnnxCpu: true,
           nativeOnnxDirectMl: true,
           sharedOnnxWgpuDevice: false,
@@ -40,7 +40,7 @@ class FakeBridge implements NativeTauriBridge {
           ? { cpu: true, directMl: true, sharedWgpuDevice: false }
           : command === 'native_onnx_load_model'
             ? { inputNames: ['images'], outputNames: ['output0'], backend: 'directml+cpu' }
-            : command === 'native_gpu_read_output'
+            : command === 'native_gpu_read_output' || command === 'native_gpu_read_preview'
               ? new Uint8Array([1, 0, 0, 0, 1, 0, 0, 0, 10, 20, 30, 255]).buffer
               : command === 'native_video_devices'
                 ? [{ id: 'camera-0', label: 'Integrated Camera' }]
@@ -73,6 +73,7 @@ describe('NativePipelineRuntime', () => {
 
     expect(info).toMatchObject({
       backend: 'Dx12',
+      outputMode: 'embedded-readback',
       nativeOnnxCpu: true,
       nativeOnnxDirectMl: true,
       sharedOnnxWgpuDevice: false,
@@ -162,7 +163,8 @@ describe('NativePipelineRuntime', () => {
     const onFrame = vi.fn();
     const onError = vi.fn();
     const onOutputSize = vi.fn();
-    const runtime = new NativePipelineRuntime({ onFrame, onError, onOutputSize }, bridge);
+    const onRendererFrame = vi.fn();
+    const runtime = new NativePipelineRuntime({ onFrame, onError, onOutputSize, onRendererFrame }, bridge);
     await runtime.initialize();
     const frame: NativeFrameRendered = {
       frame: 6,
@@ -178,6 +180,39 @@ describe('NativePipelineRuntime', () => {
     expect(onFrame).toHaveBeenCalledWith(frame);
     expect(onOutputSize).toHaveBeenCalledWith('renderer', 960, 540);
     expect(onError).toHaveBeenCalledWith('device lost');
+    await vi.waitFor(() => expect(onRendererFrame).toHaveBeenCalledWith('renderer', {
+      rgba: new Uint8Array([10, 20, 30, 255]), width: 1, height: 1,
+    }));
+    expect(bridge.calls.find(({ command }) => command === 'native_gpu_read_preview')?.args)
+      .toEqual({ nodeId: 'renderer', maxDimension: 512 });
+  });
+
+  it('forwards native ONNX pixels, data, and provider events', async () => {
+    const bridge = new FakeBridge();
+    const onOutputSize = vi.fn();
+    const onOutputData = vi.fn();
+    const onBackendDetected = vi.fn();
+    const onNativeBackendDetected = vi.fn();
+    const runtime = new NativePipelineRuntime({
+      onOutputSize,
+      onOutputData,
+      onBackendDetected,
+      onNativeBackendDetected,
+    }, bridge);
+    await runtime.initialize();
+
+    bridge.emit('native-runtime-output', {
+      nodeId: 'onnx-1',
+      width: 640,
+      height: 640,
+      data: [{ classId: 0, score: 0.9 }],
+      backend: 'directml+cpu',
+    });
+
+    expect(onOutputSize).toHaveBeenCalledWith('onnx-1', 640, 640);
+    expect(onOutputData).toHaveBeenCalledWith('onnx-1', [{ classId: 0, score: 0.9 }]);
+    expect(onBackendDetected).toHaveBeenCalledWith('onnx-1', 'native');
+    expect(onNativeBackendDetected).toHaveBeenCalledWith('onnx-1', 'directml+cpu');
   });
 
   it('uploads raw image bytes once and decodes binary output readback', async () => {
@@ -236,7 +271,7 @@ describe('NativePipelineRuntime', () => {
     });
 
     await expect(output.promise).resolves.toBe('data:image/png;base64,preview');
-    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(1);
+    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_preview')).toHaveLength(1);
   });
 
   it('validates mouse state and decodes engine events', async () => {
@@ -299,7 +334,7 @@ describe('NativePipelineRuntime', () => {
       directMl: true,
       sharedWgpuDevice: false,
     });
-    await expect(runtime.loadOnnxModel('onnx-1', 'yolov8n')).resolves.toEqual({
+    await expect(runtime.loadOnnxModel('onnx-1', 'yolov8n', 'detection')).resolves.toEqual({
       inputNames: ['images'],
       outputNames: ['output0'],
       backend: 'directml+cpu',
@@ -308,12 +343,48 @@ describe('NativePipelineRuntime', () => {
 
     expect(bridge.calls.at(-2)).toEqual({
       command: 'native_onnx_load_model',
-      args: { nodeId: 'onnx-1', modelId: 'yolov8n', preferDirectMl: true },
+      args: {
+        nodeId: 'onnx-1',
+        modelId: 'yolov8n',
+        options: {
+          modelPath: undefined, task: 'detection', targetSize: 640,
+          scoreThreshold: 0.25, iouThreshold: 0.45, preferDirectMl: true,
+        },
+      },
     });
     expect(bridge.calls.at(-1)).toEqual({
       command: 'native_onnx_unload_model',
       args: { nodeId: 'onnx-1' },
     });
+  });
+
+  it('downloads, loads, reuses, and unloads catalog ONNX resources with the graph', async () => {
+    const bridge = new FakeBridge();
+    const runtime = new NativePipelineRuntime({}, bridge);
+    await runtime.initialize();
+    const node = {
+      id: 'onnx-1',
+      type: 'onnx',
+      position: { x: 0, y: 0 },
+      data: {
+        type: 'onnx', label: 'Detector', shaderCode: '', inputs: [], outputs: [], uniforms: {},
+        onnxCatalogId: 'yolov8n', onnxModelId: 'yolov8n',
+        onnxParams: { targetSize: 320, scoreThreshold: 0.4, iouThreshold: 0.5 },
+      },
+    };
+
+    await runtime.setGraph([node] as never, []);
+    await runtime.setGraph([node] as never, []);
+    await runtime.setGraph([], []);
+
+    expect(bridge.calls.filter(({ command }) => command === 'download_model')).toHaveLength(1);
+    const loads = bridge.calls.filter(({ command }) => command === 'native_onnx_load_model');
+    expect(loads).toHaveLength(1);
+    expect(loads[0]?.args).toMatchObject({
+      nodeId: 'onnx-1', modelId: 'yolov8n',
+      options: { task: 'detection', targetSize: 320, scoreThreshold: 0.4, iouThreshold: 0.5 },
+    });
+    expect(bridge.calls.filter(({ command }) => command === 'native_onnx_unload_model')).toHaveLength(1);
   });
 
   it('closes the native window and releases listeners exactly once', async () => {
@@ -325,7 +396,7 @@ describe('NativePipelineRuntime', () => {
     await runtime.close();
 
     expect(bridge.calls.filter(({ command }) => command === 'native_gpu_close')).toHaveLength(1);
-    expect(bridge.unlisten).toHaveBeenCalledTimes(2);
+    expect(bridge.unlisten).toHaveBeenCalledTimes(3);
     await expect(runtime.renderOnce()).rejects.toThrow('not initialized');
   });
 });

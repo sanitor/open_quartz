@@ -34,6 +34,35 @@ fn native_session_runs_identity_model() {
 
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 #[test]
+fn native_image_task_roundtrips_texture_pixels() {
+    let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
+    std::env::set_var("ORT_DYLIB_PATH", runtime);
+    let mut session =
+        open_quartz::onnx::OnnxSession::from_memory(include_bytes!("data/image_identity.onnx"))
+            .unwrap();
+    let rgba = vec![
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+    ];
+    let output = open_quartz::onnx::run_native_image_task(
+        &mut session,
+        open_quartz::onnx::OnnxTask::Generic,
+        "image-identity",
+        &rgba,
+        2,
+        2,
+        2,
+        0.25,
+        0.45,
+    )
+    .unwrap();
+    assert_eq!((output.width, output.height), (2, 2));
+    assert_eq!(output.rgba, rgba);
+    assert!(output.data.is_none());
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[test]
 fn native_directml_session_runs_without_cpu_fallback() {
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");

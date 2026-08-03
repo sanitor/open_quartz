@@ -67,7 +67,7 @@ interface OnnxPanelProps {
   modelId?: string;
   source?: 'catalog' | 'custom';
   status?: string;
-  backend?: 'webgpu' | 'wasm';
+  backend?: 'webgpu' | 'wasm' | 'native';
   score?: number;
   iou?: number;
 }
@@ -159,6 +159,15 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
                 title="WebGPU not supported for this model on your GPU — running on CPU via WASM"
               >
                 CPU fallback
+              </span>
+            )}
+            {backend === 'native' && (
+              <span
+                className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ml-1"
+                style={{ color: '#007aff', backgroundColor: '#007aff18' }}
+                title="Running in the native Tauri ONNX runtime"
+              >
+                NATIVE
               </span>
             )}
           </div>

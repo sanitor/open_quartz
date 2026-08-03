@@ -54,6 +54,12 @@ export function OnnxNode({ id, data, selected }: NodeProps<OnnxNodeType>) {
         <div className="px-3 py-1 text-[9px] font-medium text-[#ff9f0a]">CPU fallback</div>
       )}
 
+      {data.onnxStatus === 'ready' && data.onnxBackend === 'native' && (
+        <div className="px-3 py-1 text-[9px] font-medium text-[#007aff]">
+          NATIVE {data.onnxNativeBackend?.toUpperCase() ?? 'ONNX'}
+        </div>
+      )}
+
       {data.onnxStatus === 'error' && (
         <div className="px-3 py-2 text-[10px] text-[#ff3b30]">{data.onnxError ?? 'Unknown error'}</div>
       )}

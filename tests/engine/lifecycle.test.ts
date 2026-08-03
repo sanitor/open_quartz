@@ -337,12 +337,11 @@ describe('RealtimeHost lifecycle', () => {
     );
   });
 
-  it('captureScreenshot() returns null (WebGPU readback not yet implemented)', async () => {
+  it('captureScreenshot() forwards the asynchronous compositor readback', async () => {
     const nodes = [makeDynamicNode('s1')];
     await host.play(nodes, []);
 
-    const result = host.captureScreenshot('r1');
-    expect(result).toBeNull();
+    await expect(host.captureScreenshot('r1')).resolves.toBeNull();
   });
 
   it('stop() cancels a pending rAF', async () => {
