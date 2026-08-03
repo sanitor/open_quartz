@@ -6,28 +6,34 @@
 
 - **Dual-target Rust SDK** — added the `open_quartz` crate for native and WASM with shared graph types, topology/dirty planning, WGSL parsing/compilation, typed frame planning, resource generations, structured lifecycle events, GPU resource primitives, and ONNX pre/postprocessing.
 - **Rust-backed production WGSL parser** — `naga` now powers Header catalog parsing, Shader Editor diagnostics, SidePanel descriptions, graph updates, and node creation through the synchronous WASM SDK adapter; the legacy TypeScript parser and `wgsl_reflect` dependency were removed.
-- **Native GPU runtime capability** — added a Rust `GpuExecutor`, dedicated Tauri output window/surface, DX12/Metal/Vulkan selection, retained pipelines/targets/feedback resources, and a Rust-owned render thread with low-frequency control IPC. The production `PipelineService` still uses the browser `RealtimeHost`; native cutover remains a later stage.
-- **Native resource/output parity** — image/video payloads are separated from graph metadata, native RGBA textures are uploaded and reused by descriptor, selected previews and screenshots use explicit readback, and frame events carry metadata rather than pixels.
-- **Native ONNX provider layer** — native ORT sessions support CPU and Windows DirectML with explicit fallback policy, model-ID loading from app data, and capability reporting that correctly leaves shared wgpu/ORT device interop disabled.
-- **Bundled native video runtime** — Tauri packages FFmpeg and its notice; native threads decode file/camera sources with loop, rate, pause/resume, camera discovery, generation-tagged frame slots, and no decoded-frame WebView IPC.
+- **Native GPU production runtime** — added a Rust offscreen `GpuExecutor`, DX12/Metal/Vulkan selection, retained pipelines/targets/feedback resources, and a Rust-owned render thread. `PipelineService` now explicitly selects this runtime in Tauri and the browser adapter elsewhere.
+- **In-editor native Renderer output** — native frame metadata triggers a coalesced, display-sized GPU preview readback that `PipelineService` draws into the existing Node, SidePanel, and fullscreen Renderer canvases. Preview work runs outside the render runtime mutex; SAVE/screenshot retains full-resolution readback and no independent `Open Quartz Output` window is created.
+- **Native ONNX graph execution** — connected ONNX execution commands to async GPU readback, CPU/DirectML ORT workers, six task-specific postprocessors, generation-safe completion, GPU output upload, cascade/static/video dirty propagation, and provider/data events.
+- **Bundled native video and camera runtime** — Tauri packages FFmpeg and its notice; native threads decode file/camera sources with loop, rate, pause/resume, generation-tagged frame slots, and no decoded-frame WebView IPC. SidePanel camera discovery now uses browser MediaDevices or native DirectShow/AVFoundation/V4L2 devices by host.
 - **Deterministic SDK startup and packaging** — the generated WASM SDK initializes before React, Vitest loads the real Node binding in global setup, and Windows bundles include ORT, DirectML, FFmpeg, and license resources.
+- **Unified host runtime facade** — browser and Tauri adapters implement one `PipelineHostRuntime` lifecycle; App delegates orchestration to `PipelineService` without dual runtime startup or hidden fallback.
+
+- **Runtime cutover hardening** — Rust Runtime now owns paced browser ticks, async completion acceptance, typed output contracts, presentation dispatch, resource-release retry semantics, and consuming work batches. Browser playback uses a Worker/OffscreenCanvas host; native media reports explicit CPU-copy counters and data-path capabilities.
 
 ### Fixes
 
 - **Vite generated SDK loading** — load the generated public WASM package through a fully qualified runtime URL so Vite does not treat it as a source dependency.
 - **Native video frame reuse** — restore the fixed-size decoder buffer after every swap so later generations cannot publish zero-byte frames.
 - **Video-to-image resource replacement** — detach stale native video before replacement image upload so cleanup cannot remove the new texture.
+- **Browser screenshot readback** — `RealtimeHost.captureScreenshot()` now forwards the compositor's asynchronous WebGPU readback instead of returning a permanent `null` placeholder.
+- **Native preview performance** — GPU-side scaling reduced the measured 1080p preview readback to 1.53 ms on the test DX12 adapter; native metadata now follows every render frame with one pending-readback backpressure slot, and fullscreen requests use the actual canvas display size × DPR.
+- **Tauri content boundaries** — replaced the unrestricted CSP and wildcard asset scope with explicit script, worker, media, image, IPC, app-data, resource, and user-media policies.
 
 ### Documentation
 
-- **Architecture baseline** — rewrote `docs/DESIGN.md` top-down around the editor/runtime/host boundaries, current browser production path, native capability path, ownership rules, FFI/resource contracts, migration gaps, and Stage F/G gates.
+- **Architecture cutover** — updated `docs/DESIGN.md` and README around the completed host selection, native ONNX dataflow, resource ownership, camera UI, security boundaries, observable provider fallback, and remaining cross-platform constraints.
 - **Release automation** — GitHub releases are explicitly created with `--latest`, and the shared Rust SDK version is included in the synchronized version checklist.
 
 ### Tests
 
-- **976 unit tests + 56 shader/pipeline tests**, all passing.
-- **Rust/native contracts** — 48 core tests plus 3 Tauri media tests cover graph/FFI lifecycle, GPU execution, feedback preservation, native ONNX, multi-frame FFmpeg decode, resource replacement, and camera metadata parsing.
-- **Runtime smoke** — generated WASM loads in Node/Chromium; native DX12 image and video pipelines validate output pixels; bundled DirectML identity returns `7`; Windows MSI and NSIS bundles include all runtime assets.
+- **980 unit tests + 56 shader/pipeline tests**, all passing.
+- **Rust/native contracts** — core and Tauri suites cover graph/FFI lifecycle, GPU execution, feedback preservation, native ONNX image tasks, multi-frame FFmpeg decode, resource replacement, and camera metadata parsing.
+- **Runtime smoke** — generated WASM loads in Node/Chromium; native DX12 image, video, and async ONNX graph pipelines validate output pixels; bundled DirectML identity returns `7`; Windows MSI and NSIS bundles include all runtime assets.
 
 ## [0.16.0b] -- 2026-07-29
 

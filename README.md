@@ -66,7 +66,7 @@ Auto type inference from connected peers. CPU-only evaluation, results propagate
 | **Depth Estimation** | MiDaS v2.1 Small | 63MB | 256×256 fixed | `sampler2D` grayscale depth | Monocular relative depth |
 | **Custom** | User `.onnx` file | any | auto-introspected | auto-introspected | Load any ONNX model, ports generated from I/O metadata |
 
-All models auto-download on first use. Tiled inference engine handles arbitrary input sizes. Adaptive WebGPU→WASM fallback for incompatible GPUs. Backend probe at load time — user sees "CPU fallback" badge before pressing Play.
+All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM fallback. Tauri hosts run graph-integrated native ORT on CPU or DirectML with observable fallback, async texture/tensor completion, task data, and downstream GPU continuation.
 
 ### Output Nodes
 
@@ -76,13 +76,9 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 
 ## Features
 
-### Realtime Rendering
-- **rAF-driven rendering loop** with PLAY / PAUSE / STOP transport controls
-- **Host/Compositor architecture** inspired by Quartz Composer's QCRenderer
-- **Shadertoy-compatible builtin uniforms**: `iTime`, `iTimeDelta`, `iFrame`, `iDate`, `iMouse`, `iResolution`
-- **Static pipeline optimization** — graphs without time-varying inputs render one frame then stop; async texture loads awaited before first render
-- **GPU-first output path** — the main realtime output stays on GPU; only the selected preview or an explicit screenshot/output request performs readback
-- **Feedback / Accumulator** — per-node ping-pong render targets with `previousFrame` uniform for temporal effects (reaction-diffusion, trails, fluid sim)
+- **Worker-owned realtime rendering** — browser playback runs in a dedicated Worker with `OffscreenCanvas`; the Rust/WASM runtime owns clock, graph work batches, lifecycle, and output delivery. The React thread receives typed frame/output projections only.
+- **GPU-first output path** — the main realtime output stays on GPU; only selected preview or explicit screenshot/output requests perform readback.
+- **Feedback / Accumulator** — Rust-planned per-node ping-pong work is executed by the browser GPU adapter for temporal effects.
 
 ### Node Graph Editor
 - Drag, connect, and arrange nodes on an infinite canvas (React Flow)
@@ -110,9 +106,10 @@ All models auto-download on first use. Tiled inference engine handles arbitrary 
 - Native desktop application via Tauri 2
 - Custom titlebar (macOS traffic lights, Windows min/max/close)
 - Video file persistence via asset protocol
-- Native Rust GPU capability runtime with a dedicated output window, DX12/Metal/Vulkan backend selection, FFmpeg media decoding, and CPU/DirectML ONNX sessions
-- Native resource and model payloads are separated from graph metadata; decoded video frames and per-frame render commands never cross WebView IPC
-- Production UI currently remains on the browser `RealtimeHost`; native graph cutover is gated on ONNX execution parity
+- Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, and CPU/DirectML ONNX graph execution
+- `PipelineService` selects exactly one host runtime: browser uses `RealtimeHost`; Tauri uses `NativePipelineRuntime` and draws bounded native previews directly into existing Renderer canvases—no separate output window
+- Native graph metadata, media/model resources, decoded frames, ONNX task pixels, and per-frame commands stay on their owning side of the Tauri boundary; renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
+- Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
 
 ### Rust SDK and Structured Runtime
 - Dual-target `open_quartz` crate for native and WASM graph semantics
@@ -133,7 +130,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 976 unit tests (fast, CI gate)
+npm test               # unit and host-adapter regression suite (fast, CI gate)
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```
@@ -159,17 +156,17 @@ React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6
 
 ### Rust SDK and native runtime
 
-Open Quartz is migrating shared graph semantics into Rust while retaining host-specific browser and Tauri GPU/media implementations. The current production UI still uses the browser runtime; native cutover is explicit rather than an invisible fallback.
+Open Quartz shares graph and engine semantics in Rust while retaining host-specific browser and Tauri GPU/media implementations. Production host selection is explicit: browser runs `BrowserPipelineRuntime`; Tauri runs `NativePipelineRuntime` with no hidden dual-runtime fallback.
 
 | Stage | What | Status |
 |-------|------|--------|
 | **A. Structured FFI contract** | API version/capabilities, typed errors/events, WASM package | Done |
 | **B. Stateless cutover** | Rust `naga` parser used by production UI | Done |
 | **C. Stateful Engine core** | Revisions, generations, dirty execution, typed frames, lifecycle | Done |
-| **D. Native GPU runtime** | Rust render thread, `GpuExecutor`, native surface/output window | Done |
+| **D. Native GPU runtime** | Rust render thread, offscreen `GpuExecutor`, in-editor Renderer output | Done |
 | **E. Native resource/output parity** | Image/video resources, FFmpeg, preview/screenshot readback, packaging | Done |
-| **F. Native ONNX graph cutover** | Texture/tensor execution, async completion, six-task parity | In progress |
-| **G. Production switch** | `PipelineService` selects one explicit runtime per host | Planned |
+| **F. Native ONNX graph cutover** | Async texture/tensor execution, six-task parity, cascade, provider/output events | Done |
+| **G. Production switch** | `PipelineService` selects one explicit runtime per host | Done |
 
 ### Quartz Composer parity
 

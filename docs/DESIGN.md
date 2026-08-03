@@ -1868,6 +1868,8 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 退出条件：播放期间主线程没有clock、graph tick、GPU submission、video upload或ORT scheduling；Worker JS没有resource diff、subscription/backpressure、presentation planning等policy；React重渲染不改变cadence；browser与Rust direct/native接受同一SDK trace；worker close经Rust lifecycle释放所有handles且不再delivery。
 
+**Implemented in 0.17.0b:** Phase 5 Worker/OffscreenCanvas browser hosting, Rust-owned paced work batches, and Phase 6 explicit native/browser copy-path reporting are now in production paths. `RealtimeHost` remains only as a migration test fixture; it is not selected by `BrowserPipelineRuntime`. Cross-platform device-loss and multi-platform smoke coverage remain release validation work.
+
 #### Phase 6 — GPU-native media 与 inference data path
 
 **目标**：消除持续媒体和推理主路径中的无意 CPU copy，并用 capability 准确暴露不能消除的边界。
