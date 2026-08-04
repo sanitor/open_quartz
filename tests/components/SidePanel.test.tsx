@@ -60,7 +60,7 @@ const defaultStoreState = {
   removeNode: mockRemoveNode,
   outputPreviews: {} as Record<string, string>,
   nodeErrors: {} as Record<string, string>,
-  fps: 0,
+  rendererFps: {} as Record<string, number>,
   loopState: 'stopped' as 'stopped' | 'playing' | 'paused',
   edges: [] as Array<{ id: string; source: string; target: string }>,
 };
@@ -488,11 +488,11 @@ describe('SidePanel', () => {
         id: 'renderer', type: 'renderer', position: { x: 0, y: 0 },
         data: makeShaderNodeData({ type: 'renderer', inputs: [], outputs: [], resolvedWidth: 1920, resolvedHeight: 1080 }),
       }],
-      fps: 59.6,
+      rendererFps: { renderer: 59.6 },
       loopState: 'playing',
     });
 
-    expect(screen.getByText('Frame rate')).toBeInTheDocument();
+    expect(screen.getByText('Display frame rate')).toBeInTheDocument();
     expect(screen.getByText('60 FPS')).toBeInTheDocument();
   });
 });

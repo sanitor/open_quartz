@@ -10,6 +10,7 @@ export function uiSlice(
     outputPreviews: {} as Record<string, string>,
     outputData: {} as Record<string, unknown>,
     nodeErrors: {} as Record<string, string>,
+    rendererFps: {} as Record<string, number>,
     captureScreenshot: null as ((rendererId: string) => Promise<string | null>) | null,
 
     setSelectedNode: (id: string | null) => set((state) => { state.selectedNodeId = id; }),
@@ -17,6 +18,8 @@ export function uiSlice(
     setOutputPreview: (nodeId: string, dataUrl: string) => set((state) => { state.outputPreviews[nodeId] = dataUrl; }),
     setOutputData: (nodeId: string, data: unknown) => set((state) => { state.outputData[nodeId] = data; }),
     clearOutputPreviews: () => set((state) => { state.outputPreviews = {}; state.outputData = {}; }),
+    setRendererFps: (nodeId: string, fps: number) => set((state) => { state.rendererFps[nodeId] = fps; }),
+    clearRendererFps: () => set((state) => { state.rendererFps = {}; }),
     setNodeError: (nodeId: string, error: string | null) => set((state) => {
       if (error === null) {
         delete state.nodeErrors[nodeId];

@@ -47,7 +47,7 @@ function SectionHeader({ title, expanded, onClick, extra }: { title: string; exp
 }
 
 export function SidePanel() {
-  const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors, fps, loopState } = useGraphStore();
+  const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors, rendererFps, loopState } = useGraphStore();
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
@@ -437,9 +437,11 @@ export function SidePanel() {
             Size follows upstream output{data.resolvedWidth && data.resolvedHeight ? `: ${data.resolvedWidth} × ${data.resolvedHeight}` : ''}
           </div>
           <div className="flex items-center justify-between border-t border-[#f0f0f0] pt-2 mb-2 text-[11px]">
-            <span className="text-[#86868b]">Frame rate</span>
+            <span className="text-[#86868b]">Display frame rate</span>
             <span className="font-mono tabular-nums text-[#1d1d1f]">
-              {loopState === 'stopped' || fps <= 0 ? '-- FPS' : `${Math.round(fps)} FPS`}
+              {loopState === 'stopped' || !selectedNodeId || (rendererFps[selectedNodeId] ?? 0) <= 0
+                ? '-- FPS'
+                : `${Math.round(rendererFps[selectedNodeId])} FPS`}
             </span>
           </div>
           <label className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">

@@ -540,9 +540,9 @@ describe('Header', () => {
     expect(screen.getByText('YOLOV8N DETECTOR')).toBeInTheDocument();
   });
 
-  it('does not render renderer-specific FPS in the global header', () => {
+  it('shows runtime graph execution FPS in the global header', () => {
     renderHeader({ loopState: 'playing', fps: 60 });
-    expect(screen.queryByText(/FPS/)).not.toBeInTheDocument();
+    expect(screen.getByText('60 FPS')).toBeInTheDocument();
   });
 
   // --- Time display ---

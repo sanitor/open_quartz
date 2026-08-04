@@ -58,6 +58,7 @@ function resetStore(): void {
     outputData: {},
     nodeErrors: {},
     fps: 0,
+    rendererFps: {},
     currentTime: 0,
     currentFrame: 0,
   });
@@ -98,6 +99,30 @@ describe('PipelineService', () => {
     expect(mocks.native).toHaveLength(0);
     service.detach();
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+  });
+
+  it('counts frames only after a Renderer is delivered for display', async () => {
+    mocks.isTauri.mockResolvedValue(false);
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const service = new PipelineService();
+    service.attach(document.createElement('canvas'));
+    useGraphStore.getState().play();
+    await vi.waitFor(() => expect(mocks.browser).toHaveLength(1));
+    const runtime = mocks.browser[0]!;
+
+    for (let frame = 0; frame < 30; frame += 1) {
+      runtime.callbacks.onRendererPresented?.('renderer-a' as never);
+    }
+    expect(useGraphStore.getState().rendererFps).toEqual({});
+
+    now.mockReturnValue(600);
+    runtime.callbacks.onRendererPresented?.('renderer-a' as never);
+    expect(useGraphStore.getState().rendererFps['renderer-a']).toBeCloseTo(31_000 / 600);
+    expect(useGraphStore.getState().rendererFps['renderer-b']).toBeUndefined();
+
+    useGraphStore.getState().stop();
+    expect(useGraphStore.getState().rendererFps).toEqual({});
+    service.detach();
   });
 
   it('samples native Renderer FPS over a stable window and resets it on replay', async () => {

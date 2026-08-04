@@ -22,6 +22,7 @@ export interface GraphState {
   nodeErrors: Record<string, string>;
   loopState: 'stopped' | 'playing' | 'paused';
   fps: number;
+  rendererFps: Record<string, number>;
   currentTime: number;
   currentFrame: number;
   activeRendererId: string | null;
@@ -57,6 +58,8 @@ export interface GraphState {
   pause: () => void;
   resume: () => void;
   setFps: (fps: number) => void;
+  setRendererFps: (nodeId: string, fps: number) => void;
+  clearRendererFps: () => void;
   setCurrentTime: (t: number) => void;
   setCurrentFrame: (frame: number) => void;
   setActiveRenderer: (id: string | null) => void;

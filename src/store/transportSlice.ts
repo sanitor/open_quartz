@@ -16,6 +16,7 @@ export function transportSlice(
     stop: () => set((state) => {
       state.loopState = 'stopped';
       state.fps = 0;
+      state.rendererFps = {};
       state.currentTime = 0;
       state.currentFrame = 0;
     }),

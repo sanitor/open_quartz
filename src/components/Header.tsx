@@ -22,7 +22,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode, addMathNode } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode, addMathNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -566,6 +566,12 @@ export function Header() {
       </button>
 
       <div className="ml-auto flex items-center gap-1">
+        {/* Runtime graph execution rate */}
+        {loopState !== 'stopped' && (
+          <span className="text-[9px] font-mono text-[#86868b] mr-2">
+            {fps > 0 ? `${Math.round(fps)} FPS` : '-- FPS'}
+          </span>
+        )}
 
         {/* Time display */}
         {loopState !== 'stopped' && (

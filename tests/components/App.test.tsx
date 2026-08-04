@@ -30,6 +30,8 @@ vi.mock('../../src/store/useGraphStore', () => ({
       edges: [],
       setOutputPreview: vi.fn(),
       clearOutputPreviews: vi.fn(),
+      clearRendererFps: vi.fn(),
+      setRendererFps: vi.fn(),
       setNodeError: vi.fn(),
       clearNodeErrors: vi.fn(),
       setSelectedNode: vi.fn(),

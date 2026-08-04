@@ -24,7 +24,7 @@
 - **Native preview delivery** — native metadata now follows every render frame with one pending-readback backpressure slot, while Renderer and selected-node previews preserve the actual output dimensions.
 - **Tauri content boundaries** — replaced the unrestricted CSP and wildcard asset scope with explicit script, worker, media, image, IPC, app-data, resource, and user-media policies.
 - **Native stop/replay lifecycle** — starting playback after STOP now restarts retained FFmpeg video decoders and resets native playback timing instead of leaving the render loop on a frozen frame.
-- **Renderer FPS status** — moved FPS out of the global Header into the selected Renderer panel and replaced per-frame instantaneous values with a stable 500 ms sampling window.
+- **Runtime and Renderer FPS status** — the Header keeps graph execution FPS, while each Renderer panel reports its own 500 ms delivery FPS measured only after a received frame is drawn into a visible mirror canvas.
 
 ### Documentation
 

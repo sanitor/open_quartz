@@ -44,6 +44,7 @@ export interface RuntimeVideoDevice {
 export interface PipelineRuntimeCallbacks {
   onFrame?: (frame: RuntimeFrame) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
+  onRendererPresented?: (nodeId: string) => void;
   onNodeError?: (nodeId: string | null, error: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
   onOutputData?: (nodeId: string, data: unknown) => void;

@@ -18,6 +18,7 @@ export class PipelineService {
   private nativeFps = 0;
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
+  private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number }>();
 
   attach(canvas: HTMLCanvasElement): void {
     window.addEventListener('renderer-remount', this.handleRendererRemount);
@@ -25,6 +26,8 @@ export class PipelineService {
       if (state.loopState === 'playing' && previous.loopState === 'stopped') {
         this.resetNativeFrameMetrics();
         const store = useGraphStore.getState();
+        this.rendererFrameMetrics.clear();
+        store.clearRendererFps();
         store.clearOutputPreviews();
         store.clearNodeErrors();
         this.enqueue(async () => {
@@ -88,6 +91,7 @@ export class PipelineService {
     window.removeEventListener('renderer-remount', this.handleRendererRemount);
     this.enqueue(async () => { await runtime?.close(); });
     this.lastNativeRendererFrame = null;
+    this.rendererFrameMetrics.clear();
   }
 
   private async ensureRuntime(canvas: HTMLCanvasElement): Promise<PipelineHostRuntime> {
@@ -128,7 +132,7 @@ export class PipelineService {
         },
         onRendererFrame: (nodeId, frame) => {
           this.lastNativeRendererFrame = { nodeId, frame };
-          this.drawRendererFrame(nodeId, frame);
+          if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
         },
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
@@ -152,6 +156,7 @@ export class PipelineService {
   private callbacks(): PipelineRuntimeCallbacks {
     return {
       onFrame: (frame) => this.handleFrame(frame),
+      onRendererPresented: (nodeId) => this.recordRendererPresentation(nodeId),
       onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
       onNodeError: (nodeId, error) => this.handleError(nodeId, error),
       onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
@@ -167,7 +172,7 @@ export class PipelineService {
   }
 
 
-  private drawRendererFrame(nodeId: string, frame: NativeOutputImage): void {
+  private drawRendererFrame(nodeId: string, frame: NativeOutputImage): boolean {
     const source = this.nativePreviewCanvas ??= document.createElement('canvas');
     if (source.width !== frame.width) source.width = frame.width;
     if (source.height !== frame.height) source.height = frame.height;
@@ -175,13 +180,15 @@ export class PipelineService {
     if (!sourceContext) throw new Error('Cannot create native renderer preview canvas');
     const pixels = new Uint8ClampedArray(frame.rgba);
     sourceContext.putImageData(new ImageData(pixels, frame.width, frame.height), 0, 0);
-    const mirrors = this.rendererMirrors(nodeId);
-    for (const mirror of mirrors) {
+    let presented = false;
+    for (const mirror of this.rendererMirrors(nodeId)) {
       const context = mirror.getContext('2d');
       if (!context) continue;
       context.clearRect(0, 0, mirror.width, mirror.height);
       context.drawImage(source, 0, 0, mirror.width, mirror.height);
+      presented = true;
     }
+    return presented;
   }
 
   private handleRendererRemount = (): void => {
@@ -190,6 +197,18 @@ export class PipelineService {
     }
     this.runtime?.requestPreviewRefresh?.();
   };
+
+  private recordRendererPresentation(nodeId: string, now = performance.now()): void {
+    const metric = this.rendererFrameMetrics.get(nodeId) ?? { windowAt: now, frames: 0 };
+    metric.frames += 1;
+    const elapsed = now - metric.windowAt;
+    if (elapsed >= 500) {
+      useGraphStore.getState().setRendererFps(nodeId, metric.frames * 1000 / elapsed);
+      metric.windowAt = now;
+      metric.frames = 0;
+    }
+    this.rendererFrameMetrics.set(nodeId, metric);
+  }
 
   private resetNativeFrameMetrics(now = performance.now()): void {
     this.nativeStartedAt = now;

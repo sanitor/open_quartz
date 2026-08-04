@@ -69,4 +69,27 @@ describe('BrowserPipelineRuntime worker host', () => {
     expect(worker.terminated).toBe(true);
     await expect(runtime.captureScreenshot('renderer')).rejects.toThrow('not initialized');
   });
+
+  it('reports Renderer presentation only after drawing a mirror canvas', async () => {
+    const onRendererPresented = vi.fn();
+    const context = { clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D;
+    const mirror = document.createElement('canvas');
+    mirror.id = 'renderer-mirror-renderer';
+    vi.spyOn(mirror, 'getContext').mockReturnValue(context);
+    document.body.appendChild(mirror);
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      set src(_value: string) { this.onload?.(); }
+    });
+    const runtime = new BrowserPipelineRuntime({ onRendererPresented });
+    await runtime.initialize({
+      transferControlToOffscreen: () => ({} as OffscreenCanvas),
+    } as HTMLCanvasElement);
+
+    FakeWorker.instances[0].emit({ type: 'output', nodeId: 'renderer', dataUrl: 'data:image/png;base64,frame' });
+
+    expect(context.drawImage).toHaveBeenCalledOnce();
+    expect(onRendererPresented).toHaveBeenCalledWith('renderer');
+    mirror.remove();
+  });
 });

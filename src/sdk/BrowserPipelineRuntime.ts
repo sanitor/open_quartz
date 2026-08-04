@@ -130,12 +130,15 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
       const mirrors = document.querySelectorAll<HTMLCanvasElement>(
         `canvas[id^="renderer-mirror-"][id$="-${nodeId}"], canvas#renderer-mirror-${nodeId}`,
       );
+      let presented = false;
       for (const mirror of mirrors) {
         const context = mirror.getContext('2d');
         if (!context) continue;
         context.clearRect(0, 0, mirror.width, mirror.height);
         context.drawImage(image, 0, 0, mirror.width, mirror.height);
+        presented = true;
       }
+      if (presented) this.callbacks.onRendererPresented?.(nodeId);
     };
     image.src = dataUrl;
   }
