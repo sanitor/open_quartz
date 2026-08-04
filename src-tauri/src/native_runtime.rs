@@ -317,6 +317,15 @@ impl NativeGpuRuntime {
         }
     }
 
+    fn start_playback(&mut self) -> Result<(), String> {
+        self.resume_videos()?;
+        let now = Instant::now();
+        self.started_at = now;
+        self.previous_frame_at = now;
+        self.frame = 0;
+        Ok(())
+    }
+
     fn resume_videos(&mut self) -> Result<(), String> {
         for source in self.videos.values_mut() {
             source.resume()?;
@@ -712,7 +721,7 @@ pub fn native_gpu_play(state: State<'_, NativeRuntimeState>) -> Result<(), Strin
         if runtime.engine.execution_plan().is_none() {
             return Err("Native runtime must receive a graph before play".to_owned());
         }
-        Ok(())
+        runtime.start_playback()
     })?;
     state.playing.store(true, Ordering::Release);
     Ok(())

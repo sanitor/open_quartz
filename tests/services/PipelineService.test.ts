@@ -100,6 +100,36 @@ describe('PipelineService', () => {
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
   });
 
+  it('samples native Renderer FPS over a stable window and resets it on replay', async () => {
+    mocks.isTauri.mockResolvedValue(true);
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const service = new PipelineService();
+    service.attach(document.createElement('canvas'));
+
+    useGraphStore.getState().play();
+    await vi.waitFor(() => expect(mocks.native).toHaveLength(1));
+    const runtime = mocks.native[0]!;
+    await vi.waitFor(() => expect(runtime.play).toHaveBeenCalledOnce());
+
+    now.mockReturnValue(100);
+    runtime.callbacks.onFrame?.({ frame: 1, outputNodeId: 'renderer', width: 1, height: 1 } as never);
+    expect(useGraphStore.getState().fps).toBe(0);
+
+    now.mockReturnValue(600);
+    runtime.callbacks.onFrame?.({ frame: 31, outputNodeId: 'renderer', width: 1, height: 1 } as never);
+    expect(useGraphStore.getState().fps).toBeCloseTo(31_000 / 600);
+
+    useGraphStore.getState().stop();
+    now.mockReturnValue(1_000);
+    useGraphStore.getState().play();
+    await vi.waitFor(() => expect(runtime.play).toHaveBeenCalledTimes(2));
+    now.mockReturnValue(1_016);
+    runtime.callbacks.onFrame?.({ frame: 1, outputNodeId: 'renderer', width: 1, height: 1 } as never);
+    expect(useGraphStore.getState()).toMatchObject({ fps: 0, currentFrame: 1 });
+
+    service.detach();
+  });
+
   it('does not rebuild the native graph for the in-place UI toggle', async () => {
     mocks.isTauri.mockResolvedValue(true);
     const service = new PipelineService();

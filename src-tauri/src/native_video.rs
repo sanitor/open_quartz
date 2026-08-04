@@ -452,7 +452,7 @@ mod tests {
         let mut source = NativeVideoSource::open(NativeVideoConfig {
             kind: NativeVideoSourceKind::File,
             source: path.to_string_lossy().into_owned(),
-            looping: false,
+            looping: true,
             playback_rate: 1.0,
         })
         .unwrap();
@@ -480,6 +480,18 @@ mod tests {
         assert!(metrics.cpu_copy_bytes >= metrics.uploaded_frames * 16 * 16 * 4);
         let pixel = first_pixel.expect("decoder must produce a frame");
         assert!(pixel[0] > 240 && pixel[1] < 16 && pixel[2] < 16 && pixel[3] == 255);
+        source.pause();
+        assert!(source.child.is_none());
+        let uploaded_before_resume = source.metrics().uploaded_frames;
+        source.resume().unwrap();
+        let resume_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < resume_deadline
+            && source.metrics().uploaded_frames == uploaded_before_resume
+        {
+            source.upload_latest(|_, _, _| Ok(())).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(source.metrics().uploaded_frames > uploaded_before_resume);
         drop(source);
         let _ = std::fs::remove_file(path);
     }

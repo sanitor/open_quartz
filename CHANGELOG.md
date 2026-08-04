@@ -7,7 +7,7 @@
 - **Dual-target Rust SDK** — added the `open_quartz` crate for native and WASM with shared graph types, topology/dirty planning, WGSL parsing/compilation, typed frame planning, resource generations, structured lifecycle events, GPU resource primitives, and ONNX pre/postprocessing.
 - **Rust-backed production WGSL parser** — `naga` now powers Header catalog parsing, Shader Editor diagnostics, SidePanel descriptions, graph updates, and node creation through the synchronous WASM SDK adapter; the legacy TypeScript parser and `wgsl_reflect` dependency were removed.
 - **Native GPU production runtime** — added a Rust offscreen `GpuExecutor`, DX12/Metal/Vulkan selection, retained pipelines/targets/feedback resources, and a Rust-owned render thread. `PipelineService` now explicitly selects this runtime in Tauri and the browser adapter elsewhere.
-- **In-editor native Renderer output** — native frame metadata triggers a coalesced, display-sized GPU preview readback that `PipelineService` draws into the existing Node, SidePanel, and fullscreen Renderer canvases. Preview work runs outside the render runtime mutex; SAVE/screenshot retains full-resolution readback and no independent `Open Quartz Output` window is created.
+- **In-editor native Renderer output** — native frame metadata triggers a coalesced, full-resolution GPU readback that `PipelineService` draws into the existing Node, SidePanel, and fullscreen Renderer canvases. Preview work runs outside the render runtime mutex; SAVE/screenshot retains explicit full-resolution capture and no independent `Open Quartz Output` window is created.
 - **Native ONNX graph execution** — connected ONNX execution commands to async GPU readback, CPU/DirectML ORT workers, six task-specific postprocessors, generation-safe completion, GPU output upload, cascade/static/video dirty propagation, and provider/data events.
 - **Bundled native video and camera runtime** — Tauri packages FFmpeg and its notice; native threads decode file/camera sources with loop, rate, pause/resume, generation-tagged frame slots, and no decoded-frame WebView IPC. SidePanel camera discovery now uses browser MediaDevices or native DirectShow/AVFoundation/V4L2 devices by host.
 - **Deterministic SDK startup and packaging** — the generated WASM SDK initializes before React, Vitest loads the real Node binding in global setup, and Windows bundles include ORT, DirectML, FFmpeg, and license resources.
@@ -21,8 +21,10 @@
 - **Native video frame reuse** — restore the fixed-size decoder buffer after every swap so later generations cannot publish zero-byte frames.
 - **Video-to-image resource replacement** — detach stale native video before replacement image upload so cleanup cannot remove the new texture.
 - **Browser screenshot readback** — `RealtimeHost.captureScreenshot()` now forwards the compositor's asynchronous WebGPU readback instead of returning a permanent `null` placeholder.
-- **Native preview performance** — GPU-side scaling reduced the measured 1080p preview readback to 1.53 ms on the test DX12 adapter; native metadata now follows every render frame with one pending-readback backpressure slot, and fullscreen requests use the actual canvas display size × DPR.
+- **Native preview delivery** — native metadata now follows every render frame with one pending-readback backpressure slot, while Renderer and selected-node previews preserve the actual output dimensions.
 - **Tauri content boundaries** — replaced the unrestricted CSP and wildcard asset scope with explicit script, worker, media, image, IPC, app-data, resource, and user-media policies.
+- **Native stop/replay lifecycle** — starting playback after STOP now restarts retained FFmpeg video decoders and resets native playback timing instead of leaving the render loop on a frozen frame.
+- **Renderer FPS status** — moved FPS out of the global Header into the selected Renderer panel and replaced per-frame instantaneous values with a stable 500 ms sampling window.
 
 ### Documentation
 

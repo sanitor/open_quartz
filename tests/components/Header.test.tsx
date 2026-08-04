@@ -540,21 +540,9 @@ describe('Header', () => {
     expect(screen.getByText('YOLOV8N DETECTOR')).toBeInTheDocument();
   });
 
-  // --- FPS display ---
-
-  it('FPS display hidden when stopped', () => {
-    renderHeader({ loopState: 'stopped' });
-    expect(screen.queryByText(/FPS/)).not.toBeInTheDocument();
-  });
-
-  it('FPS display shown when playing', () => {
+  it('does not render renderer-specific FPS in the global header', () => {
     renderHeader({ loopState: 'playing', fps: 60 });
-    expect(screen.getByText('60 FPS')).toBeInTheDocument();
-  });
-
-  it('FPS display shows placeholder when fps=0 and playing', () => {
-    renderHeader({ loopState: 'playing', fps: 0 });
-    expect(screen.getByText('-- FPS')).toBeInTheDocument();
+    expect(screen.queryByText(/FPS/)).not.toBeInTheDocument();
   });
 
   // --- Time display ---

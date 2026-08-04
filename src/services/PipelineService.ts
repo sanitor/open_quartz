@@ -13,8 +13,9 @@ export class PipelineService {
   private operations: Promise<void> = Promise.resolve();
   private generation = 0;
   private nativeStartedAt = 0;
-  private nativeFrameAt = 0;
-  private nativeFrame = 0;
+  private nativeFpsWindowAt = 0;
+  private nativeFpsWindowFrame = 0;
+  private nativeFps = 0;
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
 
@@ -22,6 +23,7 @@ export class PipelineService {
     window.addEventListener('renderer-remount', this.handleRendererRemount);
     this.unsub = useGraphStore.subscribe((state, previous) => {
       if (state.loopState === 'playing' && previous.loopState === 'stopped') {
+        this.resetNativeFrameMetrics();
         const store = useGraphStore.getState();
         store.clearOutputPreviews();
         store.clearNodeErrors();
@@ -107,20 +109,21 @@ export class PipelineService {
 
   private async createRuntime(canvas: HTMLCanvasElement): Promise<PipelineHostRuntime> {
     if (await checkIsTauri()) {
-      this.nativeStartedAt = performance.now();
-      this.nativeFrameAt = this.nativeStartedAt;
-      this.nativeFrame = 0;
+      this.resetNativeFrameMetrics();
       const runtime = new NativePipelineRuntime({
         onFrame: (frame) => {
           const now = performance.now();
-          const frameDelta = frame.frame - this.nativeFrame;
-          const elapsed = now - this.nativeFrameAt;
-          this.nativeFrame = frame.frame;
-          this.nativeFrameAt = now;
+          if (frame.frame < this.nativeFpsWindowFrame) this.resetNativeFrameMetrics(now);
+          const elapsed = now - this.nativeFpsWindowAt;
+          if (elapsed >= 500) {
+            this.nativeFps = (frame.frame - this.nativeFpsWindowFrame) * 1000 / elapsed;
+            this.nativeFpsWindowAt = now;
+            this.nativeFpsWindowFrame = frame.frame;
+          }
           this.handleFrame({
             frame: frame.frame,
             time: (now - this.nativeStartedAt) / 1000,
-            fps: elapsed > 0 ? frameDelta * 1000 / elapsed : 0,
+            fps: this.nativeFps,
           });
         },
         onRendererFrame: (nodeId, frame) => {
@@ -187,6 +190,13 @@ export class PipelineService {
     }
     this.runtime?.requestPreviewRefresh?.();
   };
+
+  private resetNativeFrameMetrics(now = performance.now()): void {
+    this.nativeStartedAt = now;
+    this.nativeFpsWindowAt = now;
+    this.nativeFpsWindowFrame = 0;
+    this.nativeFps = 0;
+  }
 
   private handleFrame(frame: { frame: number; time: number; fps: number }): void {
     const store = useGraphStore.getState();
