@@ -625,6 +625,7 @@ dependencies = [
  "serde_json",
  "wasm-bindgen",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

@@ -64,12 +64,36 @@ class FakeBridge implements NativeTauriBridge {
   }
 }
 
+class TextureStreamBridge extends FakeBridge {
+  override async invoke<T>(
+    command: string,
+    args?: NativeInvokeArgs,
+    options?: NativeInvokeOptions,
+  ): Promise<T> {
+    if (command !== 'native_gpu_initialize') return await super.invoke<T>(command, args, options);
+    this.calls.push({ command, args, options });
+    return {
+      adapterName: 'Test Adapter',
+      backend: 'Dx12',
+      deviceType: 'IntegratedGpu',
+      outputMode: 'webview-texture-stream',
+      nativeOnnxCpu: true,
+      nativeOnnxDirectMl: true,
+      sharedOnnxWgpuDevice: false,
+      nativeVideo: true,
+      videoDataPath: 'cpu-copy',
+      tensorDataPath: 'cpu-copy',
+      sharedTexture: true,
+    } as T;
+  }
+}
+
 class DeferredOutputBridge extends FakeBridge {
   private resolveFirstOutput: ((value: ArrayBuffer) => void) | null = null;
   private outputCalls = 0;
 
   override async invoke<T>(command: string, args?: NativeInvokeArgs, options?: NativeInvokeOptions): Promise<T> {
-    if (command !== 'native_gpu_read_output') return super.invoke<T>(command, args, options);
+    if (command !== 'native_gpu_read_preview') return super.invoke<T>(command, args, options);
     this.calls.push({ command, args, options });
     this.outputCalls += 1;
     if (this.outputCalls > 1) {
@@ -209,9 +233,60 @@ describe('NativePipelineRuntime', () => {
     }));
     expect(onOutputSize).toHaveBeenCalledTimes(1);
     expect(onOutputSize).toHaveBeenCalledWith('renderer', 960, 540);
-    expect(bridge.calls.find(({ command }) => command === 'native_gpu_read_output')?.args)
-      .toEqual({ nodeId: 'renderer' });
-    expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_preview')).toBe(false);
+    expect(bridge.calls.find(({ command }) => command === 'native_gpu_read_preview')?.args)
+      .toEqual({ nodeId: 'renderer', maxDimension: 960 });
+    expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_output')).toBe(false);
+  });
+
+  it('presents WebView2 TextureStream frames without renderer readback', async () => {
+    const bridge = new TextureStreamBridge();
+    const stop = vi.fn();
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+    const getTextureStream = vi.fn(() => stream);
+    Object.defineProperty(window, 'chrome', {
+      configurable: true,
+      value: { webview: { getTextureStream } },
+    });
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const readyState = vi
+      .spyOn(HTMLMediaElement.prototype, 'readyState', 'get')
+      .mockReturnValue(HTMLMediaElement.HAVE_CURRENT_DATA);
+    const onRendererVideoFrame = vi.fn();
+    const onError = vi.fn();
+    const runtime = new NativePipelineRuntime({ onRendererVideoFrame, onError }, bridge);
+
+    try {
+      await expect(runtime.initialize()).resolves.toMatchObject({
+        outputMode: 'webview-texture-stream',
+      });
+      await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
+      const frame = {
+        frame: 1,
+        revision: 1,
+        outputNodeId: 'renderer',
+        width: 640,
+        height: 360,
+      } satisfies NativeFrameRendered;
+      bridge.emit('native-runtime-frame', frame);
+
+      expect(getTextureStream).toHaveBeenCalledWith('open-quartz-renderer');
+      expect(onRendererVideoFrame).toHaveBeenCalledWith(
+        'renderer',
+        expect.any(HTMLVideoElement),
+      );
+      expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_output')).toBe(false);
+      bridge.emit('native-runtime-presentation-fallback', 'present failed');
+      expect(onError).toHaveBeenCalledWith('present failed');
+      await vi.waitFor(() => {
+        expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_preview')).toBe(true);
+      });
+      await runtime.close();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      play.mockRestore();
+      readyState.mockRestore();
+      Reflect.deleteProperty(window, 'chrome');
+    }
   });
 
   it('runs a queued renderer readback after selection remounts its canvas', async () => {
@@ -231,11 +306,11 @@ describe('NativePipelineRuntime', () => {
     runtime.requestPreviewRefresh();
 
     await vi.waitFor(() => {
-      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(1);
+      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_preview')).toHaveLength(1);
     });
     bridge.completeFirstOutput();
     await vi.waitFor(() => {
-      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(2);
+      expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_preview')).toHaveLength(2);
       expect(onRendererFrame).toHaveBeenCalledTimes(2);
     });
   });
@@ -299,20 +374,11 @@ describe('NativePipelineRuntime', () => {
     });
   });
 
-  it('coalesces full-resolution output readback and emits a data URL on native frames', async () => {
+  it('delivers bounded Renderer frames without encoding PNG previews', async () => {
     const bridge = new FakeBridge();
-    const output = Promise.withResolvers<string>();
-    const runtime = new NativePipelineRuntime({
-      onOutput: (_nodeId, dataUrl) => output.resolve(dataUrl),
-    }, bridge);
-    const context = { putImageData: vi.fn() } as unknown as CanvasRenderingContext2D;
-    vi.stubGlobal('ImageData', class {
-      constructor(_pixels: Uint8ClampedArray, _width: number, _height: number) {}
-    });
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
-    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(
-      'data:image/png;base64,preview',
-    );
+    const onRendererFrame = vi.fn();
+    const onOutput = vi.fn();
+    const runtime = new NativePipelineRuntime({ onRendererFrame, onOutput }, bridge);
     await runtime.initialize();
     runtime.setPreviewNode('renderer');
     bridge.emit('native-runtime-frame', {
@@ -323,8 +389,9 @@ describe('NativePipelineRuntime', () => {
       height: 1,
     });
 
-    await expect(output.promise).resolves.toBe('data:image/png;base64,preview');
-    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_output')).toHaveLength(1);
+    await vi.waitFor(() => expect(onRendererFrame).toHaveBeenCalledOnce());
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(bridge.calls.filter(({ command }) => command === 'native_gpu_read_preview')).toHaveLength(1);
   });
 
   it('validates mouse state and decodes engine events', async () => {
@@ -449,7 +516,7 @@ describe('NativePipelineRuntime', () => {
     await runtime.close();
 
     expect(bridge.calls.filter(({ command }) => command === 'native_gpu_close')).toHaveLength(1);
-    expect(bridge.unlisten).toHaveBeenCalledTimes(3);
+    expect(bridge.unlisten).toHaveBeenCalledTimes(4);
     await expect(runtime.renderOnce()).rejects.toThrow('not initialized');
   });
 });

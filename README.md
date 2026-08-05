@@ -78,6 +78,7 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 
 - **Worker-owned realtime rendering** — browser playback runs in a dedicated Worker with `OffscreenCanvas`; the Rust/WASM runtime owns clock, graph work batches, lifecycle, and output delivery. The React thread receives typed frame/output projections only.
 - **GPU-first output path** — the main realtime output stays on GPU; only selected preview or explicit screenshot/output requests perform readback.
+- **Multi-presenter GPU boundary** — Rust presentation sinks receive retained GPU handles through independent latest-frame mailboxes. Windows native consumers can acquire leased shared DXGI textures with NT resource/fence handles; a three-slot pool provides explicit backpressure without moving pixels through CPU memory.
 - **Feedback / Accumulator** — Rust-planned per-node ping-pong work is executed by the browser GPU adapter for temporal effects.
 
 ### Node Graph Editor
@@ -106,9 +107,11 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 - Native desktop application via Tauri 2
 - Custom titlebar (macOS traffic lights, Windows min/max/close)
 - Video file persistence via asset protocol
-- Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, and CPU/DirectML ONNX graph execution
+- Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, Windows x64 file-source D3D12VA→P010 GPU import, and CPU/DirectML ONNX graph execution
 - `PipelineService` selects exactly one host runtime: browser uses `RealtimeHost`; Tauri uses `NativePipelineRuntime` and draws bounded native previews directly into existing Renderer canvases—no separate output window
 - Native graph metadata, media/model resources, decoded frames, ONNX task pixels, and per-frame commands stay on their owning side of the Tauri boundary; renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
+- Shared-texture and hardware-frame contracts cover DXGI/IOSurface/DMA-BUF. Windows DXGI export and Windows x64 file-video D3D12VA→wgpu P010 import are implemented and smoke-tested; camera/non-Windows video reports the explicit CPU-copy fallback. The installed WebView2 exposes TextureStream/LUID interfaces but rejects `CreateTextureStream` with `ERROR_NOT_SUPPORTED`, so DOM presentation is not claimed; IOSurface, DMA-BUF, and camera hardware-frame adapters remain follow-up work.
+- WebView fallback remains lossless bounded RGBA readback. No H.264 preview path is used because Renderer output must preserve exact pixels; SAVE/screenshot always performs explicit lossless capture.
 - Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
 
 ### Rust SDK and Structured Runtime

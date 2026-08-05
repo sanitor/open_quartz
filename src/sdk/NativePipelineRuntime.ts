@@ -8,13 +8,14 @@ export interface NativeRuntimeInfo {
   adapterName: string;
   backend: string;
   deviceType: string;
-  outputMode: 'embedded-readback';
+  outputMode: 'embedded-readback' | 'webview-texture-stream';
   nativeOnnxCpu: boolean;
   nativeOnnxDirectMl: boolean;
   sharedOnnxWgpuDevice: boolean;
   nativeVideo: boolean;
-  videoDataPath: 'cpu-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
+  videoDataPath: 'cpu-copy' | 'd3d12va-p010-zero-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
   tensorDataPath: 'cpu-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
+  sharedTexture: boolean;
 }
 
 export interface NativeOnnxCapabilities {
@@ -59,6 +60,7 @@ export interface NativeOutputEvent {
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
   onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
+  onRendererVideoFrame?: (nodeId: string, video: HTMLVideoElement) => void;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
@@ -92,6 +94,20 @@ async function loadDefaultBridge(): Promise<NativeTauriBridge> {
   return { invoke, listen };
 }
 
+interface ExperimentalTextureStreamWebView {
+  getTextureStream(streamId: string): Promise<MediaStream> | MediaStream;
+}
+
+function textureStreamWebView(): ExperimentalTextureStreamWebView | null {
+  const chrome = (window as Window & {
+    chrome?: { webview?: Partial<ExperimentalTextureStreamWebView> };
+  }).chrome;
+  return typeof chrome?.webview?.getTextureStream === 'function'
+    ? chrome.webview as ExperimentalTextureStreamWebView
+    : null;
+}
+
+
 /**
  * Low-frequency Tauri control adapter. The Rust render thread owns frame timing
  * and GPU submission; this class never sends a per-frame command or pixel payload.
@@ -112,6 +128,9 @@ export class NativePipelineRuntime {
   private previewPending = false;
   private rendererReadbackPending = false;
   private queuedRendererReadbackNodeId: string | null = null;
+  private textureStreamVideo: HTMLVideoElement | null = null;
+  private textureStream: MediaStream | null = null;
+  private textureStreamMode = false;
 
 
   constructor(
@@ -128,6 +147,7 @@ export class NativePipelineRuntime {
     if (this.closed) throw new Error('Native pipeline runtime is closed');
     if (this.initialized) throw new Error('Native pipeline runtime is already initialized');
     const bridge = await this.getBridge();
+    const webview = textureStreamWebView();
     this.unlisten = await Promise.all([
       bridge.listen<NativeFrameRendered>('native-runtime-frame', ({ payload }) => {
         this.callbacks.onFrame?.(payload);
@@ -137,11 +157,18 @@ export class NativePipelineRuntime {
           payload.height,
         );
         this.lastRendererNodeId = payload.outputNodeId;
-        this.scheduleRendererReadback(payload.outputNodeId);
+        if (!this.presentTextureStreamFrame(payload.outputNodeId)) {
+          this.scheduleRendererReadback(payload.outputNodeId);
+        }
         if (this.previewNodeId !== payload.outputNodeId) this.schedulePreviewReadback();
       }),
       bridge.listen<string>('native-runtime-error', ({ payload }) => {
         this.callbacks.onError?.(payload);
+      }),
+      bridge.listen<string>('native-runtime-presentation-fallback', ({ payload }) => {
+        this.releaseTextureStream();
+        this.callbacks.onError?.(payload);
+        if (this.lastRendererNodeId) this.scheduleRendererReadback(this.lastRendererNodeId);
       }),
       bridge.listen<NativeOutputEvent>('native-runtime-output', ({ payload }) => {
         this.callbacks.onOutputSize?.(payload.nodeId, payload.width, payload.height);
@@ -154,12 +181,28 @@ export class NativePipelineRuntime {
     try {
       const info = await bridge.invoke<NativeRuntimeInfo>('native_gpu_initialize');
       this.initialized = true;
+      if (info.outputMode === 'webview-texture-stream' && webview) {
+        try {
+          const streamPromise = Promise.resolve(
+            webview.getTextureStream('open-quartz-renderer'),
+          );
+          this.textureStreamMode = true;
+          void this.attachTextureStream(streamPromise);
+        } catch (error) {
+          await bridge.invoke('native_gpu_set_shared_texture_enabled', { enabled: false });
+          info.outputMode = 'embedded-readback';
+          this.callbacks.onError?.(
+            `Cannot start WebView2 TextureStream: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       return info;
     } catch (error) {
       this.releaseListeners();
       throw error;
     }
   }
+
 
   async setGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<number> {
     const revision = await this.invoke<number>('native_gpu_set_graph', {
@@ -337,6 +380,7 @@ export class NativePipelineRuntime {
     } finally {
       this.initialized = false;
       this.lastRendererNodeId = null;
+      this.releaseTextureStream();
       this.imageResources.clear();
       this.videoResources.clear();
       this.onnxResources.clear();
@@ -443,6 +487,7 @@ export class NativePipelineRuntime {
   }
 
   private scheduleRendererReadback(nodeId: string): void {
+    if (this.textureStreamMode) return;
     if (!this.initialized) return;
     if (this.rendererReadbackPending) {
       this.queuedRendererReadbackNodeId = nodeId;
@@ -450,12 +495,9 @@ export class NativePipelineRuntime {
       return;
     }
     this.rendererReadbackPending = true;
-    void this.readOutput(nodeId)
+    void this.readPreview(nodeId, 960)
       .then((frame) => {
         this.callbacks.onRendererFrame?.(nodeId, frame);
-        if (this.previewNodeId === nodeId) {
-          this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(frame));
-        }
       })
       .catch((error: unknown) => {
         this.callbacks.onError?.(error instanceof Error ? error.message : String(error));
@@ -466,6 +508,56 @@ export class NativePipelineRuntime {
         this.queuedRendererReadbackNodeId = null;
         if (queuedNodeId) this.scheduleRendererReadback(queuedNodeId);
       });
+  }
+
+  private async attachTextureStream(streamPromise: Promise<MediaStream>): Promise<void> {
+    try {
+      const stream = await streamPromise;
+      if (this.closed || !this.textureStreamMode) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      const video = document.createElement('video');
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none';
+      video.srcObject = stream;
+      document.body.append(video);
+      this.textureStream = stream;
+      this.textureStreamVideo = video;
+      await video.play();
+      if (this.lastRendererNodeId) this.presentTextureStreamFrame(this.lastRendererNodeId);
+    } catch (error) {
+      this.releaseTextureStream();
+      this.textureStreamMode = false;
+      this.callbacks.onError?.(
+        `Cannot attach WebView2 TextureStream: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      if (this.lastRendererNodeId) this.scheduleRendererReadback(this.lastRendererNodeId);
+    }
+  }
+
+  private presentTextureStreamFrame(nodeId: string): boolean {
+    const video = this.textureStreamVideo;
+    if (!this.textureStreamMode || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return false;
+    }
+    this.callbacks.onRendererVideoFrame?.(nodeId, video);
+    return true;
+  }
+
+  private releaseTextureStream(): void {
+    this.textureStreamMode = false;
+    if (this.textureStreamVideo) {
+      this.textureStreamVideo.srcObject = null;
+      this.textureStreamVideo.remove();
+    }
+    this.textureStreamVideo = null;
+    if (this.textureStream) {
+      for (const track of this.textureStream.getTracks()) track.stop();
+    }
+    this.textureStream = null;
   }
 
   private schedulePreviewReadback(): void {

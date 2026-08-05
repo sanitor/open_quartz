@@ -9,6 +9,15 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use open_quartz::gpu::D3d12VideoFrame;
+
+pub enum NativeVideoFrame<'a> {
+    Rgba(&'a [u8]),
+    #[cfg(windows)]
+    D3d12(&'a D3d12VideoFrame),
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NativeVideoSourceKind {
@@ -31,6 +40,8 @@ pub struct NativeVideoInfo {
     pub height: u32,
     pub fps: f64,
     pub decoder: String,
+    #[serde(skip)]
+    d3d12_p010_eligible: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +61,8 @@ pub struct NativeVideoDevice {
 struct FrameSlot {
     generation: u64,
     rgba: Vec<u8>,
+    #[cfg(windows)]
+    d3d12: Option<D3d12VideoFrame>,
 }
 
 pub struct NativeVideoSource {
@@ -83,6 +96,8 @@ impl NativeVideoSource {
             slot: Arc::new(Mutex::new(FrameSlot {
                 generation: 0,
                 rgba: Vec::new(),
+                #[cfg(windows)]
+                d3d12: None,
             })),
             alive: Arc::new(AtomicBool::new(false)),
             decoded_frames: Arc::new(AtomicU64::new(0)),
@@ -104,7 +119,7 @@ impl NativeVideoSource {
 
     pub fn upload_latest(
         &mut self,
-        mut upload: impl FnMut(&[u8], u32, u32) -> Result<(), String>,
+        mut upload: impl FnMut(NativeVideoFrame<'_>, u32, u32) -> Result<(), String>,
     ) -> Result<bool, String> {
         let slot = self
             .slot
@@ -113,10 +128,20 @@ impl NativeVideoSource {
         if slot.generation == 0 || slot.generation == self.uploaded_generation {
             return Ok(false);
         }
-        upload(&slot.rgba, self.info.width, self.info.height)?;
+        #[cfg(windows)]
+        let frame = slot
+            .d3d12
+            .as_ref()
+            .map(NativeVideoFrame::D3d12)
+            .unwrap_or_else(|| NativeVideoFrame::Rgba(&slot.rgba));
+        #[cfg(not(windows))]
+        let frame = NativeVideoFrame::Rgba(&slot.rgba);
+        upload(frame, self.info.width, self.info.height)?;
         self.uploaded_generation = slot.generation;
         self.uploaded_frames = self.uploaded_frames.saturating_add(1);
-        self.cpu_copy_bytes = self.cpu_copy_bytes.saturating_add(slot.rgba.len() as u64);
+        if !slot.rgba.is_empty() {
+            self.cpu_copy_bytes = self.cpu_copy_bytes.saturating_add(slot.rgba.len() as u64);
+        }
         Ok(true)
     }
 
@@ -133,7 +158,7 @@ impl NativeVideoSource {
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
-        if self.child.is_none() {
+        if !self.alive.load(Ordering::Acquire) {
             self.start_decoder()?;
         }
         Ok(())
@@ -142,6 +167,18 @@ impl NativeVideoSource {
     fn start_decoder(&mut self) -> Result<(), String> {
         self.alive.store(true, Ordering::Release);
         self.decoded_frames.store(0, Ordering::Release);
+        #[cfg(windows)]
+        if self.config.kind == NativeVideoSourceKind::File && self.info.d3d12_p010_eligible {
+            self.info.decoder = "ffmpeg-d3d12va".to_owned();
+            match self.start_d3d12_decoder() {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    log::warn!("D3D12VA unavailable for this file; falling back to CPU RGBA decode: {error}");
+                    self.info.decoder = "ffmpeg-native".to_owned();
+                    self.alive.store(true, Ordering::Release);
+                }
+            }
+        }
         let mut command = Command::new(&self.ffmpeg);
         command.args(["-hide_banner", "-loglevel", "error"]);
         append_input_args(&mut command, &self.config, self.position_seconds);
@@ -177,6 +214,10 @@ impl NativeVideoSource {
                     }
                     if let Ok(mut current) = slot.lock() {
                         std::mem::swap(&mut current.rgba, &mut frame);
+                        #[cfg(windows)]
+                        {
+                            current.d3d12 = None;
+                        }
                         frame.resize(frame_size, 0);
                         current.generation = current.generation.saturating_add(1);
                     } else {
@@ -194,6 +235,51 @@ impl NativeVideoSource {
         self.child = Some(child);
         self.reader = Some(reader);
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn start_d3d12_decoder(&mut self) -> Result<(), String> {
+        let config = self.config.clone();
+        let position = self.position_seconds;
+        let info = self.info.clone();
+        let slot = self.slot.clone();
+        let alive = self.alive.clone();
+        let decoded_frames = self.decoded_frames.clone();
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::Builder::new()
+            .name("open-quartz-d3d12va-decoder".to_owned())
+            .spawn(move || {
+                let result = decode_d3d12_frames(
+                    &config,
+                    position,
+                    &info,
+                    &slot,
+                    &alive,
+                    &decoded_frames,
+                    ready_sender,
+                );
+                if let Err(error) = result {
+                    log::error!("D3D12VA video decoder stopped: {error}");
+                }
+                alive.store(false, Ordering::Release);
+            })
+            .map_err(|error| format!("Cannot start D3D12VA decoder thread: {error}"))?;
+        match ready_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(())) => {
+                self.reader = Some(reader);
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                self.alive.store(false, Ordering::Release);
+                let _ = reader.join();
+                Err(error)
+            }
+            Err(error) => {
+                self.alive.store(false, Ordering::Release);
+                let _ = reader.join();
+                Err(format!("D3D12VA decoder initialization timed out: {error}"))
+            }
+        }
     }
 
     fn stop_decoder(&mut self) {
@@ -217,6 +303,174 @@ impl Drop for NativeVideoSource {
     fn drop(&mut self) {
         self.stop_decoder();
     }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FfmpegD3d12Sync {
+    fence: *mut std::ffi::c_void,
+    event: *mut std::ffi::c_void,
+    fence_value: u64,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FfmpegD3d12Frame {
+    texture: *mut std::ffi::c_void,
+    subresource_index: i32,
+    sync: FfmpegD3d12Sync,
+    flags: i32,
+}
+
+#[cfg(windows)]
+unsafe extern "C" fn select_d3d12_format(
+    _context: *mut ffmpeg_next::ffi::AVCodecContext,
+    formats: *const ffmpeg_next::ffi::AVPixelFormat,
+) -> ffmpeg_next::ffi::AVPixelFormat {
+    let mut current = formats;
+    while !current.is_null()
+        && unsafe { *current } != ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NONE
+    {
+        if unsafe { *current } == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_D3D12 {
+            return unsafe { *current };
+        }
+        current = unsafe { current.add(1) };
+    }
+    ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NONE
+}
+
+#[cfg(windows)]
+fn decode_d3d12_frames(
+    config: &NativeVideoConfig,
+    initial_position: f64,
+    info: &NativeVideoInfo,
+    slot: &Arc<Mutex<FrameSlot>>,
+    alive: &AtomicBool,
+    decoded_frames: &AtomicU64,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+) -> Result<(), String> {
+    use ffmpeg_next::{codec, format, media::Type, util::frame::video::Video};
+    use std::ffi::CString;
+
+    ffmpeg_next::init().map_err(|error| format!("Cannot initialize libav: {error}"))?;
+    let mut first_pass = true;
+    let frame_interval = Duration::from_secs_f64(1.0 / (info.fps * config.playback_rate));
+    while alive.load(Ordering::Acquire) {
+        let setup = (|| {
+            let mut input = format::input(&config.source)
+                .map_err(|error| format!("Cannot open video with libav: {error}"))?;
+            let stream = input
+                .streams()
+                .best(Type::Video)
+                .ok_or_else(|| "libav found no video stream".to_owned())?;
+            let stream_index = stream.index();
+            let mut context = codec::context::Context::from_parameters(stream.parameters())
+                .map_err(|error| format!("Cannot create HEVC decoder: {error}"))?;
+            let device_name = CString::new("d3d12va").expect("static device name");
+            let mut device = std::ptr::null_mut();
+            unsafe {
+                let device_type =
+                    ffmpeg_next::ffi::av_hwdevice_find_type_by_name(device_name.as_ptr());
+                if device_type == ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+                    return Err("This libav build does not expose D3D12VA".to_owned());
+                }
+                let result = ffmpeg_next::ffi::av_hwdevice_ctx_create(
+                    &mut device,
+                    device_type,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if result < 0 || device.is_null() {
+                    return Err(format!("Cannot create FFmpeg D3D12VA device: {result}"));
+                }
+                let raw = context.as_mut_ptr();
+                (*raw).get_format = Some(select_d3d12_format);
+                (*raw).hw_device_ctx = ffmpeg_next::ffi::av_buffer_ref(device);
+            }
+            let decoder = context
+                .decoder()
+                .video()
+                .map_err(|error| format!("Cannot open D3D12VA video decoder: {error}"));
+            unsafe { ffmpeg_next::ffi::av_buffer_unref(&mut device) };
+            let decoder = decoder?;
+            if first_pass && initial_position > 0.0 {
+                let timestamp =
+                    (initial_position * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
+                input
+                    .seek(timestamp, ..timestamp)
+                    .map_err(|error| format!("Cannot seek video decoder: {error}"))?;
+            }
+            Ok((input, stream_index, decoder))
+        })();
+        let (mut input, stream_index, mut decoder) = match setup {
+            Ok(value) => value,
+            Err(error) => {
+                if first_pass {
+                    let _ = ready.send(Err(error.clone()));
+                }
+                return Err(error);
+            }
+        };
+        if first_pass {
+            ready
+                .send(Ok(()))
+                .map_err(|_| "Native runtime dropped D3D12VA startup channel".to_owned())?;
+            first_pass = false;
+        }
+        let mut decoded = Video::empty();
+        for (packet_stream, packet) in input.packets() {
+            if !alive.load(Ordering::Acquire) {
+                break;
+            }
+            if packet_stream.index() != stream_index {
+                continue;
+            }
+            decoder
+                .send_packet(&packet)
+                .map_err(|error| format!("D3D12VA packet decode failed: {error}"))?;
+            while decoder.receive_frame(&mut decoded).is_ok() {
+                let started = Instant::now();
+                if decoded.format() != ffmpeg_next::format::Pixel::D3D12 {
+                    return Err(format!(
+                        "FFmpeg returned {:?}, not a D3D12 frame",
+                        decoded.format()
+                    ));
+                }
+                let raw = unsafe { &*decoded.as_ptr() };
+                let descriptor = unsafe { &*(raw.data[0] as *const FfmpegD3d12Frame) };
+                let frame = unsafe {
+                    D3d12VideoFrame::from_raw(
+                        descriptor.texture,
+                        descriptor.sync.fence,
+                        descriptor.sync.event,
+                        descriptor.sync.fence_value,
+                        decoded.width(),
+                        decoded.height(),
+                        u32::try_from(descriptor.subresource_index).map_err(|_| {
+                            "FFmpeg returned a negative D3D12 subresource".to_owned()
+                        })?,
+                    )?
+                };
+                let mut current = slot
+                    .lock()
+                    .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
+                current.rgba.clear();
+                current.d3d12 = Some(frame);
+                current.generation = current.generation.saturating_add(1);
+                drop(current);
+                decoded_frames.fetch_add(1, Ordering::AcqRel);
+                let elapsed = started.elapsed();
+                if elapsed < frame_interval {
+                    std::thread::sleep(frame_interval - elapsed);
+                }
+            }
+        }
+        if !config.looping || !alive.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    Ok(())
 }
 
 pub fn find_ffmpeg() -> Result<PathBuf, String> {
@@ -289,6 +543,7 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         height,
         fps,
         decoder: "ffmpeg-native".to_owned(),
+        d3d12_p010_eligible: video_line.contains("yuv420p10le") || video_line.contains("p010"),
     })
 }
 
@@ -417,7 +672,9 @@ fn hide_console_window(command: &mut Command) {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_ffmpeg, NativeVideoConfig, NativeVideoSource, NativeVideoSourceKind};
+    use super::{
+        find_ffmpeg, NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
+    };
     use std::process::Command;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -462,7 +719,10 @@ mod tests {
         let mut first_pixel = None;
         while std::time::Instant::now() < deadline && frames < 2 {
             source
-                .upload_latest(|rgba, width, height| {
+                .upload_latest(|frame, width, height| {
+                    let NativeVideoFrame::Rgba(rgba) = frame else {
+                        panic!("8-bit test video must use CPU RGBA fallback");
+                    };
                     assert_eq!(rgba.len(), width as usize * height as usize * 4);
                     assert_eq!((width, height), (16, 16));
                     if frames == 0 {

@@ -1,0 +1,2 @@
+[env]
+FFMPEG_DIR = { value = "src-tauri/runtime/ffmpeg-shared", relative = true }

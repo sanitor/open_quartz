@@ -25,10 +25,11 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 }
 "#;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use wgpu::{Device, Extent3d, Features, Queue, TextureUsages};
 
+use super::readback::ReadbackStagingRing;
 use super::target::{RenderTarget, TextureFormat};
 
 #[derive(Clone)]
@@ -44,6 +45,9 @@ pub struct TextureHandle {
 pub struct GpuBackend {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub(crate) readback_ring: Arc<ReadbackStagingRing>,
+    #[cfg(windows)]
+    pub(crate) p010_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
 }
 
 impl GpuBackend {
@@ -51,11 +55,20 @@ impl GpuBackend {
         Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
+            readback_ring: Arc::new(ReadbackStagingRing::new()),
+            #[cfg(windows)]
+            p010_converter: Arc::new(OnceLock::new()),
         }
     }
 
     pub fn from_shared(device: Arc<Device>, queue: Arc<Queue>) -> Self {
-        Self { device, queue }
+        Self {
+            device,
+            queue,
+            readback_ring: Arc::new(ReadbackStagingRing::new()),
+            #[cfg(windows)]
+            p010_converter: Arc::new(OnceLock::new()),
+        }
     }
 
     pub fn create_target(&self, width: u32, height: u32, format: TextureFormat) -> RenderTarget {

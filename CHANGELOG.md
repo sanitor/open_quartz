@@ -7,13 +7,17 @@
 - **Dual-target Rust SDK** — added the `open_quartz` crate for native and WASM with shared graph types, topology/dirty planning, WGSL parsing/compilation, typed frame planning, resource generations, structured lifecycle events, GPU resource primitives, and ONNX pre/postprocessing.
 - **Rust-backed production WGSL parser** — `naga` now powers Header catalog parsing, Shader Editor diagnostics, SidePanel descriptions, graph updates, and node creation through the synchronous WASM SDK adapter; the legacy TypeScript parser and `wgsl_reflect` dependency were removed.
 - **Native GPU production runtime** — added a Rust offscreen `GpuExecutor`, DX12/Metal/Vulkan selection, retained pipelines/targets/feedback resources, and a Rust-owned render thread. `PipelineService` now explicitly selects this runtime in Tauri and the browser adapter elsewhere.
-- **In-editor native Renderer output** — native frame metadata triggers a coalesced, full-resolution GPU readback that `PipelineService` draws into the existing Node, SidePanel, and fullscreen Renderer canvases. Preview work runs outside the render runtime mutex; SAVE/screenshot retains explicit full-resolution capture and no independent `Open Quartz Output` window is created.
+- **GPU-only Windows Renderer output** — native DX12 output now flows through the three-slot shared-texture exporter, a cached D3D11On12/keyed-mutex bridge, NV12 VideoProcessor conversion, and WebView2 TextureStream into the existing Renderer canvases. The path carries no per-frame pixel IPC/readback; unsupported hosts retain coalesced RGBA readback.
 - **Native ONNX graph execution** — connected ONNX execution commands to async GPU readback, CPU/DirectML ORT workers, six task-specific postprocessors, generation-safe completion, GPU output upload, cascade/static/video dirty propagation, and provider/data events.
 - **Bundled native video and camera runtime** — Tauri packages FFmpeg and its notice; native threads decode file/camera sources with loop, rate, pause/resume, generation-tagged frame slots, and no decoded-frame WebView IPC. SidePanel camera discovery now uses browser MediaDevices or native DirectShow/AVFoundation/V4L2 devices by host.
+- **Windows D3D12VA zero-copy video input** — native file video now decodes through libav D3D12VA into P010 `ID3D12Resource` surfaces, waits the decoder fence, imports the resource through wgpu-hal DX12, and performs GPU-only BT.709 P010→RGBA conversion. The runtime bundles a checksum-pinned LGPL shared FFmpeg build and reports `d3d12va-p010-zero-copy`; camera and non-Windows paths retain the explicit CPU-copy fallback.
 - **Deterministic SDK startup and packaging** — the generated WASM SDK initializes before React, Vitest loads the real Node binding in global setup, and Windows bundles include ORT, DirectML, FFmpeg, and license resources.
 - **Unified host runtime facade** — browser and Tauri adapters implement one `PipelineHostRuntime` lifecycle; App delegates orchestration to `PipelineService` without dual runtime startup or hidden fallback.
 
 - **Runtime cutover hardening** — Rust Runtime now owns paced browser ticks, async completion acceptance, typed output contracts, presentation dispatch, resource-release retry semantics, and consuming work batches. Browser playback uses a Worker/OffscreenCanvas host; native media reports explicit CPU-copy counters and data-path capabilities.
+- **Multi-presenter and DXGI export** — added retained `GpuPresentationFrame` handles, per-presenter latest-frame mailboxes and backpressure counters, a presenter registry, a three-slot asynchronous GPU readback ring, and a Windows `DxgiSharedTextureExporter` backed by shared `ID3D12Resource` textures, NT resource/fence handles, queue-ordered synchronization, and explicit consumer leases.
+- **Native surface contracts** — added DXGI/IOSurface/DMA-BUF hardware-frame descriptors, synchronization metadata, native decoder/import traits, direct registration of imported GPU textures in `GpuExecutor`, and opt-in native runtime commands for shared-texture acquire/release. WebView2 capability distinguishes interface availability from stream readiness and selects TextureStream only after the renderer adapter is ready.
+- **Lossless WebView policy** — rejected H.264 because it is lossy; WebView2 TextureStream is the Windows lossless realtime path, while bounded RGBA readback and explicit full-resolution capture remain compatibility paths.
 
 ### Fixes
 
@@ -25,6 +29,8 @@
 - **Tauri content boundaries** — replaced the unrestricted CSP and wildcard asset scope with explicit script, worker, media, image, IPC, app-data, resource, and user-media policies.
 - **Native stop/replay lifecycle** — starting playback after STOP now restarts retained FFmpeg video decoders and resets native playback timing instead of leaving the render loop on a frozen frame.
 - **Runtime and Renderer FPS status** — the Header keeps graph execution FPS, while each Renderer panel reports its own 500 ms delivery FPS measured only after a received frame is drawn into a visible mirror canvas.
+- **Native Renderer throughput** — live renderer events now use bounded 960px preview readback instead of full-resolution 8K IPC payloads; full-resolution `readOutput()` remains reserved for screenshots/capture.
+- **H264 compatibility** — Windows D3D12VA P010 is selected only for eligible 10-bit sources; 8-bit H264 and unsupported formats use the existing FFmpeg CPU RGBA decoder instead of silently stopping after a D3D12 frame-format mismatch.
 
 ### Documentation
 
@@ -35,7 +41,8 @@
 
 - **980 unit tests + 56 shader/pipeline tests**, all passing.
 - **Rust/native contracts** — core and Tauri suites cover graph/FFI lifecycle, GPU execution, feedback preservation, native ONNX image tasks, multi-frame FFmpeg decode, resource replacement, and camera metadata parsing.
-- **Runtime smoke** — generated WASM loads in Node/Chromium; native DX12 image, video, and async ONNX graph pipelines validate output pixels; bundled DirectML identity returns `7`; Windows MSI and NSIS bundles include all runtime assets.
+- **Presenter/media GPU contracts** — focused Rust tests exercise independent latest-frame replacement, shared-texture exporter dispatch, FFmpeg-style external hardware-frame import, graph-visible imported textures, DXGI resource/fence handle reopen, queue synchronization, pool saturation, reuse, and release.
+- **Runtime smoke** — generated WASM loads in Node/Chromium; native DX12 image, video, async ONNX, shared-texture acquire/release, preview, and WebView2 TextureStream pipelines validate output; the TextureStream smoke observes the final DOM pixel after runtime shared-frame presentation. Bundled DirectML identity returns `7`.
 
 ## [0.16.0b] -- 2026-07-29
 

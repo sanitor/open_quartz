@@ -58,13 +58,13 @@ Tauri WebView UI -> Zustand Store -> PipelineService
 2. 让静态图只执行必要的 render pass，让动态图按宿主时钟连续执行。
 3. 让 graph metadata、GPU resource、媒体解码器和 ONNX session 具有清晰的所有权。
 4. 让 browser 和 Tauri 共享 graph contract、WGSL contract、执行计划和可观察事件。
-5. 让高频 command/media/ONNX path 保持宿主本地；只以合并、限尺寸的二进制 readback 更新用户可见 renderer preview。
+5. 让高频 command/media/ONNX path 保持宿主本地；Windows Renderer 主路径通过 WebView2 TextureStream 做 GPU-only DOM 合成，selected preview/screenshot 才显式 readback。
 6. 让 graph hot update 尽可能保留未变化的 pipeline、target、feedback 和媒体资源。
 7. 让失败可定位到 node、revision、resource generation 或宿主 capability。
 
 ### 1.2 非目标
 
-- 不把 Tauri WebView canvas 当作 native `wgpu::Surface`；native 离屏 texture 通过 bounded preview readback 显示在现有 Renderer canvas。
+- 不把 Tauri WebView canvas 当作 native `wgpu::Surface`；Windows 使用 WebView2 TextureStream，其他不支持的平台回退 bounded preview readback。
 - 不把 browser `GPUTexture`、Tauri `wgpu::Texture`、ONNX session 或 FFmpeg child process 序列化到项目文件。
 - 不把 native wgpu device 与 DirectML device interop 描述成已完成的零拷贝能力；当前 capability 明确为不共享。
 - 不为未来 3D patch、分布式渲染或多进程图执行提前设计协议。Three.js 依赖存在，但不是当前 2D pipeline 的执行核心。
@@ -79,7 +79,7 @@ Tauri WebView UI -> Zustand Store -> PipelineService
 | GPU 所有权 | 一个 runtime 独占自己的 GPU object；Store 不应保存 native GPU object |
 | Graph | 节点 ID 稳定；edge handle 决定端口连接；拓扑和 node data 变化才触发 plan rebuild |
 | Feedback | shader 声明 `previousFrame` 才启用 ping-pong；位置变化不能清空反馈状态 |
-| Output | native emits metadata every render frame; adapter requests actual Renderer display size × DPR and GPU-scales before readback, with one pending readback for backpressure; screenshot reads full resolution |
+| Output | native 每帧只 emit metadata；Windows 将三槽 DXGI export 经 D3D11On12、共享 keyed-mutex bridge、NV12 VideoProcessor 提交给 TextureStream；不支持时使用单 pending readback；screenshot 显式读取全分辨率 |
 | 协议 | FFI/Tauri 错误必须保留结构化 code、message、nodeId/details |
 
 ---
@@ -380,7 +380,8 @@ Tauri native render worker：
 - video frames 在 render thread 内从 decoder slot 上传到 GPU；
 - `Engine::run_frame` 生成命令；`GpuExecutor::execute_commands` 消费命令；
 - 最终 texture 保持离屏，不创建独立 output window；
-- 每个 render frame 发送 `native-runtime-frame` metadata，adapter 只保留一个 pending preview readback，来不及的中间帧丢弃，不阻塞 render worker；
+- Windows DX12 output 进入三槽 `DxgiSharedTextureExporter`，main thread 通过 D3D11On12 打开 resource/fence、复用每槽 bridge texture，D3D11 VideoProcessor 转为 WebView2 NV12 texture 后 `PresentTexture`；队列只保留 latest frame；
+- 每个 render frame 仍发送 `native-runtime-frame` metadata；TextureStream 可用时 adapter 直接从隐藏 `HTMLVideoElement` 合成到 Renderer mirrors，否则使用单 pending RGBA readback；
 - frame command、decoder frame 和完整分辨率像素不进入常规 Tauri event。
 
 ---
@@ -513,11 +514,11 @@ Browser：
 
 Native：
 
-- `NativeVideoSource` 通过 FFmpeg probe 输入尺寸和 fps；
-- decoder child 输出 raw RGBA；
-- reader thread 写入 generation-tagged frame slot；
+- `NativeVideoSource` 通过 FFmpeg probe 输入尺寸和 fps；Windows x64 文件源优先使用 libav D3D12VA，camera 与非 Windows 保留 FFmpeg raw RGBA fallback；
+- D3D12VA decoder thread 选择 `AV_PIX_FMT_D3D12`，等待 `AVD3D12VASyncContext` fence，并把独立保留的 P010 `ID3D12Resource` 放入 generation-tagged frame slot；
+- native render worker 通过 `wgpu-hal::dx12::texture_from_raw` 导入 P010 surface，在 GPU 上转换为普通 sampled RGBA texture；不读取 decoded bytes；
+- fallback decoder child 输出 raw RGBA，reader thread 写入 generation-tagged frame slot；
 - render thread 调用 `upload_latest()`，只上传新 generation；
-- `GpuExecutor` 使用普通 sampled texture；
 - pause 停 decoder，resume 重启 decoder，file source 保存 position；
 - `NativeVideoDevice` 通过平台 backend discovery 返回 id/label。
 
@@ -1010,14 +1011,14 @@ open-quartz-native-render thread (~16 ms target cadence)
 NativePipelineRuntime event listeners
   -> native-runtime-frame
        -> update fps/time/frame metadata
-       -> scheduleRendererReadback(outputNodeId)
-            -> invoke native_gpu_read_preview(nodeId, display max dimension)
-            -> Rust GPU blit/downscale to bounded preview target
-            -> copyTextureToBuffer + map
-            -> binary payload: width + height + RGBA8
-       -> PipelineService.drawRendererFrame(nodeId, frame)
-            -> putImageData(nativePreviewCanvas)
-            -> drawImage(nativePreviewCanvas -> renderer mirror canvases)
+       -> WebView2 TextureStream ready
+            -> hidden HTMLVideoElement receives native MediaStream frame
+            -> PipelineService.drawRendererSource(video -> renderer mirror canvases)
+            -> no per-frame IPC pixel payload / GPU readback
+       -> fallback when TextureStream unavailable
+            -> scheduleRendererReadback(outputNodeId)
+            -> copyTextureToBuffer + map -> binary RGBA8
+            -> putImageData(nativePreviewCanvas) -> mirror canvases
 
   -> native-runtime-output (async ONNX completion)
        -> onOutputSize / onOutputData / backend callbacks
@@ -1049,14 +1050,17 @@ imageDataUrl/rawDataUrl in Store
 ```text
 video descriptor (kind/path/device/loop/rate)
   -> native_gpu_attach_video
-  -> NativeVideoSource + FFmpeg decoder child
-  -> reader thread keeps latest complete RGBA frame in generation-tagged slot
+  -> NativeVideoSource + decoder backend
+       Windows x64 file: FFmpeg/libav D3D12VA -> P010 ID3D12Resource + fence
+       camera/non-Windows: FFmpeg child -> raw RGBA bytes
+  -> generation-tagged frame slot
   -> render worker upload_latest()
-  -> only a new generation uploads to native GPU texture
+       D3D12 path: wgpu-hal import -> GPU P010 plane conversion -> RGBA graph texture
+       fallback: queue.write_texture RGBA upload
   -> shader/ONNX consumes the texture
 ```
 
-decoder RGBA frame不通过 Tauri event/command 返回 WebView。上传 owner 是 native render worker；WebView 只收到 renderer preview 的 bounded RGBA 或显式 screenshot。
+Neither path returns decoded frames through Tauri event/command to WebView. The D3D12 path retains the resource and performs only GPU-side color conversion; the fallback is explicitly measured as CPU copy. WebView receives only bounded renderer preview RGBA or an explicit screenshot.
 
 #### Native ONNX
 
@@ -1074,27 +1078,26 @@ catalog/custom descriptor
   -> upload result texture + mark cascade dirty
   -> native-runtime-output metadata/data event
 ```
+### 9.8 Native video、时间戳与多 Renderer presentation
 
-generation 不匹配的迟到 ONNX completion 必须丢弃，不能覆盖新 graph/model 的 node output。
+本节区分当前已落地的 Windows 文件视频路径、明确的 CPU fallback 和仍待补齐的媒体时间戳契约。
 
-### 9.8 Native video、时间戳与多 Renderer presentation 目标
+#### 9.8.1 Video decode-to-input zero-copy（Windows x64 file）
 
-本节区分“当前实现”和“必须达到的 native 目标”，不能把 native ownership 等同于 zero-copy 或时间同步。
-
-#### 9.8.1 Video decode-to-input 必须 zero-copy
-
-当前 FFmpeg `rawvideo rgba` stdout → Rust `Vec<u8>` → `queue.write_texture` 路径是 CPU copy fallback，不满足目标。目标契约是 decoder 直接产出可导入 GPU 的 frame surface：
+当前 Windows 文件视频已使用 FFmpeg 8.1 D3D12VA hardware surface；D3D12 P010 resource 经 `wgpu-hal::dx12::texture_from_raw` 导入，并以 GPU pass 转换为 graph 的 RGBA sampled texture。没有 decoded RGBA pipe、CPU pixel buffer、mapped staging buffer 或 WebView IPC。
 
 ```text
-compressed packet
-  -> hardware decoder surface (带 media PTS)
-  -> platform shared texture / external image import
-  -> graph input texture view
+compressed HEVC packet
+  -> FFmpeg D3D12VA P010 surface + fence
+  -> wait fence and retain ID3D12Resource
+  -> wgpu DX12 P010 texture import
+  -> GPU-only BT.709 limited-range P010 -> RGBA pass
+  -> graph input texture
 ```
 
-逐帧路径不得出现 RGBA pipe、`Vec<u8>`、mapped staging buffer 或 WebView IPC。Windows 首个 backend 应使用 hardware decode surface 与 D3D shared-resource interop；若安全的 `wgpu` public API 不能导入该 surface，interop 必须封装在 platform backend（必要时使用 `wgpu-hal`），不能悄悄退回 CPU 后仍宣称 zero-copy。CPU fallback 可以作为 capability 明示的兼容模式，但其 runtime capability 和 UI 状态必须标为 `cpu-copy`。
+Camera and non-Windows decoders retain `rawvideo rgba` stdout → Rust `Vec<u8>` → `queue.write_texture` as an explicit `cpu-copy` fallback. They must not report `d3d12va-p010-zero-copy`.
 
-decoder frame 至少携带：`stream_id`、`media_pts`、`duration`、texture handle、color space/transfer/range 和 synchronization primitive。texture 的释放必须晚于消费它的最后一次 GPU submission。
+The remaining media-contract work is timestamp/color generalization: the current importer retains the texture and synchronization primitive, but playback pacing still derives from probed FPS and the converter currently uses BT.709 limited-range coefficients. PTS/duration and color space/transfer/range must be propagated before claiming arbitrary-source color/timestamp completeness.
 
 #### 9.8.2 Native composition clock
 
@@ -1192,6 +1195,20 @@ unsubscribe_output(subscription id)
 
 最终 native compositor/surface 路径中，presentation subscription 每帧不传像素；WebView 只接收低频状态/telemetry。WebView canvas 兼容路径仍需 readback 和 upload，因此只能称为 subscription-driven bounded preview，不能称为 zero-copy 或严格 vsync presentation。
 
+#### 9.8.5 Multi-Presenter 第一阶段实现
+
+Rust GPU 层已经建立与 graph execution 解耦的 presentation 边界：
+
+- `GpuPresentationFrame` 只克隆 `Arc<wgpu::Texture/TextureView/Sampler>` handle 和 frame metadata，不复制像素；
+- `PresenterRegistry` 可同时注册多个 `GpuPresenter`，每个 Presenter 拥有独立 `LatestFrameMailbox`、accepted/replaced/failed 统计和消费节奏；慢 UI 只覆盖自己的旧 frame，不阻塞 graph tick 或其他 Presenter；
+- `SharedTexturePresenter<E>` 把平台导出限制在 `SharedTextureExporter` adapter 内，descriptor 包含 lease、resource handle、sync handle/value、尺寸和 content timestamp。Windows `DxgiSharedTextureExporter` 已实现三槽 shared `ID3D12Resource` pool、NT handle、shared fence、异步 queue signal 和显式 consumer release；slot 必须先于其 wgpu device 销毁；IOSurface/DMA-BUF adapter 仍待实现；
+- `media` 模块保留跨平台 DXGI/IOSurface/DMA-BUF frame contract；Windows concrete adapter 由 `NativeVideoSource` + `D3d12VideoFrame` 实现，接收 FFmpeg P010 resource/fence，并通过 `GpuExecutor.upload_d3d12_p010()` 注册 GPU-converted graph texture；PTS/duration 与通用 color metadata 尚未接入该 concrete path；
+- native runtime 可按需启用 shared Presenter，并通过 `native_gpu_take_shared_texture` / `native_gpu_release_shared_texture` 转移和归还 lease；没有 consumer 时不启用，因此不改变现有 WebView 路径。Windows smoke 已实际重开 resource/fence handle、等待同步值，并跑通 graph → Presenter descriptor → release；
+- WebView2 experimental `ICoreWebView2ExperimentalEnvironment12` 和 renderer adapter LUID 在当前 runtime 可查询，但 `CreateTextureStream` 实际返回 `0x80070032 (ERROR_NOT_SUPPORTED)`。capability 因此报告 `available=true, streamReady=false`；不能接入 D3D11 texture 或验证 DOM presentation，WebView 继续使用无损 RGBA fallback；
+- 未实现 H.264 `EncodedStreamPresenter`。H.264 会破坏 Renderer 的逐像素准确性；没有 shared-texture bridge 时继续使用无损、bounded、异步 RGBA staging/readback fallback，SAVE/screenshot 始终无损。
+
+当前可宣称 Windows native file video 的 D3D12VA → wgpu 路径无 CPU pixel copy，且 Windows native UI/shared-resource consumer 的 DXGI 导出已完成；不能宣称 WebView2 TextureStream、IOSurface、DMA-BUF、camera hardware decode 或通用 PTS/color metadata 已完成。
+
 ## 10. Rust SDK 与 FFI
 
 ### 10.1 Crate 模块
@@ -1203,7 +1220,7 @@ crates/open_quartz/src/
   wgsl/        parser、compiler、validation
   engine/      plan、typed frame、execution commands、feedback
   runtime/     lifecycle/clock、resources、subscriptions、delivery、presentation planning（目标）
-  media/       timestamped input/frame selection、native decoder adapters（目标）
+  media/       external GPU frame/decoder/import contract（已实现）；FFmpeg platform adapters（目标）
   gpu/         backend traits、native targets/executor、upload/readback/interop
   onnx/        inference contract、ORT providers、pre/postprocessing
   ffi/         stable handles、errors/events、C/WASM/language bindings
@@ -1634,7 +1651,7 @@ Rust worker -> video upload -> Engine.run_frame -> GpuExecutor -> present
 - dropped/late frame count；
 - native IPC command/event count。
 
-未有 benchmark 数据前，禁止使用“零拷贝”“10x”“实时无开销”等无法验证的收益描述。native video 当前是 decoder thread → RGBA texture upload，不应称为 decoder output zero-copy。
+未有 benchmark 数据前，禁止使用“10x”“实时无开销”等无法验证的收益描述。Windows x64 file video 当前是 D3D12VA surface → wgpu P010 import → GPU color-conversion pass，指标应分别记录 decoder frame、GPU conversion 和 graph upload；camera/非 Windows fallback 仍是 decoder thread → RGBA texture upload，并明确标为 `cpu-copy`。
 
 ---
 
@@ -1656,10 +1673,10 @@ asset path 仍视为不可信输入；命令只接受已定义的 descriptor、m
 
 平台 runtime 资源：
 
-- Windows：FFmpeg、FFmpeg notice、`onnxruntime.dll`、`DirectML.dll`；
+- Windows：checksum-pinned LGPL shared FFmpeg 的 executable、libav DLL、FFmpeg notice、`onnxruntime.dll`、`DirectML.dll`；
 - macOS/Linux：FFmpeg、FFmpeg notice；
-- `npm run prepare:runtime` 构建 WASM SDK、复制 ORT、复制平台 FFmpeg；
-- Tauri bundle 通过平台 conf 文件把 runtime 资源放入 app `runtime/` 目录。
+- `npm run prepare:runtime` 构建 WASM SDK、复制 ORT，并在 Windows x64 下载、校验、解压 shared FFmpeg 后设置 `FFMPEG_DIR`；
+- Tauri bundle 通过平台 conf 文件把 runtime 资源放入 app `runtime/` 目录，并将 Windows libav DLL 放入 executable loader search path。
 
 FFmpeg 是外部发行物，打包和发布必须保留对应 notice/license 文件。
 

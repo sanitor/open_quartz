@@ -5,11 +5,16 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::native_video::{
-    find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoInfo,
-    NativeVideoSource, NativeVideoSourceKind,
+    find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoFrame,
+    NativeVideoInfo, NativeVideoSource, NativeVideoSourceKind,
 };
 use open_quartz::engine::ExecutionCommand;
-use open_quartz::gpu::{GpuBackend, GpuExecutor, GpuOutputHandle, GpuPreviewReader, TextureFormat};
+#[cfg(windows)]
+use open_quartz::gpu::{DxgiSharedTextureExporter, SharedTexturePresenter};
+use open_quartz::gpu::{
+    GpuBackend, GpuExecutor, GpuOutputHandle, GpuPresentationFrame, GpuPresenter, GpuPreviewReader,
+    SharedTextureFrame, TextureFormat,
+};
 use open_quartz::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
 use open_quartz::Engine;
 use serde::{Deserialize, Serialize};
@@ -22,6 +27,8 @@ pub struct NativeRuntimeState {
     alive: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(windows)]
+    presentation_scheduled: Arc<AtomicBool>,
 }
 
 impl Drop for NativeRuntimeState {
@@ -86,6 +93,7 @@ pub struct NativeRuntimeInfo {
     native_video: bool,
     video_data_path: String,
     tensor_data_path: String,
+    shared_texture: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -113,6 +121,10 @@ struct NativeGpuRuntime {
     onnx_receiver: mpsc::Receiver<NativeOnnxCompletion>,
     output_events: Vec<NativeOutputEvent>,
     onnx_workers: Vec<JoinHandle<()>>,
+    #[cfg(windows)]
+    shared_presenter: Option<SharedTexturePresenter<DxgiSharedTextureExporter>>,
+    #[cfg(windows)]
+    shared_texture_enabled: bool,
 }
 
 impl NativeGpuRuntime {
@@ -130,12 +142,34 @@ impl NativeGpuRuntime {
             .await
             .map_err(|error| format!("Cannot find a native GPU adapter: {error}"))?;
         let adapter_info = adapter.get_info();
+        let required_features = if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_P010)
+            && adapter
+                .features()
+                .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        {
+            wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features,
+                ..Default::default()
+            })
             .await
             .map_err(|error| format!("Cannot create native GPU device: {error}"))?;
         let backend = Arc::new(GpuBackend::from_device(device, queue));
         let executor = GpuExecutor::new(backend.clone());
+        #[cfg(windows)]
+        let shared_presenter = DxgiSharedTextureExporter::new(backend.clone())
+            .ok()
+            .map(SharedTexturePresenter::new);
+        #[cfg(windows)]
+        let shared_texture = shared_presenter.is_some();
+        #[cfg(not(windows))]
+        let shared_texture = false;
         let info = NativeRuntimeInfo {
             adapter_name: adapter_info.name,
             backend: format!("{:?}", adapter_info.backend),
@@ -145,8 +179,16 @@ impl NativeGpuRuntime {
             native_video: find_ffmpeg().is_ok(),
             native_onnx_direct_ml: cfg!(target_os = "windows"),
             shared_onnx_wgpu_device: false,
-            video_data_path: "cpu-copy".to_owned(),
+            video_data_path: if cfg!(windows)
+                && required_features.contains(wgpu::Features::TEXTURE_FORMAT_P010)
+                && required_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+            {
+                "d3d12va-p010-zero-copy".to_owned()
+            } else {
+                "cpu-copy".to_owned()
+            },
             tensor_data_path: "cpu-copy".to_owned(),
+            shared_texture,
         };
         let (onnx_sender, onnx_receiver) = mpsc::channel();
         let now = Instant::now();
@@ -166,6 +208,10 @@ impl NativeGpuRuntime {
                 onnx_receiver,
                 output_events: Vec::new(),
                 onnx_workers: Vec::new(),
+                #[cfg(windows)]
+                shared_presenter,
+                #[cfg(windows)]
+                shared_texture_enabled: false,
             },
             info,
         ))
@@ -296,10 +342,14 @@ impl NativeGpuRuntime {
         let (videos, executor) = (&mut self.videos, &mut self.executor);
         let mut dirty = Vec::new();
         for (node_id, source) in videos {
-            let uploaded = source.upload_latest(|rgba, width, height| {
-                executor
+            let uploaded = source.upload_latest(|frame, width, height| match frame {
+                NativeVideoFrame::Rgba(rgba) => executor
                     .upload_rgba(node_id, rgba, width, height)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string()),
+                #[cfg(windows)]
+                NativeVideoFrame::D3d12(frame) => executor
+                    .upload_d3d12_p010(node_id, frame)
+                    .map_err(|error| error.to_string()),
             })?;
             if uploaded {
                 dirty.push(node_id.clone());
@@ -508,6 +558,44 @@ impl NativeGpuRuntime {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn set_shared_texture_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+        let presenter = self
+            .shared_presenter
+            .as_mut()
+            .ok_or_else(|| "DXGI shared texture Presenter is unavailable".to_owned())?;
+        if !enabled {
+            if let Some(frame) = presenter.take_latest() {
+                presenter.release(frame.lease_id)?;
+            }
+        }
+        self.shared_texture_enabled = enabled;
+        Ok(enabled)
+    }
+
+    #[cfg(windows)]
+    fn take_shared_texture(&mut self) -> Option<SharedTextureFrame> {
+        self.shared_presenter
+            .as_mut()
+            .and_then(SharedTexturePresenter::take_latest)
+    }
+
+    #[cfg(windows)]
+    fn has_shared_texture_pending(&self) -> bool {
+        self.shared_presenter
+            .as_ref()
+            .and_then(SharedTexturePresenter::latest)
+            .is_some()
+    }
+
+    #[cfg(windows)]
+    fn release_shared_texture(&mut self, lease_id: u64) -> Result<(), String> {
+        self.shared_presenter
+            .as_mut()
+            .ok_or_else(|| "DXGI shared texture Presenter is unavailable".to_owned())?
+            .release(lease_id)
+    }
+
     fn take_output_events(&mut self) -> Vec<NativeOutputEvent> {
         std::mem::take(&mut self.output_events)
     }
@@ -564,6 +652,21 @@ impl NativeGpuRuntime {
                 "Output node {output_node_id} has no native GPU texture"
             ));
         };
+        #[cfg(windows)]
+        if self.shared_texture_enabled {
+            if let (Some(presenter), Some(output)) = (
+                self.shared_presenter.as_mut(),
+                self.executor.output_handle(&output_node_id),
+            ) {
+                let _ = presenter.submit(GpuPresentationFrame {
+                    node_id: output_node_id.clone(),
+                    frame,
+                    timeline_ns: (time.max(0.0) * 1_000_000_000.0) as u64,
+                    output,
+                });
+                let _ = presenter.process_latest();
+            }
+        }
         Ok(NativeFrameRendered {
             frame,
             revision: self.engine.revision(),
@@ -597,7 +700,17 @@ async fn initialize_runtime(
         .lock()
         .map_err(|_| "Native runtime lock is poisoned".to_owned())?
         .take();
-    let (runtime, info) = NativeGpuRuntime::new().await?;
+    let (mut runtime, mut info) = NativeGpuRuntime::new().await?;
+    #[cfg(windows)]
+    if app
+        .state::<crate::webview_texture_stream::TextureStreamCapabilityState>()
+        .get()
+        .stream_ready
+        && info.shared_texture
+    {
+        runtime.set_shared_texture_enabled(true)?;
+        info.output_mode = "webview-texture-stream".to_owned();
+    }
     let preview = GpuPreviewReader::new(runtime.executor.backend().clone());
     *state
         .preview
@@ -664,12 +777,22 @@ pub fn native_gpu_remove_texture(
 }
 
 #[tauri::command]
-pub fn native_gpu_read_output(
+pub async fn native_gpu_read_output(
     node_id: String,
     state: State<'_, NativeRuntimeState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let payload = with_runtime(&state, |runtime| runtime.read_output(&node_id))?;
-    Ok(tauri::ipc::Response::new(payload))
+    let (backend, output) = with_runtime(&state, |runtime| {
+        let output = runtime.preview_source(&node_id)?;
+        Ok((runtime.executor.backend().clone(), output))
+    })?;
+    let rgba = backend
+        .read_texture_rgba(&output.texture, output.width, output.height)
+        .await?;
+    Ok(tauri::ipc::Response::new(NativeGpuRuntime::output_payload(
+        &rgba,
+        output.width,
+        output.height,
+    )))
 }
 
 fn read_preview_payload(
@@ -701,6 +824,55 @@ pub fn native_gpu_read_preview(
 ) -> Result<tauri::ipc::Response, String> {
     let payload = read_preview_payload(&state, &node_id, max_dimension)?;
     Ok(tauri::ipc::Response::new(payload))
+}
+
+#[tauri::command]
+pub fn native_gpu_set_shared_texture_enabled(
+    enabled: bool,
+    state: State<'_, NativeRuntimeState>,
+) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        return with_runtime(&state, |runtime| {
+            runtime.set_shared_texture_enabled(enabled)
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (enabled, state);
+        Err("Shared textures are not implemented on this platform".to_owned())
+    }
+}
+
+#[tauri::command]
+pub fn native_gpu_take_shared_texture(
+    state: State<'_, NativeRuntimeState>,
+) -> Result<Option<SharedTextureFrame>, String> {
+    #[cfg(windows)]
+    {
+        return with_runtime(&state, |runtime| Ok(runtime.take_shared_texture()));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = state;
+        Err("Shared textures are not implemented on this platform".to_owned())
+    }
+}
+
+#[tauri::command]
+pub fn native_gpu_release_shared_texture(
+    lease_id: u64,
+    state: State<'_, NativeRuntimeState>,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        return with_runtime(&state, |runtime| runtime.release_shared_texture(lease_id));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (lease_id, state);
+        Err("Shared textures are not implemented on this platform".to_owned())
+    }
 }
 
 fn resource_header<'a>(
@@ -988,6 +1160,24 @@ fn smoke_native_onnx_graph(runtime: &mut NativeGpuRuntime) -> Result<bool, Strin
             .any(|event| event.node_id == "onnx" && event.backend == "cpu"))
 }
 
+#[cfg(windows)]
+fn smoke_shared_texture_presenter(runtime: &mut NativeGpuRuntime) -> Result<bool, String> {
+    runtime.set_shared_texture_enabled(true)?;
+    runtime.render_next()?;
+    let Some(frame) = runtime.take_shared_texture() else {
+        return Ok(false);
+    };
+    let valid = frame.platform == open_quartz::gpu::SharedTexturePlatform::Dxgi
+        && frame.resource_handle != 0
+        && frame.sync_handle.is_some()
+        && frame.sync_value > 0
+        && frame.width > 0
+        && frame.height > 0;
+    runtime.release_shared_texture(frame.lease_id)?;
+    runtime.set_shared_texture_enabled(false)?;
+    Ok(valid)
+}
+
 fn smoke_native_preview_latency(
     state: &NativeRuntimeState,
     image_graph: &str,
@@ -1136,6 +1326,10 @@ pub fn maybe_start_smoke(app: &AppHandle) {
             })?;
             let preview = read_preview_payload(&state, "renderer", 1)?;
             readback_ok &= preview.len() == 12 && preview[..8] == [1, 0, 0, 0, 1, 0, 0, 0];
+            #[cfg(windows)]
+            let shared_texture_ok = with_runtime(&state, smoke_shared_texture_presenter)?;
+            #[cfg(not(windows))]
+            let shared_texture_ok = true;
             let preview_ms = smoke_native_preview_latency(&state, graph)?;
             let video_ok = with_runtime(&state, |runtime| smoke_native_video(runtime, graph))?;
             let onnx_graph_ok = with_runtime(&state, smoke_native_onnx_graph)?;
@@ -1147,6 +1341,7 @@ pub fn maybe_start_smoke(app: &AppHandle) {
                 readback_ok,
                 video_ok,
                 onnx_graph_ok,
+                shared_texture_ok,
                 preview_ms,
             ))
         }
@@ -1159,18 +1354,19 @@ pub fn maybe_start_smoke(app: &AppHandle) {
                 readback_ok,
                 video_ok,
                 onnx_graph_ok,
+                shared_texture_ok,
                 preview_ms,
             )) => {
-                if !readback_ok || !video_ok || !onnx_graph_ok {
+                if !readback_ok || !video_ok || !onnx_graph_ok || !shared_texture_ok {
                     eprintln!(
-                        "NATIVE_GPU_SMOKE_ERROR resource mismatch image={readback_ok} video={video_ok} onnx_graph={onnx_graph_ok}"
+                        "NATIVE_GPU_SMOKE_ERROR resource mismatch image={readback_ok} video={video_ok} onnx_graph={onnx_graph_ok} shared_texture={shared_texture_ok}"
                     );
                     let _ = close_runtime(&state);
                     app.exit(1);
                     return;
                 }
                 println!(
-                    "NATIVE_GPU_SMOKE_OK adapter={} backend={} frame={} output={} size={}x{} image_readback=true video_readback=true onnx_graph=true preview_1080p_ms={:.2} onnx={} onnx_output={}",
+                    "NATIVE_GPU_SMOKE_OK adapter={} backend={} frame={} output={} size={}x{} image_readback=true video_readback=true onnx_graph=true shared_texture=true preview_1080p_ms={:.2} onnx={} onnx_output={}",
                     info.adapter_name,
                     info.backend,
                     frame.frame,
@@ -1207,10 +1403,25 @@ fn with_runtime<T>(
     operation(runtime)
 }
 
+#[cfg(windows)]
+fn present_latest_shared_texture(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<NativeRuntimeState>();
+    let Some(frame) = with_runtime(&state, |runtime| Ok(runtime.take_shared_texture()))? else {
+        return Ok(());
+    };
+    let result = crate::webview_texture_stream::present_shared_frame(&frame);
+    let release = with_runtime(&state, |runtime| {
+        runtime.release_shared_texture(frame.lease_id)
+    });
+    result.and(release).map(|_| ())
+}
+
 fn start_worker(app: &AppHandle, state: &NativeRuntimeState) -> Result<(), String> {
     let runtime = state.runtime.clone();
     let alive = state.alive.clone();
     let playing = state.playing.clone();
+    #[cfg(windows)]
+    let presentation_scheduled = state.presentation_scheduled.clone();
     let app = app.clone();
     let worker = std::thread::Builder::new()
         .name("open-quartz-native-render".to_owned())
@@ -1226,15 +1437,45 @@ fn start_worker(app: &AppHandle, state: &NativeRuntimeState) -> Result<(), Strin
                                 "Native GPU runtime is not initialized".to_owned()
                             })?;
                             let frame = runtime.render_next()?;
-                            Ok((frame, runtime.take_output_events()))
+                            #[cfg(windows)]
+                            let presentation_pending = runtime.has_shared_texture_pending();
+                            #[cfg(not(windows))]
+                            let presentation_pending = false;
+                            Ok((frame, runtime.take_output_events(), presentation_pending))
                         });
                     match result {
-                        Ok((frame, output_events)) => {
+                        Ok((frame, output_events, presentation_pending)) => {
                             for event in output_events {
                                 let _ = app.emit("native-runtime-output", event);
                             }
                             if frame.width > 0 && frame.height > 0 {
                                 let _ = app.emit("native-runtime-frame", frame);
+                            }
+                            #[cfg(windows)]
+                            if presentation_pending
+                                && !presentation_scheduled.swap(true, Ordering::AcqRel)
+                            {
+                                let callback_app = app.clone();
+                                let callback_scheduled = presentation_scheduled.clone();
+                                if let Err(error) = app.run_on_main_thread(move || {
+                                    if let Err(error) = present_latest_shared_texture(&callback_app) {
+                                        let state = callback_app.state::<NativeRuntimeState>();
+                                        let _ = with_runtime(&state, |runtime| {
+                                            runtime.set_shared_texture_enabled(false).map(|_| ())
+                                        });
+                                        let _ = callback_app.emit(
+                                            "native-runtime-presentation-fallback",
+                                            error,
+                                        );
+                                    }
+                                    callback_scheduled.store(false, Ordering::Release);
+                                }) {
+                                    presentation_scheduled.store(false, Ordering::Release);
+                                    let _ = app.emit(
+                                        "native-runtime-error",
+                                        format!("Cannot schedule WebView2 texture presentation: {error}"),
+                                    );
+                                }
                             }
                         }
                         Err(error) => {

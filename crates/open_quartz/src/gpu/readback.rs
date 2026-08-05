@@ -1,10 +1,99 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::backend::GpuBackend;
 pub const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
 pub fn align_bytes_per_row(bytes_per_row: u32) -> u32 {
     bytes_per_row.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT
+}
+
+const READBACK_RING_SIZE: usize = 3;
+
+struct ReadbackSlot {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    busy: bool,
+}
+
+#[derive(Default)]
+struct ReadbackRingState {
+    slots: Vec<ReadbackSlot>,
+    cursor: usize,
+}
+
+pub(crate) struct ReadbackStagingRing {
+    state: Mutex<ReadbackRingState>,
+}
+
+struct ReadbackSlotGuard<'a> {
+    ring: &'a ReadbackStagingRing,
+    index: usize,
+}
+
+impl Drop for ReadbackSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.ring.release(self.index);
+    }
+}
+
+impl ReadbackStagingRing {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(ReadbackRingState::default()),
+        }
+    }
+
+    fn acquire(&self, device: &wgpu::Device, size: u64) -> Result<(usize, wgpu::Buffer), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Readback staging ring lock is poisoned".to_owned())?;
+        let slot_count = state.slots.len();
+        for offset in 0..slot_count {
+            let index = (state.cursor + offset) % slot_count;
+            let slot = &mut state.slots[index];
+            if slot.busy {
+                continue;
+            }
+            if slot.capacity < size {
+                slot.buffer = create_readback_buffer(device, size, index);
+                slot.capacity = size;
+            }
+            slot.busy = true;
+            let buffer = slot.buffer.clone();
+            state.cursor = (index + 1) % READBACK_RING_SIZE;
+            return Ok((index, buffer));
+        }
+        if state.slots.len() >= READBACK_RING_SIZE {
+            return Err("Readback staging ring is saturated".to_owned());
+        }
+        let index = state.slots.len();
+        let buffer = create_readback_buffer(device, size, index);
+        state.slots.push(ReadbackSlot {
+            buffer: buffer.clone(),
+            capacity: size,
+            busy: true,
+        });
+        state.cursor = (index + 1) % READBACK_RING_SIZE;
+        Ok((index, buffer))
+    }
+
+    fn release(&self, index: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(slot) = state.slots.get_mut(index) {
+                slot.busy = false;
+            }
+        }
+    }
+}
+
+fn create_readback_buffer(device: &wgpu::Device, size: u64, index: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("open-quartz-readback-{index}")),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
 }
 
 pub fn copy_padded_rgba(
@@ -51,12 +140,11 @@ impl GpuBackend {
     ) -> Result<Vec<u8>, String> {
         let bytes_per_row = align_bytes_per_row(width * 4);
         let buffer_size = bytes_per_row as u64 * height as u64;
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("open-quartz-readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let (slot_index, readback) = self.readback_ring.acquire(&self.device, buffer_size)?;
+        let _slot_guard = ReadbackSlotGuard {
+            ring: &self.readback_ring,
+            index: slot_index,
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -85,7 +173,7 @@ impl GpuBackend {
         );
         self.queue.submit([encoder.finish()]);
 
-        let slice = readback.slice(..);
+        let slice = readback.slice(..buffer_size);
         let (sender, receiver) = futures_channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result.map_err(|error| error.to_string()));

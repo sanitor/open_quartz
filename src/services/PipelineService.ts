@@ -134,6 +134,9 @@ export class PipelineService {
           this.lastNativeRendererFrame = { nodeId, frame };
           if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
         },
+        onRendererVideoFrame: (nodeId, video) => {
+          if (this.drawRendererSource(nodeId, video)) this.recordRendererPresentation(nodeId);
+        },
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
         onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
@@ -180,6 +183,10 @@ export class PipelineService {
     if (!sourceContext) throw new Error('Cannot create native renderer preview canvas');
     const pixels = new Uint8ClampedArray(frame.rgba);
     sourceContext.putImageData(new ImageData(pixels, frame.width, frame.height), 0, 0);
+    return this.drawRendererSource(nodeId, source);
+  }
+
+  private drawRendererSource(nodeId: string, source: CanvasImageSource): boolean {
     let presented = false;
     for (const mirror of this.rendererMirrors(nodeId)) {
       const context = mirror.getContext('2d');

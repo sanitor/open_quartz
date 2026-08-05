@@ -137,6 +137,45 @@ impl GpuExecutor {
             .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 
+    #[cfg(windows)]
+    pub fn upload_d3d12_p010(
+        &mut self,
+        node_id: &str,
+        frame: &super::D3d12VideoFrame,
+    ) -> Result<(), GpuExecutionError> {
+        let texture = self
+            .backend
+            .upload_d3d12_p010(frame)
+            .map_err(|message| GpuExecutionError::for_node(node_id, message))?;
+        self.textures.insert(node_id.to_owned(), texture);
+        Ok(())
+    }
+
+    pub fn register_external_texture(
+        &mut self,
+        node_id: &str,
+        texture: GpuOutputHandle,
+    ) -> Result<(), GpuExecutionError> {
+        if node_id.is_empty() || texture.width == 0 || texture.height == 0 {
+            return Err(GpuExecutionError::for_node(
+                node_id,
+                "external texture requires a node ID and non-zero dimensions",
+            ));
+        }
+        self.textures.insert(
+            node_id.to_owned(),
+            TextureHandle {
+                texture: texture.texture,
+                view: texture.view,
+                sampler: texture.sampler,
+                width: texture.width,
+                height: texture.height,
+                format: texture.format,
+            },
+        );
+        Ok(())
+    }
+
     pub fn remove_texture(&mut self, node_id: &str) {
         self.textures.remove(node_id);
         self.renderer_sources.retain(|_, source| source != node_id);

@@ -2,6 +2,7 @@ pub mod engine;
 pub mod ffi;
 pub mod gpu;
 pub mod graph;
+pub mod media;
 pub mod onnx;
 pub mod runtime;
 pub mod types;

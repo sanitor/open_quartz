@@ -1,10 +1,11 @@
 mod native_runtime;
 mod native_video;
+mod webview_texture_stream;
 
 use futures::StreamExt;
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Models directory: `<app_data_dir>/models/`
 pub(crate) fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -147,22 +148,77 @@ fn configure_ort_runtime() {}
 #[cfg(not(target_os = "windows"))]
 fn configure_bundled_ort_runtime(_app: &AppHandle) {}
 
+#[cfg(windows)]
+fn schedule_texture_stream_retry(app: AppHandle) {
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if app
+                .state::<webview_texture_stream::TextureStreamCapabilityState>()
+                .get()
+                .stream_ready
+            {
+                return;
+            }
+            let callback_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if callback_app
+                    .state::<webview_texture_stream::TextureStreamCapabilityState>()
+                    .get()
+                    .stream_ready
+                {
+                    return;
+                }
+                let Some(webview) = callback_app.get_webview_window("main") else {
+                    return;
+                };
+                let initialize_app = callback_app.clone();
+                let _ = webview.with_webview(move |platform_webview| {
+                    let capability =
+                        webview_texture_stream::initialize(&platform_webview.environment());
+                    if capability.stream_ready {
+                        println!(
+                            "[oq:native] webview-texture-stream ready adapterLuid={:?}",
+                            capability.adapter_luid
+                        );
+                    }
+                    initialize_app
+                        .state::<webview_texture_stream::TextureStreamCapabilityState>()
+                        .set(capability);
+                });
+            });
+        }
+    });
+}
+
+#[tauri::command]
+fn webview_texture_stream_capability(
+    state: State<'_, webview_texture_stream::TextureStreamCapabilityState>,
+) -> webview_texture_stream::TextureStreamCapability {
+    state.get()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     configure_ort_runtime();
     tauri::Builder::default()
         .manage(native_runtime::NativeRuntimeState::default())
+        .manage(webview_texture_stream::TextureStreamCapabilityState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             download_model,
             read_model,
             is_model_downloaded,
             native_runtime::native_gpu_initialize,
+            webview_texture_stream_capability,
             native_runtime::native_gpu_set_graph,
             native_runtime::native_gpu_upload_image,
             native_runtime::native_gpu_remove_texture,
             native_runtime::native_gpu_read_output,
             native_runtime::native_gpu_read_preview,
+            native_runtime::native_gpu_set_shared_texture_enabled,
+            native_runtime::native_gpu_take_shared_texture,
+            native_runtime::native_gpu_release_shared_texture,
             native_runtime::native_gpu_attach_video,
             native_runtime::native_gpu_detach_video,
             native_runtime::native_gpu_video_metrics,
@@ -181,6 +237,37 @@ pub fn run() {
         ])
         .setup(|app| {
             configure_bundled_ort_runtime(app.handle());
+            #[cfg(windows)]
+            if let Some(webview) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                webview.with_webview(move |platform_webview| {
+                    let state = app_handle
+                        .state::<webview_texture_stream::TextureStreamCapabilityState>();
+                    let capability = webview_texture_stream::initialize(
+                        &platform_webview.environment(),
+                    );
+                    println!(
+                        "[oq:native] webview-texture-stream available={} streamReady={} adapterLuid={:?} reason={:?}",
+                        capability.available,
+                        capability.stream_ready,
+                        capability.adapter_luid,
+                        capability.reason
+                    );
+                    let retry = !capability.stream_ready;
+                    state.set(capability);
+                    if retry {
+                        schedule_texture_stream_retry(app_handle.clone());
+                    }
+                })?;
+            }
+            #[cfg(not(windows))]
+            app.state::<webview_texture_stream::TextureStreamCapabilityState>()
+                .set(webview_texture_stream::TextureStreamCapability {
+                    available: false,
+                    adapter_luid: None,
+                    stream_ready: false,
+                    reason: Some("TextureStream is only available in WebView2".to_owned()),
+                });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
