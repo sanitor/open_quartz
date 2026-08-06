@@ -69,8 +69,9 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
               <video
                 id={`renderer-stream-${id}`}
                 ref={(video) => {
-                  if (video && video.srcObject !== nativeStream) {
-                    video.srcObject = nativeStream;
+                  const stream = nativeStream;
+                  if (video && video.srcObject !== stream) {
+                    video.srcObject = stream;
                     void video.play();
                   }
                 }}

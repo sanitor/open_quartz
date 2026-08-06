@@ -60,7 +60,7 @@ export interface NativeOutputEvent {
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
   onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
-  onRendererStream?: (nodeId: string, stream: MediaStream | null) => void;
+  onRendererStream?: (nodeId: string, video: HTMLVideoElement | null) => void;
   onRendererVideoFrame?: (nodeId: string) => void;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
@@ -621,7 +621,7 @@ export class NativePipelineRuntime {
     if (!this.textureStreamMode || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
       return false;
     }
-    this.callbacks.onRendererStream?.(nodeId, this.textureStream);
+    this.callbacks.onRendererStream?.(nodeId, video);
     if (this.textureStreamFrameCallback === null) {
       const onFrame: VideoFrameRequestCallback = () => {
         this.callbacks.onRendererVideoFrame?.(nodeId);

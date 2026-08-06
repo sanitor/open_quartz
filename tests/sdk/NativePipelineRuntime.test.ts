@@ -284,7 +284,7 @@ describe('NativePipelineRuntime', () => {
       bridge.emit('native-runtime-frame', frame);
       await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
 
-      expect(onRendererStream).toHaveBeenCalledWith('renderer', stream);
+      expect(onRendererStream).toHaveBeenCalledWith('renderer', expect.any(HTMLVideoElement));
       expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_output')).toBe(false);
       bridge.emit('native-runtime-presentation-fallback', 'present failed');
       expect(onError).toHaveBeenCalledWith('present failed');

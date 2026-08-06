@@ -19,7 +19,7 @@ export class PipelineService {
   private lastUiFrameAt = Number.NEGATIVE_INFINITY;
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
-  private rendererStream: { nodeId: string; stream: MediaStream } | null = null;
+  private rendererStream: { nodeId: string; video: HTMLVideoElement } | null = null;
   private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number }>();
   private rendererDrawMetrics = {
     windowAt: performance.now(),
@@ -146,10 +146,11 @@ export class PipelineService {
           this.lastNativeRendererFrame = { nodeId, frame };
           if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
         },
-        onRendererStream: (nodeId, stream) => {
-          this.rendererStream = stream ? { nodeId, stream } : null;
-          useGraphStore.getState().setNativeRendererStream(nodeId, stream);
-          this.mountRendererStream(nodeId, stream);
+        onRendererStream: (nodeId, video) => {
+          if (video) this.rendererStream = { nodeId, video };
+          else this.rendererStream = null;
+          useGraphStore.getState().setNativeRendererStream(nodeId, video ? video.srcObject as MediaStream : null);
+          this.mountRendererStream(nodeId, video);
         },
         onRendererVideoFrame: (nodeId) => {
           this.recordRendererPresentation(nodeId);
@@ -197,11 +198,15 @@ export class PipelineService {
     );
   }
 
-  private mountRendererStream(nodeId: string, stream: MediaStream | null): void {
-    for (const video of this.rendererVideos(nodeId)) {
-      if (video.srcObject === stream) continue;
-      video.srcObject = stream;
-      if (stream) void video.play();
+  private mountRendererStream(nodeId: string, video: HTMLVideoElement | null): void {
+    for (const target of this.rendererVideos(nodeId)) {
+      if (target === video) continue;
+      if (video && target.srcObject !== video.srcObject) {
+        target.srcObject = video.srcObject;
+        void target.play();
+      } else if (!video) {
+        target.srcObject = null;
+      }
     }
   }
 
@@ -272,7 +277,7 @@ export class PipelineService {
 
   private handleRendererRemount = (): void => {
     if (this.rendererStream) {
-      this.mountRendererStream(this.rendererStream.nodeId, this.rendererStream.stream);
+      this.mountRendererStream(this.rendererStream.nodeId, this.rendererStream.video);
     }
     if (this.lastNativeRendererFrame) {
       this.drawRendererFrame(this.lastNativeRendererFrame.nodeId, this.lastNativeRendererFrame.frame);
