@@ -20,7 +20,7 @@ export class PipelineService {
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
   private rendererStream: { nodeId: string; video: HTMLVideoElement } | null = null;
-  private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number }>();
+  private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number; lastPresentedFrames?: number }>();
   private rendererDrawMetrics = {
     windowAt: performance.now(),
     frames: 0,
@@ -156,8 +156,8 @@ export class PipelineService {
             this.mountRendererStream(nodeId, video);
           }
         },
-        onRendererVideoFrame: (nodeId) => {
-          this.recordRendererPresentation(nodeId);
+        onRendererVideoFrame: (nodeId, presentedFrames) => {
+          this.recordRendererPresentation(nodeId, performance.now(), presentedFrames);
         },
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
@@ -284,9 +284,18 @@ export class PipelineService {
     this.runtime?.requestPreviewRefresh?.();
   };
 
-  private recordRendererPresentation(nodeId: string, now = performance.now()): void {
+  private recordRendererPresentation(
+    nodeId: string,
+    now = performance.now(),
+    presentedFrames?: number,
+  ): void {
     const metric = this.rendererFrameMetrics.get(nodeId) ?? { windowAt: now, frames: 0 };
-    metric.frames += 1;
+    if (presentedFrames === undefined) {
+      metric.frames += 1;
+    } else if (metric.lastPresentedFrames !== undefined) {
+      metric.frames += Math.max(0, presentedFrames - metric.lastPresentedFrames);
+    }
+    metric.lastPresentedFrames = presentedFrames ?? metric.lastPresentedFrames;
     const elapsed = now - metric.windowAt;
     if (elapsed >= 500) {
       useGraphStore.getState().setRendererFps(nodeId, metric.frames * 1000 / elapsed);

@@ -46,6 +46,7 @@
 - **Single DOM video consumer** — move the canonical TextureStream `<video>` element between the node, SidePanel, and fullscreen slots instead of assigning the same MediaStream to several video elements, ensuring WebView2 has exactly one media/compositor consumer.
 - **TextureStream media clock** — use microsecond presentation timestamps for WebView2 TextureStream; consumer diagnostics showed `mediaDelta≈10s` per one-second window with the previous 100ns conversion, causing WebView2 to fast-forward/drop frames and oscillate between 10–45 FPS.
 - **TextureStream UI state churn** — publish the native stream to Zustand only when the `MediaStream` identity changes; repeated native frame events no longer trigger redundant store updates or React reconciliation.
+- **Visible FPS accounting** — derive Renderer delivery FPS from `requestVideoFrameCallback().presentedFrames` deltas rather than callback invocation count; WebView2 batches multiple presented frames into callbacks, so the old counter underreported an actual ~60 FPS stream as 20–40 FPS.
 
 ### Documentation
 
