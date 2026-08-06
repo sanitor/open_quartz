@@ -292,6 +292,7 @@ pub struct D3d12VideoFrame {
     pub width: u32,
     pub height: u32,
     pub subresource_index: u32,
+    array_layers: u32,
 }
 
 unsafe impl Send for D3d12VideoFrame {}
@@ -322,6 +323,12 @@ impl D3d12VideoFrame {
                 description.Format
             ));
         }
+        let array_layers = u32::from(description.DepthOrArraySize);
+        if subresource_index >= array_layers {
+            return Err(format!(
+                "FFmpeg D3D12 subresource {subresource_index} exceeds array size {array_layers}"
+            ));
+        }
         let borrowed_fence = ID3D12Fence::from_raw(
             NonNull::new(fence)
                 .ok_or_else(|| "FFmpeg returned a null D3D12 fence".to_owned())?
@@ -348,6 +355,7 @@ impl D3d12VideoFrame {
             width,
             height,
             subresource_index,
+            array_layers,
         })
     }
 }
@@ -359,7 +367,7 @@ impl GpuBackend {
         let size = wgpu::Extent3d {
             width: frame.width,
             height: frame.height,
-            depth_or_array_layers: 1,
+            depth_or_array_layers: frame.array_layers,
         };
         let hal_texture = unsafe {
             wgpu::hal::dx12::Device::texture_from_raw(
@@ -389,11 +397,15 @@ impl GpuBackend {
         let y_view = source.create_view(&wgpu::TextureViewDescriptor {
             format: Some(wgpu::TextureFormat::R16Unorm),
             aspect: wgpu::TextureAspect::Plane0,
+            base_array_layer: frame.subresource_index,
+            array_layer_count: Some(1),
             ..Default::default()
         });
         let uv_view = source.create_view(&wgpu::TextureViewDescriptor {
             format: Some(wgpu::TextureFormat::Rg16Unorm),
             aspect: wgpu::TextureAspect::Plane1,
+            base_array_layer: frame.subresource_index,
+            array_layer_count: Some(1),
             ..Default::default()
         });
         let output = self.create_texture(frame.width, frame.height, TextureFormat::Rgba8Unorm);

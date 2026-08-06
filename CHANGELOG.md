@@ -37,6 +37,7 @@
 - **D3D12VA loop stalls** — seek and flush the existing demuxer/decoder at file-video loop boundaries instead of reopening the media input and recreating the hardware device, retaining the decoder GPU context across loops.
 - **Native live-graph recovery** — resume the native render worker after every graph update so a transient incomplete graph assembled while PLAY is active cannot leave the UI transport playing while the Rust worker remains stopped on a stale output-node error.
 - **Native video resource lifecycle** — keep Tauri file videos on the native path when reselected, stop creating duplicate WebView video decoders for native thumbnails, use bounded 960px native preview readback instead of full-resolution 8K readback, and throttle selected-input previews to 5 Hz.
+- **D3D12VA frame ordering** — sample the FFmpeg-reported D3D12 texture-array subresource instead of always reading array layer zero, preventing decoder surface reuse from making displayed video frames jump backward despite monotonic renderer timestamps.
 
 ### Documentation
 
