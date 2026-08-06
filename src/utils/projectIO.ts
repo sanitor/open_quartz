@@ -1,7 +1,6 @@
 import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import { checkIsTauri, tauriConvertFileSrc } from './tauri';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
 
 const CURRENT_VERSION = '0.4.0';
@@ -94,19 +93,6 @@ export async function deserializeProject(json: string): Promise<{
       dragging: false,
     };
   });
-
-  const tauri = await checkIsTauri();
-  if (tauri) {
-    for (const node of nodes) {
-      if (node.data.inputMode === 'video' && node.data.videoFilePath && !node.data.videoUrl) {
-        try {
-          node.data.videoUrl = await tauriConvertFileSrc(node.data.videoFilePath);
-        } catch {
-          // File may have been moved; user sees reload prompt
-        }
-      }
-    }
-  }
 
   const edges: Edge[] = project.graph.edges.map((e) => ({
     id: e.id,

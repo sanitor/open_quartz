@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::{
     GpuBackend, GpuOutputHandle, RenderTarget, TextureFormat, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV,
@@ -8,6 +9,8 @@ pub struct GpuPreviewImage {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub scale_submit: Duration,
+    pub readback: Duration,
 }
 
 /// Reusable GPU scaler and bounded readback for UI previews.
@@ -136,6 +139,7 @@ impl GpuPreviewReader {
             .target
             .as_ref()
             .ok_or_else(|| "GPU preview target allocation failed".to_owned())?;
+        let scale_started = Instant::now();
         let bind_group = self
             .backend
             .device
@@ -180,11 +184,16 @@ impl GpuPreviewReader {
             pass.draw(0..3, 0..1);
         }
         self.backend.queue.submit([encoder.finish()]);
+        let scale_submit = scale_started.elapsed();
+        let readback_started = Instant::now();
         let rgba = self.backend.read_target_rgba(target).await?;
+        let readback = readback_started.elapsed();
         Ok(GpuPreviewImage {
             rgba,
             width,
             height,
+            scale_submit,
+            readback,
         })
     }
 }

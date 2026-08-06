@@ -153,6 +153,10 @@ impl NativeVideoSource {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
     pub fn pause(&mut self) {
         self.stop_decoder();
     }
@@ -353,70 +357,66 @@ fn decode_d3d12_frames(
     use std::ffi::CString;
 
     ffmpeg_next::init().map_err(|error| format!("Cannot initialize libav: {error}"))?;
-    let mut first_pass = true;
     let frame_interval = Duration::from_secs_f64(1.0 / (info.fps * config.playback_rate));
-    while alive.load(Ordering::Acquire) {
-        let setup = (|| {
-            let mut input = format::input(&config.source)
-                .map_err(|error| format!("Cannot open video with libav: {error}"))?;
-            let stream = input
-                .streams()
-                .best(Type::Video)
-                .ok_or_else(|| "libav found no video stream".to_owned())?;
-            let stream_index = stream.index();
-            let mut context = codec::context::Context::from_parameters(stream.parameters())
-                .map_err(|error| format!("Cannot create HEVC decoder: {error}"))?;
-            let device_name = CString::new("d3d12va").expect("static device name");
-            let mut device = std::ptr::null_mut();
-            unsafe {
-                let device_type =
-                    ffmpeg_next::ffi::av_hwdevice_find_type_by_name(device_name.as_ptr());
-                if device_type == ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-                    return Err("This libav build does not expose D3D12VA".to_owned());
-                }
-                let result = ffmpeg_next::ffi::av_hwdevice_ctx_create(
-                    &mut device,
-                    device_type,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    0,
-                );
-                if result < 0 || device.is_null() {
-                    return Err(format!("Cannot create FFmpeg D3D12VA device: {result}"));
-                }
-                let raw = context.as_mut_ptr();
-                (*raw).get_format = Some(select_d3d12_format);
-                (*raw).hw_device_ctx = ffmpeg_next::ffi::av_buffer_ref(device);
+    let setup = (|| {
+        let mut input = format::input(&config.source)
+            .map_err(|error| format!("Cannot open video with libav: {error}"))?;
+        let stream = input
+            .streams()
+            .best(Type::Video)
+            .ok_or_else(|| "libav found no video stream".to_owned())?;
+        let stream_index = stream.index();
+        let mut context = codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|error| format!("Cannot create HEVC decoder: {error}"))?;
+        let device_name = CString::new("d3d12va").expect("static device name");
+        let mut device = std::ptr::null_mut();
+        unsafe {
+            let device_type = ffmpeg_next::ffi::av_hwdevice_find_type_by_name(device_name.as_ptr());
+            if device_type == ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+                return Err("This libav build does not expose D3D12VA".to_owned());
             }
-            let decoder = context
-                .decoder()
-                .video()
-                .map_err(|error| format!("Cannot open D3D12VA video decoder: {error}"));
-            unsafe { ffmpeg_next::ffi::av_buffer_unref(&mut device) };
-            let decoder = decoder?;
-            if first_pass && initial_position > 0.0 {
-                let timestamp =
-                    (initial_position * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
-                input
-                    .seek(timestamp, ..timestamp)
-                    .map_err(|error| format!("Cannot seek video decoder: {error}"))?;
+            let result = ffmpeg_next::ffi::av_hwdevice_ctx_create(
+                &mut device,
+                device_type,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+            );
+            if result < 0 || device.is_null() {
+                return Err(format!("Cannot create FFmpeg D3D12VA device: {result}"));
             }
-            Ok((input, stream_index, decoder))
-        })();
-        let (mut input, stream_index, mut decoder) = match setup {
-            Ok(value) => value,
-            Err(error) => {
-                if first_pass {
-                    let _ = ready.send(Err(error.clone()));
-                }
-                return Err(error);
-            }
-        };
-        if first_pass {
-            ready
-                .send(Ok(()))
-                .map_err(|_| "Native runtime dropped D3D12VA startup channel".to_owned())?;
-            first_pass = false;
+            let raw = context.as_mut_ptr();
+            (*raw).get_format = Some(select_d3d12_format);
+            (*raw).hw_device_ctx = ffmpeg_next::ffi::av_buffer_ref(device);
+        }
+        let decoder = context
+            .decoder()
+            .video()
+            .map_err(|error| format!("Cannot open D3D12VA video decoder: {error}"));
+        unsafe { ffmpeg_next::ffi::av_buffer_unref(&mut device) };
+        let decoder = decoder?;
+        if initial_position > 0.0 {
+            let timestamp = (initial_position * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
+            input
+                .seek(timestamp, ..timestamp)
+                .map_err(|error| format!("Cannot seek video decoder: {error}"))?;
+        }
+        ready
+            .send(Ok(()))
+            .map_err(|_| "Native runtime dropped D3D12VA startup channel".to_owned())?;
+        Ok((input, stream_index, decoder))
+    })();
+    let (mut input, stream_index, mut decoder) = match setup {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = ready.send(Err(error.clone()));
+            return Err(error);
+        }
+    };
+
+    loop {
+        if !alive.load(Ordering::Acquire) {
+            break;
         }
         let mut decoded = Video::empty();
         for (packet_stream, packet) in input.packets() {
@@ -469,6 +469,10 @@ fn decode_d3d12_frames(
         if !config.looping || !alive.load(Ordering::Acquire) {
             break;
         }
+        input
+            .seek(0, ..)
+            .map_err(|error| format!("Cannot seek video loop: {error}"))?;
+        decoder.flush();
     }
     Ok(())
 }

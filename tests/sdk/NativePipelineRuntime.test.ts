@@ -206,6 +206,20 @@ describe('NativePipelineRuntime', () => {
     ]);
   });
 
+  it('resumes native playback after a live graph update', async () => {
+    const bridge = new FakeBridge();
+    const runtime = new NativePipelineRuntime({}, bridge);
+    await runtime.initialize();
+    const before = bridge.calls.length;
+
+    await runtime.updateGraph([], []);
+
+    expect(bridge.calls.slice(before).map(({ command }) => command)).toEqual([
+      'native_gpu_set_graph',
+      'native_gpu_resume',
+    ]);
+  });
+
   it('forwards coalesced native frame, size, and error events', async () => {
     const bridge = new FakeBridge();
     const onFrame = vi.fn();
@@ -259,7 +273,6 @@ describe('NativePipelineRuntime', () => {
       await expect(runtime.initialize()).resolves.toMatchObject({
         outputMode: 'webview-texture-stream',
       });
-      await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
       const frame = {
         frame: 1,
         revision: 1,
@@ -268,6 +281,7 @@ describe('NativePipelineRuntime', () => {
         height: 360,
       } satisfies NativeFrameRendered;
       bridge.emit('native-runtime-frame', frame);
+      await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
 
       expect(getTextureStream).toHaveBeenCalledWith('open-quartz-renderer');
       expect(onRendererVideoFrame).toHaveBeenCalledWith(

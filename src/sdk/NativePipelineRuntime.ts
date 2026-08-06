@@ -126,11 +126,23 @@ export class NativePipelineRuntime {
   private previewNodeId: string | null = null;
   private lastRendererNodeId: string | null = null;
   private previewPending = false;
+  private nextPreviewAt = 0;
   private rendererReadbackPending = false;
   private queuedRendererReadbackNodeId: string | null = null;
   private textureStreamVideo: HTMLVideoElement | null = null;
   private textureStream: MediaStream | null = null;
   private textureStreamMode = false;
+  private textureStreamSupported = false;
+  private textureStreamStartPending = false;
+  private textureStreamRetryAt = 0;
+  private rendererReadbackMetrics = {
+    windowAt: performance.now(),
+    completed: 0,
+    queued: 0,
+    totalMs: 0,
+    maxMs: 0,
+    bytes: 0,
+  };
 
 
   constructor(
@@ -158,6 +170,9 @@ export class NativePipelineRuntime {
         );
         this.lastRendererNodeId = payload.outputNodeId;
         if (!this.presentTextureStreamFrame(payload.outputNodeId)) {
+          if (this.textureStreamSupported && webview) {
+            void this.startTextureStream(webview, bridge);
+          }
           this.scheduleRendererReadback(payload.outputNodeId);
         }
         if (this.previewNodeId !== payload.outputNodeId) this.schedulePreviewReadback();
@@ -182,19 +197,10 @@ export class NativePipelineRuntime {
       const info = await bridge.invoke<NativeRuntimeInfo>('native_gpu_initialize');
       this.initialized = true;
       if (info.outputMode === 'webview-texture-stream' && webview) {
-        try {
-          const streamPromise = Promise.resolve(
-            webview.getTextureStream('open-quartz-renderer'),
-          );
-          this.textureStreamMode = true;
-          void this.attachTextureStream(streamPromise);
-        } catch (error) {
-          await bridge.invoke('native_gpu_set_shared_texture_enabled', { enabled: false });
-          info.outputMode = 'embedded-readback';
-          this.callbacks.onError?.(
-            `Cannot start WebView2 TextureStream: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+        this.textureStreamSupported = true;
+        runtimeLog('native', 'info', 'texture-stream-supported', {
+          phase: 'deferred-until-native-frame',
+        });
       }
       return info;
     } catch (error) {
@@ -220,7 +226,9 @@ export class NativePipelineRuntime {
   }
 
   async updateGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<number> {
-    return await this.setGraph(nodes, edges);
+    const revision = await this.setGraph(nodes, edges);
+    await this.invoke<void>('native_gpu_resume');
+    return revision;
   }
 
   async pause(): Promise<void> {
@@ -314,6 +322,7 @@ export class NativePipelineRuntime {
       rendererReadbackPending: this.rendererReadbackPending,
     });
     this.previewNodeId = nodeId;
+    this.nextPreviewAt = 0;
   }
 
   requestPreviewRefresh(): void {
@@ -486,17 +495,50 @@ export class NativePipelineRuntime {
     }
   }
 
+  private recordRendererReadback(startedAt: number, frame: NativeOutputImage): void {
+    const now = performance.now();
+    const durationMs = now - startedAt;
+    const metrics = this.rendererReadbackMetrics;
+    if (metrics.completed === 0) metrics.windowAt = now;
+    metrics.completed += 1;
+    metrics.totalMs += durationMs;
+    metrics.maxMs = Math.max(metrics.maxMs, durationMs);
+    metrics.bytes += frame.rgba.byteLength;
+    const windowMs = now - metrics.windowAt;
+    if (windowMs < 1000) return;
+    runtimeLog('native', 'info', 'renderer-readback-perf', {
+      rate: Number((metrics.completed * 1000 / windowMs).toFixed(1)),
+      avgMs: Number((metrics.totalMs / Math.max(metrics.completed, 1)).toFixed(3)),
+      maxMs: Number(metrics.maxMs.toFixed(3)),
+      queued: metrics.queued,
+      throughputMiBs: Number((metrics.bytes * 1000 / windowMs / (1024 * 1024)).toFixed(1)),
+      width: frame.width,
+      height: frame.height,
+    });
+    this.rendererReadbackMetrics = {
+      windowAt: now,
+      completed: 0,
+      queued: 0,
+      totalMs: 0,
+      maxMs: 0,
+      bytes: 0,
+    };
+  }
+
   private scheduleRendererReadback(nodeId: string): void {
     if (this.textureStreamMode) return;
     if (!this.initialized) return;
     if (this.rendererReadbackPending) {
       this.queuedRendererReadbackNodeId = nodeId;
+      this.rendererReadbackMetrics.queued += 1;
       runtimeLog('native', 'debug', 'renderer-readback-queued', { nodeId });
       return;
     }
     this.rendererReadbackPending = true;
+    const startedAt = performance.now();
     void this.readPreview(nodeId, 960)
       .then((frame) => {
+        this.recordRendererReadback(startedAt, frame);
         this.callbacks.onRendererFrame?.(nodeId, frame);
       })
       .catch((error: unknown) => {
@@ -508,6 +550,43 @@ export class NativePipelineRuntime {
         this.queuedRendererReadbackNodeId = null;
         if (queuedNodeId) this.scheduleRendererReadback(queuedNodeId);
       });
+  }
+
+  private async startTextureStream(
+    webview: ExperimentalTextureStreamWebView,
+    bridge: NativeTauriBridge,
+  ): Promise<void> {
+    const now = performance.now();
+    if (
+      this.textureStreamStartPending
+      || this.textureStreamMode
+      || now < this.textureStreamRetryAt
+    ) {
+      return;
+    }
+    this.textureStreamStartPending = true;
+    this.textureStreamMode = true;
+    try {
+      const streamPromise = Promise.resolve(
+        webview.getTextureStream('open-quartz-renderer'),
+      );
+      await bridge.invoke('native_gpu_set_shared_texture_enabled', { enabled: true });
+      await this.attachTextureStream(streamPromise);
+      runtimeLog('native', 'info', 'texture-stream-started', {
+        width: this.textureStreamVideo?.videoWidth,
+        height: this.textureStreamVideo?.videoHeight,
+      });
+    } catch (error) {
+      this.textureStreamMode = false;
+      this.textureStreamRetryAt = performance.now() + 1000;
+      await bridge.invoke('native_gpu_set_shared_texture_enabled', { enabled: false });
+      runtimeLog('native', 'warn', 'texture-stream-start-failed', {
+        error: error instanceof Error ? error.message : String(error),
+        retryInMs: 1000,
+      });
+    } finally {
+      this.textureStreamStartPending = false;
+    }
   }
 
   private async attachTextureStream(streamPromise: Promise<MediaStream>): Promise<void> {
@@ -531,10 +610,7 @@ export class NativePipelineRuntime {
     } catch (error) {
       this.releaseTextureStream();
       this.textureStreamMode = false;
-      this.callbacks.onError?.(
-        `Cannot attach WebView2 TextureStream: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      if (this.lastRendererNodeId) this.scheduleRendererReadback(this.lastRendererNodeId);
+      throw error;
     }
   }
 
@@ -561,7 +637,9 @@ export class NativePipelineRuntime {
   }
 
   private schedulePreviewReadback(): void {
-    if (!this.previewNodeId || this.previewPending || !this.initialized) return;
+    const now = performance.now();
+    if (now < this.nextPreviewAt || this.previewPending || !this.previewNodeId || !this.initialized) return;
+    this.nextPreviewAt = now + 200;
     this.previewPending = true;
     void this.refreshPreview()
       .catch((error: unknown) => {
@@ -575,7 +653,7 @@ export class NativePipelineRuntime {
   private async refreshPreview(): Promise<void> {
     const nodeId = this.previewNodeId;
     if (!nodeId) return;
-    const output = await this.readOutput(nodeId);
+    const output = await this.readPreview(nodeId, 960);
     if (this.previewNodeId !== nodeId) return;
     this.callbacks.onOutputSize?.(nodeId, output.width, output.height);
     this.callbacks.onOutput?.(nodeId, outputImageToDataUrl(output));

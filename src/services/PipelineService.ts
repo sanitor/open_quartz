@@ -16,9 +16,20 @@ export class PipelineService {
   private nativeFpsWindowAt = 0;
   private nativeFpsWindowFrame = 0;
   private nativeFps = 0;
+  private lastUiFrameAt = Number.NEGATIVE_INFINITY;
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
+  private pendingRendererVideoFrame: { nodeId: string; video: HTMLVideoElement } | null = null;
+  private rendererVideoFrameRaf: number | null = null;
   private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number }>();
+  private rendererDrawMetrics = {
+    windowAt: performance.now(),
+    frames: 0,
+    imageDataMs: 0,
+    mirrorDrawMs: 0,
+    totalMs: 0,
+    maxMs: 0,
+  };
 
   attach(canvas: HTMLCanvasElement): void {
     window.addEventListener('renderer-remount', this.handleRendererRemount);
@@ -89,6 +100,11 @@ export class PipelineService {
     this.runtime = null;
     this.runtimePromise = null;
     window.removeEventListener('renderer-remount', this.handleRendererRemount);
+    if (this.rendererVideoFrameRaf !== null) {
+      cancelAnimationFrame(this.rendererVideoFrameRaf);
+      this.rendererVideoFrameRaf = null;
+    }
+    this.pendingRendererVideoFrame = null;
     this.enqueue(async () => { await runtime?.close(); });
     this.lastNativeRendererFrame = null;
     this.rendererFrameMetrics.clear();
@@ -135,7 +151,16 @@ export class PipelineService {
           if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
         },
         onRendererVideoFrame: (nodeId, video) => {
-          if (this.drawRendererSource(nodeId, video)) this.recordRendererPresentation(nodeId);
+          this.pendingRendererVideoFrame = { nodeId, video };
+          if (this.rendererVideoFrameRaf !== null) return;
+          this.rendererVideoFrameRaf = requestAnimationFrame(() => {
+            this.rendererVideoFrameRaf = null;
+            const pending = this.pendingRendererVideoFrame;
+            this.pendingRendererVideoFrame = null;
+            if (pending && this.drawRendererSource(pending.nodeId, pending.video)) {
+              this.recordRendererPresentation(pending.nodeId);
+            }
+          });
         },
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
@@ -176,6 +201,7 @@ export class PipelineService {
 
 
   private drawRendererFrame(nodeId: string, frame: NativeOutputImage): boolean {
+    const startedAt = performance.now();
     const source = this.nativePreviewCanvas ??= document.createElement('canvas');
     if (source.width !== frame.width) source.width = frame.width;
     if (source.height !== frame.height) source.height = frame.height;
@@ -183,7 +209,47 @@ export class PipelineService {
     if (!sourceContext) throw new Error('Cannot create native renderer preview canvas');
     const pixels = new Uint8ClampedArray(frame.rgba);
     sourceContext.putImageData(new ImageData(pixels, frame.width, frame.height), 0, 0);
-    return this.drawRendererSource(nodeId, source);
+    const imageDataMs = performance.now() - startedAt;
+    const mirrorStartedAt = performance.now();
+    const presented = this.drawRendererSource(nodeId, source);
+    const mirrorDrawMs = performance.now() - mirrorStartedAt;
+    this.recordRendererDraw(frame, imageDataMs, mirrorDrawMs, performance.now() - startedAt);
+    return presented;
+  }
+
+  private recordRendererDraw(
+    frame: NativeOutputImage,
+    imageDataMs: number,
+    mirrorDrawMs: number,
+    totalMs: number,
+  ): void {
+    const now = performance.now();
+    const metrics = this.rendererDrawMetrics;
+    if (metrics.frames === 0) metrics.windowAt = now;
+    metrics.frames += 1;
+    metrics.imageDataMs += imageDataMs;
+    metrics.mirrorDrawMs += mirrorDrawMs;
+    metrics.totalMs += totalMs;
+    metrics.maxMs = Math.max(metrics.maxMs, totalMs);
+    const windowMs = now - metrics.windowAt;
+    if (windowMs < 1000) return;
+    runtimeLog('native', 'info', 'renderer-draw-perf', {
+      rate: Number((metrics.frames * 1000 / windowMs).toFixed(1)),
+      avgImageDataMs: Number((metrics.imageDataMs / Math.max(metrics.frames, 1)).toFixed(3)),
+      avgMirrorDrawMs: Number((metrics.mirrorDrawMs / Math.max(metrics.frames, 1)).toFixed(3)),
+      avgTotalMs: Number((metrics.totalMs / Math.max(metrics.frames, 1)).toFixed(3)),
+      maxMs: Number(metrics.maxMs.toFixed(3)),
+      width: frame.width,
+      height: frame.height,
+    });
+    this.rendererDrawMetrics = {
+      windowAt: now,
+      frames: 0,
+      imageDataMs: 0,
+      mirrorDrawMs: 0,
+      totalMs: 0,
+      maxMs: 0,
+    };
   }
 
   private drawRendererSource(nodeId: string, source: CanvasImageSource): boolean {
@@ -222,13 +288,18 @@ export class PipelineService {
     this.nativeFpsWindowAt = now;
     this.nativeFpsWindowFrame = 0;
     this.nativeFps = 0;
+    this.lastUiFrameAt = Number.NEGATIVE_INFINITY;
   }
 
   private handleFrame(frame: { frame: number; time: number; fps: number }): void {
-    const store = useGraphStore.getState();
-    store.setFps(frame.fps);
-    store.setCurrentTime(frame.time);
-    store.setCurrentFrame(frame.frame);
+    const now = performance.now();
+    if (now - this.lastUiFrameAt < 100) return;
+    this.lastUiFrameAt = now;
+    useGraphStore.setState({
+      fps: frame.fps,
+      currentTime: frame.time,
+      currentFrame: frame.frame,
+    });
   }
 
   private handleOutputSize(nodeId: string, width: number, height: number): void {

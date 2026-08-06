@@ -47,7 +47,14 @@ function SectionHeader({ title, expanded, onClick, extra }: { title: string; exp
 }
 
 export function SidePanel() {
-  const { nodes, selectedNodeId, updateNodeData, removeNode, outputPreviews, nodeErrors, rendererFps, loopState } = useGraphStore();
+  const nodes = useGraphStore((state) => state.nodes);
+  const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
+  const updateNodeData = useGraphStore((state) => state.updateNodeData);
+  const removeNode = useGraphStore((state) => state.removeNode);
+  const outputPreviews = useGraphStore((state) => state.outputPreviews);
+  const nodeErrors = useGraphStore((state) => state.nodeErrors);
+  const rendererFps = useGraphStore((state) => state.rendererFps);
+  const loopState = useGraphStore((state) => state.loopState);
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
   const nodeError = selectedNodeId ? nodeErrors[selectedNodeId] : undefined;
@@ -148,9 +155,11 @@ export function SidePanel() {
       if (!data.rawDataUrl || !data.fbWidth || !data.fbHeight) return null;
       return generateRawPreview(data.rawDataUrl, (data.fbFormat ?? 'rgba8') as FramebufferFormat, data.fbWidth, data.fbHeight, data.fbStride);
     }
-    if (data.inputMode === 'video') return data.videoUrl ?? null;
+    if (data.inputMode === 'video') {
+      return outputPreviews[selectedNodeId!] ?? data.videoUrl ?? null;
+    }
     return data.imageDataUrl ?? null;
-  }, [data, isSampler2D, isFramebuffer, data?.rawDataUrl, data?.fbFormat, data?.fbWidth, data?.fbHeight, data?.fbStride, data?.imageDataUrl, data?.videoUrl, data?.inputMode]);
+  }, [data, isSampler2D, isFramebuffer, outputPreviews, selectedNodeId, data?.rawDataUrl, data?.fbFormat, data?.fbWidth, data?.fbHeight, data?.fbStride, data?.imageDataUrl, data?.videoUrl, data?.inputMode]);
 
   if (!selectedNode || !data) return null;
 
@@ -618,7 +627,7 @@ export function SidePanel() {
             />
           ) : isSampler2D ? (
             inputPreviewSrc ? (
-              data.inputMode === 'video' ? (
+              data.inputMode === 'video' && !outputPreviews[selectedNodeId!] ? (
                 <video src={`${inputPreviewSrc}#t=0.1`} muted playsInline preload="metadata"
                   onClick={() => setLightboxSrc(inputPreviewSrc)}
                   className="max-w-full max-h-full object-contain rounded border border-[#d2d2d7] cursor-pointer hover:opacity-90 transition-opacity" />
@@ -629,7 +638,7 @@ export function SidePanel() {
               )
             ) : (
               <span className="text-[12px] text-[#aeaeb2]">
-                {isFramebuffer ? 'Load file and set width/height' : data.inputMode === 'video' ? 'Load a video' : 'Load an image'}
+                {isFramebuffer ? 'Load file and set width/height' : data.inputMode === 'video' ? 'Native preview appears while playing' : 'Load an image'}
               </span>
             )
           ) : outputPreviews[selectedNodeId!] ? (

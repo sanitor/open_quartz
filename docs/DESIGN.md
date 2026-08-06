@@ -1204,10 +1204,10 @@ Rust GPU 层已经建立与 graph execution 解耦的 presentation 边界：
 - `SharedTexturePresenter<E>` 把平台导出限制在 `SharedTextureExporter` adapter 内，descriptor 包含 lease、resource handle、sync handle/value、尺寸和 content timestamp。Windows `DxgiSharedTextureExporter` 已实现三槽 shared `ID3D12Resource` pool、NT handle、shared fence、异步 queue signal 和显式 consumer release；slot 必须先于其 wgpu device 销毁；IOSurface/DMA-BUF adapter 仍待实现；
 - `media` 模块保留跨平台 DXGI/IOSurface/DMA-BUF frame contract；Windows concrete adapter 由 `NativeVideoSource` + `D3d12VideoFrame` 实现，接收 FFmpeg P010 resource/fence，并通过 `GpuExecutor.upload_d3d12_p010()` 注册 GPU-converted graph texture；PTS/duration 与通用 color metadata 尚未接入该 concrete path；
 - native runtime 可按需启用 shared Presenter，并通过 `native_gpu_take_shared_texture` / `native_gpu_release_shared_texture` 转移和归还 lease；没有 consumer 时不启用，因此不改变现有 WebView 路径。Windows smoke 已实际重开 resource/fence handle、等待同步值，并跑通 graph → Presenter descriptor → release；
-- WebView2 experimental `ICoreWebView2ExperimentalEnvironment12` 和 renderer adapter LUID 在当前 runtime 可查询，但 `CreateTextureStream` 实际返回 `0x80070032 (ERROR_NOT_SUPPORTED)`。capability 因此报告 `available=true, streamReady=false`；不能接入 D3D11 texture 或验证 DOM presentation，WebView 继续使用无损 RGBA fallback；
-- 未实现 H.264 `EncodedStreamPresenter`。H.264 会破坏 Renderer 的逐像素准确性；没有 shared-texture bridge 时继续使用无损、bounded、异步 RGBA staging/readback fallback，SAVE/screenshot 始终无损。
-
-当前可宣称 Windows native file video 的 D3D12VA → wgpu 路径无 CPU pixel copy，且 Windows native UI/shared-resource consumer 的 DXGI 导出已完成；不能宣称 WebView2 TextureStream、IOSurface、DMA-BUF、camera hardware decode 或通用 PTS/color metadata 已完成。
+- WebView2 experimental `ICoreWebView2ExperimentalEnvironment12` 与 renderer adapter LUID 查询已接入启动 retry；`TextureStream` 注册 `StartRequested` handler，consumer 在首个 native frame 后启动，native 侧复用 `GetAvailableTexture`，避免每帧创建 8K WebView texture；
+- TextureStream 的真实验收包含 `getTextureStream()`、`HTMLVideoElement.play()`、首帧尺寸和持续 `requestVideoFrameCallback`。当前 AMD Radeon 860M + WebView2 实测 `7680×3840` stream 首帧成功，10 秒收到 585 帧（约 58.5 FPS，P50 16.7ms）；
+- 如果 consumer handshake 或 presentation 出错，native 会关闭 shared presenter，JS 退回 bounded RGBA readback；这条 fallback 仍明确是 CPU/IPC copy，不宣称为 zero-copy；
+- 未实现 H.264 `EncodedStreamPresenter`。H.264 会破坏 Renderer 的逐像素准确性；没有可用 TextureStream 时继续使用无损、bounded、异步 RGBA fallback，SAVE/screenshot 始终无损；IOSurface、DMA-BUF、camera hardware-frame adapter 和通用 PTS/color metadata 仍待实现。
 
 ## 10. Rust SDK 与 FFI
 

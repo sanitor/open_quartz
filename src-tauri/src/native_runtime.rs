@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -106,6 +106,190 @@ pub struct NativeFrameRendered {
     height: u32,
 }
 
+fn emit_perf(message: std::fmt::Arguments<'_>) {
+    log::info!(target: "open_quartz::perf", "{message}");
+    if std::env::var_os("OPEN_QUARTZ_NATIVE_VIDEO_BENCH").is_some()
+        || std::env::var_os("OPEN_QUARTZ_PERF_LOG").is_some()
+    {
+        println!("[oq:perf] {message}");
+    }
+}
+
+#[cfg(windows)]
+struct NativePresentationPerf {
+    window_started: Instant,
+    frames: u64,
+    total: Duration,
+    max: Duration,
+}
+
+#[cfg(windows)]
+impl NativePresentationPerf {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            frames: 0,
+            total: Duration::ZERO,
+            max: Duration::ZERO,
+        }
+    }
+
+    fn record(&mut self, elapsed: Duration) {
+        self.frames += 1;
+        self.total += elapsed;
+        self.max = self.max.max(elapsed);
+        let window = self.window_started.elapsed();
+        if window < Duration::from_secs(1) {
+            return;
+        }
+        let frames = self.frames.max(1) as f64;
+        emit_perf(format_args!(
+            "native-presentation fps={:.1} avg_ms={:.3} max_ms={:.3}",
+            self.frames as f64 / window.as_secs_f64(),
+            self.total.as_secs_f64() * 1000.0 / frames,
+            self.max.as_secs_f64() * 1000.0,
+        ));
+        *self = Self::new();
+    }
+}
+
+#[cfg(windows)]
+static NATIVE_PRESENTATION_PERF: LazyLock<Mutex<NativePresentationPerf>> =
+    LazyLock::new(|| Mutex::new(NativePresentationPerf::new()));
+
+struct NativeRenderPerf {
+    window_started: Instant,
+    frames: u64,
+    upload_video: Duration,
+    engine_plan: Duration,
+    execute_gpu: Duration,
+    total: Duration,
+    max_total: Duration,
+}
+
+impl NativeRenderPerf {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            frames: 0,
+            upload_video: Duration::ZERO,
+            engine_plan: Duration::ZERO,
+            execute_gpu: Duration::ZERO,
+            total: Duration::ZERO,
+            max_total: Duration::ZERO,
+        }
+    }
+
+    fn record(
+        &mut self,
+        upload_video: Duration,
+        engine_plan: Duration,
+        execute_gpu: Duration,
+        total: Duration,
+        decoded_frames: u64,
+        uploaded_frames: u64,
+    ) {
+        if self.frames == 0 {
+            self.window_started = Instant::now();
+        }
+        self.frames += 1;
+        self.upload_video += upload_video;
+        self.engine_plan += engine_plan;
+        self.execute_gpu += execute_gpu;
+        self.total += total;
+        self.max_total = self.max_total.max(total);
+        let window = self.window_started.elapsed();
+        if window < Duration::from_secs(1) {
+            return;
+        }
+        let frames = self.frames.max(1) as f64;
+        emit_perf(format_args!(
+            "native-render fps={:.1} avg_ms={{upload_video:{:.3},engine_plan:{:.3},execute_gpu:{:.3},total:{:.3}}} max_total_ms={:.3} video={{decoded:{decoded_frames},uploaded:{uploaded_frames}}}",
+            self.frames as f64 / window.as_secs_f64(),
+            self.upload_video.as_secs_f64() * 1000.0 / frames,
+            self.engine_plan.as_secs_f64() * 1000.0 / frames,
+            self.execute_gpu.as_secs_f64() * 1000.0 / frames,
+            self.total.as_secs_f64() * 1000.0 / frames,
+            self.max_total.as_secs_f64() * 1000.0,
+        ));
+        *self = Self::new();
+    }
+}
+
+struct PreviewPerf {
+    window_started: Instant,
+    calls: u64,
+    source_lookup: Duration,
+    gpu_read: Duration,
+    scale_submit: Duration,
+    readback: Duration,
+    total: Duration,
+    max_total: Duration,
+    bytes: u64,
+}
+
+impl PreviewPerf {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            calls: 0,
+            source_lookup: Duration::ZERO,
+            gpu_read: Duration::ZERO,
+            scale_submit: Duration::ZERO,
+            readback: Duration::ZERO,
+            total: Duration::ZERO,
+            max_total: Duration::ZERO,
+            bytes: 0,
+        }
+    }
+
+    fn record(
+        &mut self,
+        source_lookup: Duration,
+        gpu_read: Duration,
+        scale_submit: Duration,
+        readback: Duration,
+        total: Duration,
+        bytes: usize,
+        width: u32,
+        height: u32,
+    ) {
+        if self.calls == 0 {
+            self.window_started = Instant::now();
+        }
+        self.calls += 1;
+        self.source_lookup += source_lookup;
+        self.gpu_read += gpu_read;
+        self.scale_submit += scale_submit;
+        self.readback += readback;
+        self.total += total;
+        self.max_total = self.max_total.max(total);
+        self.bytes = self.bytes.saturating_add(bytes as u64);
+        let window = self.window_started.elapsed();
+        if window < Duration::from_secs(1) {
+            return;
+        }
+        let calls = self.calls.max(1) as f64;
+        emit_perf(format_args!(
+            "native-preview rate={:.1}/s size={}x{} avg_ms={{source:{:.3},scale_submit:{:.3},readback:{:.3},gpu_total:{:.3},total:{:.3}}} max_total_ms={:.3} throughput_mib_s={:.1}",
+            self.calls as f64 / window.as_secs_f64(),
+            width,
+            height,
+            self.source_lookup.as_secs_f64() * 1000.0 / calls,
+            self.scale_submit.as_secs_f64() * 1000.0 / calls,
+            self.readback.as_secs_f64() * 1000.0 / calls,
+            self.gpu_read.as_secs_f64() * 1000.0 / calls,
+            self.total.as_secs_f64() * 1000.0 / calls,
+            self.max_total.as_secs_f64() * 1000.0,
+            self.bytes as f64 / (1024.0 * 1024.0) / window.as_secs_f64(),
+        ));
+        *self = Self::new();
+    }
+}
+
+static PREVIEW_PERF: LazyLock<Mutex<PreviewPerf>> =
+    LazyLock::new(|| Mutex::new(PreviewPerf::new()));
+
 struct NativeGpuRuntime {
     executor: GpuExecutor,
     engine: Engine,
@@ -121,6 +305,7 @@ struct NativeGpuRuntime {
     onnx_receiver: mpsc::Receiver<NativeOnnxCompletion>,
     output_events: Vec<NativeOutputEvent>,
     onnx_workers: Vec<JoinHandle<()>>,
+    perf: NativeRenderPerf,
     #[cfg(windows)]
     shared_presenter: Option<SharedTexturePresenter<DxgiSharedTextureExporter>>,
     #[cfg(windows)]
@@ -208,6 +393,7 @@ impl NativeGpuRuntime {
                 onnx_receiver,
                 output_events: Vec::new(),
                 onnx_workers: Vec::new(),
+                perf: NativeRenderPerf::new(),
                 #[cfg(windows)]
                 shared_presenter,
                 #[cfg(windows)]
@@ -610,12 +796,16 @@ impl NativeGpuRuntime {
     }
 
     fn render(&mut self, time: f64, delta: f64, frame: u64) -> Result<NativeFrameRendered, String> {
+        let total_started = Instant::now();
         let (width, height) = self
             .engine
             .execution_plan()
             .map(|plan| (plan.default_width.max(1), plan.default_height.max(1)))
             .unwrap_or((960, 540));
+        let upload_started = Instant::now();
         self.upload_video_frames()?;
+        let upload_video = upload_started.elapsed();
+        let engine_started = Instant::now();
         self.drain_onnx_completions()?;
         let date = utc_date_uniform(SystemTime::now());
         self.engine.run_frame(
@@ -632,14 +822,19 @@ impl NativeGpuRuntime {
             .ok_or_else(|| "Native engine has no execution plan".to_owned())?
             .clone();
         let commands = self.engine.pending_commands().to_vec();
+        let engine_plan = engine_started.elapsed();
+        let execute_started = Instant::now();
         self.execute_runtime_commands(&plan, &commands)?;
+        let execute_gpu = execute_started.elapsed();
         let output_node_id = self
             .output_node_id
             .clone()
             .or_else(|| plan.output_nodes.first().cloned())
             .ok_or_else(|| "Graph has no renderer or terminal texture output".to_owned())?;
         let Some(output) = self.executor.output_texture(&output_node_id) else {
-            if !self.onnx_pending.is_empty() {
+            if !self.onnx_pending.is_empty()
+                || self.videos.values().any(NativeVideoSource::is_active)
+            {
                 return Ok(NativeFrameRendered {
                     frame,
                     revision: self.engine.revision(),
@@ -667,13 +862,32 @@ impl NativeGpuRuntime {
                 let _ = presenter.process_latest();
             }
         }
-        Ok(NativeFrameRendered {
+        let rendered = NativeFrameRendered {
             frame,
             revision: self.engine.revision(),
             output_node_id,
             width: output.width,
             height: output.height,
-        })
+        };
+        let (decoded_frames, uploaded_frames) =
+            self.videos
+                .values()
+                .fold((0_u64, 0_u64), |(decoded, uploaded), source| {
+                    let metrics = source.metrics();
+                    (
+                        decoded.saturating_add(metrics.decoded_frames),
+                        uploaded.saturating_add(metrics.uploaded_frames),
+                    )
+                });
+        self.perf.record(
+            upload_video,
+            engine_plan,
+            execute_gpu,
+            total_started.elapsed(),
+            decoded_frames,
+            uploaded_frames,
+        );
+        Ok(rendered)
     }
 }
 
@@ -685,10 +899,25 @@ impl Drop for NativeGpuRuntime {
     }
 }
 
+#[cfg(windows)]
+async fn wait_for_texture_stream_capability(app: &AppHandle) {
+    for _ in 0..40 {
+        let capability = app
+            .state::<crate::webview_texture_stream::TextureStreamCapabilityState>()
+            .get();
+        if capability.stream_ready || (!capability.available && capability.reason.is_some()) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn initialize_runtime(
     app: &AppHandle,
     state: &NativeRuntimeState,
 ) -> Result<NativeRuntimeInfo, String> {
+    #[cfg(windows)]
+    wait_for_texture_stream_capability(app).await;
     shutdown_worker(state);
     state
         .preview
@@ -700,7 +929,7 @@ async fn initialize_runtime(
         .lock()
         .map_err(|_| "Native runtime lock is poisoned".to_owned())?
         .take();
-    let (mut runtime, mut info) = NativeGpuRuntime::new().await?;
+    let (runtime, mut info) = NativeGpuRuntime::new().await?;
     #[cfg(windows)]
     if app
         .state::<crate::webview_texture_stream::TextureStreamCapabilityState>()
@@ -708,7 +937,6 @@ async fn initialize_runtime(
         .stream_ready
         && info.shared_texture
     {
-        runtime.set_shared_texture_enabled(true)?;
         info.output_mode = "webview-texture-stream".to_owned();
     }
     let preview = GpuPreviewReader::new(runtime.executor.backend().clone());
@@ -800,7 +1028,11 @@ fn read_preview_payload(
     node_id: &str,
     max_dimension: u32,
 ) -> Result<Vec<u8>, String> {
+    let total_started = Instant::now();
+    let source_started = Instant::now();
     let source = with_runtime(state, |runtime| runtime.preview_source(node_id))?;
+    let source_lookup = source_started.elapsed();
+    let gpu_started = Instant::now();
     let mut preview = state
         .preview
         .lock()
@@ -809,11 +1041,26 @@ fn read_preview_payload(
         .as_mut()
         .ok_or_else(|| "Native preview reader is not initialized".to_owned())?;
     let image = pollster::block_on(reader.read(&source, max_dimension))?;
-    Ok(NativeGpuRuntime::output_payload(
-        &image.rgba,
-        image.width,
-        image.height,
-    ))
+    let gpu_read = gpu_started.elapsed();
+    let payload = NativeGpuRuntime::output_payload(&image.rgba, image.width, image.height);
+    let width = image.width;
+    let height = image.height;
+    let scale_submit = image.scale_submit;
+    let readback = image.readback;
+    drop(preview);
+    if let Ok(mut perf) = PREVIEW_PERF.lock() {
+        perf.record(
+            source_lookup,
+            gpu_read,
+            scale_submit,
+            readback,
+            total_started.elapsed(),
+            payload.len(),
+            width,
+            height,
+        );
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -1269,7 +1516,126 @@ fn smoke_native_video(runtime: &mut NativeGpuRuntime, image_graph: &str) -> Resu
     result
 }
 
+fn start_native_video_benchmark(app: &AppHandle, path: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<NativeRuntimeState>();
+        let result = async {
+            let info = initialize_runtime(&app, &state).await?;
+            let graph = r#"{
+                "nodes": [
+                    {
+                        "id": "video", "type": "input", "position": {"x": 0.0, "y": 0.0},
+                        "data": {
+                            "type": "input", "label": "Video", "shaderCode": "", "inputs": [],
+                            "outputs": [{"id": "video_out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                            "uniforms": {}, "inputMode": "video", "inputDataType": "sampler2D",
+                            "imageWidth": 7680, "imageHeight": 3840
+                        }
+                    },
+                    {
+                        "id": "renderer", "type": "renderer", "position": {"x": 1.0, "y": 0.0},
+                        "data": {
+                            "type": "renderer", "label": "Output", "shaderCode": "",
+                            "inputs": [{"id": "renderer_in", "label": "inputImage", "dataType": "sampler2D", "direction": "input"}],
+                            "outputs": [], "uniforms": {}
+                        }
+                    }
+                ],
+                "edges": [
+                    {"id": "e1", "source": "video", "sourceHandle": "video_out", "target": "renderer", "targetHandle": "renderer_in"}
+                ]
+            }"#;
+            let video_info = with_runtime(&state, |runtime| {
+                runtime.set_graph(graph)?;
+                runtime.attach_video(
+                    "video",
+                    NativeVideoConfig {
+                        kind: NativeVideoSourceKind::File,
+                        source: path,
+                        looping: true,
+                        playback_rate: 1.0,
+                    },
+                )
+            })?;
+            let startup_deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < startup_deadline {
+                let ready = with_runtime(&state, |runtime| {
+                    runtime.upload_video_frames()?;
+                    Ok(runtime.executor.output_texture("video").is_some())
+                })?;
+                if ready {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(10);
+            let mut rendered = 0_u64;
+            let mut previews = 0_u64;
+            let mut missed_deadlines = 0_u64;
+            while Instant::now() < deadline {
+                let tick_started = Instant::now();
+                with_runtime(&state, |runtime| runtime.render_next())?;
+                rendered += 1;
+                let _ = read_preview_payload(&state, "renderer", 960)?;
+                previews += 1;
+                let elapsed = tick_started.elapsed();
+                if elapsed < Duration::from_millis(16) {
+                    std::thread::sleep(Duration::from_millis(16) - elapsed);
+                } else {
+                    missed_deadlines += 1;
+                }
+            }
+            let elapsed = started.elapsed();
+            let metrics = with_runtime(&state, |runtime| {
+                runtime
+                    .videos
+                    .get("video")
+                    .map(NativeVideoSource::metrics)
+                    .ok_or_else(|| "Benchmark video source disappeared".to_owned())
+            })?;
+            Ok::<_, String>((
+                info,
+                video_info,
+                rendered,
+                previews,
+                missed_deadlines,
+                elapsed,
+                metrics,
+            ))
+        }
+        .await;
+        let succeeded = result.is_ok();
+        match result {
+            Ok((info, video, rendered, previews, missed, elapsed, metrics)) => println!(
+                "NATIVE_VIDEO_BENCH_OK adapter={} backend={} decoder={} source={}x{}@{:.1} duration_s={:.2} render_fps={:.2} preview_fps={:.2} missed={} decoded={} uploaded={} cpu_copy_bytes={}",
+                info.adapter_name,
+                info.backend,
+                video.decoder,
+                video.width,
+                video.height,
+                video.fps,
+                elapsed.as_secs_f64(),
+                rendered as f64 / elapsed.as_secs_f64(),
+                previews as f64 / elapsed.as_secs_f64(),
+                missed,
+                metrics.decoded_frames,
+                metrics.uploaded_frames,
+                metrics.cpu_copy_bytes,
+            ),
+            Err(error) => eprintln!("NATIVE_VIDEO_BENCH_ERROR {error}"),
+        }
+        let _ = close_runtime(&state);
+        app.exit(if succeeded { 0 } else { 1 });
+    });
+}
+
 pub fn maybe_start_smoke(app: &AppHandle) {
+    if let Some(path) = std::env::var_os("OPEN_QUARTZ_NATIVE_VIDEO_BENCH") {
+        start_native_video_benchmark(app, path.to_string_lossy().into_owned());
+        return;
+    }
     if std::env::var_os("OPEN_QUARTZ_NATIVE_SMOKE").is_none() {
         return;
     }
@@ -1409,11 +1775,19 @@ fn present_latest_shared_texture(app: &AppHandle) -> Result<(), String> {
     let Some(frame) = with_runtime(&state, |runtime| Ok(runtime.take_shared_texture()))? else {
         return Ok(());
     };
+    let started = Instant::now();
     let result = crate::webview_texture_stream::present_shared_frame(&frame);
+    let presented = result.as_ref().is_ok_and(|frame| frame.presented);
     let release = with_runtime(&state, |runtime| {
         runtime.release_shared_texture(frame.lease_id)
     });
-    result.and(release).map(|_| ())
+    let outcome = result.and(release).map(|_| ());
+    if outcome.is_ok() && presented {
+        if let Ok(mut perf) = NATIVE_PRESENTATION_PERF.lock() {
+            perf.record(started.elapsed());
+        }
+    }
+    outcome
 }
 
 fn start_worker(app: &AppHandle, state: &NativeRuntimeState) -> Result<(), String> {
@@ -1459,10 +1833,12 @@ fn start_worker(app: &AppHandle, state: &NativeRuntimeState) -> Result<(), Strin
                                 let callback_scheduled = presentation_scheduled.clone();
                                 if let Err(error) = app.run_on_main_thread(move || {
                                     if let Err(error) = present_latest_shared_texture(&callback_app) {
+                                        eprintln!("[oq:native] texture-stream-present-error {error}");
                                         let state = callback_app.state::<NativeRuntimeState>();
                                         let _ = with_runtime(&state, |runtime| {
                                             runtime.set_shared_texture_enabled(false).map(|_| ())
                                         });
+
                                         let _ = callback_app.emit(
                                             "native-runtime-presentation-fallback",
                                             error,

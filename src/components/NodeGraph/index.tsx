@@ -171,15 +171,13 @@ function ConnectionLine({ fromX, fromY, toX, toY, fromPosition, toPosition }: Co
 }
 
 export function NodeGraph() {
-  const {
-    nodes,
-    edges,
-    onNodesChange,
-    onEdgesChange,
-    onConnect,
-    setSelectedNode,
-    removeSelectedElements,
-  } = useGraphStore();
+  const nodes = useGraphStore((state) => state.nodes);
+  const edges = useGraphStore((state) => state.edges);
+  const onNodesChange = useGraphStore((state) => state.onNodesChange);
+  const onEdgesChange = useGraphStore((state) => state.onEdgesChange);
+  const onConnect = useGraphStore((state) => state.onConnect);
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const removeSelectedElements = useGraphStore((state) => state.removeSelectedElements);
 
   // When the user presses on a connected target (input) handle, detach the
   // edge and re-dispatch the pointer event on the source (output) handle so

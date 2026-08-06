@@ -4,7 +4,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType, FramebufferFormat } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 import { generateRawPreview } from '../../../utils/rawPreview';
-import { checkIsTauri, tauriOpenVideoFile, tauriConvertFileSrc } from '../../../utils/tauri';
+import { checkIsTauri, tauriOpenVideoFile } from '../../../utils/tauri';
 
 const VEC_COMPONENTS: Record<string, string[]> = {
   vec2: ['x', 'y'],
@@ -53,6 +53,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const currentTime = useGraphStore((s) => s.currentTime);
   const currentFrame = useGraphStore((s) => s.currentFrame);
   const loopState = useGraphStore((s) => s.loopState);
+  const outputPreviews = useGraphStore((s) => s.outputPreviews);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rawFileInputRef = useRef<HTMLInputElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
@@ -62,7 +63,8 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const isVideo = data.inputMode === 'video';
   const isSystem = data.inputMode === 'system';
   const error = nodeErrors[id];
-  const hasNoValue = currentType === 'sampler2D' && !data.imageDataUrl && !data.rawDataUrl && !data.videoUrl;
+  const hasNoValue = currentType === 'sampler2D'
+    && !data.imageDataUrl && !data.rawDataUrl && !data.videoUrl && !data.videoFilePath;
   const sourceCategory = isSystem ? 'system' : (currentType === 'sampler2D' ? 'external' : 'constants');
   const icon = SOURCE_ICONS[sourceCategory] ?? '○';
   const typeName = isSystem ? (data.systemSource ?? 'system') : isVideo ? 'Video' : isFramebuffer ? 'Framebuffer' : currentType === 'sampler2D' ? 'Image' : currentType;
@@ -133,10 +135,12 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
       }
       tauriOpenVideoFile().then((filePath) => {
         if (!filePath) return;
-        tauriConvertFileSrc(filePath).then((assetUrl) => {
-          const fileName = filePath.split('/').pop() ?? filePath.split('\\').pop() ?? filePath;
-          updateNodeData(id, { videoFilePath: filePath });
-          loadVideoFromUrl(assetUrl, fileName);
+        const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+        updateNodeData(id, {
+          videoSourceType: 'file',
+          videoFilePath: filePath,
+          videoUrl: undefined,
+          videoFileName: fileName,
         });
       });
     });
@@ -236,16 +240,23 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
         <div className="flex items-stretch">
           <div onClick={handleVideoClick} className="cursor-pointer flex-1 min-w-0">
             <input ref={videoFileInputRef} type="file" accept="video/*" onChange={handleVideoFileChange} className="hidden" />
-            {data.videoUrl ? (
+            {data.videoFilePath && outputPreviews[id] ? (
+              <div className="p-2">
+                <img src={outputPreviews[id]} alt="video preview" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+                <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
+                  {data.videoFileName ?? 'loaded'}
+                </div>
+              </div>
+            ) : data.videoUrl ? (
               <div className="p-2">
                 <video src={`${data.videoUrl}#t=0.1`} muted playsInline preload="metadata" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
                 <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                   {data.videoFileName ?? 'loaded'}
                 </div>
               </div>
-            ) : data.videoFileName ? (
+            ) : data.videoFilePath || data.videoFileName ? (
               <div onClick={handleVideoClick} className="flex flex-col items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#ff9500] rounded cursor-pointer" style={{ height: 80 }}>
-                <span className="text-[10px] truncate px-2">{data.videoFileName}</span>
+                <span className="text-[10px] truncate px-2">{data.videoFileName ?? data.videoFilePath}</span>
                 <span className="text-[9px] mt-1">Click to reload</span>
               </div>
             ) : (

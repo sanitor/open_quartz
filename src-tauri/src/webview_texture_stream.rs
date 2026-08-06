@@ -16,6 +16,7 @@ pub struct TextureStreamTestFrame {
     pub width: u32,
     pub height: u32,
     pub format: String,
+    pub presented: bool,
 }
 
 #[derive(Default)]
@@ -47,7 +48,14 @@ impl TextureStreamCapabilityState {
 mod platform {
     use super::{TextureStreamCapability, TextureStreamTestFrame};
     use open_quartz::gpu::SharedTextureFrame;
-    use std::{cell::RefCell, collections::HashMap};
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, AtomicU32, Ordering},
+            Arc,
+        },
+    };
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment;
     use windows::Win32::Foundation::{HANDLE, HMODULE, LUID};
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
@@ -76,7 +84,7 @@ mod platform {
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory2, IDXGIAdapter, IDXGIFactory4, IDXGIKeyedMutex, IDXGIResource,
     };
-    use windows_core::{IUnknown, IUnknown_Vtbl, Interface, PCWSTR};
+    use windows_core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, PCWSTR};
 
     const STREAM_ID: &str = "open-quartz-renderer";
     const ALLOWED_ORIGINS: &[&str] = &[
@@ -127,8 +135,13 @@ mod platform {
         pub add_allowed_origin:
             unsafe extern "system" fn(*mut core::ffi::c_void, PCWSTR, i32) -> windows_core::HRESULT,
         pub remove_allowed_origin: usize,
-        pub add_start_requested: usize,
-        pub remove_start_requested: usize,
+        pub add_start_requested: unsafe extern "system" fn(
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut i64,
+        ) -> windows_core::HRESULT,
+        pub remove_start_requested:
+            unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
         pub add_stopped: usize,
         pub remove_stopped: usize,
         pub create_texture: unsafe extern "system" fn(
@@ -157,6 +170,100 @@ mod platform {
         pub remove_web_texture_received: usize,
         pub add_web_texture_stream_stopped: usize,
         pub remove_web_texture_stream_stopped: usize,
+    }
+
+    windows_core::imp::define_interface!(
+        ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler,
+        ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler_Vtbl,
+        0x62d09330_00a9_41bf_a9ae_55aaef8b3c44
+    );
+    windows_core::imp::interface_hierarchy!(
+        ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler,
+        IUnknown
+    );
+
+    #[repr(C)]
+    pub struct ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler_Vtbl {
+        pub base__: IUnknown_Vtbl,
+        pub invoke: unsafe extern "system" fn(
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+        ) -> HRESULT,
+    }
+
+    #[repr(C)]
+    struct StartRequestedHandlerObject {
+        vtable: *const ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler_Vtbl,
+        references: AtomicU32,
+        start_requested: Arc<AtomicBool>,
+    }
+
+    unsafe extern "system" fn start_handler_query_interface(
+        this: *mut core::ffi::c_void,
+        iid: *const GUID,
+        interface: *mut *mut core::ffi::c_void,
+    ) -> HRESULT {
+        if iid.is_null() || interface.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        *interface = core::ptr::null_mut();
+        if *iid == IUnknown::IID
+            || *iid == ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler::IID
+        {
+            *interface = this;
+            start_handler_add_ref(this);
+            return HRESULT(0);
+        }
+        HRESULT(0x80004002u32 as i32)
+    }
+
+    unsafe extern "system" fn start_handler_add_ref(this: *mut core::ffi::c_void) -> u32 {
+        let object = &*(this as *mut StartRequestedHandlerObject);
+        object.references.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    unsafe extern "system" fn start_handler_release(this: *mut core::ffi::c_void) -> u32 {
+        let object = &*(this as *mut StartRequestedHandlerObject);
+        let remaining = object.references.fetch_sub(1, Ordering::Release) - 1;
+        if remaining == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            drop(Box::from_raw(this as *mut StartRequestedHandlerObject));
+        }
+        remaining
+    }
+
+    unsafe extern "system" fn start_handler_invoke(
+        this: *mut core::ffi::c_void,
+        _sender: *mut core::ffi::c_void,
+        _args: *mut core::ffi::c_void,
+    ) -> HRESULT {
+        let object = &*(this as *mut StartRequestedHandlerObject);
+        object.start_requested.store(true, Ordering::Release);
+        println!("[oq:native] webview-texture-stream start-requested");
+        HRESULT(0)
+    }
+
+    static START_REQUESTED_HANDLER_VTABLE:
+        ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler_Vtbl =
+        ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler_Vtbl {
+            base__: IUnknown_Vtbl {
+                QueryInterface: start_handler_query_interface,
+                AddRef: start_handler_add_ref,
+                Release: start_handler_release,
+            },
+            invoke: start_handler_invoke,
+        };
+
+    fn create_start_requested_handler(
+        start_requested: Arc<AtomicBool>,
+    ) -> ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler {
+        let object = Box::new(StartRequestedHandlerObject {
+            vtable: &START_REQUESTED_HANDLER_VTABLE,
+            references: AtomicU32::new(1),
+            start_requested,
+        });
+        unsafe { Interface::from_raw(Box::into_raw(object).cast()) }
     }
 
     windows_core::imp::define_interface!(
@@ -207,6 +314,10 @@ mod platform {
         d3d12_device: ID3D12Device,
         d3d12_queue: ID3D12CommandQueue,
         interface: ICoreWebView2ExperimentalTextureStream,
+        start_requested_handler: ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler,
+        start_requested: Arc<AtomicBool>,
+        has_started: bool,
+        start_requested_token: i64,
         video_pipeline: Option<VideoProcessorPipeline>,
         shared_bridges: HashMap<u64, SharedBridgeSlot>,
     }
@@ -253,6 +364,38 @@ mod platform {
                     0,
                 )
                 .ok()
+            }
+        }
+
+        fn add_start_requested(
+            &self,
+            handler: &ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler,
+        ) -> windows_core::Result<i64> {
+            unsafe {
+                let mut token = 0;
+                (Interface::vtable(self).add_start_requested)(
+                    Interface::as_raw(self),
+                    Interface::as_raw(handler),
+                    &mut token,
+                )
+                .ok()?;
+                Ok(token)
+            }
+        }
+
+        fn remove_start_requested(&self, token: i64) -> windows_core::Result<()> {
+            unsafe {
+                (Interface::vtable(self).remove_start_requested)(Interface::as_raw(self), token)
+                    .ok()
+            }
+        }
+
+        fn available_texture(&self) -> windows_core::Result<ICoreWebView2ExperimentalTexture> {
+            unsafe {
+                let mut raw = core::ptr::null_mut();
+                (Interface::vtable(self).get_available_texture)(Interface::as_raw(self), &mut raw)
+                    .ok()?;
+                Ok(Interface::from_raw(raw))
             }
         }
 
@@ -368,6 +511,15 @@ mod platform {
         }
     }
 
+    impl Drop for TextureStream {
+        fn drop(&mut self) {
+            let _ = self
+                .interface
+                .remove_start_requested(self.start_requested_token);
+            let _ = &self.start_requested_handler;
+        }
+    }
+
     impl TextureStream {
         fn video_pipeline(
             &mut self,
@@ -425,10 +577,36 @@ mod platform {
             height: u32,
             timestamp: u64,
         ) -> windows_core::Result<TextureStreamTestFrame> {
-            let texture = com_step(
-                self.interface.create_texture(width, height),
-                "CreateTexture",
-            )?;
+            let start_requested = self.start_requested.swap(false, Ordering::AcqRel);
+            if !self.has_started && !start_requested {
+                return Ok(TextureStreamTestFrame {
+                    width,
+                    height,
+                    format: "pending".to_owned(),
+                    presented: false,
+                });
+            }
+            let texture = if start_requested {
+                self.has_started = true;
+                com_step(
+                    self.interface.create_texture(width, height),
+                    "CreateTexture",
+                )?
+            } else {
+                match self.interface.available_texture() {
+                    Ok(texture) => texture,
+                    Err(error) if error.code() == HRESULT(0x80070103u32 as i32) => com_step(
+                        self.interface.create_texture(width, height),
+                        "CreateTexture",
+                    )?,
+                    Err(error) => {
+                        return Err(windows_core::Error::new(
+                            error.code(),
+                            format!("GetAvailableTexture: {error}"),
+                        ));
+                    }
+                }
+            };
             let resource = com_step(texture.resource(), "Texture.Resource")?;
             let resource = com_step(resource.cast::<ID3D11Texture2D>(), "QI ID3D11Texture2D")?;
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -516,6 +694,7 @@ mod platform {
                 width: desc.Width,
                 height: desc.Height,
                 format: format!("{:?}", desc.Format),
+                presented: true,
             })
         }
 
@@ -844,6 +1023,9 @@ mod platform {
             for origin in ALLOWED_ORIGINS {
                 stream.add_allowed_origin(origin)?;
             }
+            let start_requested = Arc::new(AtomicBool::new(false));
+            let start_requested_handler = create_start_requested_handler(start_requested.clone());
+            let start_requested_token = stream.add_start_requested(&start_requested_handler)?;
             Ok(TextureStream {
                 device,
                 context,
@@ -852,6 +1034,10 @@ mod platform {
                 d3d12_device,
                 d3d12_queue,
                 interface: stream,
+                start_requested_handler,
+                start_requested_token,
+                start_requested,
+                has_started: false,
                 video_pipeline: None,
                 shared_bridges: HashMap::new(),
             })
