@@ -60,7 +60,8 @@ export interface NativeOutputEvent {
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
   onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
-  onRendererVideoFrame?: (nodeId: string, video: HTMLVideoElement) => void;
+  onRendererStream?: (nodeId: string, stream: MediaStream | null) => void;
+  onRendererVideoFrame?: (nodeId: string) => void;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
@@ -134,6 +135,7 @@ export class NativePipelineRuntime {
   private textureStreamMode = false;
   private textureStreamSupported = false;
   private textureStreamStartPending = false;
+  private textureStreamFrameCallback: number | null = null;
   private textureStreamRetryAt = 0;
   private rendererReadbackMetrics = {
     windowAt: performance.now(),
@@ -619,12 +621,30 @@ export class NativePipelineRuntime {
     if (!this.textureStreamMode || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
       return false;
     }
-    this.callbacks.onRendererVideoFrame?.(nodeId, video);
+    this.callbacks.onRendererStream?.(nodeId, this.textureStream);
+    if (this.textureStreamFrameCallback === null) {
+      const onFrame: VideoFrameRequestCallback = () => {
+        this.callbacks.onRendererVideoFrame?.(nodeId);
+        if (!this.textureStreamMode || !this.textureStreamVideo) {
+          this.textureStreamFrameCallback = null;
+          return;
+        }
+        this.textureStreamFrameCallback = this.textureStreamVideo.requestVideoFrameCallback(onFrame);
+      };
+      this.textureStreamFrameCallback = video.requestVideoFrameCallback(onFrame);
+    }
     return true;
   }
 
   private releaseTextureStream(): void {
     this.textureStreamMode = false;
+    if (this.textureStreamVideo && this.textureStreamFrameCallback !== null) {
+      this.textureStreamVideo.cancelVideoFrameCallback(this.textureStreamFrameCallback);
+    }
+    this.textureStreamFrameCallback = null;
+    if (this.lastRendererNodeId) {
+      this.callbacks.onRendererStream?.(this.lastRendererNodeId, null);
+    }
     if (this.textureStreamVideo) {
       this.textureStreamVideo.srcObject = null;
       this.textureStreamVideo.remove();

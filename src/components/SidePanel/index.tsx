@@ -54,6 +54,7 @@ export function SidePanel() {
   const outputPreviews = useGraphStore((state) => state.outputPreviews);
   const nodeErrors = useGraphStore((state) => state.nodeErrors);
   const rendererFps = useGraphStore((state) => state.rendererFps);
+  const nativeRendererStreams = useGraphStore((state) => state.nativeRendererStreams);
   const loopState = useGraphStore((state) => state.loopState);
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
@@ -754,10 +755,29 @@ export function SidePanel() {
               <button onClick={(e) => { e.stopPropagation(); setLightboxSrc(null); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">CLOSE</button>
             </div>
-            <canvas id={`renderer-mirror-fullscreen-${rid}`} className="rounded overflow-hidden"
-              width={rw} height={rh}
-              style={{ width: '90vw', maxHeight: '85vh', aspectRatio: `${rw} / ${rh}` }}
-              onClick={(e) => e.stopPropagation()} />
+            {nativeRendererStreams[rid] ? (
+              <video
+                id={`renderer-stream-fullscreen-${rid}`}
+                ref={(video) => {
+                  const stream = nativeRendererStreams[rid];
+                  if (video && video.srcObject !== stream) {
+                    video.srcObject = stream;
+                    void video.play();
+                  }
+                }}
+                muted
+                autoPlay
+                playsInline
+                className="rounded overflow-hidden"
+                style={{ width: '90vw', maxHeight: '85vh', aspectRatio: `${rw} / ${rh}` }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <canvas id={`renderer-mirror-fullscreen-${rid}`} className="rounded overflow-hidden"
+                width={Math.min(rw, 960)} height={Math.max(1, Math.round(Math.min(rw, 960) * rh / rw))}
+                style={{ width: '90vw', maxHeight: '85vh', aspectRatio: `${rw} / ${rh}` }}
+                onClick={(e) => e.stopPropagation()} />
+            )}
           </div>
         );
       })()}

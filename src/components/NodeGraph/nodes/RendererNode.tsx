@@ -12,6 +12,7 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
   const nodeErrors = useGraphStore((s) => s.nodeErrors);
   const loopState = useGraphStore((s) => s.loopState);
   const isPlaying = loopState !== 'stopped';
+  const nativeStream = useGraphStore((s) => s.nativeRendererStreams?.[id] ?? null);
   const error = nodeErrors[id];
 
   const inputPort = data.inputs[0];
@@ -64,14 +65,32 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
         <>
           <PortDivider />
           <div className="px-2 py-2">
-            <canvas
-              id={`renderer-mirror-${id}`}
-              onClick={handlePreviewClick}
-              className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f]"
-              width={previewW}
-              height={previewH}
-              style={{ width: previewW, height: previewH, display: 'block' }}
-            />
+            {nativeStream ? (
+              <video
+                id={`renderer-stream-${id}`}
+                ref={(video) => {
+                  if (video && video.srcObject !== nativeStream) {
+                    video.srcObject = nativeStream;
+                    void video.play();
+                  }
+                }}
+                muted
+                autoPlay
+                playsInline
+                onClick={handlePreviewClick}
+                className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+                style={{ width: previewW, height: previewH, display: 'block' }}
+              />
+            ) : (
+              <canvas
+                id={`renderer-mirror-${id}`}
+                onClick={handlePreviewClick}
+                className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+                width={previewW}
+                height={previewH}
+                style={{ width: previewW, height: previewH, display: 'block' }}
+              />
+            )}
             <div className="text-[9px] text-[#aeaeb2] text-center mt-1">
               {rw}×{rh}
             </div>

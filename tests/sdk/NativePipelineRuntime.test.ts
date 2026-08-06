@@ -265,9 +265,10 @@ describe('NativePipelineRuntime', () => {
     const readyState = vi
       .spyOn(HTMLMediaElement.prototype, 'readyState', 'get')
       .mockReturnValue(HTMLMediaElement.HAVE_CURRENT_DATA);
+    const onRendererStream = vi.fn();
     const onRendererVideoFrame = vi.fn();
     const onError = vi.fn();
-    const runtime = new NativePipelineRuntime({ onRendererVideoFrame, onError }, bridge);
+    const runtime = new NativePipelineRuntime({ onRendererStream, onRendererVideoFrame, onError }, bridge);
 
     try {
       await expect(runtime.initialize()).resolves.toMatchObject({
@@ -283,11 +284,7 @@ describe('NativePipelineRuntime', () => {
       bridge.emit('native-runtime-frame', frame);
       await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
 
-      expect(getTextureStream).toHaveBeenCalledWith('open-quartz-renderer');
-      expect(onRendererVideoFrame).toHaveBeenCalledWith(
-        'renderer',
-        expect.any(HTMLVideoElement),
-      );
+      expect(onRendererStream).toHaveBeenCalledWith('renderer', stream);
       expect(bridge.calls.some(({ command }) => command === 'native_gpu_read_output')).toBe(false);
       bridge.emit('native-runtime-presentation-fallback', 'present failed');
       expect(onError).toHaveBeenCalledWith('present failed');

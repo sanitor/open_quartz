@@ -19,8 +19,7 @@ export class PipelineService {
   private lastUiFrameAt = Number.NEGATIVE_INFINITY;
   private nativePreviewCanvas: HTMLCanvasElement | null = null;
   private lastNativeRendererFrame: { nodeId: string; frame: NativeOutputImage } | null = null;
-  private pendingRendererVideoFrame: { nodeId: string; video: HTMLVideoElement } | null = null;
-  private rendererVideoFrameRaf: number | null = null;
+  private rendererStream: { nodeId: string; stream: MediaStream } | null = null;
   private readonly rendererFrameMetrics = new Map<string, { windowAt: number; frames: number }>();
   private rendererDrawMetrics = {
     windowAt: performance.now(),
@@ -100,11 +99,8 @@ export class PipelineService {
     this.runtime = null;
     this.runtimePromise = null;
     window.removeEventListener('renderer-remount', this.handleRendererRemount);
-    if (this.rendererVideoFrameRaf !== null) {
-      cancelAnimationFrame(this.rendererVideoFrameRaf);
-      this.rendererVideoFrameRaf = null;
-    }
-    this.pendingRendererVideoFrame = null;
+    this.rendererStream = null;
+    useGraphStore.setState({ nativeRendererStreams: {} });
     this.enqueue(async () => { await runtime?.close(); });
     this.lastNativeRendererFrame = null;
     this.rendererFrameMetrics.clear();
@@ -150,17 +146,13 @@ export class PipelineService {
           this.lastNativeRendererFrame = { nodeId, frame };
           if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
         },
-        onRendererVideoFrame: (nodeId, video) => {
-          this.pendingRendererVideoFrame = { nodeId, video };
-          if (this.rendererVideoFrameRaf !== null) return;
-          this.rendererVideoFrameRaf = requestAnimationFrame(() => {
-            this.rendererVideoFrameRaf = null;
-            const pending = this.pendingRendererVideoFrame;
-            this.pendingRendererVideoFrame = null;
-            if (pending && this.drawRendererSource(pending.nodeId, pending.video)) {
-              this.recordRendererPresentation(pending.nodeId);
-            }
-          });
+        onRendererStream: (nodeId, stream) => {
+          this.rendererStream = stream ? { nodeId, stream } : null;
+          useGraphStore.getState().setNativeRendererStream(nodeId, stream);
+          this.mountRendererStream(nodeId, stream);
+        },
+        onRendererVideoFrame: (nodeId) => {
+          this.recordRendererPresentation(nodeId);
         },
         onError: (error) => this.handleError(null, error),
         onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
@@ -197,6 +189,20 @@ export class PipelineService {
     return document.querySelectorAll<HTMLCanvasElement>(
       `canvas[id^="renderer-mirror-"][id$="-${nodeId}"], canvas#renderer-mirror-${nodeId}`,
     );
+  }
+
+  private rendererVideos(nodeId: string): NodeListOf<HTMLVideoElement> {
+    return document.querySelectorAll<HTMLVideoElement>(
+      `video[id^="renderer-stream-"][id$="-${nodeId}"], video#renderer-stream-${nodeId}`,
+    );
+  }
+
+  private mountRendererStream(nodeId: string, stream: MediaStream | null): void {
+    for (const video of this.rendererVideos(nodeId)) {
+      if (video.srcObject === stream) continue;
+      video.srcObject = stream;
+      if (stream) void video.play();
+    }
   }
 
 
@@ -265,6 +271,9 @@ export class PipelineService {
   }
 
   private handleRendererRemount = (): void => {
+    if (this.rendererStream) {
+      this.mountRendererStream(this.rendererStream.nodeId, this.rendererStream.stream);
+    }
     if (this.lastNativeRendererFrame) {
       this.drawRendererFrame(this.lastNativeRendererFrame.nodeId, this.lastNativeRendererFrame.frame);
     }

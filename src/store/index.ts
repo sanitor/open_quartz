@@ -23,6 +23,7 @@ export interface GraphState {
   loopState: 'stopped' | 'playing' | 'paused';
   fps: number;
   rendererFps: Record<string, number>;
+  nativeRendererStreams: Record<string, MediaStream | null>;
   currentTime: number;
   currentFrame: number;
   activeRendererId: string | null;
@@ -59,6 +60,7 @@ export interface GraphState {
   resume: () => void;
   setFps: (fps: number) => void;
   setRendererFps: (nodeId: string, fps: number) => void;
+  setNativeRendererStream: (nodeId: string, stream: MediaStream | null) => void;
   clearRendererFps: () => void;
   setCurrentTime: (t: number) => void;
   setCurrentFrame: (frame: number) => void;
