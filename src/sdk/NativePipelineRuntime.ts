@@ -549,6 +549,7 @@ export class NativePipelineRuntime {
     const startedAt = performance.now();
     void this.readPreview(nodeId, 960)
       .then((frame) => {
+        if (this.textureStreamMode) return;
         this.recordRendererReadback(startedAt, frame);
         this.callbacks.onRendererFrame?.(nodeId, frame);
       })
