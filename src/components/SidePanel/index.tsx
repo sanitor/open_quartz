@@ -615,19 +615,10 @@ export function SidePanel() {
       content: (
         <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
           {data.type === 'renderer' && nativeRendererStreams[selectedNodeId!] ? (
-            <video
-              id={`renderer-stream-${selectedNodeId}`}
-              ref={(video) => {
-                const stream = nativeRendererStreams[selectedNodeId!];
-                if (video && video.srcObject !== stream) {
-                  video.srcObject = stream;
-                  void video.play();
-                }
-              }}
-              muted
-              autoPlay
-              playsInline
-              className="rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+            <div
+              id={`renderer-stream-slot-sidepanel-${selectedNodeId}`}
+              ref={() => { requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount'))); }}
+              className="rounded border border-[#e8e8ed] bg-[#1d1d1f] overflow-hidden"
               style={{ width: '100%', maxHeight: '100%', aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}` }}
             />
           ) : data.type === 'renderer' ? (
@@ -768,18 +759,9 @@ export function SidePanel() {
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">CLOSE</button>
             </div>
             {nativeRendererStreams[rid] ? (
-              <video
-                id={`renderer-stream-fullscreen-${rid}`}
-                ref={(video) => {
-                  const stream = nativeRendererStreams[rid];
-                  if (video && video.srcObject !== stream) {
-                    video.srcObject = stream;
-                    void video.play();
-                  }
-                }}
-                muted
-                autoPlay
-                playsInline
+              <div
+                id={`renderer-stream-slot-fullscreen-${rid}`}
+                ref={() => { requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount'))); }}
                 className="rounded overflow-hidden"
                 style={{ width: '90vw', maxHeight: '85vh', aspectRatio: `${rw} / ${rh}` }}
                 onClick={(e) => e.stopPropagation()}

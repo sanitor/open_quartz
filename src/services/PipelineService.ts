@@ -192,22 +192,17 @@ export class PipelineService {
     );
   }
 
-  private rendererVideos(nodeId: string): NodeListOf<HTMLVideoElement> {
-    return document.querySelectorAll<HTMLVideoElement>(
-      `video[id^="renderer-stream-"][id$="-${nodeId}"], video#renderer-stream-${nodeId}`,
-    );
-  }
 
   private mountRendererStream(nodeId: string, video: HTMLVideoElement | null): void {
-    for (const target of this.rendererVideos(nodeId)) {
-      if (target === video) continue;
-      if (video && target.srcObject !== video.srcObject) {
-        target.srcObject = video.srcObject;
-        void target.play();
-      } else if (!video) {
-        target.srcObject = null;
-      }
-    }
+    if (!video) return;
+    const target = [
+      document.getElementById(`renderer-stream-slot-fullscreen-${nodeId}`),
+      document.getElementById(`renderer-stream-slot-sidepanel-${nodeId}`),
+      document.getElementById(`renderer-stream-slot-node-${nodeId}`),
+    ].find((slot) => slot !== null);
+    if (!target || video.parentElement === target) return;
+    video.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block';
+    target.replaceChildren(video);
   }
 
 

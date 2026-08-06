@@ -43,6 +43,7 @@
 - **Direct TextureStream Renderer composition** — expose the native MediaStream through the UI store and render it directly in Renderer node, SidePanel, and fullscreen views; `requestVideoFrameCallback` now measures delivery without `video→canvas drawImage`, while canvas remains the fallback path.
 - **SidePanel native stream path** — selected Renderer previews now use the same direct TextureStream `<video>` composition as the graph node and fullscreen view; the SidePanel no longer creates a hidden 960px canvas fallback while the native stream is active.
 - **TextureStream single-consumer composition** — keep one hidden media consumer for the WebView2 stream and mirror its `srcObject` into the visible Renderer video when mounted, avoiding independent MediaStream consumers for the node, SidePanel, and fullscreen views.
+- **Single DOM video consumer** — move the canonical TextureStream `<video>` element between the node, SidePanel, and fullscreen slots instead of assigning the same MediaStream to several video elements, ensuring WebView2 has exactly one media/compositor consumer.
 
 ### Documentation
 

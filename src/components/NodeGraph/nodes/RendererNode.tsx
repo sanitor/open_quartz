@@ -67,20 +67,11 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
           <PortDivider />
           <div className="px-2 py-2">
             {nativeStream ? (
-              <video
-                id={`renderer-stream-${id}`}
-                ref={(video) => {
-                  const stream = nativeStream;
-                  if (video && video.srcObject !== stream) {
-                    video.srcObject = stream;
-                    void video.play();
-                  }
-                }}
-                muted
-                autoPlay
-                playsInline
+              <div
+                id={`renderer-stream-slot-node-${id}`}
+                ref={() => { requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount'))); }}
                 onClick={handlePreviewClick}
-                className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+                className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f] overflow-hidden"
                 style={{ width: previewW, height: previewH, display: 'block' }}
               />
             ) : (
