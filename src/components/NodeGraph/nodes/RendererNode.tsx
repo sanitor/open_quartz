@@ -13,7 +13,7 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
   const loopState = useGraphStore((s) => s.loopState);
   const isPlaying = loopState !== 'stopped';
   const nativeStream = useGraphStore((s) => s.nativeRendererStreams?.[id] ?? null);
-  const rendererFps = useGraphStore((s) => s.rendererFps?.[id] ?? 0);
+  const cadence = useGraphStore((s) => s.rendererCadence?.[id]);
   const error = nodeErrors[id];
 
   const inputPort = data.inputs[0];
@@ -84,8 +84,10 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
                 style={{ width: previewW, height: previewH, display: 'block' }}
               />
             )}
-            <div className="text-[9px] text-[#86868b] text-center mt-1">
-              {rendererFps > 0 ? `${Math.round(rendererFps)} FPS` : '-- FPS'}
+            <div className="text-[9px] text-[#86868b] text-center mt-1 font-mono tabular-nums">
+              {cadence
+                ? `G ${Math.round(cadence.graphFps)} · D ${Math.round(cadence.displayedFps)} · P ${Math.round(cadence.presentedFps)} · C ${Math.round(cadence.callbackFps)}`
+                : 'G -- · D -- · P -- · C --'}
             </div>
             <div className="text-[9px] text-[#aeaeb2] text-center mt-1">
               {rw}×{rh}

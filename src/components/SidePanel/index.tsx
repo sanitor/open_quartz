@@ -54,6 +54,7 @@ export function SidePanel() {
   const outputPreviews = useGraphStore((state) => state.outputPreviews);
   const nodeErrors = useGraphStore((state) => state.nodeErrors);
   const rendererFps = useGraphStore((state) => state.rendererFps);
+  const rendererCadence = useGraphStore((state) => state.rendererCadence ?? {});
   const nativeRendererStreams = useGraphStore((state) => state.nativeRendererStreams);
   const loopState = useGraphStore((state) => state.loopState);
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
@@ -446,14 +447,31 @@ export function SidePanel() {
           <div className="text-[11px] text-[#86868b] mb-2">
             Size follows upstream output{data.resolvedWidth && data.resolvedHeight ? `: ${data.resolvedWidth} × ${data.resolvedHeight}` : ''}
           </div>
-          <div className="flex items-center justify-between border-t border-[#f0f0f0] pt-2 mb-2 text-[11px]">
-            <span className="text-[#86868b]">Display frame rate</span>
-            <span className="font-mono tabular-nums text-[#1d1d1f]">
-              {loopState === 'stopped' || !selectedNodeId || (rendererFps[selectedNodeId] ?? 0) <= 0
-                ? '-- FPS'
-                : `${Math.round(rendererFps[selectedNodeId])} FPS`}
-            </span>
-          </div>
+          {selectedNodeId && rendererCadence[selectedNodeId] ? (() => {
+            const cadence = rendererCadence[selectedNodeId];
+            return (
+              <div className="border-t border-[#f0f0f0] pt-2 mb-2 text-[11px] font-mono tabular-nums space-y-1">
+                <div className="flex justify-between"><span className="text-[#86868b]">Graph</span><span>{cadence.graphFps.toFixed(1)} FPS</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Displayed</span><span>{cadence.displayedFps.toFixed(1)} FPS</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Dropped</span><span>{cadence.droppedFps.toFixed(1)} FPS ({(cadence.dropRatio * 100).toFixed(1)}%)</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Presented</span><span>{cadence.presentedFps.toFixed(1)} FPS</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Callback</span><span>{cadence.callbackFps.toFixed(1)} FPS</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Media clock</span><span>{cadence.mediaRate.toFixed(3)}×</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Callback P50/P95</span><span>{cadence.callbackP50Ms.toFixed(1)} / {cadence.callbackP95Ms.toFixed(1)} ms</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Callback max</span><span>{cadence.callbackMaxMs.toFixed(1)} ms</span></div>
+                <div className="flex justify-between"><span className="text-[#86868b]">Presented burst P95/max</span><span>{cadence.presentedBurstP95.toFixed(0)} / {cadence.presentedBurstMax.toFixed(0)}</span></div>
+              </div>
+            );
+          })() : (
+            <div className="flex items-center justify-between border-t border-[#f0f0f0] pt-2 mb-2 text-[11px]">
+              <span className="text-[#86868b]">Display callback rate</span>
+              <span className="font-mono tabular-nums text-[#1d1d1f]">
+                {loopState === 'stopped' || !selectedNodeId || (rendererFps[selectedNodeId] ?? 0) <= 0
+                  ? '-- FPS'
+                  : `${Math.round(rendererFps[selectedNodeId])} FPS`}
+              </span>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-[11px] text-[#1d1d1f]">
             <input type="checkbox" checked={data.expanded !== false}
               onChange={(e) => {

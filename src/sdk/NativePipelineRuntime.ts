@@ -56,12 +56,26 @@ export interface NativeOutputEvent {
   backend: 'cpu' | 'directml' | 'directml+cpu';
   data?: unknown;
 }
+export interface NativeRendererCadence {
+  callbackFps: number;
+  presentedFps: number;
+  displayedFps: number;
+  droppedFps: number;
+  dropRatio: number;
+  mediaRate: number;
+  callbackP50Ms: number;
+  callbackP95Ms: number;
+  callbackMaxMs: number;
+  presentedBurstP95: number;
+  presentedBurstMax: number;
+}
 
 export interface NativeRuntimeCallbacks {
   onFrame?: (frame: NativeFrameRendered) => void;
   onRendererFrame?: (nodeId: string, frame: NativeOutputImage) => void;
   onRendererStream?: (nodeId: string, video: HTMLVideoElement | null) => void;
-  onRendererVideoFrame?: (nodeId: string, presentedFrames: number) => void;
+  onRendererVideoFrame?: (nodeId: string) => void;
+  onRendererCadence?: (nodeId: string, cadence: NativeRendererCadence) => void;
   onError?: (error: string) => void;
   onOutput?: (nodeId: string, dataUrl: string) => void;
   onOutputSize?: (nodeId: string, width: number, height: number) => void;
@@ -143,6 +157,11 @@ export class NativePipelineRuntime {
     totalProcessingMs: 0,
     maxIntervalMs: 0,
     lastCallbackAt: 0,
+    intervals: [] as number[],
+    presentedBursts: [] as number[],
+    previousPresentedFrames: 0,
+    qualityTotalAtWindow: -1,
+    qualityDroppedAtWindow: -1,
   };
   private textureStreamSupported = false;
   private textureStreamStartPending = false;
@@ -639,23 +658,62 @@ export class NativePipelineRuntime {
         const callbackAt = performance.now();
         const metrics = this.textureStreamFrameMetrics;
         const interval = metrics.lastCallbackAt > 0 ? callbackAt - metrics.lastCallbackAt : 0;
+        if (interval > 0) metrics.intervals.push(interval);
         metrics.lastCallbackAt = callbackAt;
         metrics.frames += 1;
         metrics.lastMediaTime = metadata.mediaTime;
         if (metrics.frames === 1) metrics.firstMediaTime = metadata.mediaTime;
         metrics.lastPresentedFrames = metadata.presentedFrames;
         if (metrics.frames === 1) metrics.firstPresentedFrames = metadata.presentedFrames;
+        const presentedBurst = metrics.previousPresentedFrames > 0
+          ? Math.max(0, metadata.presentedFrames - metrics.previousPresentedFrames)
+          : 0;
+        metrics.previousPresentedFrames = metadata.presentedFrames;
+        if (presentedBurst > 0) metrics.presentedBursts.push(presentedBurst);
         metrics.totalProcessingMs += metadata.processingDuration ?? 0;
         metrics.maxIntervalMs = Math.max(metrics.maxIntervalMs, interval);
+        const quality = video.getVideoPlaybackQuality();
+        if (metrics.qualityTotalAtWindow < 0) {
+          metrics.qualityTotalAtWindow = quality.totalVideoFrames;
+          metrics.qualityDroppedAtWindow = quality.droppedVideoFrames;
+        }
         const elapsed = callbackAt - metrics.windowAt;
         if (elapsed >= 1000) {
+          const intervals = metrics.intervals.toSorted((a, b) => a - b);
+          const bursts = metrics.presentedBursts.toSorted((a, b) => a - b);
+          const percentile = (values: number[], fraction: number) => values.length > 0
+            ? values[Math.min(values.length - 1, Math.floor(values.length * fraction))]
+            : 0;
+          const totalFrames = Math.max(0, quality.totalVideoFrames - metrics.qualityTotalAtWindow);
+          const droppedFrames = Math.max(0, quality.droppedVideoFrames - metrics.qualityDroppedAtWindow);
+          const displayedFrames = Math.max(0, totalFrames - droppedFrames);
+          const cadence: NativeRendererCadence = {
+            callbackFps: metrics.frames * 1000 / elapsed,
+            presentedFps: (metrics.lastPresentedFrames - metrics.firstPresentedFrames) * 1000 / elapsed,
+            displayedFps: displayedFrames * 1000 / elapsed,
+            droppedFps: droppedFrames * 1000 / elapsed,
+            dropRatio: totalFrames > 0 ? droppedFrames / totalFrames : 0,
+            mediaRate: (metrics.lastMediaTime - metrics.firstMediaTime) * 1000 / elapsed,
+            callbackP50Ms: percentile(intervals, 0.5),
+            callbackP95Ms: percentile(intervals, 0.95),
+            callbackMaxMs: metrics.maxIntervalMs,
+            presentedBurstP95: percentile(bursts, 0.95),
+            presentedBurstMax: bursts.at(-1) ?? 0,
+          };
           runtimeLog('native', 'info', 'texture-stream-consumer-perf', {
-            rate: Number((metrics.frames * 1000 / elapsed).toFixed(1)),
-            presentedRate: Number(((metrics.lastPresentedFrames - metrics.firstPresentedFrames) * 1000 / elapsed).toFixed(1)),
-            mediaDelta: Number((metrics.lastMediaTime - metrics.firstMediaTime).toFixed(3)),
-            avgProcessingMs: Number((metrics.totalProcessingMs / metrics.frames).toFixed(3)),
-            maxIntervalMs: Number(metrics.maxIntervalMs.toFixed(3)),
+            callbackFps: Number(cadence.callbackFps.toFixed(1)),
+            presentedFps: Number(cadence.presentedFps.toFixed(1)),
+            displayedFps: Number(cadence.displayedFps.toFixed(1)),
+            droppedFps: Number(cadence.droppedFps.toFixed(1)),
+            dropRatio: Number(cadence.dropRatio.toFixed(3)),
+            mediaRate: Number(cadence.mediaRate.toFixed(3)),
+            callbackP50Ms: Number(cadence.callbackP50Ms.toFixed(1)),
+            callbackP95Ms: Number(cadence.callbackP95Ms.toFixed(1)),
+            callbackMaxMs: Number(cadence.callbackMaxMs.toFixed(1)),
+            presentedBurstP95: cadence.presentedBurstP95,
+            presentedBurstMax: cadence.presentedBurstMax,
           });
+          this.callbacks.onRendererCadence?.(nodeId, cadence);
           this.textureStreamFrameMetrics = {
             windowAt: callbackAt,
             frames: 0,
@@ -666,9 +724,14 @@ export class NativePipelineRuntime {
             totalProcessingMs: 0,
             maxIntervalMs: 0,
             lastCallbackAt: callbackAt,
+            intervals: [],
+            presentedBursts: [],
+            previousPresentedFrames: metrics.previousPresentedFrames,
+            qualityTotalAtWindow: quality.totalVideoFrames,
+            qualityDroppedAtWindow: quality.droppedVideoFrames,
           };
         }
-        this.callbacks.onRendererVideoFrame?.(nodeId, metadata.presentedFrames);
+        this.callbacks.onRendererVideoFrame?.(nodeId);
         if (!this.textureStreamMode || !this.textureStreamVideo) {
           this.textureStreamFrameCallback = null;
           return;
@@ -678,7 +741,6 @@ export class NativePipelineRuntime {
       this.textureStreamFrameCallback = video.requestVideoFrameCallback(onFrame);
     }
     return true;
-
   }
 
   private releaseTextureStream(): void {

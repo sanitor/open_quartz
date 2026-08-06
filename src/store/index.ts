@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import type { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode } from '../types';
+import type { ShaderNodeData, DataType, InputMode, RendererCadenceMetrics } from '../types';
 import type { HistoryEntry } from './helpers';
 import { graphSlice } from './graphSlice';
 import { transportSlice } from './transportSlice';
@@ -23,6 +23,7 @@ export interface GraphState {
   loopState: 'stopped' | 'playing' | 'paused';
   fps: number;
   rendererFps: Record<string, number>;
+  rendererCadence: Record<string, RendererCadenceMetrics>;
   nativeRendererStreams: Record<string, MediaStream | null>;
   currentTime: number;
   currentFrame: number;
@@ -60,6 +61,7 @@ export interface GraphState {
   resume: () => void;
   setFps: (fps: number) => void;
   setRendererFps: (nodeId: string, fps: number) => void;
+  setRendererCadence: (nodeId: string, metrics: RendererCadenceMetrics) => void;
   setNativeRendererStream: (nodeId: string, stream: MediaStream | null) => void;
   clearRendererFps: () => void;
   setCurrentTime: (t: number) => void;

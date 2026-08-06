@@ -16,6 +16,20 @@ export type DataType = GlslDataType | LogicalDataType | 'auto';
 export type InputMode = 'image' | 'framebuffer' | 'video' | 'system';
 
 export type FramebufferFormat = 'rgba8' | 'rgba32f' | 'rg8' | 'rg32f' | 'r8' | 'r32f' | 'nv12';
+export interface RendererCadenceMetrics {
+  graphFps: number;
+  presentedFps: number;
+  callbackFps: number;
+  displayedFps: number;
+  droppedFps: number;
+  dropRatio: number;
+  mediaRate: number;
+  callbackP50Ms: number;
+  callbackP95Ms: number;
+  callbackMaxMs: number;
+  presentedBurstP95: number;
+  presentedBurstMax: number;
+}
 
 export type TextureFilter = 'linear' | 'nearest';
 export type TextureWrap = 'clamp' | 'repeat' | 'mirror';

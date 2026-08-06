@@ -485,7 +485,7 @@ describe('SidePanel', () => {
     expect(screen.getByText('Mirror')).toBeInTheDocument();
   });
 
-  it('shows FPS only in the selected Renderer panel', () => {
+  it('labels the legacy Renderer rate as callback cadence', () => {
     renderSidePanel({
       selectedNodeId: 'renderer',
       nodes: [{
@@ -496,7 +496,44 @@ describe('SidePanel', () => {
       loopState: 'playing',
     });
 
-    expect(screen.getByText('Display frame rate')).toBeInTheDocument();
+    expect(screen.getByText('Display callback rate')).toBeInTheDocument();
     expect(screen.getByText('60 FPS')).toBeInTheDocument();
+  });
+
+  it('shows graph, presentation, callback, and cadence metrics separately', () => {
+    renderSidePanel({
+      selectedNodeId: 'renderer',
+      nodes: [{
+        id: 'renderer', type: 'renderer', position: { x: 0, y: 0 },
+        data: makeShaderNodeData({ type: 'renderer', inputs: [], outputs: [] }),
+      }],
+      rendererCadence: { renderer: {
+        graphFps: 62,
+        presentedFps: 60.8,
+        callbackFps: 23.2,
+        displayedFps: 14.1,
+        droppedFps: 46.7,
+        dropRatio: 0.768,
+        mediaRate: 0.997,
+        callbackP50Ms: 33.4,
+        callbackP95Ms: 67.1,
+        callbackMaxMs: 95.2,
+        presentedBurstP95: 4,
+        presentedBurstMax: 6,
+      } },
+    });
+
+    expect(screen.getByText('Graph')).toBeInTheDocument();
+    expect(screen.getByText('Displayed')).toBeInTheDocument();
+    expect(screen.getByText('Dropped')).toBeInTheDocument();
+    expect(screen.getByText('Presented')).toBeInTheDocument();
+    expect(screen.getByText('Callback')).toBeInTheDocument();
+    expect(screen.getByText('62.0 FPS')).toBeInTheDocument();
+    expect(screen.getByText('60.8 FPS')).toBeInTheDocument();
+    expect(screen.getByText('14.1 FPS')).toBeInTheDocument();
+    expect(screen.getByText('46.7 FPS (76.8%)')).toBeInTheDocument();
+    expect(screen.getByText('23.2 FPS')).toBeInTheDocument();
+    expect(screen.getByText('33.4 / 67.1 ms')).toBeInTheDocument();
+    expect(screen.getByText('4 / 6')).toBeInTheDocument();
   });
 });
