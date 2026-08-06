@@ -105,11 +105,11 @@ impl GpuPreviewReader {
         }
     }
 
-    pub async fn read(
+    pub fn scale(
         &mut self,
         source: &GpuOutputHandle,
         max_dimension: u32,
-    ) -> Result<GpuPreviewImage, String> {
+    ) -> Result<GpuOutputHandle, String> {
         if max_dimension == 0 {
             return Err("GPU preview max dimension must be greater than zero".to_owned());
         }
@@ -125,7 +125,7 @@ impl GpuPreviewReader {
             .max(1) as u32;
         let height = ((u64::from(source.height) * u64::from(scale_dimension)) / u64::from(largest))
             .max(1) as u32;
-        let recreate = self.target.as_ref().map_or(true, |target| {
+        let recreate = self.target.as_ref().is_none_or(|target| {
             target.width != width || target.height != height
         });
         if recreate {
@@ -139,7 +139,6 @@ impl GpuPreviewReader {
             .target
             .as_ref()
             .ok_or_else(|| "GPU preview target allocation failed".to_owned())?;
-        let scale_started = Instant::now();
         let bind_group = self
             .backend
             .device
@@ -184,14 +183,35 @@ impl GpuPreviewReader {
             pass.draw(0..3, 0..1);
         }
         self.backend.queue.submit([encoder.finish()]);
+        Ok(GpuOutputHandle {
+            texture: target.texture.clone(),
+            view: target.view.clone(),
+            sampler: source.sampler.clone(),
+            width,
+            height,
+            format: TextureFormat::Rgba8Unorm,
+        })
+    }
+
+    pub async fn read(
+        &mut self,
+        source: &GpuOutputHandle,
+        max_dimension: u32,
+    ) -> Result<GpuPreviewImage, String> {
+        let scale_started = Instant::now();
+        let scaled = self.scale(source, max_dimension)?;
         let scale_submit = scale_started.elapsed();
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| "GPU preview target allocation failed".to_owned())?;
         let readback_started = Instant::now();
         let rgba = self.backend.read_target_rgba(target).await?;
         let readback = readback_started.elapsed();
         Ok(GpuPreviewImage {
             rgba,
-            width,
-            height,
+            width: scaled.width,
+            height: scaled.height,
             scale_submit,
             readback,
         })

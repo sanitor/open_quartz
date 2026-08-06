@@ -47,6 +47,7 @@
 - **TextureStream media clock** — use microsecond presentation timestamps for WebView2 TextureStream; consumer diagnostics showed `mediaDelta≈10s` per one-second window with the previous 100ns conversion, causing WebView2 to fast-forward/drop frames and oscillate between 10–45 FPS.
 - **TextureStream UI state churn** — publish the native stream to Zustand only when the `MediaStream` identity changes; repeated native frame events no longer trigger redundant store updates or React reconciliation.
 - **Renderer cadence accounting** — separate native graph execution, TextureStream frames submitted for composition, `requestVideoFrameCallback` cadence, and frames actually displayed versus dropped using `getVideoPlaybackQuality()`; expose callback P50/P95/max latency and presented-frame burst distribution instead of relabeling submitted frames as visible FPS.
+- **TextureStream presentation scaling** — keep native graph/output textures at full resolution, but downscale oversized Windows TextureStream frames in a GPU render pass to a maximum 3840px dimension before DXGI export; screenshots and native output readback remain full-resolution.
 
 ### Documentation
 

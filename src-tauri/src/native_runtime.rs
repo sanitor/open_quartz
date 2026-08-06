@@ -19,6 +19,8 @@ use open_quartz::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
 use open_quartz::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(windows)]
+const PRESENTATION_MAX_DIMENSION: u32 = 3_840;
 
 #[derive(Default)]
 pub struct NativeRuntimeState {
@@ -309,6 +311,8 @@ struct NativeGpuRuntime {
     #[cfg(windows)]
     shared_presenter: Option<SharedTexturePresenter<DxgiSharedTextureExporter>>,
     #[cfg(windows)]
+    presentation_scaler: GpuPreviewReader,
+    #[cfg(windows)]
     shared_texture_enabled: bool,
 }
 
@@ -352,6 +356,8 @@ impl NativeGpuRuntime {
             .ok()
             .map(SharedTexturePresenter::new);
         #[cfg(windows)]
+        let presentation_scaler = GpuPreviewReader::new(backend.clone());
+        #[cfg(windows)]
         let shared_texture = shared_presenter.is_some();
         #[cfg(not(windows))]
         let shared_texture = false;
@@ -394,6 +400,8 @@ impl NativeGpuRuntime {
                 output_events: Vec::new(),
                 onnx_workers: Vec::new(),
                 perf: NativeRenderPerf::new(),
+                #[cfg(windows)]
+                presentation_scaler,
                 #[cfg(windows)]
                 shared_presenter,
                 #[cfg(windows)]
@@ -849,17 +857,24 @@ impl NativeGpuRuntime {
         };
         #[cfg(windows)]
         if self.shared_texture_enabled {
-            if let (Some(presenter), Some(output)) = (
-                self.shared_presenter.as_mut(),
-                self.executor.output_handle(&output_node_id),
-            ) {
-                let _ = presenter.submit(GpuPresentationFrame {
-                    node_id: output_node_id.clone(),
-                    frame,
-                    timeline_ns: (time.max(0.0) * 1_000_000_000.0) as u64,
-                    output,
-                });
-                let _ = presenter.process_latest();
+            if let Some(output_handle) = self.executor.output_handle(&output_node_id) {
+                let presentation_output = if output_handle.width.max(output_handle.height)
+                    > PRESENTATION_MAX_DIMENSION
+                {
+                    self.presentation_scaler
+                        .scale(&output_handle, PRESENTATION_MAX_DIMENSION)?
+                } else {
+                    output_handle
+                };
+                if let Some(presenter) = self.shared_presenter.as_mut() {
+                    let _ = presenter.submit(GpuPresentationFrame {
+                        node_id: output_node_id.clone(),
+                        frame,
+                        timeline_ns: (time.max(0.0) * 1_000_000_000.0) as u64,
+                        output: presentation_output,
+                    });
+                    let _ = presenter.process_latest();
+                }
             }
         }
         let rendered = NativeFrameRendered {
