@@ -363,7 +363,11 @@ impl D3d12VideoFrame {
 impl GpuBackend {
     /// Converts an imported P010 D3D12 surface to the normal RGBA graph texture.
     /// The conversion is GPU-only; no decoded bytes cross the CPU.
-    pub fn upload_d3d12_p010(&self, frame: &D3d12VideoFrame) -> Result<TextureHandle, String> {
+    pub fn upload_d3d12_p010(
+        &self,
+        frame: &D3d12VideoFrame,
+        output: &TextureHandle,
+    ) -> Result<(), String> {
         let size = wgpu::Extent3d {
             width: frame.width,
             height: frame.height,
@@ -408,7 +412,6 @@ impl GpuBackend {
             array_layer_count: Some(1),
             ..Default::default()
         });
-        let output = self.create_texture(frame.width, frame.height, TextureFormat::Rgba8Unorm);
         let (layout, pipeline) = self
             .p010_converter
             .get_or_init(|| create_p010_pipeline(&self.device));
@@ -452,7 +455,7 @@ impl GpuBackend {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        Ok(output)
+        Ok(())
     }
 }
 

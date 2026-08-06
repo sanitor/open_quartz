@@ -143,12 +143,24 @@ impl GpuExecutor {
         node_id: &str,
         frame: &super::D3d12VideoFrame,
     ) -> Result<(), GpuExecutionError> {
-        let texture = self
-            .backend
-            .upload_d3d12_p010(frame)
-            .map_err(|message| GpuExecutionError::for_node(node_id, message))?;
-        self.textures.insert(node_id.to_owned(), texture);
-        Ok(())
+        let recreate = self.textures.get(node_id).is_none_or(|texture| {
+            texture.width != frame.width
+                || texture.height != frame.height
+                || texture.format != TextureFormat::Rgba8Unorm
+        });
+        if recreate {
+            self.textures.insert(
+                node_id.to_owned(),
+                self.backend
+                    .create_texture(frame.width, frame.height, TextureFormat::Rgba8Unorm),
+            );
+        }
+        let texture = self.textures.get(node_id).ok_or_else(|| {
+            GpuExecutionError::for_node(node_id, "video texture allocation failed")
+        })?;
+        self.backend
+            .upload_d3d12_p010(frame, texture)
+            .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 
     pub fn register_external_texture(
