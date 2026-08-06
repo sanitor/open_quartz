@@ -872,7 +872,7 @@ mod platform {
                 &slot.source,
                 frame.width,
                 frame.height,
-                frame.timeline_ns / 100,
+                frame.timeline_ns / 1_000,
             );
             drop(source_mutex);
             result
