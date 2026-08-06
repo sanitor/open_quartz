@@ -133,6 +133,15 @@ export class NativePipelineRuntime {
   private textureStreamVideo: HTMLVideoElement | null = null;
   private textureStream: MediaStream | null = null;
   private textureStreamMode = false;
+  private textureStreamFrameMetrics = {
+    windowAt: performance.now(),
+    frames: 0,
+    firstMediaTime: 0,
+    lastMediaTime: 0,
+    totalProcessingMs: 0,
+    maxIntervalMs: 0,
+    lastCallbackAt: 0,
+  };
   private textureStreamSupported = false;
   private textureStreamStartPending = false;
   private textureStreamFrameCallback: number | null = null;
@@ -623,7 +632,34 @@ export class NativePipelineRuntime {
     }
     this.callbacks.onRendererStream?.(nodeId, video);
     if (this.textureStreamFrameCallback === null) {
-      const onFrame: VideoFrameRequestCallback = () => {
+      const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+        const callbackAt = performance.now();
+        const metrics = this.textureStreamFrameMetrics;
+        const interval = metrics.lastCallbackAt > 0 ? callbackAt - metrics.lastCallbackAt : 0;
+        metrics.lastCallbackAt = callbackAt;
+        metrics.frames += 1;
+        metrics.lastMediaTime = metadata.mediaTime;
+        if (metrics.frames === 1) metrics.firstMediaTime = metadata.mediaTime;
+        metrics.totalProcessingMs += metadata.processingDuration ?? 0;
+        metrics.maxIntervalMs = Math.max(metrics.maxIntervalMs, interval);
+        const elapsed = callbackAt - metrics.windowAt;
+        if (elapsed >= 1000) {
+          runtimeLog('native', 'info', 'texture-stream-consumer-perf', {
+            rate: Number((metrics.frames * 1000 / elapsed).toFixed(1)),
+            mediaDelta: Number((metrics.lastMediaTime - metrics.firstMediaTime).toFixed(3)),
+            avgProcessingMs: Number((metrics.totalProcessingMs / metrics.frames).toFixed(3)),
+            maxIntervalMs: Number(metrics.maxIntervalMs.toFixed(3)),
+          });
+          this.textureStreamFrameMetrics = {
+            windowAt: callbackAt,
+            frames: 0,
+            firstMediaTime: 0,
+            lastMediaTime: 0,
+            totalProcessingMs: 0,
+            maxIntervalMs: 0,
+            lastCallbackAt: callbackAt,
+          };
+        }
         this.callbacks.onRendererVideoFrame?.(nodeId);
         if (!this.textureStreamMode || !this.textureStreamVideo) {
           this.textureStreamFrameCallback = null;
@@ -634,6 +670,7 @@ export class NativePipelineRuntime {
       this.textureStreamFrameCallback = video.requestVideoFrameCallback(onFrame);
     }
     return true;
+
   }
 
   private releaseTextureStream(): void {
