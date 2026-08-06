@@ -614,15 +614,27 @@ export function SidePanel() {
       extra: previewExtra,
       content: (
         <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
-          {data.type === 'renderer' && data.expanded === false ? (
+          {data.type === 'renderer' && nativeRendererStreams[selectedNodeId!] ? (
+            <video
+              id={`renderer-stream-${selectedNodeId}`}
+              ref={(video) => {
+                const stream = nativeRendererStreams[selectedNodeId!];
+                if (video && video.srcObject !== stream) {
+                  video.srcObject = stream;
+                  void video.play();
+                }
+              }}
+              muted
+              autoPlay
+              playsInline
+              className="rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+              style={{ width: '100%', maxHeight: '100%', aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}` }}
+            />
+          ) : data.type === 'renderer' ? (
             <canvas
               width={960}
               height={Math.max(1, Math.round(960 * (data.resolvedHeight ?? 9) / (data.resolvedWidth ?? 16)))}
-              style={{
-                width: '100%',
-                maxHeight: '100%',
-                aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}`,
-              }}
+              style={{ width: '100%', maxHeight: '100%', aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}` }}
             />
           ) : isSampler2D ? (
             inputPreviewSrc ? (

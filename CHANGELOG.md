@@ -41,6 +41,7 @@
 - **Long-run 8K stability** — retain one RGBA conversion target per native video node instead of allocating a new 8K texture for every decoded D3D12VA frame, eliminating GPU allocation churn and the progressive 40→10 FPS collapse.
 - **Visible Renderer FPS** — size node and SidePanel canvas backing stores to their visible preview bounds instead of 7680×3840, avoiding a full 8K `drawImage` plus browser canvas backing update on every TextureStream frame while preserving full-resolution native output and screenshot capture.
 - **Direct TextureStream Renderer composition** — expose the native MediaStream through the UI store and render it directly in Renderer node, SidePanel, and fullscreen views; `requestVideoFrameCallback` now measures delivery without `video→canvas drawImage`, while canvas remains the fallback path.
+- **SidePanel native stream path** — selected Renderer previews now use the same direct TextureStream `<video>` composition as the graph node and fullscreen view; the SidePanel no longer creates a hidden 960px canvas fallback while the native stream is active.
 
 ### Documentation
 
