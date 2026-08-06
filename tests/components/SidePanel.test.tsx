@@ -65,7 +65,9 @@ const defaultStoreState = {
   edges: [] as Array<{ id: string; source: string; target: string }>,
 };
 
-const mockUseGraphStore = vi.fn(() => defaultStoreState);
+const mockUseGraphStore = vi.fn((selector?: (state: typeof defaultStoreState) => unknown) =>
+  selector ? selector(defaultStoreState) : defaultStoreState,
+);
 
 vi.mock('../../src/store/useGraphStore', () => ({
   useGraphStore: (...args: unknown[]) => mockUseGraphStore(...(args as [])),
@@ -75,7 +77,9 @@ import { SidePanel } from '../../src/components/SidePanel';
 
 function renderSidePanel(overrides: Partial<typeof defaultStoreState> = {}) {
   const state = { ...defaultStoreState, ...overrides };
-  mockUseGraphStore.mockReturnValue(state);
+  mockUseGraphStore.mockImplementation((selector?: (value: typeof defaultStoreState) => unknown) =>
+    selector ? selector(state) : state,
+  );
   return render(<SidePanel />);
 }
 

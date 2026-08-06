@@ -68,8 +68,8 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
               id={`renderer-mirror-${id}`}
               onClick={handlePreviewClick}
               className="cursor-pointer rounded border border-[#e8e8ed] bg-[#1d1d1f]"
-              width={rw}
-              height={rh}
+              width={previewW}
+              height={previewH}
               style={{ width: previewW, height: previewH, display: 'block' }}
             />
             <div className="text-[9px] text-[#aeaeb2] text-center mt-1">

@@ -615,10 +615,8 @@ export function SidePanel() {
         <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
           {data.type === 'renderer' && data.expanded === false ? (
             <canvas
-              id={`renderer-mirror-${selectedNodeId}`}
-              className="rounded border border-[#e8e8ed] bg-[#1d1d1f]"
-              width={data.resolvedWidth ?? 512}
-              height={data.resolvedHeight ?? 512}
+              width={960}
+              height={Math.max(1, Math.round(960 * (data.resolvedHeight ?? 9) / (data.resolvedWidth ?? 16)))}
               style={{
                 width: '100%',
                 maxHeight: '100%',

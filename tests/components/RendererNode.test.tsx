@@ -199,15 +199,15 @@ describe('RendererNode', () => {
     expect(screen.getByText('1920×1080')).toBeInTheDocument();
   });
 
-  it('canvas dimensions match resolvedWidth/resolvedHeight', () => {
+  it('canvas backing size matches the bounded visible preview', () => {
     const props = makeProps(
       { resolvedWidth: 800, resolvedHeight: 600 },
       { loopState: 'playing' },
     );
     const { container } = render(<RendererNode {...props} />);
     const canvas = container.querySelector('canvas') as HTMLCanvasElement;
-    expect(canvas.width).toBe(800);
-    expect(canvas.height).toBe(600);
+    expect(canvas.width).toBe(200);
+    expect(canvas.height).toBe(150);
   });
 
   it('preview width is clamped to MAX_PREVIEW_W=200 with proportional height', () => {
