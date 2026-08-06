@@ -149,8 +149,12 @@ export class PipelineService {
         onRendererStream: (nodeId, video) => {
           if (video) this.rendererStream = { nodeId, video };
           else this.rendererStream = null;
-          useGraphStore.getState().setNativeRendererStream(nodeId, video ? video.srcObject as MediaStream : null);
-          this.mountRendererStream(nodeId, video);
+          const stream = video?.srcObject as MediaStream | null;
+          const current = useGraphStore.getState().nativeRendererStreams[nodeId] ?? null;
+          if (current !== stream) {
+            useGraphStore.getState().setNativeRendererStream(nodeId, stream);
+            this.mountRendererStream(nodeId, video);
+          }
         },
         onRendererVideoFrame: (nodeId) => {
           this.recordRendererPresentation(nodeId);
