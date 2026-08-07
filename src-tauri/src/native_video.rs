@@ -42,6 +42,8 @@ pub struct NativeVideoInfo {
     pub decoder: String,
     #[serde(skip)]
     d3d12_eligible: bool,
+    #[serde(skip)]
+    d3d12_detach_required: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -454,6 +456,7 @@ fn decode_d3d12_frames(
                         decoded.height(),
                         u32::try_from(descriptor.subresource_index)
                             .map_err(|_| "FFmpeg returned a negative D3D12 subresource".to_owned())?,
+                        info.d3d12_detach_required,
                     )?
                 };
                 unsafe { ffmpeg_next::ffi::av_frame_unref(decoded.as_mut_ptr()) };
@@ -556,7 +559,8 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .and_then(|capture| capture[1].parse::<f64>().ok())
         .filter(|fps| *fps > 0.0)
         .unwrap_or(30.0);
-    let codec_supported = video_line.contains("h264") || video_line.contains("hevc");
+    let is_h264 = video_line.contains("h264");
+    let codec_supported = is_h264 || video_line.contains("hevc");
     let format_supported = video_line.contains("yuv420p")
         || video_line.contains("nv12")
         || video_line.contains("p010");
@@ -566,6 +570,7 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         fps,
         decoder: "ffmpeg-native".to_owned(),
         d3d12_eligible: codec_supported && format_supported,
+        d3d12_detach_required: is_h264,
     })
 }
 

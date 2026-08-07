@@ -392,11 +392,12 @@ impl D3d12VideoFrame {
     pub unsafe fn from_raw(
         resource: *mut c_void,
         fence: *mut c_void,
-        event: *mut c_void,
+        _event: *mut c_void,
         fence_value: u64,
         width: u32,
         height: u32,
         subresource_index: u32,
+        detach: bool,
     ) -> Result<Self, String> {
         let borrowed_resource = ID3D12Resource::from_raw(
             NonNull::new(resource)
@@ -437,15 +438,20 @@ impl D3d12VideoFrame {
                 return Err("Timed out waiting for D3D12 video decode".to_owned());
             }
         }
-        let _ = event;
-        let resource = detach_video_subresource(&resource, subresource_index)?;
+        let imported_subresource = if detach { 0 } else { subresource_index };
+        let imported_array_layers = if detach { 1 } else { array_layers };
+        let resource = if detach {
+            detach_video_subresource(&resource, subresource_index)?
+        } else {
+            resource
+        };
         Ok(Self {
             resource,
             width,
             height,
-            subresource_index: 0,
+            subresource_index: imported_subresource,
             format,
-            array_layers: 1,
+            array_layers: imported_array_layers,
         })
     }
 }
