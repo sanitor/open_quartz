@@ -1099,6 +1099,16 @@ Camera and non-Windows decoders retain `rawvideo rgba` stdout → Rust `Vec<u8>`
 
 The remaining media-contract work is timestamp/color generalization: the current importer retains the texture and synchronization primitive, but playback pacing still derives from probed FPS and the converter currently uses BT.709 limited-range coefficients. PTS/duration and color space/transfer/range must be propagated before claiming arbitrary-source color/timestamp completeness.
 
+8-bit H.264 的 D3D12VA 输出通常是 NV12。`wgpu` 可在启用 `TEXTURE_FORMAT_NV12` 后导入 Y/UV planes 并以同一 GPU pass 转为 RGBA；但不能把“直接长期持有 decoder surface”当作稳定契约。AMD Radeon 860M + FFmpeg D3D12VA 实测在异步 graph slot 持有输出 resource 时于 17 帧后报 `No space for new Reference frame`。扩大 `AVHWFramesContext`、关闭 frame threading、提前释放 `AVFrame` 和等待 wgpu conversion submission 均未消除该 decoder reference-surface exhaustion。
+
+因此 H.264 production path 必须显式选择以下边界之一，不能把已失败的 direct-import 实验标记为完成：
+
+1. **D3D12VA + detached GPU copy（推荐）**：decode fence 完成后立即把 NV12 subresource GPU-copy 到 OpenQuartz 自有的复用纹理池，再归还 FFmpeg reference surface；随后 wgpu 导入自有 NV12 texture。它是 zero-CPU-pixel-copy，但不是 zero-GPU-copy。
+2. **D3D11VA shared interop**：将成熟的 D3D11VA H.264 surface GPU-copy 到 keyed shared texture，再由 D3D12/wgpu 打开；设备与 mutex/fence 边界更复杂。
+3. **严格 direct decoder-surface import**：必须让 conversion 在 decoder surface 归还前同步完成，且证明驱动不会耗尽 reference allocations；当前 AMD/FFmpeg 组合未满足退出条件。
+
+H.264 验收必须连续跨过 decoder reference pool 和文件 loop：`decodedFrames/uploadedFrames` 持续增长、`cpuCopyBytes == 0`、画面时间推进、无 `No space for new Reference frame`，不能用前 17 帧成功或 graph 重复呈现最后一帧代替连续解码证据。
+
 #### 9.8.2 Native composition clock
 
 native runtime 是唯一 composition clock owner；`SystemTime` 只用于 `iDate`，不能驱动 elapsed time。目标 clock state：
@@ -1208,6 +1218,33 @@ Rust GPU 层已经建立与 graph execution 解耦的 presentation 边界：
 - TextureStream 的真实验收包含 `getTextureStream()`、`HTMLVideoElement.play()`、首帧尺寸和持续 `requestVideoFrameCallback`。当前 AMD Radeon 860M + WebView2 实测 `7680×3840` stream 首帧成功，10 秒收到 585 帧（约 58.5 FPS，P50 16.7ms）；
 - 如果 consumer handshake 或 presentation 出错，native 会关闭 shared presenter，JS 退回 bounded RGBA readback；这条 fallback 仍明确是 CPU/IPC copy，不宣称为 zero-copy；
 - 未实现 H.264 `EncodedStreamPresenter`。H.264 会破坏 Renderer 的逐像素准确性；没有可用 TextureStream 时继续使用无损、bounded、异步 RGBA fallback，SAVE/screenshot 始终无损；IOSurface、DMA-BUF、camera hardware-frame adapter 和通用 PTS/color metadata 仍待实现。
+
+#### 9.8.6 TextureStream GPU copy budget与presentation scaling
+
+Windows TextureStream 是 **no-CPU-readback**，不是 **no-GPU-copy**。当前 RGBA presentation 链路为：
+
+```text
+full-resolution graph texture
+  -> GPU fullscreen scale pass
+  -> bounded presentation texture (max dimension 3840)
+  -> D3D12 shared texture copy/export + fence
+  -> D3D11On12 wrapped resource
+  -> keyed-mutex D3D11 bridge texture
+  -> WebView2-owned available texture (CopyResource or NV12 VideoProcessorBlt)
+  -> Chromium compositor sample/compose
+```
+
+CPU 只负责 command/COM 调用、resource handle 和 fence/mutex 同步；当前显式像素操作由 GPU/D3D11 video processor 执行，不经过 mapped CPU buffer。独立显卡上这些资源通常驻留在同一 adapter 的显存；WDDM 在显存压力下仍可能分页，UMA 设备的物理内存由平台共享。
+
+presentation scaling 保持 graph、下游节点、截图和 native output readback 的原始分辨率，只降低 WebView2 consumer 的像素负载。当前 7680×3840 RGBA8 在进入 TextureStream 前缩放为 3840×1920；实测 `displayedFps` 从约 18–20 恢复到约 60，`dropRatio` 从约 67% 降至约 1.6%。
+
+未来优化按风险排序：
+
+1. 让 presentation scaler 直接渲染到 exporter 的可共享 D3D12 slot，消除 `presentation texture -> shared texture` 一次 GPU copy；必须保留三槽 lease，避免 WebView2 尚未消费的 slot 被覆盖。
+2. 探测 WebView2-owned texture 的 shared handle/keyed mutex 能力；若 bridge device 可直接打开，可将 D3D12 wrapped resource 到 bridge texture、bridge 到 WebView2 texture 两步合并为一次 copy/VideoProcessorBlt。失败时保留现有 bridge fallback。
+3. compositor 本身不能删除；fullscreen、opaque、无复杂 transform 的 video 才可能获得 Chromium/DComp hardware overlay promotion，不能作为通用契约依赖。
+
+所有优化都必须同时报告 `graphFps`、`presentedFps`、`displayedFps`、`droppedFps/dropRatio` 和 callback cadence，不能用 submitted/presented 帧率代替最终显示帧率。
 
 ## 10. Rust SDK 与 FFI
 
