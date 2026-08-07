@@ -13,7 +13,7 @@ export interface NativeRuntimeInfo {
   nativeOnnxDirectMl: boolean;
   sharedOnnxWgpuDevice: boolean;
   nativeVideo: boolean;
-  videoDataPath: 'cpu-copy' | 'd3d12va-p010-zero-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
+  videoDataPath: 'cpu-copy' | 'd3d12va-yuv-detached-gpu-copy' | 'd3d12va-p010-zero-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
   tensorDataPath: 'cpu-copy' | 'external-frame/no-cpu-readback' | 'shared-gpu';
   sharedTexture: boolean;
 }

@@ -331,17 +331,17 @@ impl NativeGpuRuntime {
             .await
             .map_err(|error| format!("Cannot find a native GPU adapter: {error}"))?;
         let adapter_info = adapter.get_info();
-        let required_features = if adapter
-            .features()
-            .contains(wgpu::Features::TEXTURE_FORMAT_P010)
-            && adapter
-                .features()
-                .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        let adapter_features = adapter.features();
+        let mut required_features = wgpu::Features::empty();
+        if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+        }
+        if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_P010)
+            && adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
         {
-            wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-        } else {
-            wgpu::Features::empty()
-        };
+            required_features |=
+                wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features,
@@ -371,10 +371,11 @@ impl NativeGpuRuntime {
             native_onnx_direct_ml: cfg!(target_os = "windows"),
             shared_onnx_wgpu_device: false,
             video_data_path: if cfg!(windows)
-                && required_features.contains(wgpu::Features::TEXTURE_FORMAT_P010)
-                && required_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+                && required_features.intersects(
+                    wgpu::Features::TEXTURE_FORMAT_NV12 | wgpu::Features::TEXTURE_FORMAT_P010,
+                )
             {
-                "d3d12va-p010-zero-copy".to_owned()
+                "d3d12va-yuv-detached-gpu-copy".to_owned()
             } else {
                 "cpu-copy".to_owned()
             },
@@ -542,7 +543,7 @@ impl NativeGpuRuntime {
                     .map_err(|error| error.to_string()),
                 #[cfg(windows)]
                 NativeVideoFrame::D3d12(frame) => executor
-                    .upload_d3d12_p010(node_id, frame)
+                    .upload_d3d12_yuv(node_id, frame)
                     .map_err(|error| error.to_string()),
             })?;
             if uploaded {

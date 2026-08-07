@@ -9,7 +9,7 @@ pub mod target;
 
 pub use backend::{GpuBackend, TextureHandle, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
 #[cfg(windows)]
-pub use dxgi::{D3d12VideoFrame, DxgiSharedTextureExporter};
+pub use dxgi::{D3d12VideoFormat, D3d12VideoFrame, DxgiSharedTextureExporter};
 pub use executor::{GpuExecutionError, GpuExecutor, GpuOutput, GpuOutputHandle};
 pub use presenter::{
     GpuPresentationFrame, GpuPresenter, LatestFrameMailbox, PresentationBackendKind,

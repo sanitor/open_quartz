@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0b] -- 2026-08-06
+
+### Features
+
+- **Direct TextureStream composition** — Renderer, SidePanel, and fullscreen views now share one canonical WebView2 media consumer instead of copying frames through intermediate canvases.
+- **Accurate presentation telemetry** — renderer metrics distinguish graph execution, submitted, callback, presented, displayed, and dropped frames, including callback latency percentiles and burst counts.
+- **Stable H.264 D3D12VA zero-copy input** — the Windows runtime uses a checksum-pinned FFmpeg master build with fixed reference-frame reuse, sustaining 61.31 FPS at 1920×1080 with zero CPU-copy bytes in the native benchmark.
+
+### Fixes
+
+- **TextureStream pacing and lifecycle** — corrected presentation timestamps, first-frame handshakes, stale readback rejection, stream-start retries, and repeated Zustand updates.
+- **D3D12VA frame selection** — preserve FFmpeg-reported texture-array subresources so decoder surface reuse cannot reorder displayed frames.
+- **TextureStream presentation scaling** — downscale oversized exported frames while retaining full-resolution native textures and screenshots.
+
+### Tests
+
+- **Native H.264 benchmark** — 10.01 seconds at 61.31 render/preview FPS, 391 decoded and uploaded frames, `cpu_copy_bytes=0`.
+- **Automated suites** — 990 Vitest tests across 41 files and 76 Rust tests, all passing; TypeScript type-check passes.
+
 ## [0.17.0b] -- 2026-07-29
 
 ### Features

@@ -138,7 +138,7 @@ impl GpuExecutor {
     }
 
     #[cfg(windows)]
-    pub fn upload_d3d12_p010(
+    pub fn upload_d3d12_yuv(
         &mut self,
         node_id: &str,
         frame: &super::D3d12VideoFrame,
@@ -159,7 +159,7 @@ impl GpuExecutor {
             GpuExecutionError::for_node(node_id, "video texture allocation failed")
         })?;
         self.backend
-            .upload_d3d12_p010(frame, texture)
+            .upload_d3d12_yuv(frame, texture)
             .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 

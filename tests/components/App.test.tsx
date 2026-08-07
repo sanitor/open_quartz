@@ -23,6 +23,7 @@ const { mockSubscribe } = vi.hoisted(() => ({
 }));
 vi.mock('../../src/store/useGraphStore', () => ({
   useGraphStore: Object.assign(vi.fn(), {
+    setState: vi.fn(),
     subscribe: mockSubscribe,
     getState: vi.fn(() => ({
       loopState: 'stopped' as const,
@@ -38,6 +39,7 @@ vi.mock('../../src/store/useGraphStore', () => ({
       updateNodeData: vi.fn(),
       setFps: vi.fn(),
       setCaptureScreenshot: vi.fn(),
+      setState: vi.fn(),
     })),
   }),
 }));

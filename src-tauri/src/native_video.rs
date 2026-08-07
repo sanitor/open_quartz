@@ -41,7 +41,7 @@ pub struct NativeVideoInfo {
     pub fps: f64,
     pub decoder: String,
     #[serde(skip)]
-    d3d12_p010_eligible: bool,
+    d3d12_eligible: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -121,7 +121,7 @@ impl NativeVideoSource {
         &mut self,
         mut upload: impl FnMut(NativeVideoFrame<'_>, u32, u32) -> Result<(), String>,
     ) -> Result<bool, String> {
-        let slot = self
+        let mut slot = self
             .slot
             .lock()
             .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
@@ -129,18 +129,26 @@ impl NativeVideoSource {
             return Ok(false);
         }
         #[cfg(windows)]
-        let frame = slot
-            .d3d12
-            .as_ref()
-            .map(NativeVideoFrame::D3d12)
-            .unwrap_or_else(|| NativeVideoFrame::Rgba(&slot.rgba));
-        #[cfg(not(windows))]
-        let frame = NativeVideoFrame::Rgba(&slot.rgba);
-        upload(frame, self.info.width, self.info.height)?;
+        let used_d3d12 = slot.d3d12.is_some();
+        {
+            #[cfg(windows)]
+            let frame = slot
+                .d3d12
+                .as_ref()
+                .map(NativeVideoFrame::D3d12)
+                .unwrap_or_else(|| NativeVideoFrame::Rgba(&slot.rgba));
+            #[cfg(not(windows))]
+            let frame = NativeVideoFrame::Rgba(&slot.rgba);
+            upload(frame, self.info.width, self.info.height)?;
+        }
         self.uploaded_generation = slot.generation;
         self.uploaded_frames = self.uploaded_frames.saturating_add(1);
         if !slot.rgba.is_empty() {
             self.cpu_copy_bytes = self.cpu_copy_bytes.saturating_add(slot.rgba.len() as u64);
+        }
+        #[cfg(windows)]
+        if used_d3d12 {
+            slot.d3d12 = None;
         }
         Ok(true)
     }
@@ -172,7 +180,7 @@ impl NativeVideoSource {
         self.alive.store(true, Ordering::Release);
         self.decoded_frames.store(0, Ordering::Release);
         #[cfg(windows)]
-        if self.config.kind == NativeVideoSourceKind::File && self.info.d3d12_p010_eligible {
+        if self.config.kind == NativeVideoSourceKind::File && self.info.d3d12_eligible {
             self.info.decoder = "ffmpeg-d3d12va".to_owned();
             match self.start_d3d12_decoder() {
                 Ok(()) => return Ok(()),
@@ -432,10 +440,7 @@ fn decode_d3d12_frames(
             while decoder.receive_frame(&mut decoded).is_ok() {
                 let started = Instant::now();
                 if decoded.format() != ffmpeg_next::format::Pixel::D3D12 {
-                    return Err(format!(
-                        "FFmpeg returned {:?}, not a D3D12 frame",
-                        decoded.format()
-                    ));
+                    return Err(format!("FFmpeg returned {:?}, not a D3D12 frame", decoded.format()));
                 }
                 let raw = unsafe { &*decoded.as_ptr() };
                 let descriptor = unsafe { &*(raw.data[0] as *const FfmpegD3d12Frame) };
@@ -447,11 +452,11 @@ fn decode_d3d12_frames(
                         descriptor.sync.fence_value,
                         decoded.width(),
                         decoded.height(),
-                        u32::try_from(descriptor.subresource_index).map_err(|_| {
-                            "FFmpeg returned a negative D3D12 subresource".to_owned()
-                        })?,
+                        u32::try_from(descriptor.subresource_index)
+                            .map_err(|_| "FFmpeg returned a negative D3D12 subresource".to_owned())?,
                     )?
                 };
+                unsafe { ffmpeg_next::ffi::av_frame_unref(decoded.as_mut_ptr()) };
                 let mut current = slot
                     .lock()
                     .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
@@ -460,6 +465,15 @@ fn decode_d3d12_frames(
                 current.generation = current.generation.saturating_add(1);
                 drop(current);
                 decoded_frames.fetch_add(1, Ordering::AcqRel);
+                while alive.load(Ordering::Acquire) {
+                    let consumed = slot
+                        .lock()
+                        .map_err(|_| "Native video frame lock is poisoned".to_owned())?
+                        .d3d12
+                        .is_none();
+                    if consumed { break; }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 let elapsed = started.elapsed();
                 if elapsed < frame_interval {
                     std::thread::sleep(frame_interval - elapsed);
@@ -542,12 +556,16 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .and_then(|capture| capture[1].parse::<f64>().ok())
         .filter(|fps| *fps > 0.0)
         .unwrap_or(30.0);
+    let codec_supported = video_line.contains("h264") || video_line.contains("hevc");
+    let format_supported = video_line.contains("yuv420p")
+        || video_line.contains("nv12")
+        || video_line.contains("p010");
     Ok(NativeVideoInfo {
         width,
         height,
         fps,
         decoder: "ffmpeg-native".to_owned(),
-        d3d12_p010_eligible: video_line.contains("yuv420p10le") || video_line.contains("p010"),
+        d3d12_eligible: codec_supported && format_supported,
     })
 }
 

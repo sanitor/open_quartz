@@ -5,13 +5,16 @@ use windows_graphics::core::Interface;
 
 use windows_graphics::Win32::Foundation::{CloseHandle, BOOL, GENERIC_ALL, HANDLE, WAIT_OBJECT_0};
 use windows_graphics::Win32::Graphics::Direct3D12::{
-    ID3D12Fence, ID3D12Resource, D3D12_FENCE_FLAG_SHARED, D3D12_HEAP_FLAG_SHARED,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
-    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
-    D3D12_TEXTURE_LAYOUT_UNKNOWN,
+    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device,
+    ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    D3D12_COMMAND_QUEUE_DESC, D3D12_FENCE_FLAG_NONE, D3D12_FENCE_FLAG_SHARED,
+    D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_NONE,
+    D3D12_RESOURCE_STATE_COMMON, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_UNKNOWN,
 };
 use windows_graphics::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows_graphics::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
@@ -286,12 +289,98 @@ impl SharedTextureExporter for DxgiSharedTextureExporter {
         Ok(())
     }
 }
+
+fn detach_video_subresource(
+    source: &ID3D12Resource,
+    subresource_index: u32,
+) -> Result<ID3D12Resource, String> {
+    unsafe {
+        let mut device = None;
+        source
+            .GetDevice::<ID3D12Device>(&mut device)
+            .map_err(|error| format!("Cannot get D3D12 video device: {error}"))?;
+        let device = device.ok_or_else(|| "D3D12 video resource returned no device".to_owned())?;
+        let queue: ID3D12CommandQueue = device
+            .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())
+            .map_err(|error| format!("Cannot create D3D12 detach queue: {error}"))?;
+        let allocator: ID3D12CommandAllocator = device
+            .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+            .map_err(|error| format!("Cannot create D3D12 detach allocator: {error}"))?;
+        let list: ID3D12GraphicsCommandList = device
+            .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
+            .map_err(|error| format!("Cannot create D3D12 detach command list: {error}"))?;
+        let mut description = source.GetDesc();
+        description.DepthOrArraySize = 1;
+        description.Flags = D3D12_RESOURCE_FLAG_NONE;
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let mut detached: Option<ID3D12Resource> = None;
+        device
+            .CreateCommittedResource(
+                &heap,
+                Default::default(),
+                &description,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut detached,
+            )
+            .map_err(|error| format!("Cannot allocate detached D3D12 video resource: {error}"))?;
+        let detached = detached.ok_or_else(|| "D3D12 returned no detached video resource".to_owned())?;
+        let source_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: std::mem::ManuallyDrop::new(Some(source.clone())),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: subresource_index },
+        };
+        let destination_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: std::mem::ManuallyDrop::new(Some(detached.clone())),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+        };
+        list.CopyTextureRegion(
+            &destination_location,
+            0,
+            0,
+            0,
+            &source_location,
+            None,
+        );
+        list.Close()
+            .map_err(|error| format!("Cannot close D3D12 detach command list: {error}"))?;
+        queue.ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()
+            .map_err(|error| format!("Cannot cast D3D12 detach command list: {error}"))?)]);
+        let fence: ID3D12Fence = device
+            .CreateFence(0, D3D12_FENCE_FLAG_NONE)
+            .map_err(|error| format!("Cannot create D3D12 detach fence: {error}"))?;
+        queue.Signal(&fence, 1)
+            .map_err(|error| format!("Cannot signal D3D12 detach fence: {error}"))?;
+        let event = CreateEventW(None, BOOL(0), BOOL(0), None)
+            .map_err(|error| format!("Cannot create D3D12 detach event: {error}"))?;
+        fence.SetEventOnCompletion(1, event)
+            .map_err(|error| format!("Cannot arm D3D12 detach fence: {error}"))?;
+        let wait = WaitForSingleObject(event, 5_000);
+        let _ = CloseHandle(event);
+        if wait != WAIT_OBJECT_0 {
+            return Err("Timed out waiting for detached D3D12 video copy".to_owned());
+        }
+        Ok(detached)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum D3d12VideoFormat {
+    Nv12,
+    P010,
+}
+
 /// A decoded D3D12 video surface retained independently of its FFmpeg AVFrame.
 pub struct D3d12VideoFrame {
     resource: ID3D12Resource,
     pub width: u32,
     pub height: u32,
     pub subresource_index: u32,
+    pub format: D3d12VideoFormat,
     array_layers: u32,
 }
 
@@ -317,12 +406,11 @@ impl D3d12VideoFrame {
         let resource = borrowed_resource.clone();
         std::mem::forget(borrowed_resource);
         let description = resource.GetDesc();
-        if description.Format != DXGI_FORMAT_P010 {
-            return Err(format!(
-                "D3D12VA produced DXGI format {:?}, expected P010",
-                description.Format
-            ));
-        }
+        let format = match description.Format {
+            DXGI_FORMAT_NV12 => D3d12VideoFormat::Nv12,
+            DXGI_FORMAT_P010 => D3d12VideoFormat::P010,
+            format => return Err(format!("D3D12VA produced unsupported DXGI format {format:?}")),
+        };
         let array_layers = u32::from(description.DepthOrArraySize);
         if subresource_index >= array_layers {
             return Err(format!(
@@ -350,24 +438,38 @@ impl D3d12VideoFrame {
             }
         }
         let _ = event;
+        let resource = detach_video_subresource(&resource, subresource_index)?;
         Ok(Self {
             resource,
             width,
             height,
-            subresource_index,
-            array_layers,
+            subresource_index: 0,
+            format,
+            array_layers: 1,
         })
     }
 }
-
 impl GpuBackend {
-    /// Converts an imported P010 D3D12 surface to the normal RGBA graph texture.
-    /// The conversion is GPU-only; no decoded bytes cross the CPU.
-    pub fn upload_d3d12_p010(
+    /// Detaches an imported NV12/P010 decoder surface with a GPU conversion into
+    /// an owned RGBA texture, then copies that texture to the graph output.
+    /// No decoded pixel bytes cross the CPU.
+    pub fn upload_d3d12_yuv(
         &self,
         frame: &D3d12VideoFrame,
         output: &TextureHandle,
     ) -> Result<(), String> {
+        let (format, y_format, uv_format) = match frame.format {
+            D3d12VideoFormat::Nv12 => (
+                wgpu::TextureFormat::NV12,
+                wgpu::TextureFormat::R8Unorm,
+                wgpu::TextureFormat::Rg8Unorm,
+            ),
+            D3d12VideoFormat::P010 => (
+                wgpu::TextureFormat::P010,
+                wgpu::TextureFormat::R16Unorm,
+                wgpu::TextureFormat::Rg16Unorm,
+            ),
+        };
         let size = wgpu::Extent3d {
             width: frame.width,
             height: frame.height,
@@ -376,7 +478,7 @@ impl GpuBackend {
         let hal_texture = unsafe {
             wgpu::hal::dx12::Device::texture_from_raw(
                 frame.resource.clone(),
-                wgpu::TextureFormat::P010,
+                format,
                 wgpu::TextureDimension::D2,
                 size,
                 1,
@@ -387,74 +489,81 @@ impl GpuBackend {
             self.device.create_texture_from_hal::<wgpu::hal::api::Dx12>(
                 hal_texture,
                 &wgpu::TextureDescriptor {
-                    label: Some("open-quartz-d3d12-p010"),
+                    label: Some("open-quartz-d3d12-decoder-yuv"),
                     size,
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::P010,
+                    format,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 },
             )
         };
         let y_view = source.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(wgpu::TextureFormat::R16Unorm),
+            format: Some(y_format),
             aspect: wgpu::TextureAspect::Plane0,
             base_array_layer: frame.subresource_index,
             array_layer_count: Some(1),
             ..Default::default()
         });
         let uv_view = source.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(wgpu::TextureFormat::Rg16Unorm),
+            format: Some(uv_format),
             aspect: wgpu::TextureAspect::Plane1,
             base_array_layer: frame.subresource_index,
             array_layer_count: Some(1),
             ..Default::default()
         });
+        let owned = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("open-quartz-d3d12-detached-rgba"),
+            size: wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
         let (layout, pipeline) = self
             .p010_converter
             .get_or_init(|| create_p010_pipeline(&self.device));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("open-quartz-p010-bindings"),
-            layout: &layout,
+            label: Some("open-quartz-d3d12-yuv-bindings"),
+            layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&y_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uv_view),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&y_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&uv_view) },
             ],
         });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("open-quartz-p010-convert"),
-            });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("open-quartz-d3d12-yuv-detach"),
+        });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("open-quartz-p010-convert-pass"),
+                label: Some("open-quartz-d3d12-yuv-detach-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
+                    view: &owned.create_view(&wgpu::TextureViewDescriptor::default()),
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo { texture: &owned, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &output.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
+        );
         self.queue.submit([encoder.finish()]);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| format!("Cannot wait for detached D3D12 video surface: {error:?}"))?;
         Ok(())
     }
 }

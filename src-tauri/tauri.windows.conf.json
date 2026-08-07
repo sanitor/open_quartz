@@ -4,13 +4,13 @@
       "../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll": "runtime/onnxruntime.dll",
       "../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/DirectML.dll": "runtime/DirectML.dll",
       "runtime/ffmpeg.exe": "runtime/ffmpeg.exe",
-      "runtime/ffmpeg-shared/bin/avcodec-62.dll": "runtime/avcodec-62.dll",
-      "runtime/ffmpeg-shared/bin/avformat-62.dll": "runtime/avformat-62.dll",
-      "runtime/ffmpeg-shared/bin/avutil-60.dll": "runtime/avutil-60.dll",
-      "runtime/ffmpeg-shared/bin/avdevice-62.dll": "runtime/avdevice-62.dll",
-      "runtime/ffmpeg-shared/bin/avfilter-11.dll": "runtime/avfilter-11.dll",
-      "runtime/ffmpeg-shared/bin/swresample-6.dll": "runtime/swresample-6.dll",
-      "runtime/ffmpeg-shared/bin/swscale-9.dll": "runtime/swscale-9.dll",
+      "runtime/ffmpeg-shared/bin/avcodec-63.dll": "runtime/avcodec-63.dll",
+      "runtime/ffmpeg-shared/bin/avformat-63.dll": "runtime/avformat-63.dll",
+      "runtime/ffmpeg-shared/bin/avutil-61.dll": "runtime/avutil-61.dll",
+      "runtime/ffmpeg-shared/bin/avdevice-63.dll": "runtime/avdevice-63.dll",
+      "runtime/ffmpeg-shared/bin/avfilter-12.dll": "runtime/avfilter-12.dll",
+      "runtime/ffmpeg-shared/bin/swresample-7.dll": "runtime/swresample-7.dll",
+      "runtime/ffmpeg-shared/bin/swscale-10.dll": "runtime/swscale-10.dll",
       "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt"
     }
   }
