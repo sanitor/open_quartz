@@ -198,6 +198,13 @@ fn webview_texture_stream_capability(
     state.get()
 }
 
+#[tauri::command]
+async fn native_video_thumbnail(path: String) -> Result<Vec<u8>, String> {
+    tauri::async_runtime::spawn_blocking(move || native_video::read_video_thumbnail(&path))
+        .await
+        .map_err(|error| format!("Video thumbnail worker failed: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     configure_ort_runtime();
@@ -211,6 +218,7 @@ pub fn run() {
             is_model_downloaded,
             native_runtime::native_gpu_initialize,
             webview_texture_stream_capability,
+            native_video_thumbnail,
             native_runtime::native_gpu_set_graph,
             native_runtime::native_gpu_upload_image,
             native_runtime::native_gpu_remove_texture,

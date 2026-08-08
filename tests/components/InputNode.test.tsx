@@ -9,6 +9,10 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 const mockUpdateNodeData = vi.fn();
+const { mockCheckIsTauri, mockReadVideoThumbnail } = vi.hoisted(() => ({
+  mockCheckIsTauri: vi.fn(() => Promise.resolve(true)),
+  mockReadVideoThumbnail: vi.fn(() => Promise.resolve('data:image/jpeg;base64,thumbnail')),
+}));
 
 vi.mock('../../src/store/useGraphStore', () => ({
   useGraphStore: vi.fn((selector: unknown) => {
@@ -16,6 +20,7 @@ vi.mock('../../src/store/useGraphStore', () => ({
       const state = {
         updateNodeData: mockUpdateNodeData,
         nodeErrors: {} as Record<string, string>,
+        outputPreviews: {} as Record<string, string>,
       };
       return (selector as (s: typeof state) => unknown)(state);
     }
@@ -25,6 +30,12 @@ vi.mock('../../src/store/useGraphStore', () => ({
 
 vi.mock('../../src/utils/rawPreview', () => ({
   generateRawPreview: vi.fn(() => 'data:image/png;base64,mockpreview'),
+}));
+
+vi.mock('../../src/utils/tauri', () => ({
+  checkIsTauri: mockCheckIsTauri,
+  tauriOpenVideoFile: vi.fn(),
+  tauriReadVideoThumbnail: mockReadVideoThumbnail,
 }));
 
 import { InputNode } from '../../src/components/NodeGraph/nodes/InputNode';
@@ -182,6 +193,22 @@ describe('InputNode', () => {
     expect(screen.getByText('FRAMEBUFFER')).toBeInTheDocument();
     expect(screen.getByText('frame.bin')).toBeInTheDocument();
     expect(screen.getByText('RGBA8 640×480')).toBeInTheDocument();
+  });
+
+  it('renders a thumbnail for a video path restored from JSON', async () => {
+    const props = makeNodeProps({
+      inputDataType: 'sampler2D',
+      inputMode: 'video',
+      videoSourceType: 'file',
+      videoFilePath: 'D:\\Video\\clip.mp4',
+      videoFileName: 'clip.mp4',
+      inputs: [],
+      outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
+    });
+    render(<InputNode {...props} />);
+    const thumbnail = await screen.findByAltText('video preview');
+    expect(thumbnail).toHaveAttribute('src', 'data:image/jpeg;base64,thumbnail');
+    expect(mockReadVideoThumbnail).toHaveBeenCalledWith('D:\\Video\\clip.mp4');
   });
 
   it('renders output handle for scalar types', () => {

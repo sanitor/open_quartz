@@ -24,6 +24,16 @@ export async function tauriConvertFileSrc(filePath: string): Promise<string> {
   return convertFileSrc(filePath);
 }
 
+export async function tauriReadVideoThumbnail(filePath: string): Promise<string> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const bytes = Uint8Array.from(await invoke<number[]>('native_video_thumbnail', { path: filePath }));
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return `data:image/jpeg;base64,${btoa(binary)}`;
+}
+
 export async function tauriOpenVideoFile(): Promise<string | null> {
   // dynamic: plugin only available in Tauri runtime
   const { open } = await import('@tauri-apps/plugin-dialog');

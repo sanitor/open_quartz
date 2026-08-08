@@ -1,10 +1,10 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NodeShell, ROW_H, SOURCE_ICONS, type NodeStatus } from './NodeShell';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType, FramebufferFormat } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 import { generateRawPreview } from '../../../utils/rawPreview';
-import { checkIsTauri, tauriOpenVideoFile } from '../../../utils/tauri';
+import { checkIsTauri, tauriOpenVideoFile, tauriReadVideoThumbnail } from '../../../utils/tauri';
 
 const VEC_COMPONENTS: Record<string, string[]> = {
   vec2: ['x', 'y'],
@@ -57,6 +57,23 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rawFileInputRef = useRef<HTMLInputElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
+  const [videoFileSrc, setVideoFileSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setVideoFileSrc(null);
+    if (!data.videoFilePath) return () => { active = false; };
+    void checkIsTauri().then((isTauri) => {
+      if (!isTauri) return null;
+      return tauriReadVideoThumbnail(data.videoFilePath!);
+    }).then((src) => {
+      if (active && src) setVideoFileSrc(src);
+    }).catch(() => {
+      // Keep the reload placeholder when the persisted file is unavailable.
+    });
+    return () => { active = false; };
+  }, [data.videoFilePath]);
+  const videoThumbnail = videoFileSrc;
 
   const currentType = (data.inputDataType ?? 'float') as DataType;
   const isFramebuffer = data.inputMode === 'framebuffer';
@@ -243,6 +260,13 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
             {data.videoFilePath && outputPreviews[id] ? (
               <div className="p-2">
                 <img src={outputPreviews[id]} alt="video preview" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+                <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
+                  {data.videoFileName ?? 'loaded'}
+                </div>
+              </div>
+            ) : videoThumbnail ? (
+              <div className="p-2">
+                <img src={videoThumbnail} alt="video preview" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
                 <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                   {data.videoFileName ?? 'loaded'}
                 </div>

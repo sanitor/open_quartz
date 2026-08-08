@@ -524,9 +524,33 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
         }
     }
     Err(
+
         "FFmpeg runtime is unavailable; run npm run prepare:runtime or set OPEN_QUARTZ_FFMPEG_PATH"
             .to_owned(),
     )
+}
+
+pub fn read_video_thumbnail(path: &str) -> Result<Vec<u8>, String> {
+    if !Path::new(path).is_file() {
+        return Err(format!("Video file does not exist: {path}"));
+    }
+    let ffmpeg = find_ffmpeg()?;
+    let mut command = Command::new(ffmpeg);
+    command.args([
+        "-hide_banner", "-loglevel", "error", "-ss", "0.1", "-i", path,
+        "-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe",
+        "-vcodec", "mjpeg", "-q:v", "4", "-",
+    ]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    hide_console_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("Cannot create video thumbnail: {error}"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("FFmpeg thumbnail extraction failed: {detail}"));
+    }
+    Ok(output.stdout)
 }
 
 fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoInfo, String> {
