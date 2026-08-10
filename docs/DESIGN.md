@@ -71,11 +71,11 @@ flowchart TB
         NativePresenter[DXGI / native presenter / readback]
 
         Runtime --> Engine
-        Runtime --> Gpu
-        Runtime --> Media
-        Runtime --> Inference
-        Runtime --> Presenter
         Engine --> Schema
+        Engine --> Gpu
+        Engine --> Media
+        Engine --> Inference
+        Engine --> Presenter
 
         Gpu --> WgpuWeb
         Gpu --> WgpuNative
@@ -86,40 +86,41 @@ flowchart TB
         Presenter --> WebPresenter
         Presenter --> NativePresenter
 
-        WebMedia -. stamped completion .-> Runtime
-        NativeMedia -. stamped completion .-> Runtime
-        OrtWeb -. stamped completion .-> Runtime
-        OrtNative -. stamped completion .-> Runtime
     end
 
     BrowserUI --> WasmBinding --> Runtime
     TauriUI --> TauriBinding --> Runtime
 ```
-图中约定：**实线表示静态依赖或同步调用，虚线表示异步结果/事件的数据流，不表示 backend 依赖 Runtime。**因此，`Runtime` 同时依赖 `Engine` 和各个 facade 是合理的：Runtime 是 orchestration owner，调用 Engine 生成/维护执行语义，再调用 facade 执行资源、媒体、推理和 presentation work。`Engine` 本身只依赖 graph/schema/WGSL contract，不直接持有 GPU、codec 或 ORT session。
-
-异步回调的逻辑是：
+图中约定：这里是**逐层依赖/同步调用图**，实线不表示数据返回。依赖方向严格为：
 
 ```text
-Runtime -> facade -> backend
-backend -. stamped completion/event .-> Runtime
+Runtime -> Engine -> facade -> platform implementation
 ```
 
-backend 通过 facade/host trait 被注册或注入；它不反向依赖 `Runtime`。虚线只代表 completion queue、callback 或 event transport 的返回方向。
+因此，`Runtime` 依赖 `Engine` 是正确的；`Engine` 依赖 GPU、media、inference、presentation facade 也合理，因为这些 facade 是 Engine 执行计划落地时使用的抽象端口。`Engine` 不直接持有 GPU、codec 或 ORT session，只依赖 facade contract。
+
+平台实现到 Runtime 的返回是另一条**实际数据流**，不属于上面的依赖图：
+
+```text
+platform backend -. completion / frame / output .-> facade -. stamped result .-> Runtime
+```
+
+backend 通过 facade/host trait 被注册或注入，不反向依赖 `Runtime`。虚线只应出现在数据流图中，表示 completion queue、callback 或 event 的返回方向。
 
 该图表达的不是“所有平台实现都相同”，而是**共享模块 facade 相同，模块内部选择 backend**：
 
 ```text
 Browser binding -> shared Rust Runtime
-                         ├-> shared Rust Engine
-                         ├-> shared Rust gpu facade -> wgpu WebGPU
-                         ├-> shared Rust media facade -> WebCodecs/HTML media
-                         └-> shared Rust inference facade -> ORT-Web
+                         └-> shared Rust Engine
+                                  ├-> shared Rust gpu facade -> wgpu WebGPU
+                                  ├-> shared Rust media facade -> WebCodecs/HTML media
+                                  └-> shared Rust inference facade -> ORT-Web
 
 Tauri binding  -> shared Rust Runtime
-                         ├-> shared Rust Engine
-                         ├-> shared Rust gpu facade -> wgpu native backend
-                         ├-> shared Rust media facade -> FFmpeg/native decoder
-                         └-> shared Rust inference facade -> ort/DirectML
+                         └-> shared Rust Engine
+                                  ├-> shared Rust gpu facade -> wgpu native backend
+                                  ├-> shared Rust media facade -> FFmpeg/native decoder
+                                  └-> shared Rust inference facade -> ort/DirectML
 ```
 
 `wgpu` 是最适合首先合并的模块：当前 Cargo 已启用 `wgpu` 的 `webgpu` 和 native backend features，GPU resource、render target、pipeline、command encoding 的核心可以收敛到同一 Rust implementation。不能强行共用的是 surface/presenter、Web `GPUExternalTexture`、DXGI interop 和具体 window object。
@@ -189,7 +190,7 @@ flowchart TB
 
     Service --> BAdapter
     Service --> NAdapter
-    BRuntime -. uses Engine through WASM .-> Engine
+    BRuntime -->|uses Engine through WASM| Engine
 ```
 
 当前实现的真实结论：
@@ -844,10 +845,10 @@ flowchart TD
     Engine --> Wgsl
     Runtime --> Schema
     Runtime --> Engine
-    Runtime --> Gpu
-    Runtime --> Media
-    Runtime --> Inference
-    Runtime --> Presentation
+    Engine --> Gpu
+    Engine --> Media
+    Engine --> Inference
+    Engine --> Presentation
     Gpu --> WgpuWeb
     Gpu --> WgpuNative
     Media --> WebMedia
@@ -864,7 +865,7 @@ flowchart TD
 目标规则：
 
 1. schema/error/event 不依赖 binding。
-2. `Runtime/Engine` 向下调用共享 facade；facade 再调用平台 backend；backend completion 带 stamp 返回。
+2. `Runtime -> Engine -> facade -> platform implementation` 是唯一的逐层依赖/调用方向；backend completion 只作为独立数据流返回。
 3. `gpu` 共享 resource/target/pipeline/command encoding；surface、`GPUExternalTexture`、DXGI interop 和 window object 留在 backend。
 4. `media` 共享 timestamp、frame selection、pause/resume/seek、generation 和 frame ownership；WebCodecs/HTML media 与 FFmpeg 是内部 backend。
 5. `inference` 共享 model descriptor、tensor contract、task、preprocess/postprocess 和 async completion；`onnxruntime-web` 与 `ort`/DirectML 是内部 backend。
