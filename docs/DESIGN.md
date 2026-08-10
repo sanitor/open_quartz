@@ -42,14 +42,17 @@
 
 ```mermaid
 flowchart TB
-    subgraph Clients[React clients]
-        BrowserUI[Browser UI]
-        TauriUI[Tauri UI]
+    subgraph TsApp[共享 TypeScript application layer]
+        ReactUI[同一个 React UI / components]
+        Store[同一个 Zustand GraphState]
+        Service[同一个 PipelineService]
+        Provider[PipelineHostRuntime provider]
+        ReactUI --> Store --> Service --> Provider
     end
 
-    subgraph Bindings[薄 binding / transport]
-        WasmBinding[Worker + wasm-bindgen]
-        TauriBinding[Tauri command / direct Rust]
+    subgraph Bindings[provider 以下的宿主 binding / transport]
+        WasmBinding[BrowserPipelineRuntime / Worker / wasm-bindgen]
+        TauriBinding[NativePipelineRuntime / Tauri command / direct Rust]
     end
 
     subgraph Kernel[共享 Rust kernel]
@@ -88,9 +91,19 @@ flowchart TB
 
     end
 
-    BrowserUI --> WasmBinding --> Runtime
-    TauriUI --> TauriBinding --> Runtime
+    Provider -->|Browser host| WasmBinding --> Runtime
+    Provider -->|Tauri host| TauriBinding --> Runtime
 ```
+Browser 与 Tauri 不存在两套 React UI。`App`、components、Zustand 和 `PipelineService` 都是同一套 TypeScript application layer；分叉点是 `PipelineService.createRuntime()` 的 provider selection：
+
+```text
+shared React/TS UI -> PipelineService -> PipelineHostRuntime provider
+                                           ├-> BrowserPipelineRuntime
+                                           └-> NativePipelineRuntime
+```
+
+只有 provider 以下的 Worker/wasm-bindgen 与 Tauri command/direct Rust transport 不同。
+
 图中约定：这里是**逐层依赖/同步调用图**，实线不表示数据返回。依赖方向严格为：
 
 ```text
@@ -110,17 +123,18 @@ backend 通过 facade/host trait 被注册或注入，不反向依赖 `Runtime`�
 该图表达的不是“所有平台实现都相同”，而是**共享模块 facade 相同，模块内部选择 backend**：
 
 ```text
-Browser binding -> shared Rust Runtime
-                         └-> shared Rust Engine
-                                  ├-> shared Rust gpu facade -> wgpu WebGPU
-                                  ├-> shared Rust media facade -> WebCodecs/HTML media
-                                  └-> shared Rust inference facade -> ORT-Web
+shared React/TS UI -> PipelineHostRuntime provider
+  Browser branch -> BrowserPipelineRuntime / Worker / wasm-bindgen
+                 -> shared Rust Runtime -> Engine
+                    -> gpu facade -> wgpu WebGPU
+                    -> media facade -> WebCodecs/HTML media
+                    -> inference facade -> ORT-Web
 
-Tauri binding  -> shared Rust Runtime
-                         └-> shared Rust Engine
-                                  ├-> shared Rust gpu facade -> wgpu native backend
-                                  ├-> shared Rust media facade -> FFmpeg/native decoder
-                                  └-> shared Rust inference facade -> ort/DirectML
+  Tauri branch   -> NativePipelineRuntime / Tauri direct Rust
+                 -> shared Rust Runtime -> Engine
+                    -> gpu facade -> wgpu native backend
+                    -> media facade -> FFmpeg/native decoder
+                    -> inference facade -> ort/DirectML
 ```
 
 `wgpu` 是最适合首先合并的模块：当前 Cargo 已启用 `wgpu` 的 `webgpu` 和 native backend features，GPU resource、render target、pipeline、command encoding 的核心可以收敛到同一 Rust implementation。不能强行共用的是 surface/presenter、Web `GPUExternalTexture`、DXGI interop 和具体 window object。
