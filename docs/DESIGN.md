@@ -1060,6 +1060,76 @@ open_quartz_bindings
 
 不要先机械拆 crate；当前环依赖未清除时拆分只会制造 facade 和 re-export。
 
+### 专项 TODO：自包含 Windows Screen Saver Host
+
+**当前实现（必须替换）**：
+
+```text
+exported .scr launcher
+  -> manifest.application_path
+  -> 启动已安装的 OpenQuartz Tauri app
+  -> ScreenSaverApp / PipelineService / NativePipelineRuntime
+```
+
+当前 `open-quartz-screensaver-stub` 只是 Win32 launcher/config host，没有链接 `open_quartz`；导出包依赖原安装路径，移动或卸载 OpenQuartz 后不能独立运行。这是过渡实现，不是目标架构。
+
+**目标实现**：
+
+```text
+Windows Screen Saver Control
+  -> self-contained .scr native host
+  -> shared Rust Runtime
+  -> Engine
+  -> gpu/media/inference/presentation facades
+  -> native platform implementations
+  -> screen saver HWND / preview parent HWND
+```
+
+`.scr` 直接读取内嵌 graph/package、初始化共享 Rust kernel 和 native backend、创建输出窗口并运行；不得启动 Tauri、WebView、React、`PipelineService` 或已安装的 OpenQuartz。
+
+#### 前置条件
+
+- [ ] 完成 Phase 1：解除 `runtime ↔ ffi`、`wgsl ↔ gpu` 等逆向依赖。
+- [ ] 完成 Phase 2：Native 使用 canonical `Runtime`，不再由 Tauri `NativeGpuRuntime` 持有第二套 scheduler/policy。
+- [ ] 将可复用 native backend 从 `src-tauri` 下沉到共享 Rust module/crate：wgpu executor、native media、native inference、native presenter、resource bootstrap。
+- [ ] 定义不依赖 Tauri/WebView 的 native window/surface presenter contract。
+
+#### Host 与 package
+
+- [ ] 将 `open-quartz-screensaver-stub` 从 launcher 改为真正的 native runtime host，直接依赖共享 Rust Runtime/native backend。
+- [ ] 从 manifest 删除 `application_path`，升级 screen saver package schema/version，并提供旧 package 的明确拒绝信息。
+- [ ] `/s`：直接创建全屏 Win32 host window，按当前显示器物理像素运行选定 Renderer。
+- [ ] `/p <HWND>`：直接把 native child window 嵌入 Windows Screen Saver Control Panel 的 preview parent。
+- [ ] `/c [HWND]`：保留纯 Win32 配置流程和 per-export settings，不启动 renderer/Tauri。
+- [ ] package 内嵌 graph manifest、Renderer 选择和导出默认值；媒体和模型采用显式 resource descriptor，不写入 UI/Tauri state。
+- [ ] package 可移动、可复制，运行不依赖 OpenQuartz 安装目录、注册表安装记录或用户机器上的 `app.exe`。
+
+#### 能力与体积
+
+- [ ] 定义最小 capability profile：shader、image、math、feedback、renderer，只携带 native host + Rust kernel + wgpu 路径。
+- [ ] 定义 video profile：明确 FFmpeg/native codec 的静态链接、sidecar 或 package payload 策略。
+- [ ] 定义 ONNX profile：明确 ORT/DirectML runtime、模型文件和 provider fallback 的 package 策略。
+- [ ] 导出器按 graph 实际节点计算 capability/resource closure，不为未使用的 video/ONNX 能力打包 runtime。
+- [ ] 删除“完整自包含 `.scr` 固定约 264 KB”的假设；分别记录 host、kernel、video runtime、inference runtime 和资源 payload 体积。
+
+#### 生命周期与数据正确性
+
+- [ ] screen saver host 直接拥有 Runtime、Engine、GPU device、decoder/session 和 presenter 生命周期。
+- [ ] graph revision、node generation、async completion、output delivery 与桌面 Native host 使用同一 contract。
+- [ ] `/s`、`/p` 退出时释放 window/surface、GPU、video、ORT worker、presenter lease 和 resource handle。
+- [ ] native backend capability/fallback 必须可观察；缺失 video/ONNX runtime 时在启动前给出结构化错误，不能静默降级为不运行。
+- [ ] 配置中重新选择的媒体路径只改变 resource descriptor，不改变 graph semantics。
+
+#### 验收
+
+- [ ] 在未安装 OpenQuartz、PATH 中没有 `app.exe` 的干净 Windows 环境运行导出的 `.scr`。
+- [ ] 移动 `.scr` 后 `/s`、`/p`、`/c` 仍可工作。
+- [ ] shader/image graph 在 `/s` 和 `/p <HWND>` 下按目标物理分辨率输出。
+- [ ] video graph 验证 decode、loop、pause/exit 和资源释放。
+- [ ] ONNX graph 验证模型加载、provider capability、stale completion 拒绝和下游 GPU continuation。
+- [ ] 自动测试确认 manifest 不再含 `applicationPath`，stub 不再 `Command::new(app.exe)`，screen saver host 直接构造共享 Runtime。
+- [ ] 删除 Tauri `ScreenSaverApp` renderer 启动路径、`application_binary()` 和旧 launcher 兼容代码，不保留双实现。
+
 ---
 
 ## 11. 性能与正确性不变量
