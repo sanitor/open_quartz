@@ -34,7 +34,9 @@
 
 ## 1. 系统总览
 
-### 1.1 当前生产架构
+### 1.1 当前生产架构与共享 Rust 核心
+
+这张图同时表达**调用拓扑**和**Rust 模块复用**。Browser/Tauri 在 transport、线程和平台对象处分叉，但两条路径都进入 `open_quartz` 的共享 Rust kernel：
 
 ```mermaid
 flowchart TB
@@ -49,21 +51,33 @@ flowchart TB
         Service -->|callbacks project state| Store
     end
 
+    subgraph SharedRust[共享 Rust kernel]
+        Schema[types / errors / events]
+        Graph[graph / topology / dirty]
+        Wgsl[wgsl parser / compiler contract]
+        Engine[engine / ExecutionPlan / ExecutionCommand]
+        Runtime[Runtime / clock / lifecycle / delivery]
+        Graph --> Schema
+        Engine --> Graph
+        Engine --> Wgsl
+        Runtime --> Engine
+        Runtime --> Schema
+    end
+
     subgraph Browser[Browser 数据面]
         BrowserAdapter[BrowserPipelineRuntime]
         Worker[BrowserRuntimeWorker]
-        WasmBinding[WasmRuntimeContract]
-        RustRuntime[Rust Runtime via WASM]
-        Compositor[Compositor]
-        TsGpu[WebGPUExecutionEngine]
-        WebGpu[WebGPUBackend]
-        OrtWeb[onnxruntime-web]
+        WasmBinding[WasmRuntimeContract / wasm-bindgen]
+        BrowserHost[TS WebGPUExecutionEngine / WebGPUBackend]
+        BrowserMedia[HTML video / WebCodecs]
+        BrowserOnnx[ORT-Web]
 
         BrowserAdapter <-->|postMessage request / event| Worker
-        Worker --> WasmBinding --> RustRuntime
-        RustRuntime -->|ExecutionCommand batch| Worker
-        Worker --> Compositor --> TsGpu --> WebGpu
-        TsGpu --> OrtWeb
+        Worker --> WasmBinding
+        WasmBinding -->|当前生产使用| Runtime
+        Runtime -->|work contract| BrowserHost
+        BrowserHost --> BrowserMedia
+        BrowserHost --> BrowserOnnx
     end
 
     subgraph Native[Tauri / Native 数据面]
@@ -72,20 +86,13 @@ flowchart TB
         Shell[src-tauri commands]
         NativeWorker[open-quartz-native-render thread]
         NativeFacade[NativeGpuRuntime in app crate]
-        RustEngine[open_quartz::Engine]
-        GpuExecutor[open_quartz::gpu::GpuExecutor]
-        NativeMedia[NativeVideoSource / FFmpeg]
-        NativeOnnx[open_quartz::onnx / ORT]
-        Presenter[DXGI shared texture / readback]
+        NativeHost[GpuExecutor / FFmpeg / ORT / DXGI / WebView2]
 
         NativeAdapter <-->|commands and events| Ipc
         Ipc <--> Shell
         Shell --> NativeWorker --> NativeFacade
-        NativeFacade --> RustEngine
-        NativeFacade --> GpuExecutor
-        NativeFacade --> NativeMedia
-        NativeFacade --> NativeOnnx
-        NativeFacade --> Presenter
+        NativeFacade -->|当前直接使用| Engine
+        Engine -->|work contract| NativeHost
     end
 
     User --> Components
@@ -93,13 +100,36 @@ flowchart TB
     Service -->|host selected once| NativeAdapter
 ```
 
-核心结论：
+这里的箭头表示控制调用或 work dispatch：
 
-- React/Zustand 是控制面和 UI 投影，不是执行 runtime。
-- `PipelineService` 是图编辑状态与 host runtime 之间的唯一通用桥。
-- Browser 已在 Worker 中使用 Rust/WASM `Runtime` 负责 clock、生命周期和 work batch，但 GPU prepare/execution、媒体和 ORT-Web 仍由 TypeScript 实现。
-- Native 没有使用 `open_quartz::runtime::Runtime`；`src-tauri::native_runtime::NativeGpuRuntime` 直接组合 `Engine`、`GpuExecutor`、视频、ONNX 和 presenter。
-- 因此当前是“共享 Rust graph/engine primitives 的双宿主”，还不是“两个宿主调用同一个完整 Rust Runtime”。
+```text
+UI -> PipelineService -> host binding
+Browser: Worker -> wasm-bindgen -> Rust Runtime -> Engine -> Browser host
+Native:  render thread -> Native facade -> Engine -> Native host
+```
+
+宿主 backend 不反向驱动 `Engine`。GPU、codec、ORT 和 presenter 由 Runtime/Engine 通过 host trait 或 work contract 向下调用；异步 backend 只把带 `revision`、`generation` 和 `FrameStamp` 的 completion 向上返回。
+
+当前实现与目标的差异：
+
+| Rust 模块/语义 | Browser/WASM | Tauri/native | 结论 |
+|---|---|---|---|
+| `types`、`graph`、`engine`、部分 `wgsl` | 通过 WASM 使用 | 直接链接使用 | 已共享 |
+| `ffi`/binding | `wasm-bindgen` | Tauri command/direct Rust | transport 不同，语义应相同 |
+| `runtime::Runtime` | Browser Worker 生产使用 | Native 尚未使用，仍直接持有 `Engine` | 当前最大分叉 |
+| `gpu` | TypeScript `WebGPUBackend`/`WebGPUExecutionEngine` | Rust `GpuExecutor` | 宿主实现分叉，Browser 仍重复部分 policy |
+| `media` | DOM/WebCodecs/HTML video | `NativeVideoSource`/FFmpeg | 正确的宿主分叉 |
+| `onnx` | ORT-Web + TypeScript task glue，部分 preprocess/postprocess 可用 Rust | Rust ORT/DirectML + `open_quartz::onnx` | 推理 transport 分叉，任务语义应共享 |
+| `output/presentation` | Rust 类型已存在但生产 callback 仍占主导 | native event + presenter | 尚未统一 delivery |
+
+目标收敛为：
+
+```text
+Browser Worker -> wasm-bindgen -> Rust Runtime/Engine -> Browser host backend
+Tauri thread   -> direct Rust  -> Rust Runtime/Engine -> Native host backend
+```
+
+两边不能共享的只应是 DOM/WebGPU/wgpu/FFmpeg/ORT session、GPU handle、window handle 和 transport。不能共享的 graph semantics、clock、generation、output contract 不应继续留在宿主层。
 
 ### 1.2 控制面与数据面
 
@@ -122,87 +152,6 @@ checkIsTauri() == true  -> NativePipelineRuntime
 ```
 
 同一会话不得同时启动两套生产 runtime，也不得把 Browser runtime 当作 Native 的隐式 fallback。平台 fallback 只能发生在宿主内部，例如 Native presentation 从 TextureStream 降级为 bounded RGBA readback。
-
-### 1.4 共享 Rust 核心与宿主分叉
-
-上一张图按进程和 transport 展开，容易把“调用路径分叉”误读成“Rust 逻辑分叉”。应区分两条轴：
-
-```text
-调用/部署轴：
-Browser UI -> Worker -> wasm-bindgen -> Rust
-Tauri UI   -> Tauri command/direct Rust -> Rust
-
-语义/实现轴：
-共享 Rust kernel：schema、graph、WGSL contract、plan、dirty、feedback、
-                 revision/generation、clock、output/delivery policy
-宿主实现：       WebGPU/WebCodecs/ORT-Web
-                 wgpu/FFmpeg/ORT/DXGI/WebView2
-```
-
-目标架构不是让 WASM 和 Tauri 共用同一个 GPU object 或同一个进程，而是让它们在尽可能高的位置进入同一个 Rust kernel。**控制调用方向是从 Runtime/Engine 向下，通过 host trait 调用 GPU、codec、ORT 和 presenter；host implementation 不反向调用 Engine。**异步 backend 只把带 stamp/generation 的 completion 返回 Runtime。
-
-```mermaid
-flowchart TB
-    subgraph Clients[可替换客户端]
-        ReactBrowser[React Browser UI]
-        ReactTauri[React Tauri UI]
-    end
-
-    subgraph Bindings[薄 binding / transport]
-        BrowserBinding[Worker + wasm-bindgen binding]
-        TauriBinding[Tauri command/direct Rust binding]
-    end
-
-    subgraph Shared[共享 Rust kernel - 两条链路都应使用]
-        Schema[types / errors / events]
-        Graph[graph / topology / dirty]
-        Wgsl[WGSL parse / compile contract]
-        Engine[Engine / ExecutionPlan / Frame work]
-        Runtime[Runtime / clock / lifecycle / output delivery]
-        HostApi[Host traits: GPU / media / inference / presenter]
-    end
-
-    subgraph Implementations[宿主实现]
-        BrowserHost[WebGPU / WebCodecs / ORT-Web]
-        NativeHost[wgpu / FFmpeg / ORT / DXGI / WebView2]
-    end
-
-    ReactBrowser --> BrowserBinding
-    ReactTauri --> TauriBinding
-    BrowserBinding --> Runtime
-    TauriBinding --> Runtime
-    Runtime --> Engine
-    Engine --> Graph
-    Engine --> Wgsl
-    Engine --> Schema
-    Runtime --> Schema
-    Runtime -->|dispatch host work| HostApi
-    HostApi -->|Browser implementation| BrowserHost
-    HostApi -->|Native implementation| NativeHost
-    BrowserHost -. async completion .-> Runtime
-    NativeHost -. async completion .-> Runtime
-```
-
-**当前实现**与目标仍有差异：
-
-| Rust 模块/语义 | Browser/WASM | Tauri/native | 结论 |
-|---|---|---|---|
-| `types`、`graph`、`engine`、部分 `wgsl` | 通过 WASM 使用 | 直接链接使用 | 已共享 |
-| `ffi`/binding | `wasm-bindgen` | Tauri command/direct Rust | transport 不同，语义应相同 |
-| `runtime::Runtime` | Browser Worker 生产使用 | Native 尚未使用，仍直接持有 `Engine` | 当前最大分叉 |
-| `gpu` | TypeScript `WebGPUBackend`/`WebGPUExecutionEngine` | Rust `GpuExecutor` | 宿主实现分叉，Browser 仍重复部分 policy |
-| `media` | DOM/WebCodecs/HTML video | `NativeVideoSource`/FFmpeg | 正确的宿主分叉 |
-| `onnx` | ORT-Web + TypeScript task glue，部分 preprocess/postprocess 可用 Rust | Rust ORT/DirectML + `open_quartz::onnx` | 推理 transport 分叉，任务语义应共享 |
-| `output/presentation` | Rust 类型已存在但生产 callback 仍占主导 | native event + presenter | 尚未统一 delivery |
-
-所以文档中出现高位分叉，是为了准确表示**当前 transport 和 host ownership**；但共享 Rust kernel 必须在该分叉上方显式画出。下一步收敛的硬目标是：
-
-```text
-Browser Worker -> Rust Runtime/Engine -> Browser host backend
-Tauri thread   -> Rust Runtime/Engine -> Native host backend
-```
-
-两边不能共享的只应是 DOM/WebGPU/wgpu/FFmpeg/ORT session、GPU handle、window handle 和 transport；不能共享的 graph semantics、clock、generation、output contract 不应继续留在宿主层。
 
 
 ---
