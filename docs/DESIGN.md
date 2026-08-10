@@ -122,6 +122,82 @@ checkIsTauri() == true  -> NativePipelineRuntime
 ```
 
 同一会话不得同时启动两套生产 runtime，也不得把 Browser runtime 当作 Native 的隐式 fallback。平台 fallback 只能发生在宿主内部，例如 Native presentation 从 TextureStream 降级为 bounded RGBA readback。
+### 1.4 共享 Rust 核心与宿主分叉
+
+上一张图按进程和 transport 展开，容易把“调用路径分叉”误读成“Rust 逻辑分叉”。应区分两条轴：
+
+```text
+调用/部署轴：
+Browser UI -> Worker -> wasm-bindgen -> Rust
+Tauri UI   -> Tauri command/direct Rust -> Rust
+
+语义/实现轴：
+共享 Rust kernel：schema、graph、WGSL contract、plan、dirty、feedback、
+                 revision/generation、clock、output/delivery policy
+宿主实现：       WebGPU/WebCodecs/ORT-Web
+                 wgpu/FFmpeg/ORT/DXGI/WebView2
+```
+
+目标架构不是让 WASM 和 Tauri 共用同一个 GPU object 或同一个进程，而是让它们在尽可能高的位置进入同一个 Rust kernel：
+
+```mermaid
+flowchart TB
+    subgraph Clients[可替换客户端]
+        ReactBrowser[React Browser UI]
+        ReactTauri[React Tauri UI]
+    end
+
+    subgraph Adapters[薄宿主适配层]
+        BrowserBinding[Worker + wasm-bindgen binding]
+        TauriBinding[Tauri command/direct Rust binding]
+        BrowserHost[WebGPU / WebCodecs / ORT-Web]
+        NativeHost[wgpu / FFmpeg / ORT / DXGI / WebView2]
+    end
+
+    subgraph Shared[共享 Rust kernel - 两条链路都应使用]
+        Schema[types / errors / events]
+        Graph[graph / topology / dirty]
+        Wgsl[WGSL parse / compile contract]
+        Engine[Engine / ExecutionPlan / Frame work]
+        Runtime[Runtime / clock / lifecycle / output delivery]
+    end
+
+    ReactBrowser --> BrowserBinding
+    ReactTauri --> TauriBinding
+    BrowserBinding --> Runtime
+    TauriBinding --> Runtime
+    Runtime --> Engine
+    Engine --> Graph
+    Engine --> Wgsl
+    Engine --> Schema
+    Runtime --> Schema
+    BrowserBinding --> BrowserHost
+    TauriBinding --> NativeHost
+    BrowserHost -. executes host work .-> Engine
+    NativeHost -. executes host work .-> Engine
+```
+
+**当前实现**与目标仍有差异：
+
+| Rust 模块/语义 | Browser/WASM | Tauri/native | 结论 |
+|---|---|---|---|
+| `types`、`graph`、`engine`、部分 `wgsl` | 通过 WASM 使用 | 直接链接使用 | 已共享 |
+| `ffi`/binding | `wasm-bindgen` | Tauri command/direct Rust | transport 不同，语义应相同 |
+| `runtime::Runtime` | Browser Worker 生产使用 | Native 尚未使用，仍直接持有 `Engine` | 当前最大分叉 |
+| `gpu` | TypeScript `WebGPUBackend`/`WebGPUExecutionEngine` | Rust `GpuExecutor` | 宿主实现分叉，Browser 仍重复部分 policy |
+| `media` | DOM/WebCodecs/HTML video | `NativeVideoSource`/FFmpeg | 正确的宿主分叉 |
+| `onnx` | ORT-Web + TypeScript task glue，部分 preprocess/postprocess 可用 Rust | Rust ORT/DirectML + `open_quartz::onnx` | 推理 transport 分叉，任务语义应共享 |
+| `output/presentation` | Rust 类型已存在但生产 callback 仍占主导 | native event + presenter | 尚未统一 delivery |
+
+所以文档中出现高位分叉，是为了准确表示**当前 transport 和 host ownership**；但共享 Rust kernel 必须在该分叉上方显式画出。下一步收敛的硬目标是：
+
+```text
+Browser Worker -> Rust Runtime/Engine -> Browser host backend
+Tauri thread   -> Rust Runtime/Engine -> Native host backend
+```
+
+两边不能共享的只应是 DOM/WebGPU/wgpu/FFmpeg/ORT session、GPU handle、window handle 和 transport；不能共享的 graph semantics、clock、generation、output contract 不应继续留在宿主层。
+
 
 ---
 
