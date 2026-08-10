@@ -122,6 +122,7 @@ checkIsTauri() == true  -> NativePipelineRuntime
 ```
 
 同一会话不得同时启动两套生产 runtime，也不得把 Browser runtime 当作 Native 的隐式 fallback。平台 fallback 只能发生在宿主内部，例如 Native presentation 从 TextureStream 降级为 bounded RGBA readback。
+
 ### 1.4 共享 Rust 核心与宿主分叉
 
 上一张图按进程和 transport 展开，容易把“调用路径分叉”误读成“Rust 逻辑分叉”。应区分两条轴：
@@ -138,7 +139,7 @@ Tauri UI   -> Tauri command/direct Rust -> Rust
                  wgpu/FFmpeg/ORT/DXGI/WebView2
 ```
 
-目标架构不是让 WASM 和 Tauri 共用同一个 GPU object 或同一个进程，而是让它们在尽可能高的位置进入同一个 Rust kernel：
+目标架构不是让 WASM 和 Tauri 共用同一个 GPU object 或同一个进程，而是让它们在尽可能高的位置进入同一个 Rust kernel。**控制调用方向是从 Runtime/Engine 向下，通过 host trait 调用 GPU、codec、ORT 和 presenter；host implementation 不反向调用 Engine。**异步 backend 只把带 stamp/generation 的 completion 返回 Runtime。
 
 ```mermaid
 flowchart TB
@@ -147,11 +148,9 @@ flowchart TB
         ReactTauri[React Tauri UI]
     end
 
-    subgraph Adapters[薄宿主适配层]
+    subgraph Bindings[薄 binding / transport]
         BrowserBinding[Worker + wasm-bindgen binding]
         TauriBinding[Tauri command/direct Rust binding]
-        BrowserHost[WebGPU / WebCodecs / ORT-Web]
-        NativeHost[wgpu / FFmpeg / ORT / DXGI / WebView2]
     end
 
     subgraph Shared[共享 Rust kernel - 两条链路都应使用]
@@ -160,6 +159,12 @@ flowchart TB
         Wgsl[WGSL parse / compile contract]
         Engine[Engine / ExecutionPlan / Frame work]
         Runtime[Runtime / clock / lifecycle / output delivery]
+        HostApi[Host traits: GPU / media / inference / presenter]
+    end
+
+    subgraph Implementations[宿主实现]
+        BrowserHost[WebGPU / WebCodecs / ORT-Web]
+        NativeHost[wgpu / FFmpeg / ORT / DXGI / WebView2]
     end
 
     ReactBrowser --> BrowserBinding
@@ -171,10 +176,11 @@ flowchart TB
     Engine --> Wgsl
     Engine --> Schema
     Runtime --> Schema
-    BrowserBinding --> BrowserHost
-    TauriBinding --> NativeHost
-    BrowserHost -. executes host work .-> Engine
-    NativeHost -. executes host work .-> Engine
+    Runtime -->|dispatch host work| HostApi
+    HostApi -->|Browser implementation| BrowserHost
+    HostApi -->|Native implementation| NativeHost
+    BrowserHost -. async completion .-> Runtime
+    NativeHost -. async completion .-> Runtime
 ```
 
 **当前实现**与目标仍有差异：
@@ -794,8 +800,7 @@ flowchart TD
     Runtime --> Schema
     Runtime --> Engine
     Runtime --> HostTraits
-    NativeImpl --> HostTraits
-    NativeImpl --> Runtime
+    NativeImpl -. implements .-> HostTraits
     Binding --> Runtime
     Tauri --> Binding
     Tauri --> NativeImpl
