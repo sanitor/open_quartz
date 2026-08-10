@@ -255,11 +255,13 @@ export class NativePipelineRuntime {
   async play(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void> {
     await this.setGraph(nodes, edges);
     await this.invoke<void>('native_gpu_play');
+    await this.resumeTextureStreamPlayback();
   }
 
   async updateGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<number> {
     const revision = await this.setGraph(nodes, edges);
-    await this.invoke<void>('native_gpu_resume');
+    await this.invoke<void>('native_gpu_play');
+    await this.resumeTextureStreamPlayback();
     return revision;
   }
 
@@ -269,6 +271,7 @@ export class NativePipelineRuntime {
 
   async resume(): Promise<void> {
     await this.invoke<void>('native_gpu_resume');
+    await this.resumeTextureStreamPlayback();
   }
 
   async stop(): Promise<void> {
@@ -475,6 +478,10 @@ export class NativePipelineRuntime {
       const playbackRate = node.data.videoPlaybackRate ?? 1;
       const resourceKey = [kind, source, looping, playbackRate].join('|');
       if (this.videoResources.get(node.id) === resourceKey) continue;
+      if (this.videoResources.has(node.id)) {
+        await this.detachVideo(node.id);
+        this.videoResources.delete(node.id);
+      }
       const info = await this.attachVideo(node.id, kind, source, looping, playbackRate);
       this.videoResources.set(node.id, resourceKey);
       this.callbacks.onOutputSize?.(node.id, info.width, info.height);
@@ -741,6 +748,11 @@ export class NativePipelineRuntime {
       this.textureStreamFrameCallback = video.requestVideoFrameCallback(onFrame);
     }
     return true;
+  }
+
+  private async resumeTextureStreamPlayback(): Promise<void> {
+    if (!this.textureStreamMode || !this.textureStreamVideo) return;
+    await this.textureStreamVideo.play();
   }
 
   private releaseTextureStream(): void {

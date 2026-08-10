@@ -61,6 +61,8 @@ export class PipelineService {
       }
 
       if (state.loopState === 'stopped' && previous.loopState !== 'stopped') {
+        useGraphStore.getState().clearOutputPreviews();
+        this.runtime?.setPreviewNode(null);
         this.enqueue(async () => { await this.runtime?.stop(); });
       }
 
@@ -81,10 +83,12 @@ export class PipelineService {
           runtime: this.runtime?.constructor.name ?? null,
           runtimeReady: this.runtime !== null,
         });
-        const runtime = this.runtime;
-        runtime?.setPreviewNode(state.selectedNodeId);
-        if (runtime?.requestPreviewRefresh) {
-          requestAnimationFrame(() => runtime.requestPreviewRefresh?.());
+        if (state.loopState !== 'stopped') {
+          const runtime = this.runtime;
+          runtime?.setPreviewNode(state.selectedNodeId);
+          if (runtime?.requestPreviewRefresh) {
+            requestAnimationFrame(() => runtime.requestPreviewRefresh?.());
+          }
         }
       }
     });
@@ -166,7 +170,7 @@ export class PipelineService {
           });
         },
         onError: (error) => this.handleError(null, error),
-        onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
+        onOutput: (nodeId, dataUrl) => this.handleOutput(nodeId, dataUrl),
         onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
         onOutputData: (nodeId, data) => useGraphStore.getState().setOutputData(nodeId, data),
         onBackendDetected: (nodeId) => this.handleBackend(nodeId, 'native'),
@@ -188,7 +192,7 @@ export class PipelineService {
     return {
       onFrame: (frame) => this.handleFrame(frame),
       onRendererPresented: (nodeId) => this.recordRendererPresentation(nodeId),
-      onOutput: (nodeId, dataUrl) => useGraphStore.getState().setOutputPreview(nodeId, dataUrl),
+      onOutput: (nodeId, dataUrl) => this.handleOutput(nodeId, dataUrl),
       onNodeError: (nodeId, error) => this.handleError(nodeId, error),
       onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
       onOutputData: (nodeId, data) => useGraphStore.getState().setOutputData(nodeId, data),
@@ -308,6 +312,11 @@ export class PipelineService {
     this.nativeFpsWindowFrame = 0;
     this.nativeFps = 0;
     this.lastUiFrameAt = Number.NEGATIVE_INFINITY;
+  }
+
+  private handleOutput(nodeId: string, dataUrl: string): void {
+    if (useGraphStore.getState().loopState === 'stopped') return;
+    useGraphStore.getState().setOutputPreview(nodeId, dataUrl);
   }
 
   private handleFrame(frame: { frame: number; time: number; fps: number }): void {

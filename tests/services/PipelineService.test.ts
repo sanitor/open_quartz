@@ -101,6 +101,36 @@ describe('PipelineService', () => {
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
   });
 
+  it('clears runtime previews on stop and ignores late output callbacks', async () => {
+    mocks.isTauri.mockResolvedValue(false);
+    const service = new PipelineService();
+    service.attach(document.createElement('canvas'));
+
+    useGraphStore.getState().play();
+    await vi.waitFor(() => expect(mocks.browser).toHaveLength(1));
+    const runtime = mocks.browser[0]!;
+    await vi.waitFor(() => expect(runtime.play).toHaveBeenCalledOnce());
+
+    runtime.callbacks.onOutput?.('input_2', 'data:image/png;base64,runtime-frame' as never);
+    expect(useGraphStore.getState().outputPreviews).toEqual({
+      input_2: 'data:image/png;base64,runtime-frame',
+    });
+
+    useGraphStore.getState().stop();
+    await vi.waitFor(() => expect(runtime.stop).toHaveBeenCalledOnce());
+    expect(useGraphStore.getState().outputPreviews).toEqual({});
+
+    runtime.callbacks.onOutput?.('input_2', 'data:image/png;base64,late-frame' as never);
+    expect(useGraphStore.getState().outputPreviews).toEqual({});
+
+    const setPreviewCalls = runtime.setPreviewNode.mock.calls.length;
+    const refreshCalls = runtime.requestPreviewRefresh.mock.calls.length;
+    useGraphStore.getState().setSelectedNode('input_2');
+    expect(runtime.setPreviewNode.mock.calls.length).toBe(setPreviewCalls);
+    expect(runtime.requestPreviewRefresh.mock.calls.length).toBe(refreshCalls);
+    service.detach();
+  });
+
   it('counts frames only after a Renderer is delivered for display', async () => {
     mocks.isTauri.mockResolvedValue(false);
     const now = vi.spyOn(performance, 'now').mockReturnValue(0);

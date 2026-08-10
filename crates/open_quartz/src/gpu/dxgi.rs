@@ -456,9 +456,8 @@ impl D3d12VideoFrame {
     }
 }
 impl GpuBackend {
-    /// Detaches an imported NV12/P010 decoder surface with a GPU conversion into
-    /// an owned RGBA texture, then copies that texture to the graph output.
-    /// No decoded pixel bytes cross the CPU.
+    /// Converts an imported NV12/P010 decoder surface directly into the graph's
+    /// persistent RGBA output texture. No decoded pixel bytes cross the CPU.
     pub fn upload_d3d12_yuv(
         &self,
         frame: &D3d12VideoFrame,
@@ -520,16 +519,6 @@ impl GpuBackend {
             array_layer_count: Some(1),
             ..Default::default()
         });
-        let owned = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("open-quartz-d3d12-detached-rgba"),
-            size: wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
         let (layout, pipeline) = self
             .p010_converter
             .get_or_init(|| create_p010_pipeline(&self.device));
@@ -548,7 +537,7 @@ impl GpuBackend {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("open-quartz-d3d12-yuv-detach-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &owned.create_view(&wgpu::TextureViewDescriptor::default()),
+                    view: &output.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
@@ -561,11 +550,6 @@ impl GpuBackend {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo { texture: &owned, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyTextureInfo { texture: &output.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
-        );
         self.queue.submit([encoder.finish()]);
         self.device
             .poll(wgpu::PollType::wait_indefinitely())

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -353,6 +354,33 @@ unsafe extern "C" fn select_d3d12_format(
     ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NONE
 }
 
+fn frame_pacing_delay(
+    next_frame_at: &mut Instant,
+    now: Instant,
+    frame_interval: Duration,
+) -> Duration {
+    *next_frame_at += frame_interval;
+    if now < *next_frame_at {
+        *next_frame_at - now
+    } else {
+        *next_frame_at = now;
+        Duration::ZERO
+    }
+}
+fn validate_monotonic_pts(last_pts: &Cell<Option<i64>>, pts: Option<i64>) -> Result<(), String> {
+    let Some(pts) = pts else {
+        return Ok(());
+    };
+    if last_pts.get().is_some_and(|previous| pts < previous) {
+        return Err(format!(
+            "D3D12VA decoder produced out-of-order timestamp {pts} after {}",
+            last_pts.get().unwrap_or_default(),
+        ));
+    }
+    last_pts.set(Some(pts));
+    Ok(())
+}
+
 #[cfg(windows)]
 fn decode_d3d12_frames(
     config: &NativeVideoConfig,
@@ -368,6 +396,7 @@ fn decode_d3d12_frames(
 
     ffmpeg_next::init().map_err(|error| format!("Cannot initialize libav: {error}"))?;
     let frame_interval = Duration::from_secs_f64(1.0 / (info.fps * config.playback_rate));
+    let mut next_frame_at = Instant::now();
     let setup = (|| {
         let mut input = format::input(&config.source)
             .map_err(|error| format!("Cannot open video with libav: {error}"))?;
@@ -423,6 +452,57 @@ fn decode_d3d12_frames(
             return Err(error);
         }
     };
+    let last_pts = Cell::new(None);
+
+    let mut publish_frame = |decoded: &mut Video| -> Result<(), String> {
+        validate_monotonic_pts(&last_pts, decoded.timestamp())?;
+        if decoded.format() != ffmpeg_next::format::Pixel::D3D12 {
+            return Err(format!(
+                "FFmpeg returned {:?}, not a D3D12 frame",
+                decoded.format()
+            ));
+        }
+        let raw = unsafe { &*decoded.as_ptr() };
+        let descriptor = unsafe { &*(raw.data[0] as *const FfmpegD3d12Frame) };
+        let frame = unsafe {
+            D3d12VideoFrame::from_raw(
+                descriptor.texture,
+                descriptor.sync.fence,
+                descriptor.sync.event,
+                descriptor.sync.fence_value,
+                decoded.width(),
+                decoded.height(),
+                u32::try_from(descriptor.subresource_index)
+                    .map_err(|_| "FFmpeg returned a negative D3D12 subresource".to_owned())?,
+                info.d3d12_detach_required,
+            )?
+        };
+        unsafe { ffmpeg_next::ffi::av_frame_unref(decoded.as_mut_ptr()) };
+        let mut current = slot
+            .lock()
+            .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
+        current.rgba.clear();
+        current.d3d12 = Some(frame);
+        current.generation = current.generation.saturating_add(1);
+        drop(current);
+        decoded_frames.fetch_add(1, Ordering::AcqRel);
+        while alive.load(Ordering::Acquire) {
+            let consumed = slot
+                .lock()
+                .map_err(|_| "Native video frame lock is poisoned".to_owned())?
+                .d3d12
+                .is_none();
+            if consumed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let delay = frame_pacing_delay(&mut next_frame_at, Instant::now(), frame_interval);
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        Ok(())
+    };
 
     loop {
         if !alive.load(Ordering::Acquire) {
@@ -440,56 +520,26 @@ fn decode_d3d12_frames(
                 .send_packet(&packet)
                 .map_err(|error| format!("D3D12VA packet decode failed: {error}"))?;
             while decoder.receive_frame(&mut decoded).is_ok() {
-                let started = Instant::now();
-                if decoded.format() != ffmpeg_next::format::Pixel::D3D12 {
-                    return Err(format!("FFmpeg returned {:?}, not a D3D12 frame", decoded.format()));
-                }
-                let raw = unsafe { &*decoded.as_ptr() };
-                let descriptor = unsafe { &*(raw.data[0] as *const FfmpegD3d12Frame) };
-                let frame = unsafe {
-                    D3d12VideoFrame::from_raw(
-                        descriptor.texture,
-                        descriptor.sync.fence,
-                        descriptor.sync.event,
-                        descriptor.sync.fence_value,
-                        decoded.width(),
-                        decoded.height(),
-                        u32::try_from(descriptor.subresource_index)
-                            .map_err(|_| "FFmpeg returned a negative D3D12 subresource".to_owned())?,
-                        info.d3d12_detach_required,
-                    )?
-                };
-                unsafe { ffmpeg_next::ffi::av_frame_unref(decoded.as_mut_ptr()) };
-                let mut current = slot
-                    .lock()
-                    .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
-                current.rgba.clear();
-                current.d3d12 = Some(frame);
-                current.generation = current.generation.saturating_add(1);
-                drop(current);
-                decoded_frames.fetch_add(1, Ordering::AcqRel);
-                while alive.load(Ordering::Acquire) {
-                    let consumed = slot
-                        .lock()
-                        .map_err(|_| "Native video frame lock is poisoned".to_owned())?
-                        .d3d12
-                        .is_none();
-                    if consumed { break; }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                let elapsed = started.elapsed();
-                if elapsed < frame_interval {
-                    std::thread::sleep(frame_interval - elapsed);
-                }
+                publish_frame(&mut decoded)?;
             }
         }
-        if !config.looping || !alive.load(Ordering::Acquire) {
+        if !alive.load(Ordering::Acquire) {
+            break;
+        }
+        decoder
+            .send_eof()
+            .map_err(|error| format!("D3D12VA decoder drain failed: {error}"))?;
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            publish_frame(&mut decoded)?;
+        }
+        if !config.looping {
             break;
         }
         input
             .seek(0, ..)
             .map_err(|error| format!("Cannot seek video loop: {error}"))?;
         decoder.flush();
+        last_pts.set(None);
     }
     Ok(())
 }
@@ -524,7 +574,6 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
         }
     }
     Err(
-
         "FFmpeg runtime is unavailable; run npm run prepare:runtime or set OPEN_QUARTZ_FFMPEG_PATH"
             .to_owned(),
     )
@@ -537,9 +586,24 @@ pub fn read_video_thumbnail(path: &str) -> Result<Vec<u8>, String> {
     let ffmpeg = find_ffmpeg()?;
     let mut command = Command::new(ffmpeg);
     command.args([
-        "-hide_banner", "-loglevel", "error", "-ss", "0.1", "-i", path,
-        "-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe",
-        "-vcodec", "mjpeg", "-q:v", "4", "-",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        "0.1",
+        "-i",
+        path,
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=480:-2",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "-q:v",
+        "4",
+        "-",
     ]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_console_window(&mut command);
@@ -551,6 +615,15 @@ pub fn read_video_thumbnail(path: &str) -> Result<Vec<u8>, String> {
         return Err(format!("FFmpeg thumbnail extraction failed: {detail}"));
     }
     Ok(output.stdout)
+}
+
+fn d3d12_decode_policy(video_line: &str) -> (bool, bool) {
+    let detach_required = video_line.contains("h264");
+    let codec_supported = detach_required || video_line.contains("hevc");
+    let format_supported = video_line.contains("yuv420p")
+        || video_line.contains("nv12")
+        || video_line.contains("p010");
+    (codec_supported && format_supported, detach_required)
 }
 
 fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoInfo, String> {
@@ -583,18 +656,14 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .and_then(|capture| capture[1].parse::<f64>().ok())
         .filter(|fps| *fps > 0.0)
         .unwrap_or(30.0);
-    let is_h264 = video_line.contains("h264");
-    let codec_supported = is_h264 || video_line.contains("hevc");
-    let format_supported = video_line.contains("yuv420p")
-        || video_line.contains("nv12")
-        || video_line.contains("p010");
+    let (d3d12_eligible, d3d12_detach_required) = d3d12_decode_policy(video_line);
     Ok(NativeVideoInfo {
         width,
         height,
         fps,
         decoder: "ffmpeg-native".to_owned(),
-        d3d12_eligible: codec_supported && format_supported,
-        d3d12_detach_required: is_h264,
+        d3d12_eligible,
+        d3d12_detach_required,
     })
 }
 
@@ -724,10 +793,72 @@ fn hide_console_window(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_ffmpeg, NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
+        d3d12_decode_policy, find_ffmpeg, frame_pacing_delay, read_video_thumbnail,
+        validate_monotonic_pts, NativeVideoConfig, NativeVideoFrame, NativeVideoSource,
+        NativeVideoSourceKind,
     };
+    use std::cell::Cell;
     use std::process::Command;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rejects_regressing_decoder_timestamps_without_advancing_the_clock() {
+        let last_pts = Cell::new(None);
+        assert!(validate_monotonic_pts(&last_pts, Some(10)).is_ok());
+        assert!(validate_monotonic_pts(&last_pts, Some(10)).is_ok());
+        assert!(validate_monotonic_pts(&last_pts, Some(11)).is_ok());
+        assert!(validate_monotonic_pts(&last_pts, Some(9)).is_err());
+        assert_eq!(last_pts.get(), Some(11));
+    }
+
+    #[test]
+    fn d3d12_pacing_counts_decode_time_and_skips_sleep_when_late() {
+        let frame_interval = Duration::from_millis(33);
+        let started_at = Instant::now();
+        let mut next_frame_at = started_at;
+
+        assert_eq!(
+            frame_pacing_delay(
+                &mut next_frame_at,
+                started_at + Duration::from_millis(8),
+                frame_interval,
+            ),
+            Duration::from_millis(25),
+        );
+        assert_eq!(
+            frame_pacing_delay(
+                &mut next_frame_at,
+                started_at + Duration::from_millis(44),
+                frame_interval,
+            ),
+            Duration::from_millis(22),
+        );
+        assert_eq!(
+            frame_pacing_delay(
+                &mut next_frame_at,
+                started_at + Duration::from_millis(100),
+                frame_interval,
+            ),
+            Duration::ZERO,
+        );
+        assert_eq!(next_frame_at, started_at + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn keeps_h264_detached_but_hevc_on_direct_d3d12_import() {
+        assert_eq!(
+            d3d12_decode_policy("Video: h264 (High), yuv420p, 1920x1080"),
+            (true, true),
+        );
+        assert_eq!(
+            d3d12_decode_policy("Video: hevc (Main 10), yuv420p10le, 7680x3840"),
+            (true, false),
+        );
+        assert_eq!(
+            d3d12_decode_policy("Video: vp9, yuv420p, 1920x1080"),
+            (false, false),
+        );
+    }
 
     #[test]
     fn decodes_file_frames_without_webview_pixel_ipc() {
@@ -756,6 +887,12 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+        let thumbnail = read_video_thumbnail(&path.to_string_lossy()).unwrap();
+        assert_eq!(thumbnail.get(..2), Some([0xff, 0xd8].as_slice()));
+        assert_eq!(
+            thumbnail.get(thumbnail.len().saturating_sub(2)..),
+            Some([0xff, 0xd9].as_slice()),
+        );
 
         let mut source = NativeVideoSource::open(NativeVideoConfig {
             kind: NativeVideoSourceKind::File,

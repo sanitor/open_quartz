@@ -298,6 +298,7 @@ struct NativeGpuRuntime {
     output_node_id: Option<String>,
     started_at: Instant,
     previous_frame_at: Instant,
+    presentation_started_at: Instant,
     frame: u64,
     mouse: [f32; 4],
     videos: HashMap<String, NativeVideoSource>,
@@ -373,8 +374,7 @@ impl NativeGpuRuntime {
             video_data_path: if cfg!(windows)
                 && required_features.intersects(
                     wgpu::Features::TEXTURE_FORMAT_NV12 | wgpu::Features::TEXTURE_FORMAT_P010,
-                )
-            {
+                ) {
                 "d3d12va-yuv-detached-gpu-copy".to_owned()
             } else {
                 "cpu-copy".to_owned()
@@ -391,6 +391,7 @@ impl NativeGpuRuntime {
                 output_node_id: None,
                 started_at: now,
                 previous_frame_at: now,
+                presentation_started_at: now,
                 frame: 0,
                 mouse: [0.0; 4],
                 videos: HashMap::new(),
@@ -859,19 +860,20 @@ impl NativeGpuRuntime {
         #[cfg(windows)]
         if self.shared_texture_enabled {
             if let Some(output_handle) = self.executor.output_handle(&output_node_id) {
-                let presentation_output = if output_handle.width.max(output_handle.height)
-                    > PRESENTATION_MAX_DIMENSION
-                {
-                    self.presentation_scaler
-                        .scale(&output_handle, PRESENTATION_MAX_DIMENSION)?
-                } else {
-                    output_handle
-                };
+                let presentation_output =
+                    if output_handle.width.max(output_handle.height) > PRESENTATION_MAX_DIMENSION {
+                        self.presentation_scaler
+                            .scale(&output_handle, PRESENTATION_MAX_DIMENSION)?
+                    } else {
+                        output_handle
+                    };
                 if let Some(presenter) = self.shared_presenter.as_mut() {
                     let _ = presenter.submit(GpuPresentationFrame {
                         node_id: output_node_id.clone(),
                         frame,
-                        timeline_ns: (time.max(0.0) * 1_000_000_000.0) as u64,
+                        timeline_ns: crate::webview_texture_stream::presentation_timestamp_ns(
+                            self.presentation_started_at,
+                        ),
                         output: presentation_output,
                     });
                     let _ = presenter.process_latest();

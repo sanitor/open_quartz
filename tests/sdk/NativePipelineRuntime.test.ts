@@ -173,6 +173,43 @@ describe('NativePipelineRuntime', () => {
     expect(bridge.calls.filter(({ command }) => command === 'native_gpu_attach_video')).toHaveLength(1);
   });
 
+  it('replaces H.265 with H.264 before a stop and replay without reopening the decoder', async () => {
+    const bridge = new FakeBridge();
+    const runtime = new NativePipelineRuntime({}, bridge);
+    await runtime.initialize();
+    const node = (videoFilePath: string) => ({
+      id: 'video-1',
+      type: 'input',
+      position: { x: 0, y: 0 },
+      data: {
+        type: 'input', label: 'Video', shaderCode: '', inputs: [], outputs: [], uniforms: {},
+        inputMode: 'video', inputDataType: 'sampler2D', videoSourceType: 'file', videoFilePath,
+      },
+    });
+    await runtime.setGraph([node('C:/video/source-hevc.mp4')] as never, []);
+    const before = bridge.calls.length;
+
+    await runtime.setGraph([node('C:/video/source-h264.mp4')] as never, []);
+
+    expect(bridge.calls.slice(before).map(({ command }) => command)).toEqual([
+      'native_gpu_set_graph',
+      'native_gpu_detach_video',
+      'native_gpu_attach_video',
+    ]);
+    expect(bridge.calls.at(-1)?.args).toMatchObject({
+      nodeId: 'video-1',
+      source: 'C:/video/source-h264.mp4',
+    });
+    const replayBefore = bridge.calls.length;
+    await runtime.stop();
+    await runtime.play([node('C:/video/source-h264.mp4')] as never, []);
+    expect(bridge.calls.slice(replayBefore).map(({ command }) => command)).toEqual([
+      'native_gpu_stop',
+      'native_gpu_set_graph',
+      'native_gpu_play',
+    ]);
+  });
+
   it('detaches stale video before uploading a replacement image texture', async () => {
     const bridge = new FakeBridge();
     const runtime = new NativePipelineRuntime({}, bridge);
@@ -206,7 +243,7 @@ describe('NativePipelineRuntime', () => {
     ]);
   });
 
-  it('resumes native playback after a live graph update', async () => {
+  it('restarts native playback after a live graph update resets the engine to ready', async () => {
     const bridge = new FakeBridge();
     const runtime = new NativePipelineRuntime({}, bridge);
     await runtime.initialize();
@@ -216,7 +253,7 @@ describe('NativePipelineRuntime', () => {
 
     expect(bridge.calls.slice(before).map(({ command }) => command)).toEqual([
       'native_gpu_set_graph',
-      'native_gpu_resume',
+      'native_gpu_play',
     ]);
   });
 
@@ -296,6 +333,57 @@ describe('NativePipelineRuntime', () => {
     } finally {
       play.mockRestore();
       readyState.mockRestore();
+      Reflect.deleteProperty(window, 'chrome');
+    }
+  });
+
+  it('resumes the existing TextureStream consumer after stop-play and pause-resume', async () => {
+    const bridge = new TextureStreamBridge();
+    const stream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
+    Object.defineProperty(window, 'chrome', {
+      configurable: true,
+      value: { webview: { getTextureStream: vi.fn(() => stream) } },
+    });
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const readyState = vi
+      .spyOn(HTMLMediaElement.prototype, 'readyState', 'get')
+      .mockReturnValue(HTMLMediaElement.HAVE_CURRENT_DATA);
+    const requestVideoFrameCallback = vi.fn(() => 1);
+    const cancelVideoFrameCallback = vi.fn();
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: requestVideoFrameCallback,
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: cancelVideoFrameCallback,
+    });
+    const runtime = new NativePipelineRuntime({}, bridge);
+
+    try {
+      await runtime.initialize();
+      bridge.emit('native-runtime-frame', {
+        frame: 1,
+        revision: 1,
+        outputNodeId: 'renderer',
+        width: 640,
+        height: 360,
+      } satisfies NativeFrameRendered);
+      await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
+
+      await runtime.stop();
+      await runtime.play([], []);
+      expect(play).toHaveBeenCalledTimes(2);
+
+      await runtime.pause();
+      await runtime.resume();
+      expect(play).toHaveBeenCalledTimes(3);
+    } finally {
+      await runtime.close();
+      play.mockRestore();
+      readyState.mockRestore();
+      Reflect.deleteProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback');
+      Reflect.deleteProperty(HTMLVideoElement.prototype, 'cancelVideoFrameCallback');
       Reflect.deleteProperty(window, 'chrome');
     }
   });

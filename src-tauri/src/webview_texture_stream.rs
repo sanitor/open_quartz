@@ -55,6 +55,7 @@ mod platform {
             atomic::{AtomicBool, AtomicU32, Ordering},
             Arc,
         },
+        time::Instant,
     };
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment;
     use windows::Win32::Foundation::{HANDLE, HMODULE, LUID};
@@ -317,9 +318,18 @@ mod platform {
         start_requested_handler: ICoreWebView2ExperimentalTextureStreamStartRequestedEventHandler,
         start_requested: Arc<AtomicBool>,
         has_started: bool,
+        texture_size: Option<(u32, u32)>,
         start_requested_token: i64,
         video_pipeline: Option<VideoProcessorPipeline>,
         shared_bridges: HashMap<u64, SharedBridgeSlot>,
+    }
+
+    fn texture_size_changed(current: Option<(u32, u32)>, width: u32, height: u32) -> bool {
+        current != Some((width, height))
+    }
+
+    pub(crate) fn presentation_timestamp_ns(started_at: Instant) -> u64 {
+        started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
     impl ICoreWebView2ExperimentalEnvironment12 {
@@ -586,19 +596,26 @@ mod platform {
                     presented: false,
                 });
             }
-            let texture = if start_requested {
+            let size_changed = texture_size_changed(self.texture_size, width, height);
+            let texture = if start_requested || size_changed {
                 self.has_started = true;
-                com_step(
+                let texture = com_step(
                     self.interface.create_texture(width, height),
                     "CreateTexture",
-                )?
+                )?;
+                self.texture_size = Some((width, height));
+                texture
             } else {
                 match self.interface.available_texture() {
                     Ok(texture) => texture,
-                    Err(error) if error.code() == HRESULT(0x80070103u32 as i32) => com_step(
-                        self.interface.create_texture(width, height),
-                        "CreateTexture",
-                    )?,
+                    Err(error) if error.code() == HRESULT(0x80070103u32 as i32) => {
+                        let texture = com_step(
+                            self.interface.create_texture(width, height),
+                            "CreateTexture",
+                        )?;
+                        self.texture_size = Some((width, height));
+                        texture
+                    }
                     Err(error) => {
                         return Err(windows_core::Error::new(
                             error.code(),
@@ -1038,6 +1055,7 @@ mod platform {
                 start_requested_token,
                 start_requested,
                 has_started: false,
+                texture_size: None,
                 video_pipeline: None,
                 shared_bridges: HashMap::new(),
             })
@@ -1063,7 +1081,31 @@ mod platform {
             },
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{presentation_timestamp_ns, texture_size_changed};
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn recreates_webview_texture_only_when_presentation_size_changes() {
+            assert!(texture_size_changed(None, 3840, 1920));
+            assert!(!texture_size_changed(Some((3840, 1920)), 3840, 1920));
+            assert!(texture_size_changed(Some((3840, 1920)), 1920, 1080));
+        }
+
+        #[test]
+        fn presentation_timestamp_stays_monotonic_across_graph_clock_resets() {
+            let runtime_started_at = Instant::now();
+            std::thread::sleep(Duration::from_millis(1));
+            let before_graph_reset = presentation_timestamp_ns(runtime_started_at);
+            std::thread::sleep(Duration::from_millis(1));
+            let after_graph_reset = presentation_timestamp_ns(runtime_started_at);
+            assert!(before_graph_reset > 0);
+            assert!(after_graph_reset > before_graph_reset);
+        }
+    }
 }
 
 #[cfg(windows)]
-pub use platform::{initialize, present_shared_frame};
+pub(crate) use platform::{initialize, present_shared_frame, presentation_timestamp_ns};

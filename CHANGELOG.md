@@ -13,11 +13,13 @@
 - **TextureStream pacing and lifecycle** — corrected presentation timestamps, first-frame handshakes, stale readback rejection, stream-start retries, and repeated Zustand updates.
 - **D3D12VA frame selection** — preserve FFmpeg-reported texture-array subresources so decoder surface reuse cannot reorder displayed frames.
 - **TextureStream presentation scaling** — downscale oversized exported frames while retaining full-resolution native textures and screenshots.
+- **Native video replacement and replay** — live H.265→H.264 changes now detach the old decoder before attaching the new source, restart ready graphs with PLAY instead of RESUME, and explicitly resume the retained TextureStream consumer after STOP or PAUSE.
+- **Stable 8K D3D12VA conversion** — render NV12/P010 conversion directly into the persistent graph output texture instead of allocating and copying a temporary 8K RGBA texture every frame, eliminating the observed 36 ms upload stall while retaining single-surface and monotonic-PTS ordering.
 
 ### Tests
 
 - **Native H.264 benchmark** — 10.01 seconds at 61.31 render/preview FPS, 391 decoded and uploaded frames, `cpu_copy_bytes=0`.
-- **Automated suites** — 990 Vitest tests across 41 files and 76 Rust tests, all passing; TypeScript type-check passes.
+- **Automated suites** — 994 Vitest tests across 41 files and 81 Rust tests pass; TypeScript type-check passes.
 
 ## [0.17.0b] -- 2026-07-29
 
