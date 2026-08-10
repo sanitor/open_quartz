@@ -61,15 +61,6 @@ flowchart TB
         Inference[inference facade: tensor/task/completion]
         Presenter[presentation facade]
 
-        Runtime --> Engine
-        Runtime --> Gpu
-        Runtime --> Media
-        Runtime --> Inference
-        Runtime --> Presenter
-        Engine --> Schema
-    end
-
-    subgraph Backends[模块内部的宿主实现分支]
         WgpuWeb[wgpu WebGPU backend]
         WgpuNative[wgpu DX12 / Vulkan / Metal backend]
         WebMedia[WebCodecs / HTML media adapter]
@@ -78,22 +69,31 @@ flowchart TB
         OrtNative[ort CPU / DirectML adapter]
         WebPresenter[Canvas / OffscreenCanvas / TextureStream consumer]
         NativePresenter[DXGI / native presenter / readback]
+
+        Runtime --> Engine
+        Runtime --> Gpu
+        Runtime --> Media
+        Runtime --> Inference
+        Runtime --> Presenter
+        Engine --> Schema
+
+        Gpu --> WgpuWeb
+        Gpu --> WgpuNative
+        Media --> WebMedia
+        Media --> NativeMedia
+        Inference --> OrtWeb
+        Inference --> OrtNative
+        Presenter --> WebPresenter
+        Presenter --> NativePresenter
+
+        WebMedia -. stamped completion .-> Runtime
+        NativeMedia -. stamped completion .-> Runtime
+        OrtWeb -. stamped completion .-> Runtime
+        OrtNative -. stamped completion .-> Runtime
     end
 
     BrowserUI --> WasmBinding --> Runtime
     TauriUI --> TauriBinding --> Runtime
-    Gpu --> WgpuWeb
-    Gpu --> WgpuNative
-    Media --> WebMedia
-    Media --> NativeMedia
-    Inference --> OrtWeb
-    Inference --> OrtNative
-    Presenter --> WebPresenter
-    Presenter --> NativePresenter
-    WebMedia -. stamped completion .-> Runtime
-    NativeMedia -. stamped completion .-> Runtime
-    OrtWeb -. stamped completion .-> Runtime
-    OrtNative -. stamped completion .-> Runtime
 ```
 图中约定：**实线表示静态依赖或同步调用，虚线表示异步结果/事件的数据流，不表示 backend 依赖 Runtime。**因此，`Runtime` 同时依赖 `Engine` 和各个 facade 是合理的：Runtime 是 orchestration owner，调用 Engine 生成/维护执行语义，再调用 facade 执行资源、媒体、推理和 presentation work。`Engine` 本身只依赖 graph/schema/WGSL contract，不直接持有 GPU、codec 或 ORT session。
 
