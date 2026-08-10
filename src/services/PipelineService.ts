@@ -6,7 +6,12 @@ import { useGraphStore } from '../store/useGraphStore';
 import { checkIsTauri } from '../utils/tauri';
 import { runtimeLog } from '../sdk/runtimeLog';
 
+interface PipelineServiceOptions {
+  nativeTextureStream?: boolean;
+}
+
 export class PipelineService {
+  private readonly options: PipelineServiceOptions;
   private runtime: PipelineHostRuntime | null = null;
   private runtimePromise: Promise<PipelineHostRuntime> | null = null;
   private unsub: (() => void) | null = null;
@@ -29,6 +34,10 @@ export class PipelineService {
     totalMs: 0,
     maxMs: 0,
   };
+
+  constructor(options: PipelineServiceOptions = {}) {
+    this.options = options;
+  }
 
   attach(canvas: HTMLCanvasElement): void {
     window.addEventListener('renderer-remount', this.handleRendererRemount);
@@ -178,7 +187,7 @@ export class PipelineService {
           const store = useGraphStore.getState();
           store.updateNodeData(nodeId, { onnxBackend: 'native', onnxNativeBackend: backend });
         },
-      });
+      }, undefined, undefined, this.options.nativeTextureStream !== false);
       await runtime.initialize(canvas);
       return runtime;
     }

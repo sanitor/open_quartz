@@ -1,7 +1,7 @@
 {
   "name": "open-quartz",
   "private": true,
-  "version": "0.18.0b",
+  "version": "0.19.0b",
   "type": "module",
   "scripts": {
     "predev": "npm run prepare:runtime",
@@ -20,7 +20,8 @@
     "build:sdk": "wasm-pack build crates/open_quartz --target web --release --out-dir ../../public/open_quartz-sdk --out-name open_quartz",
     "copy:ort": "node scripts/copy-ort.mjs",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
-    "prepare:runtime": "npm run build:sdk && npm run copy:ort && npm run copy:ffmpeg",
+    "build:screensaver-stub": "node scripts/build-screensaver-stub.mjs",
+    "prepare:runtime": "npm run build:sdk && npm run copy:ort && npm run copy:ffmpeg && npm run build:screensaver-stub",
     "clean": "rm -rf dist node_modules/.vite src-tauri/target src-tauri/runtime public/open_quartz-sdk"
   },
   "dependencies": {

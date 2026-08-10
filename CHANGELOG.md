@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.19.0b] -- 2026-08-10
+
+### Features
+
+- **Lightweight Windows screen saver export** — File groups Load/Save/Save As and exports a selected Renderer as an approximately 264 KB native `.scr`; media stays path-referenced, output follows the active screen or preview resolution, and `/s` or `/p <HWND>` reuse the installed OpenQuartz renderer without embedding Tauri, FFmpeg, ORT, or media payloads.
+- **Native screen saver settings** — `/c` runs entirely in the Win32 host, exposes the selected image/video inputs through native file dialogs, supports restoring exported defaults, and persists overrides per export under `%APPDATA%`.
+
+### Fixes
+
+- **Native video source restoration** — project reload restores path-backed video thumbnails and source metadata without creating duplicate playback resources.
+- **HEVC D3D12 surface ownership** — retain decoder-owned surfaces through direct GPU import so borrowed texture-array subresources remain valid.
+- **Native video replacement and replay** — live H.265→H.264 changes detach the old decoder before attaching the replacement, ready graphs restart with PLAY, and retained TextureStream consumers resume after STOP or PAUSE.
+- **Stable 8K D3D12VA conversion** — render NV12/P010 conversion directly into the persistent graph output texture, eliminating the observed per-frame temporary 8K RGBA allocation and copy.
+
+### Tests
+
+- **Automated suites** — 998 Vitest tests across 43 files, 83 application/core Rust tests, and 2 native screen saver host tests pass; TypeScript type-check and Rust format checks pass.
+- **Native screen saver smoke** — a graph referencing a nominal 100 GB video exports to 264,027 bytes; native `/c` settings save successfully, and `/p` renders the selected graph at the preview's physical resolution.
+
 ## [0.18.0b] -- 2026-08-06
 
 ### Features
@@ -13,13 +32,11 @@
 - **TextureStream pacing and lifecycle** — corrected presentation timestamps, first-frame handshakes, stale readback rejection, stream-start retries, and repeated Zustand updates.
 - **D3D12VA frame selection** — preserve FFmpeg-reported texture-array subresources so decoder surface reuse cannot reorder displayed frames.
 - **TextureStream presentation scaling** — downscale oversized exported frames while retaining full-resolution native textures and screenshots.
-- **Native video replacement and replay** — live H.265→H.264 changes now detach the old decoder before attaching the new source, restart ready graphs with PLAY instead of RESUME, and explicitly resume the retained TextureStream consumer after STOP or PAUSE.
-- **Stable 8K D3D12VA conversion** — render NV12/P010 conversion directly into the persistent graph output texture instead of allocating and copying a temporary 8K RGBA texture every frame, eliminating the observed 36 ms upload stall while retaining single-surface and monotonic-PTS ordering.
 
 ### Tests
 
 - **Native H.264 benchmark** — 10.01 seconds at 61.31 render/preview FPS, 391 decoded and uploaded frames, `cpu_copy_bytes=0`.
-- **Automated suites** — 994 Vitest tests across 41 files and 81 Rust tests pass; TypeScript type-check passes.
+- **Automated suites** — 990 Vitest tests across 41 files and 76 Rust tests pass; TypeScript type-check passes.
 
 ## [0.17.0b] -- 2026-07-29
 

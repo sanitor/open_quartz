@@ -1,0 +1,18 @@
+[package]
+name = "open-quartz-screensaver-stub"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.61"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

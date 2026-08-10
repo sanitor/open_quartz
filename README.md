@@ -102,6 +102,7 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 ### Project Management
 - Save / Save As / Load (`.quartz.json` files)
 - 50-level undo/redo with Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z
+- Windows `File → Export As Screen Saver…` selects one Renderer and the image/video inputs exposed by native `/c` settings. The lightweight `.scr` keeps media as path references, uses native Win32 configuration dialogs, and reuses the installed OpenQuartz renderer for `/s` and `/p <HWND>`.
 
 ### Desktop App (Tauri)
 - Native desktop application via Tauri 2
@@ -113,6 +114,7 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 - Shared-texture and hardware-frame contracts cover DXGI/IOSurface/DMA-BUF. Windows x64 file-video now uses D3D12VA→wgpu P010 import and a WebView2 TextureStream consumer with StartRequested handling, reusable texture allocation, adapter-capability retry, first-frame handshake, and accurate presented-frame cadence telemetry; the tested 1920×1080 H.264 path sustains 61.31 FPS over a 10-second native benchmark with zero CPU-copy bytes. Camera/non-Windows video retains the explicit CPU-copy fallback; IOSurface, DMA-BUF, and camera hardware-frame adapters remain follow-up work.
 - WebView fallback remains lossless bounded RGBA readback. No H.264 preview path is used because Renderer output must preserve exact pixels; SAVE/screenshot always performs explicit lossless capture.
 - Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
+- Exported Windows screen savers are approximately 264 KB for a small graph because they contain only the native host and graph manifest—not Tauri, WebView2, FFmpeg, ORT, models, or media. Moving/uninstalling OpenQuartz requires re-exporting; moved media can be reselected through native screen saver settings.
 
 ### Rust SDK and Structured Runtime
 - Dual-target `open_quartz` crate for native and WASM graph semantics
@@ -133,7 +135,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 990 unit tests across 41 files (fast, CI gate)
+npm test               # 998 unit tests across 43 files (fast, CI gate)
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```

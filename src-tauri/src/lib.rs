@@ -1,5 +1,6 @@
 mod native_runtime;
 mod native_video;
+mod screen_saver;
 mod webview_texture_stream;
 
 use futures::StreamExt;
@@ -207,8 +208,10 @@ async fn native_video_thumbnail(path: String) -> Result<Vec<u8>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let prepared_screen_saver = screen_saver::prepare();
     configure_ort_runtime();
     tauri::Builder::default()
+        .manage(screen_saver::state(prepared_screen_saver))
         .manage(native_runtime::NativeRuntimeState::default())
         .manage(webview_texture_stream::TextureStreamCapabilityState::default())
         .plugin(tauri_plugin_dialog::init())
@@ -216,6 +219,10 @@ pub fn run() {
             download_model,
             read_model,
             is_model_downloaded,
+            screen_saver::screen_saver_export,
+            screen_saver::screen_saver_bootstrap,
+            screen_saver::screen_saver_read_file,
+            screen_saver::screen_saver_exit,
             native_runtime::native_gpu_initialize,
             webview_texture_stream_capability,
             native_video_thumbnail,
@@ -244,6 +251,7 @@ pub fn run() {
             native_runtime::native_onnx_unload_model,
         ])
         .setup(|app| {
+            screen_saver::configure_window(app)?;
             configure_bundled_ort_runtime(app.handle());
             #[cfg(windows)]
             if let Some(webview) = app.get_webview_window("main") {

@@ -143,6 +143,10 @@ function renderHeader(overrides: Record<string, unknown> = {}) {
   return render(<Header />);
 }
 
+function openFileMenu() {
+  fireEvent.click(screen.getByText('FILE').closest('button')!);
+}
+
 describe('Header', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -209,43 +213,38 @@ describe('Header', () => {
     expect(screen.getByText('SOURCE')).toBeInTheDocument();
   });
 
-  it('renders SAVE button', () => {
+  it('groups LOAD, SAVE, SAVE AS, and screen saver export under FILE', () => {
     renderHeader();
-    expect(screen.getByText('SAVE')).toBeInTheDocument();
-  });
-
-  it('renders SAVE AS button', () => {
-    renderHeader();
-    expect(screen.getByText('SAVE AS')).toBeInTheDocument();
-  });
-
-  it('renders LOAD button', () => {
-    renderHeader();
+    expect(screen.queryByText('SAVE')).not.toBeInTheDocument();
+    openFileMenu();
     expect(screen.getByText('LOAD')).toBeInTheDocument();
+    expect(screen.getByText('SAVE')).toBeInTheDocument();
+    expect(screen.getByText('SAVE AS')).toBeInTheDocument();
+    expect(screen.getByText('EXPORT AS SCREEN SAVER…')).toBeInTheDocument();
   });
 
   it('SAVE button is disabled when no savedFilePath', () => {
     renderHeader({ savedFilePath: null });
-    const saveBtn = screen.getByText('SAVE').closest('button')!;
-    expect(saveBtn).toBeDisabled();
+    openFileMenu();
+    expect(screen.getByText('SAVE').closest('button')).toBeDisabled();
   });
 
   it('SAVE button is enabled when savedFilePath exists', () => {
     renderHeader({ savedFilePath: 'test.quartz.json' });
-    const saveBtn = screen.getByText('SAVE').closest('button')!;
-    expect(saveBtn).not.toBeDisabled();
+    openFileMenu();
+    expect(screen.getByText('SAVE').closest('button')).not.toBeDisabled();
   });
 
   it('SAVE AS button is disabled when no nodes', () => {
     renderHeader({ nodes: [] });
-    const saveAsBtn = screen.getByText('SAVE AS').closest('button')!;
-    expect(saveAsBtn).toBeDisabled();
+    openFileMenu();
+    expect(screen.getByText('SAVE AS').closest('button')).toBeDisabled();
   });
 
   it('SAVE AS button is enabled when nodes exist', () => {
     renderHeader({ nodes: [{ id: '1', type: 'shader', position: { x: 0, y: 0 }, data: {} }] });
-    const saveAsBtn = screen.getByText('SAVE AS').closest('button')!;
-    expect(saveAsBtn).not.toBeDisabled();
+    openFileMenu();
+    expect(screen.getByText('SAVE AS').closest('button')).not.toBeDisabled();
   });
 
   // --- PLAY/PAUSE/STOP transport ---
@@ -450,6 +449,7 @@ describe('Header', () => {
 
   it('clicking SAVE AS opens save-as dialog', () => {
     renderHeader({ nodes: [{ id: '1', type: 'shader', position: { x: 0, y: 0 }, data: {} }] });
+    openFileMenu();
     const saveAsBtn = screen.getByText('SAVE AS').closest('button')!;
     fireEvent.click(saveAsBtn);
     expect(screen.getByText('SAVE AS', { selector: 'div' })).toBeInTheDocument();
@@ -460,6 +460,7 @@ describe('Header', () => {
 
   it('LOAD button click triggers hidden file input', () => {
     renderHeader();
+    openFileMenu();
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
     const clickSpy = vi.spyOn(fileInput!, 'click');
     const loadBtn = screen.getByText('LOAD').closest('button')!;

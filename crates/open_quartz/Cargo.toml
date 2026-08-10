@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "open_quartz"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Rust SDK for the OpenQuartz realtime heterogeneous video pipeline"

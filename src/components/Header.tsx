@@ -8,8 +8,10 @@ import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../catalog
 import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../catalog/onnxCatalog';
 import { MATH_CATEGORIES, MATH_OPS } from '../catalog/mathOps';
 import { parseWgslShader } from '../sdk/wgslParser';
+import { ScreenSaverExportDialog } from './ScreenSaverExportDialog';
 
 const isMac = navigator.platform.startsWith('Mac');
+const isWindows = navigator.platform.startsWith('Win');
 
 function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
   let cur: HTMLElement | null = el;
@@ -22,7 +24,7 @@ function isInteractiveTarget(el: HTMLElement, boundary: HTMLElement): boolean {
 }
 
 export function Header() {
-  const { nodes, edges, projectName, savedFilePath, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode, addMathNode } = useGraphStore();
+  const { nodes, edges, projectName, savedFilePath, activeRendererId, setProjectName, setSavedFilePath, loadGraph, clearGraph, undo, redo, undoStack, redoStack, loopState, fps, currentTime, play, pause, resume, stop, addRendererNode, addSystemNode, addMathNode } = useGraphStore();
   const { fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -155,7 +157,6 @@ export function Header() {
   };
 
   const btnClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] transition-colors cursor-default';
-  const btnDisabledClass = 'flex flex-col items-center gap-0.5 px-1.5 py-1 text-[9px] font-bold text-[#aeaeb2] cursor-default';
   const iconClass = 'text-[14px] leading-none font-normal';
   const svgClass = 'w-[14px] h-[14px]';
 
@@ -175,6 +176,8 @@ export function Header() {
     setEditingName(false);
   };
 
+  const [fileOpen, setFileOpen] = useState(false);
+  const [screenSaverExportOpen, setScreenSaverExportOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [shaderOpen, setShaderOpen] = useState(false);
   const [onnxOpen, setOnnxOpen] = useState(false);
@@ -251,30 +254,66 @@ export function Header() {
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
 
-      <button onClick={handleSave} disabled={!savedFilePath} className={savedFilePath ? btnClass : btnDisabledClass}>
-        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414a1 1 0 0 0-.293-.707l-2.414-2.414A1 1 0 0 0 11.586 1H2z" />
-          <path d="M3 1v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V1" />
-          <path d="M5 9a2 2 0 1 1 4 0 2 2 0 0 1-4 0z" />
-        </svg>
-        <span>SAVE</span>
-      </button>
-      <button onClick={handleSaveAs} disabled={nodes.length === 0} className={nodes.length > 0 ? btnClass : btnDisabledClass}>
-        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414a1 1 0 0 0-.293-.707l-2.414-2.414A1 1 0 0 0 11.586 1H2z" />
-          <path d="M3 1v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V1" />
-          <path d="M5 9a2 2 0 1 1 4 0 2 2 0 0 1-4 0z" />
-          <text x="8" y="11" textAnchor="middle" fontSize="7" fill="currentColor" stroke="none" fontWeight="bold">AS</text>
-        </svg>
-        <span>SAVE AS</span>
-      </button>
-      <button onClick={handleLoad} className={btnClass}>
-        <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M1.5 4.5h4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V5a1 1 0 0 1 .5-.5z" />
-          <path d="M1 7.5h8.5l2 4H2.5z" />
-        </svg>
-        <span>LOAD</span>
-      </button>
+      <div className="relative">
+        <button onClick={() => setFileOpen(!fileOpen)} className={btnClass}>
+          <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 2.5h4l1.5 1.5H14a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" />
+          </svg>
+          <span className="flex items-center gap-px">
+            <span>FILE</span>
+            <span className="text-[16px] leading-none font-normal">▾</span>
+          </span>
+        </button>
+        {fileOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onMouseDown={() => setFileOpen(false)} />
+            <div className="absolute top-full left-0 mt-0.5 bg-white border border-[#d2d2d7] rounded-lg shadow-lg z-20 py-1 min-w-[210px]">
+              <button
+                onClick={() => { setFileOpen(false); handleLoad(); }}
+                className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7]"
+              >
+                <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1.5 4.5h4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V5a1 1 0 0 1 .5-.5z" />
+                  <path d="M1 7.5h8.5l2 4H2.5z" />
+                </svg>
+                <span>LOAD</span>
+              </button>
+              <button
+                onClick={() => { setFileOpen(false); handleSave(); }}
+                disabled={!savedFilePath}
+                className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] disabled:text-[#aeaeb2] disabled:hover:bg-white"
+              >
+                <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 1h9.5L15 4.5V15H1V1z" /><path d="M4 1v4h6V1" /><circle cx="8" cy="10.5" r="2.5" />
+                </svg>
+                <span>SAVE</span>
+              </button>
+              <button
+                onClick={() => { setFileOpen(false); handleSaveAs(); }}
+                disabled={nodes.length === 0}
+                className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] disabled:text-[#aeaeb2] disabled:hover:bg-white"
+              >
+                <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 1h9.5L15 4.5V15H1V1z" /><path d="M4 1v4h6V1" /><path d="M11.5 9v5M9 11.5h5" />
+                </svg>
+                <span>SAVE AS</span>
+              </button>
+              <div className="mx-2 my-1 border-t border-[#e8e8ed]" />
+              <button
+                onClick={() => { setFileOpen(false); setScreenSaverExportOpen(true); }}
+                disabled={!tauriApp || !isWindows || nodes.length === 0}
+                title={!tauriApp || !isWindows ? 'Windows desktop app only' : undefined}
+                className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[9px] font-bold text-[#1d1d1f] hover:text-[#007aff] hover:bg-[#f5f5f7] disabled:text-[#aeaeb2] disabled:hover:bg-white"
+              >
+                <svg viewBox="0 0 16 16" className={svgClass} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1.5" y="2" width="13" height="9" rx="1" /><path d="M5 14h6M8 11v3" /><path d="M5.5 6.5h5M8 4v5" />
+                </svg>
+                <span>EXPORT AS SCREEN SAVER…</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
       <input ref={fileInputRef} type="file" accept=".quartz.json,.json" onChange={handleFileChange} className="hidden" />
 
       <span className="mx-1 text-[#c7c7cc]">|</span>
@@ -639,6 +678,15 @@ export function Header() {
             </div>
           </div>
         </>
+      )}
+      {screenSaverExportOpen && (
+        <ScreenSaverExportDialog
+          nodes={nodes}
+          edges={edges}
+          project={serializeProject(nodes, edges, projectName)}
+          activeRendererId={activeRendererId}
+          onClose={() => setScreenSaverExportOpen(false)}
+        />
       )}
     </header>
   );

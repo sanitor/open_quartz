@@ -132,6 +132,7 @@ export class NativePipelineRuntime {
   private bridge: NativeTauriBridge | null;
   private readonly bridgeLoader: () => Promise<NativeTauriBridge>;
   private readonly callbacks: NativeRuntimeCallbacks;
+  private readonly textureStreamAllowed: boolean;
   private readonly imageResources = new Map<string, string>();
   private readonly videoResources = new Map<string, string>();
   private readonly onnxResources = new Map<string, string>();
@@ -181,17 +182,19 @@ export class NativePipelineRuntime {
     callbacks: NativeRuntimeCallbacks = {},
     bridge?: NativeTauriBridge,
     bridgeLoader: () => Promise<NativeTauriBridge> = loadDefaultBridge,
+    textureStreamAllowed = true,
   ) {
     this.callbacks = callbacks;
     this.bridge = bridge ?? null;
     this.bridgeLoader = bridgeLoader;
+    this.textureStreamAllowed = textureStreamAllowed;
   }
 
   async initialize(_canvas?: HTMLCanvasElement): Promise<NativeRuntimeInfo> {
     if (this.closed) throw new Error('Native pipeline runtime is closed');
     if (this.initialized) throw new Error('Native pipeline runtime is already initialized');
     const bridge = await this.getBridge();
-    const webview = textureStreamWebView();
+    const webview = this.textureStreamAllowed ? textureStreamWebView() : null;
     this.unlisten = await Promise.all([
       bridge.listen<NativeFrameRendered>('native-runtime-frame', ({ payload }) => {
         this.callbacks.onFrame?.(payload);

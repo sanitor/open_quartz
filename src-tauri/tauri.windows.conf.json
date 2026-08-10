@@ -11,7 +11,8 @@
       "runtime/ffmpeg-shared/bin/avfilter-12.dll": "runtime/avfilter-12.dll",
       "runtime/ffmpeg-shared/bin/swresample-7.dll": "runtime/swresample-7.dll",
       "runtime/ffmpeg-shared/bin/swscale-10.dll": "runtime/swscale-10.dll",
-      "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt"
+      "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt",
+      "runtime/open-quartz-screensaver-stub.exe": "runtime/open-quartz-screensaver-stub.exe"
     }
   }
 }
