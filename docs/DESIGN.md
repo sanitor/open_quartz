@@ -56,38 +56,81 @@ flowchart TB
         Runtime[Runtime: lifecycle / clock / delivery]
         Engine[Engine: graph execution / plan / work]
         Schema[types / errors / events]
-        HostApi[host traits: GPU / media / inference / presenter]
+        Gpu[gpu facade: shared wgpu executor]
+        Media[media facade: timestamped frame contract]
+        Inference[inference facade: tensor/task/completion]
+        Presenter[presentation facade]
+
         Runtime --> Engine
-        Runtime --> HostApi
-        Engine --> HostApi
+        Runtime --> Gpu
+        Runtime --> Media
+        Runtime --> Inference
+        Runtime --> Presenter
         Engine --> Schema
     end
 
-    subgraph Hosts[宿主 backend]
-        BrowserHost[WebGPU / WebCodecs / ORT-Web]
-        NativeHost[wgpu / FFmpeg / ORT / DXGI / WebView2]
+    subgraph Backends[模块内部的宿主实现分支]
+        WgpuWeb[wgpu WebGPU backend]
+        WgpuNative[wgpu DX12 / Vulkan / Metal backend]
+        WebMedia[WebCodecs / HTML media adapter]
+        NativeMedia[FFmpeg / native decoder adapter]
+        OrtWeb[onnxruntime-web adapter]
+        OrtNative[ort CPU / DirectML adapter]
+        WebPresenter[Canvas / OffscreenCanvas / TextureStream consumer]
+        NativePresenter[DXGI / native presenter / readback]
     end
 
     BrowserUI --> WasmBinding --> Runtime
     TauriUI --> TauriBinding --> Runtime
-    HostApi -->|Browser implementation| BrowserHost
-    HostApi -->|Native implementation| NativeHost
-    BrowserHost -. stamped async completion .-> Runtime
-    NativeHost -. stamped async completion .-> Runtime
+    Gpu --> WgpuWeb
+    Gpu --> WgpuNative
+    Media --> WebMedia
+    Media --> NativeMedia
+    Inference --> OrtWeb
+    Inference --> OrtNative
+    Presenter --> WebPresenter
+    Presenter --> NativePresenter
+    WebMedia -. stamped completion .-> Runtime
+    NativeMedia -. stamped completion .-> Runtime
+    OrtWeb -. stamped completion .-> Runtime
+    OrtNative -. stamped completion .-> Runtime
 ```
+图中约定：**实线表示静态依赖或同步调用，虚线表示异步结果/事件的数据流，不表示 backend 依赖 Runtime。**因此，`Runtime` 同时依赖 `Engine` 和各个 facade 是合理的：Runtime 是 orchestration owner，调用 Engine 生成/维护执行语义，再调用 facade 执行资源、媒体、推理和 presentation work。`Engine` 本身只依赖 graph/schema/WGSL contract，不直接持有 GPU、codec 或 ORT session。
 
-目标调用方向：
+异步回调的逻辑是：
 
 ```text
-Browser UI -> Worker/wasm-bindgen -> Runtime
-Tauri UI   -> Tauri binding/direct Rust -> Runtime
-                                      ↓
-                           Engine / host traits
-                                      ↓
-                    WebGPU/codec/ORT 或 wgpu/FFmpeg/ORT
+Runtime -> facade -> backend
+backend -. stamped completion/event .-> Runtime
 ```
 
-`Runtime` 和 `Engine` 是共享 policy/kernel；GPU、codec、ORT、DXGI、WebView2 是宿主实现。backend 不反向驱动 `Engine`；异步 backend 只把带 `revision`、`generation`、`FrameStamp` 的 completion 返回 Runtime。
+backend 通过 facade/host trait 被注册或注入；它不反向依赖 `Runtime`。虚线只代表 completion queue、callback 或 event transport 的返回方向。
+
+该图表达的不是“所有平台实现都相同”，而是**共享模块 facade 相同，模块内部选择 backend**：
+
+```text
+Browser binding -> shared Rust Runtime
+                         ├-> shared Rust Engine
+                         ├-> shared Rust gpu facade -> wgpu WebGPU
+                         ├-> shared Rust media facade -> WebCodecs/HTML media
+                         └-> shared Rust inference facade -> ORT-Web
+
+Tauri binding  -> shared Rust Runtime
+                         ├-> shared Rust Engine
+                         ├-> shared Rust gpu facade -> wgpu native backend
+                         ├-> shared Rust media facade -> FFmpeg/native decoder
+                         └-> shared Rust inference facade -> ort/DirectML
+```
+
+`wgpu` 是最适合首先合并的模块：当前 Cargo 已启用 `wgpu` 的 `webgpu` 和 native backend features，GPU resource、render target、pipeline、command encoding 的核心可以收敛到同一 Rust implementation。不能强行共用的是 surface/presenter、Web `GPUExternalTexture`、DXGI interop 和具体 window object。
+
+`media` 和 `inference` 也应提供共享 Rust facade，但不应把平台 SDK 假装成同一实现：
+
+- `media` 共享 timestamp、frame selection、pause/resume/seek、resource generation 和 frame ownership；`media::web` 与 `media::native` 分别桥接 WebCodecs/HTML media 和 FFmpeg。
+- `inference` 共享 model descriptor、tensor shape/dtype、task contract、async completion、revision/generation 检查以及 preprocess/postprocess；`inference::web` 调用 `onnxruntime-web`，`inference::native` 调用 `ort`/DirectML。
+- Browser 的 `GPUExternalTexture`、WebCodecs `VideoFrame`、WebView2 `MediaStream` 和 Native 的 D3D12 surface、DXGI handle 仍然是 backend object，不进入 shared schema。
+
+因此，目标不是把 `ort-web`、`ort`、WebCodecs、FFmpeg 变成一个二进制实现，而是让它们都位于同一 Rust module facade 之后。上层只看到统一的 runtime/graph/resource/output contract。
 
 #### 当前实现：共享基础模块，但 Runtime 和 host orchestration 仍不对称
 
@@ -780,10 +823,19 @@ flowchart TD
     Wgsl[wgsl]
     Engine[engine]
     Runtime[runtime]
-    HostTraits[host traits: gpu/media/inference/presenter]
-    NativeImpl[native implementations]
+    Gpu[shared gpu facade / wgpu executor]
+    Media[shared media facade / timestamp contract]
+    Inference[shared inference facade / tensor contract]
+    Presentation[shared presentation facade]
+    WgpuWeb[wgpu WebGPU backend]
+    WgpuNative[wgpu DX12 / Vulkan / Metal backend]
+    WebMedia[WebCodecs / HTML media]
+    NativeMedia[FFmpeg / native decoder]
+    OrtWeb[onnxruntime-web bridge]
+    OrtNative[ort / DirectML]
+    WebPresenter[Canvas / OffscreenCanvas]
+    NativePresenter[DXGI / TextureStream / readback]
     Binding[ffi/wasm/c bindings]
-    Tauri[Tauri shell]
 
     Graph --> Schema
     Wgsl --> Schema
@@ -792,20 +844,33 @@ flowchart TD
     Engine --> Wgsl
     Runtime --> Schema
     Runtime --> Engine
-    Runtime --> HostTraits
-    NativeImpl -. implements .-> HostTraits
+    Runtime --> Gpu
+    Runtime --> Media
+    Runtime --> Inference
+    Runtime --> Presentation
+    Gpu --> WgpuWeb
+    Gpu --> WgpuNative
+    Media --> WebMedia
+    Media --> NativeMedia
+    Inference --> OrtWeb
+    Inference --> OrtNative
+    Presentation --> WebPresenter
+    Presentation --> NativePresenter
     Binding --> Runtime
-    Tauri --> Binding
-    Tauri --> NativeImpl
 ```
+
+这张图中的 `gpu`、`media`、`inference`、`presentation` 是共享 Rust module facade；Web/native 只在 facade 内选择 backend。`wgpu` 的 WebGPU、DX12、Vulkan、Metal backend 属于同一个 GPU 抽象，不应在高层拆成两套 GPU executor。
 
 目标规则：
 
 1. schema/error/event 不依赖 binding。
-2. WGSL compiler 不依赖 GPU implementation；共享 shader source 放 WGSL 或独立 shader module。
-3. media contract 不依赖 concrete `GpuOutputHandle`；通过 opaque handle/host trait 连接。
-4. `ffi` 只依赖 runtime，不得被 runtime 反向依赖。
-5. Tauri 不拥有第二套 scheduler/resource reconciliation/output policy。
+2. `Runtime/Engine` 向下调用共享 facade；facade 再调用平台 backend；backend completion 带 stamp 返回。
+3. `gpu` 共享 resource/target/pipeline/command encoding；surface、`GPUExternalTexture`、DXGI interop 和 window object 留在 backend。
+4. `media` 共享 timestamp、frame selection、pause/resume/seek、generation 和 frame ownership；WebCodecs/HTML media 与 FFmpeg 是内部 backend。
+5. `inference` 共享 model descriptor、tensor contract、task、preprocess/postprocess 和 async completion；`onnxruntime-web` 与 `ort`/DirectML 是内部 backend。
+6. `ffi` 只依赖 runtime，不得被 runtime 反向依赖。
+7. Tauri 不拥有第二套 scheduler、resource reconciliation、output 或 presentation policy。
+
 
 ### 7.4 Rust 核心对象所有权
 
@@ -960,9 +1025,9 @@ platform implementation -> host traits + platform APIs
 ### Phase 4：Browser backend 变薄
 
 1. Rust Runtime 生成完整 per-port work/resource reconciliation contract。
-2. Browser TS 只持 WebGPU/WebCodecs/ORT-Web 对象并执行 work。
-3. 删除 TS topology/dirty/clock/generation 的重复实现。
-4. 删除或隔离 `RealtimeHost`。
+2. 将 Rust `gpu` facade 与 `GpuExecutor` 收敛到同一 `wgpu` implementation；WASM 选择 `wgpu` WebGPU backend，native 选择 DX12/Vulkan/Metal backend。
+3. 将 `media`、`inference` facade 的 backend 分支收回 Rust module 内：WebCodecs/HTML media 与 ORT-Web 走 wasm adapter；FFmpeg 与 `ort`/DirectML 走 native adapter。
+4. Browser TS 只持有无法由 Rust/WASM 表达的 Web 对象（例如 `GPUExternalTexture`、`VideoFrame`、DOM presenter），不再持有第二份 graph/execution policy。
 
 验收：同一 graph 的 Browser/Native work batch contract 可比较，TS engine 不再依赖 Store。
 
