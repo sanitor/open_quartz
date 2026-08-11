@@ -931,42 +931,77 @@ flowchart TD
 | ONNX async | completion 必须防 stale | Native 检查 revision + generation | 保持 | 改用通用 `AsyncCompletionEnvelope` |
 | Legacy host | 单一 Browser production host | `RealtimeHost` 无生产引用但测试仍依赖 | 漂移/债务 | 删除或隔离 legacy tests |
 
-### 8.3 最大的四个结构风险
+### 8.3 结构风险在目标架构下的状态与防回退措施
+
+新架构图本身不会自动消除风险。A、B 在目标结构完整落地后应被删除；C、D 仍需要协议和编译边界才能消除。迁移期间四项风险都仍然存在。
+
+| 风险 | 当前 | 目标架构落地后 | 是否会复发 |
+|---|---|---|---|
+| A. Native 第二个 Runtime | 存在 | 应消除 | host adapter 重新拥有 clock/scheduler/resource policy 时会复发 |
+| B. Browser 第二份 execution semantics | 存在 | 应消除 | Web adapter 重新解析 graph、topology、dirty/feedback 时会复发 |
+| C. output contract 未统一 | 存在 | 仅靠 facade 设计不能消除 | 新增 host-specific callback/event 时会复发 |
+| D. 同 crate 模块环 | 存在 | 逻辑图不能消除 | 没有编译边界时随时会复发 |
 
 #### A. Native runtime 是第二个 runtime
 
-`src-tauri/src/native_runtime.rs` 同时负责：
+当前 `src-tauri/src/native_runtime.rs` 同时拥有 clock、worker、graph/resource reconciliation、video/ONNX lifecycle、output selection 和 presentation policy，超出薄 adapter 边界。
 
-- device/executor 创建；
-- clock 和 16 ms worker；
-- graph/resource reconcile；
-- video lifecycle；
-- ONNX scheduling/completion；
-- output selection；
-- presentation；
-- event emission；
-- smoke/benchmark。
+目标结构通过以下不变量消除：
 
-这已经超出“薄 Tauri adapter”。文件体积不是问题本身；问题是它拥有与 `open_quartz::runtime::Runtime` 重复的 policy。
+```text
+Tauri host -------┐
+Screen saver host ├-> 同一个 open_quartz::Runtime
+Other native host ┘
+```
+
+- Runtime 是唯一 lifecycle、clock、scheduler、revision/generation、resource reconciliation、subscription 和 presentation policy owner。
+- Tauri、screen saver、未来 native UI 只负责构造 platform backend、注册 opaque handle、转发 command/event 和提供 window/surface。
+- host crate 不得定义第二个 `*Runtime` policy object；只能定义 `*Host`、`*Backend`、`*Binding`。
+- conformance tests 对所有 host 运行同一 lifecycle/graph/output contract。
 
 #### B. Browser 仍有第二份 execution semantics
 
-Rust `Runtime.advance()` 生成 `ExecutionCommand`，但 `WebGPUExecutionEngine.prepare()` 仍执行 topology/plan/resource/ONNX 相关逻辑，并依赖 Store/Catalog。若 Rust plan 与 TS plan 漂移，command batch 可能在错误资源图上执行。
+当前 Rust `Runtime.advance()` 生成 `ExecutionCommand`，但 TypeScript `WebGPUExecutionEngine.prepare()` 仍处理 topology、plan、resource 和 ONNX policy。
+
+目标结构通过以下不变量消除：
+
+- Rust `Engine` 是 topology、dirty、feedback、Math、generation 和 work ordering 的唯一来源。
+- Browser 使用共享 Rust `gpu` facade/`wgpu` executor；Web adapter 只实现 `GPUExternalTexture`、WebCodecs、ORT-Web 和 DOM presenter 等平台对象桥接。
+- Browser backend 的输入必须是 typed work/resource descriptor，不能接收完整 Zustand Store，也不能导入 `src/store`、node catalog 或自行拓扑排序。
+- 同一 graph 的 Browser/Native work contract test 必须比较 node order、port binding、target descriptor、generation 和 completion stamp。
 
 #### C. 通用 output contract 尚未成为生产观察边界
 
-`OutputKey/OutputState/OutputSubscription/OutputDeliveryBatch` 已存在，但 UI 生产路径仍依赖：
+`OutputKey/OutputState/OutputSubscription/OutputDeliveryBatch` 已存在，但生产仍依赖 `onFrame/onOutput/onOutputSize/onOutputData` 和 `native-runtime-*` 特例。
 
-```text
-onFrame / onOutput / onOutputSize / onOutputData / onBackendDetected
-native-runtime-frame / native-runtime-output
-```
+避免方式：
 
-这些 callback 有用，但应成为通用 delivery 的 UI projection，而不是并列的 canonical protocol。
+- Runtime 只发布 `OutputDeliveryBatch`、structured event 和 presentation delivery。
+- Worker message、Tauri event、C/WASM callback 只是同一 delivery schema 的 transport 编码，不能新增宿主专属 output semantics。
+- `PipelineService` callback 只能由 delivery projection 生成；新增 output 类型不能新增 callback 字段或 Tauri event name。
+- frame heartbeat 只承载 cadence/health，不承载 output value、backend result 或 presentation ownership。
 
-#### D. 同 crate 模块环隐藏了分层错误
+#### D. 同 crate 模块环隐藏分层错误
 
-`runtime ↔ ffi` 和 `wgsl ↔ gpu` 在单 crate 内能编译，因此常规测试不会阻止方向恶化。需要架构测试或拆 crate 才能形成编译期边界。
+当前 `runtime ↔ ffi`、`wgsl ↔ gpu` 在单 crate 内可编译，架构图无法阻止逆向依赖。
+
+避免方式：
+
+1. 先把 `Engine`、error/event/schema 和共享 shader source 移出 `ffi`/concrete GPU module。
+2. 让 dependency 单向为 `binding -> Runtime -> Engine -> facade contract -> platform implementation`。
+3. 收紧 Rust module visibility，禁止通过 crate root 重新导出绕过层次。
+4. 增加 dependency policy CI；最终拆成 kernel/host-api/platform/binding crates，用 Cargo 编译边界阻止逆向依赖。
+
+#### E. 新 facade 设计的额外风险：平台类型泄漏
+
+即使 A–D 消除，`web_sys::VideoFrame`、`GPUExternalTexture`、FFmpeg frame、ORT session、D3D12 resource 或 HWND 仍可能泄漏进共享 schema，使 facade 名义共享、实际继续分叉。
+
+避免方式：
+
+- shared facade 只暴露 descriptor、capability、opaque resource handle、stamp 和 completion envelope。
+- `media::web/native`、`inference::web/native`、`gpu` platform backend 在模块内部隔离具体类型和 `cfg`。
+- Runtime/Engine 不匹配平台类型、不包含 `cfg(target_arch/target_os)` policy 分支；平台差异通过 capability 和 backend registration 表达。
+- Tauri host 与 screen saver host 必须复用同一个 native backend implementation，不能复制 FFmpeg/ORT/wgpu orchestration。
 
 ---
 
