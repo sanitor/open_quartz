@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ffi::{SdkError, SdkErrorCode};
+use crate::error::{SdkError, SdkErrorCode};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

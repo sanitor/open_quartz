@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use open_quartz::types::{Graph, InputMode, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -6,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
-const MAGIC: &[u8; 16] = b"OQSCRPKG00000002";
+const MAGIC: &[u8; 16] = b"OQSCRPKG00000003";
 const FOOTER_LEN: u64 = 24;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -33,7 +35,6 @@ struct ScreenSaverManifest {
     version: u32,
     export_id: String,
     name: String,
-    application_path: String,
     project_json: String,
     renderer_node_id: String,
     exposed_inputs: Vec<ScreenSaverExposedInput>,
@@ -71,18 +72,30 @@ pub fn prepare() -> Option<PreparedScreenSaver> {
         .iter()
         .position(|arg| arg == "--open-quartz-screen-saver-package")?;
     let package_path = PathBuf::from(args.get(marker + 1)?);
-    let manifest = read_manifest(&package_path).ok()?;
-    if manifest.version != 2 {
-        return None;
-    }
-    let mode = parse_mode(
+    prepare_package(
+        &package_path,
         args.iter()
             .skip(marker + 2)
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect(),
-    );
-    let settings_root = settings_root(&manifest.export_id).ok()?;
-    Some(PreparedScreenSaver {
+    )
+    .ok()
+}
+
+pub fn prepare_package(
+    package_path: &Path,
+    args: Vec<String>,
+) -> Result<PreparedScreenSaver, String> {
+    let manifest = read_manifest(package_path)?;
+    if manifest.version != 3 {
+        return Err(format!(
+            "Unsupported OpenQuartz screen saver version {}",
+            manifest.version
+        ));
+    }
+    let mode = parse_mode(args);
+    let settings_root = settings_root(&manifest.export_id)?;
+    Ok(PreparedScreenSaver {
         settings_root,
         mode,
         manifest,
@@ -248,6 +261,7 @@ fn read_settings(root: &Path) -> Result<HashMap<String, String>, String> {
 
 #[cfg(windows)]
 fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<(), String> {
+    validate_minimum_profile(&request.project_json)?;
     let output = PathBuf::from(&request.output_path);
     if output
         .extension()
@@ -268,10 +282,9 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
             .as_nanos(),
     );
     let manifest = ScreenSaverManifest {
-        version: 2,
+        version: 3,
         export_id,
         name: request.name,
-        application_path: application_binary()?.to_string_lossy().into_owned(),
         project_json: request.project_json,
         renderer_node_id: request.renderer_node_id,
         exposed_inputs: request.exposed_inputs,
@@ -281,6 +294,38 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
 }
 
 #[cfg(windows)]
+fn validate_minimum_profile(project_json: &str) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(project_json)
+        .map_err(|error| format!("Invalid screen saver project JSON: {error}"))?;
+    let graph_value = value.get("graph").unwrap_or(&value);
+    let graph: Graph = serde_json::from_value(graph_value.clone())
+        .map_err(|error| format!("Invalid screen saver graph: {error}"))?;
+    let unsupported = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let capability = if node.node_type == NodeType::Onnx {
+                Some("ONNX")
+            } else if node.node_type == NodeType::Input
+                && node.data.input_mode == Some(InputMode::Video)
+            {
+                Some("video")
+            } else {
+                None
+            };
+            capability.map(|capability| format!("{} ({capability})", node.data.label))
+        })
+        .collect::<Vec<_>>();
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "This graph requires screen saver capability profiles that are not packaged yet: {}",
+            unsupported.join(", ")
+        ))
+    }
+}
+
 fn write_package(stub: &Path, output: &Path, manifest: &[u8]) -> Result<(), String> {
     let temporary = output.with_extension("scr.tmp");
     let mut destination = File::create(&temporary).map_err(|error| error.to_string())?;
@@ -301,20 +346,6 @@ fn write_package(stub: &Path, output: &Path, manifest: &[u8]) -> Result<(), Stri
         fs::remove_file(output).map_err(|error| error.to_string())?;
     }
     fs::rename(&temporary, output).map_err(|error| error.to_string())
-}
-
-#[cfg(windows)]
-fn application_binary() -> Result<PathBuf, String> {
-    let current = std::env::current_exe().map_err(|error| error.to_string())?;
-    if !cfg!(debug_assertions) {
-        return Ok(current);
-    }
-    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/app.exe");
-    if release.is_file() {
-        Ok(release)
-    } else {
-        Err("Screen saver export from a development build requires src-tauri/target/release/app.exe".to_owned())
-    }
 }
 
 #[cfg(windows)]
@@ -388,5 +419,51 @@ mod tests {
     fn rejects_unsafe_export_ids() {
         assert!(settings_root("safe-id_1").is_ok());
         assert!(settings_root("../unsafe").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_unpacked_screen_saver_capabilities_before_export() {
+        let graph = serde_json::json!({
+            "nodes": [{
+                "id": "onnx",
+                "type": "onnx",
+                "position": { "x": 0.0, "y": 0.0 },
+                "data": {
+                    "type": "onnx", "label": "Detector", "shaderCode": "",
+                    "inputs": [], "outputs": [], "uniforms": {}
+                }
+            }],
+            "edges": []
+        });
+        let error = validate_minimum_profile(&graph.to_string()).unwrap_err();
+        assert!(error.contains("Detector (ONNX)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn writes_a_self_contained_version_three_package() {
+        let root = std::env::temp_dir().join(format!(
+            "open-quartz-screen-saver-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let stub = root.join("host.exe");
+        let package = root.join("sample.scr");
+        fs::write(&stub, b"native-host").unwrap();
+        let manifest = ScreenSaverManifest {
+            version: 3,
+            export_id: "test-export".to_owned(),
+            name: "Test".to_owned(),
+            project_json: "{\"nodes\":[],\"edges\":[]}".to_owned(),
+            renderer_node_id: "renderer".to_owned(),
+            exposed_inputs: Vec::new(),
+        };
+        write_package(&stub, &package, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let decoded = read_manifest(&package).unwrap();
+        assert_eq!(decoded.version, 3);
+        assert_eq!(decoded.project_json, manifest.project_json);
+        assert_eq!(&fs::read(&package).unwrap()[..11], b"native-host");
+        fs::remove_dir_all(root).unwrap();
     }
 }

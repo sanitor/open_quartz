@@ -1,5 +1,5 @@
-use open_quartz::ffi::SdkErrorCode;
 use open_quartz::runtime::CompositionClock;
+use open_quartz::SdkErrorCode;
 
 #[test]
 fn composition_clock_freezes_pause_and_resets_stop_without_deadline_drift() {

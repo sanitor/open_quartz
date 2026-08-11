@@ -13,12 +13,18 @@ import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
 import type { FrameInputs } from './compositor';
 import { WebGPUBackend, type RenderTarget, type TextureHandle } from './gpu/WebGPUBackend';
-import { compileWgslShader, validateWgslShader, type CompiledShader } from './gpu/wgslCompiler';
+import {
+  compileWgslShader,
+  materializeWgslShader,
+  validateWgslShader,
+  type CanonicalCompiledShader,
+  type CompiledShader,
+} from './gpu/wgslCompiler';
 import { topologicalSort } from './graphExecutor';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
 import { DEFAULT_ONNX_MODEL_ID as _DEFAULT_ONNX_MODEL_ID } from '../catalog/onnxRegistry';
-import { modelManager } from '../store/helpers';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
+import { modelManager } from '../store/helpers';
 import { OnnxInferenceSession, runSuperResolution, runBackgroundRemoval, runDepthEstimation, runGenericImageToImage, runDetection, runSegmentation } from './onnx/inference';
 import { COCO_CLASSES } from './onnx/yoloDetectionPostprocess';
 import { drawDetectionOverlay, drawSegmentationOverlay } from './onnx/overlay';
@@ -34,6 +40,23 @@ type TextureSource =
 const BUILTIN_UNIFORMS = new Set([
   'iTime', 'iTimeDelta', 'iFrame', 'iDate', 'iMouse', 'iResolution', 'previousFrame',
 ]);
+
+export interface CanonicalExecutionPlan {
+  revision: number;
+  sortedIds: string[];
+  nodes: Array<{
+    id: string;
+    nodeType: ShaderNodeData['type'];
+    upstream: Record<string, string>;
+    builtinPorts: string[];
+    target: { width: number; height: number; float: boolean } | null;
+    shader: CanonicalCompiledShader | null;
+    validationErrors: Array<{ message: string; line: number; column: number }>;
+    feedback: boolean;
+  }>;
+  outputNodes: string[];
+  cycle: boolean;
+}
 
 export interface WebGPUExecutionPlan {
   sortedIds: string[];
@@ -64,6 +87,7 @@ export interface RuntimeWorkCommand {
   kind: string;
   outputPortId?: string;
   uniforms: Record<string, number[]>;
+  scalarOutput?: number;
   feedbackReadIndex?: number;
   feedbackWriteIndex?: number;
   clearFeedback: boolean;
@@ -150,6 +174,7 @@ export class WebGPUExecutionEngine {
     onOnnxComplete?: () => void,
     prevPlan?: WebGPUExecutionPlan | null,
     onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void,
+    canonicalPlan?: CanonicalExecutionPlan,
   ): WebGPUExecutionPlan | null {
     if (!this.backend) return null;
     const device = this.backend.device;
@@ -180,9 +205,17 @@ export class WebGPUExecutionEngine {
         break;
       }
     }
+    const canonicalNodes = new Map(
+      canonicalPlan?.nodes.map((node) => [node.id, node]) ?? [],
+    );
+    const canonicalTarget = canonicalPlan?.nodes.find((node) => node.target)?.target;
+    if (canonicalTarget) {
+      defaultW = canonicalTarget.width;
+      defaultH = canonicalTarget.height;
+    }
 
     this.backend.setSize(defaultW, defaultH);
-    const sortedIds = topologicalSort(nodes, edges);
+    const sortedIds = canonicalPlan?.sortedIds ?? topologicalSort(nodes, edges);
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const textureSources = new Map<string, TextureSource>();
     const targets = new Map<string, RenderTarget>();
@@ -193,6 +226,16 @@ export class WebGPUExecutionEngine {
     for (const nodeId of sortedIds) {
       const node = nodeMap.get(nodeId);
       if (!node) continue;
+      const canonicalNode = canonicalNodes.get(nodeId);
+      const upstreamMap = new Map<string, string>(
+        canonicalNode ? Object.entries(canonicalNode.upstream) : [],
+      );
+      if (!canonicalNode) {
+        for (const edge of edges.filter((candidate) => candidate.target === nodeId)) {
+          const port = node.data.inputs.find((candidate) => candidate.id === edge.targetHandle);
+          if (port) upstreamMap.set(port.label, edge.source);
+        }
+      }
 
 
       // Input nodes
@@ -215,23 +258,11 @@ export class WebGPUExecutionEngine {
 
       // Math nodes
       if (node.data.type === 'math') {
-        const upstreamEdges = edges.filter((e) => e.target === nodeId);
-        const mathUpstream = new Map<string, string>();
-        for (const edge of upstreamEdges) {
-          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-          if (port) mathUpstream.set(port.label, edge.source);
-        }
-        upstreamSamplerBindings.set(nodeId, mathUpstream);
+        upstreamSamplerBindings.set(nodeId, upstreamMap);
         continue;
       }
 
       if (node.data.type === 'renderer') {
-        const upstreamEdges = edges.filter((e) => e.target === nodeId);
-        const upstreamMap = new Map<string, string>();
-        for (const edge of upstreamEdges) {
-          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-          if (port) upstreamMap.set(port.label, edge.source);
-        }
         upstreamSamplerBindings.set(nodeId, upstreamMap);
         const sourceId = upstreamMap.values().next().value;
         if (sourceId) {
@@ -245,12 +276,6 @@ export class WebGPUExecutionEngine {
       }
 
       if (node.data.type === 'onnx') {
-        const upstreamEdges = edges.filter((e) => e.target === nodeId);
-        const upstreamMap = new Map<string, string>();
-        for (const edge of upstreamEdges) {
-          const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-          if (port) upstreamMap.set(port.label, edge.source);
-        }
         upstreamSamplerBindings.set(nodeId, upstreamMap);
         continue;
       }
@@ -258,35 +283,27 @@ export class WebGPUExecutionEngine {
       // Shader / constant nodes → compile WGSL
       if (node.data.type !== 'shader' && node.data.type !== 'constant') continue;
 
-      const upstreamEdges = edges.filter((e) => e.target === nodeId);
-      const upstreamMap = new Map<string, string>();
       const upstreamScalarValues = new Map<string, unknown>();
-      const connectedPorts = new Set<string>();
-
-      for (const edge of upstreamEdges) {
-        const port = node.data.inputs.find((p) => p.id === edge.targetHandle);
-        if (!port) continue;
-        connectedPorts.add(port.label);
-        upstreamMap.set(port.label, edge.source);
-        if (port.dataType !== 'sampler2D' && port.dataType !== 'samplerCube') {
-          const srcNode = nodeMap.get(edge.source);
-          if (srcNode?.data.type === 'input') {
-            const srcLabel = srcNode.data.inputs[0]?.label;
-            const v = srcNode.data.uniforms?.[srcLabel ?? ''] ?? port.defaultValue;
-            upstreamScalarValues.set(port.label, v);
-          } else if (srcNode?.data.type === 'math') {
-            upstreamScalarValues.set(port.label, 0);
-          }
+      const connectedPorts = new Set(upstreamMap.keys());
+      for (const [portLabel, sourceNodeId] of upstreamMap) {
+        const port = node.data.inputs.find((candidate) => candidate.label === portLabel);
+        if (!port || port.dataType === 'sampler2D' || port.dataType === 'samplerCube') continue;
+        const srcNode = nodeMap.get(sourceNodeId);
+        if (srcNode?.data.type === 'input') {
+          const srcLabel = srcNode.data.inputs[0]?.label;
+          upstreamScalarValues.set(port.label, srcNode.data.uniforms?.[srcLabel ?? ''] ?? port.defaultValue);
+        } else if (srcNode?.data.type === 'math') {
+          upstreamScalarValues.set(port.label, 0);
         }
       }
 
-      const builtin = new Set<string>();
-      for (const port of node.data.inputs) {
-        if (connectedPorts.has(port.label)) continue;
-        if (BUILTIN_UNIFORMS.has(port.label)) {
-          builtin.add(port.label);
-        }
-      }
+      const builtin = canonicalNode
+        ? new Set(canonicalNode.builtinPorts)
+        : new Set(
+          node.data.inputs
+            .filter((port) => !connectedPorts.has(port.label) && BUILTIN_UNIFORMS.has(port.label))
+            .map((port) => port.label),
+        );
 
       // Detect which texture inputs come from video nodes (for zero-copy external textures)
       const videoInputs = new Set<string>();
@@ -298,15 +315,26 @@ export class WebGPUExecutionEngine {
       }
 
       try {
-        const outW = node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW;
-        const outH = node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH;
-        const isFloat = node.data.outFormat === 'rgba32f' || node.data.outFormat === 'rg32f' || node.data.outFormat === 'r32f';
-
+        const outW = canonicalNode?.target?.width
+          ?? (node.data.autoSize === false ? ((node.data.width as number) || defaultW) : defaultW);
+        const outH = canonicalNode?.target?.height
+          ?? (node.data.autoSize === false ? ((node.data.height as number) || defaultH) : defaultH);
+        const isFloat = canonicalNode?.target?.float
+          ?? (node.data.outFormat === 'rgba32f' || node.data.outFormat === 'rg32f' || node.data.outFormat === 'r32f');
         const shaderCode = node.data.shaderTemplateId
           ? (SHADER_TEMPLATES.get(node.data.shaderTemplateId)?.code ?? node.data.shaderCode)
           : node.data.shaderCode;
-
-        const compiled = compileWgslShader(device, shaderCode, node.data.inputs, upstreamMap, 'rgba8unorm', videoInputs);
+        if (canonicalNode?.validationErrors.length) {
+          onNodeError?.(
+            nodeId,
+            canonicalNode.validationErrors
+              .map((error) => `Line ${error.line}: ${error.message}`)
+              .join('\n'),
+          );
+        }
+        const compiled = canonicalNode?.shader
+          ? materializeWgslShader(device, canonicalNode.shader)
+          : compileWgslShader(device, shaderCode, node.data.inputs, upstreamMap, 'rgba8unorm', videoInputs);
 
         if (compiled.needsFeedback) {
           const prevFb = prevPlan?.feedbackTargets.get(nodeId);
@@ -359,13 +387,15 @@ export class WebGPUExecutionEngine {
       }
     }
 
-    const rendererNodes = nodes.filter((n) => n.data.type === 'renderer').map((n) => n.id);
-    const outputNodes = rendererNodes.length > 0
-      ? rendererNodes
-      : nodes
-        .filter((n) => n.data.type === 'shader' || n.data.type === 'constant' || n.data.type === 'renderer' || n.data.type === 'onnx')
-        .filter((n) => !edges.some((e) => e.source === n.id))
-        .map((n) => n.id);
+    const outputNodes = canonicalPlan?.outputNodes ?? (() => {
+      const rendererNodes = nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id);
+      return rendererNodes.length > 0
+        ? rendererNodes
+        : nodes
+          .filter((node) => node.data.type === 'shader' || node.data.type === 'constant' || node.data.type === 'renderer' || node.data.type === 'onnx')
+          .filter((node) => !edges.some((edge) => edge.source === node.id))
+          .map((node) => node.id);
+    })();
 
     return {
       sortedIds, nodeMap, edges, shaders,

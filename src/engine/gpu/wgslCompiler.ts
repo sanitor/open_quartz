@@ -36,6 +36,25 @@ export interface CompiledShader {
   previousFrameBinding: number | null;
 }
 
+export interface CanonicalCompiledShader {
+  fullFragmentCode: string;
+  preambleLines: number;
+  bindings: Array<{
+    binding: number;
+    kind: 'texture' | 'externalTexture' | 'sampler' | 'uniform';
+    name: string;
+    wgslType?: string;
+  }>;
+  upstreamSamplers: Record<string, string>;
+  textureBindings: Record<string, number>;
+  externalTextureBindings: Record<string, number>;
+  uniformBindings: Record<string, number>;
+  previousFrameBinding: number | null;
+  needsFeedback: boolean;
+  targetFormat: string;
+  vertexShader: string;
+}
+
 // ---------------------------------------------------------------------------
 // Compiler
 // ---------------------------------------------------------------------------
@@ -200,6 +219,58 @@ export function compileWgslShader(
   return {
     pipeline, bindGroupLayout, upstreamSamplers, preambleLines, needsFeedback,
     textureBindings, externalTextureBindings, uniformBindings, previousFrameBinding,
+  };
+}
+
+/** Materialize the canonical Rust shader descriptor into browser GPU objects. */
+export function materializeWgslShader(
+  device: GPUDevice,
+  descriptor: CanonicalCompiledShader,
+): CompiledShader {
+  const entries: GPUBindGroupLayoutEntry[] = descriptor.bindings.map((binding) => {
+    const entry: GPUBindGroupLayoutEntry = {
+      binding: binding.binding,
+      visibility: GPUShaderStage.FRAGMENT,
+    };
+    if (binding.kind === 'texture') {
+      entry.texture = {
+        sampleType: 'float',
+        viewDimension: binding.wgslType?.includes('cube') ? 'cube' : '2d',
+      };
+    } else if (binding.kind === 'externalTexture') {
+      entry.externalTexture = {};
+    } else if (binding.kind === 'sampler') {
+      entry.sampler = { type: 'filtering' };
+    } else {
+      entry.buffer = { type: 'uniform' };
+    }
+    return entry;
+  });
+  const bindGroupLayout = device.createBindGroupLayout({ entries });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+  const pipeline = device.createRenderPipeline({
+    layout: pipelineLayout,
+    vertex: {
+      module: device.createShaderModule({ code: descriptor.vertexShader }),
+      entryPoint: 'main',
+    },
+    fragment: {
+      module: device.createShaderModule({ code: descriptor.fullFragmentCode }),
+      entryPoint: 'main',
+      targets: [{ format: descriptor.targetFormat as GPUTextureFormat }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  return {
+    pipeline,
+    bindGroupLayout,
+    upstreamSamplers: new Map(Object.entries(descriptor.upstreamSamplers)),
+    preambleLines: descriptor.preambleLines,
+    needsFeedback: descriptor.needsFeedback,
+    textureBindings: new Map(Object.entries(descriptor.textureBindings)),
+    externalTextureBindings: new Map(Object.entries(descriptor.externalTextureBindings)),
+    uniformBindings: new Map(Object.entries(descriptor.uniformBindings)),
+    previousFrameBinding: descriptor.previousFrameBinding,
   };
 }
 

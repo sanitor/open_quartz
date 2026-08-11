@@ -109,6 +109,9 @@ class FakeRuntime {
     this.subscriptions = this.subscriptions.filter((item) => JSON.parse(item).subscriptionId !== subscriptionId);
   }
   publishOutput(_stateJson: string): void {}
+  executionPlan(): string {
+    return JSON.stringify({ revision: 1, sortedIds: [], nodes: [], outputNodes: [], cycle: false });
+  }
   drainDeliveries(): string { return JSON.stringify({ deliveries: [], invalidations: [] }); }
   pause(): void {}
   resume(): void {}
@@ -159,6 +162,13 @@ describe('WasmSdkClient', () => {
     const client = await WasmSdkClient.load(async () => fakeBindings());
     const runtime = client.createRuntime();
     expect(runtime.setGraph([], [])).toBe(1);
+    expect(runtime.executionPlan()).toEqual({
+      revision: 1,
+      sortedIds: [],
+      nodes: [],
+      outputNodes: [],
+      cycle: false,
+    });
     runtime.subscribeOutput({
       subscriptionId: 'math',
       output: { nodeId: 'math-1', portId: 'result' },

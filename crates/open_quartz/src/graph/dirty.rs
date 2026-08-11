@@ -38,6 +38,14 @@ impl DirtySet {
         }
     }
 
+    pub fn mark_dependents_dirty(&mut self, node_id: &str) {
+        if let Some(children) = self.dependents.get(node_id).cloned() {
+            for child in children {
+                self.mark_dirty(&child);
+            }
+        }
+    }
+
     pub fn mark_all<I>(&mut self, node_ids: I)
     where
         I: IntoIterator<Item = String>,

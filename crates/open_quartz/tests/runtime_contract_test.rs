@@ -1,9 +1,10 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use open_quartz::engine::{ExecutionCommand, ExecutionPlan, GpuFacade};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 struct RecordingBackend {
-    registered: Rc<RefCell<Vec<u64>>>,
-    removed: Rc<RefCell<Vec<u64>>>,
+    registered: Arc<AtomicU64>,
+    removed: Arc<AtomicU64>,
 }
 
 impl open_quartz::runtime::HostBackend for RecordingBackend {
@@ -17,8 +18,8 @@ impl open_quartz::runtime::HostBackend for RecordingBackend {
         &mut self,
         _descriptor: &ResourceDescriptor,
         handle: u64,
-    ) -> Result<(), open_quartz::ffi::SdkError> {
-        self.registered.borrow_mut().push(handle);
+    ) -> Result<(), open_quartz::SdkError> {
+        self.registered.store(handle, Ordering::Release);
         Ok(())
     }
 
@@ -26,17 +27,16 @@ impl open_quartz::runtime::HostBackend for RecordingBackend {
         &mut self,
         _resource_id: &str,
         handle: u64,
-    ) -> Result<(), open_quartz::ffi::SdkError> {
-        self.removed.borrow_mut().push(handle);
+    ) -> Result<(), open_quartz::SdkError> {
+        self.removed.store(handle, Ordering::Release);
         Ok(())
     }
 
-    fn present(&mut self, _set: &PresentationSet) -> Result<(), open_quartz::ffi::SdkError> {
+    fn present(&mut self, _set: &PresentationSet) -> Result<(), open_quartz::SdkError> {
         Ok(())
     }
 }
 
-use open_quartz::ffi::EngineState;
 use open_quartz::runtime::{
     public_surface_manifest, AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy,
     FrameStamp, HostBackend, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
@@ -44,6 +44,7 @@ use open_quartz::runtime::{
     PresentationSet, ResourceDescriptor, Runtime, RuntimeCapabilities, RuntimeFrameInput, Viewport,
 };
 use open_quartz::types::Graph;
+use open_quartz::EngineState;
 use serde_json::json;
 
 fn stamp(frame: u64) -> FrameStamp {
@@ -240,8 +241,8 @@ fn direct_runtime_client_drives_the_same_public_lifecycle() {
 
 #[test]
 fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
-    let registered = Rc::new(RefCell::new(Vec::new()));
-    let removed = Rc::new(RefCell::new(Vec::new()));
+    let registered = Arc::new(AtomicU64::new(0));
+    let removed = Arc::new(AtomicU64::new(0));
     let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.attach_backend(Box::new(RecordingBackend {
         registered: registered.clone(),
@@ -260,26 +261,41 @@ fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
         runtime.capabilities().data_paths,
         vec![DataPathMode::NativePresent]
     );
-    assert_eq!(registered.borrow().as_slice(), &[99]);
+    assert_eq!(registered.load(Ordering::Acquire), 99);
     assert_eq!(runtime.remove_resource("video").unwrap(), 99);
-    assert_eq!(removed.borrow().as_slice(), &[99]);
+    assert_eq!(removed.load(Ordering::Acquire), 99);
 }
 
 #[test]
 fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
     let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&serde_json::from_value(json!({
-        "nodes": [{
-            "id": "onnx-1",
-            "type": "onnx",
-            "position": { "x": 0.0, "y": 0.0 },
-            "data": {
-                "type": "onnx", "label": "ONNX", "shaderCode": "", "inputs": [],
-                "outputs": [{ "id": "result", "label": "result", "dataType": "json", "direction": "output" }],
-                "uniforms": {}
+        "nodes": [
+            {
+                "id": "onnx-1",
+                "type": "onnx",
+                "position": { "x": 0.0, "y": 0.0 },
+                "data": {
+                    "type": "onnx", "label": "ONNX", "shaderCode": "", "inputs": [],
+                    "outputs": [{ "id": "result", "label": "result", "dataType": "json", "direction": "output" }],
+                    "uniforms": {}
+                }
+            },
+            {
+                "id": "renderer",
+                "type": "renderer",
+                "position": { "x": 100.0, "y": 0.0 },
+                "data": {
+                    "type": "renderer", "label": "Renderer", "shaderCode": "",
+                    "inputs": [{ "id": "input", "label": "input", "dataType": "json", "direction": "input" }],
+                    "outputs": [], "uniforms": {}
+                }
             }
-        }],
-        "edges": []
+        ],
+        "edges": [{
+            "id": "onnx-renderer", "source": "onnx-1", "sourceHandle": "result",
+            "target": "renderer", "targetHandle": "input"
+        }]
     })).unwrap()).unwrap();
     runtime
         .subscribe_output(OutputSubscription {
@@ -291,6 +307,16 @@ fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
             max_height: None,
         })
         .unwrap();
+    runtime.play(0).unwrap();
+    runtime
+        .advance(&RuntimeFrameInput {
+            now_ns: 16,
+            date: [0.0; 4],
+            mouse: [0.0; 4],
+            resolution: [640.0, 360.0, 1.0],
+        })
+        .unwrap();
+    runtime.drain_commands();
     let completion = AsyncCompletionEnvelope {
         node_id: "onnx-1".to_owned(),
         graph_revision: runtime.revision(),
@@ -310,6 +336,22 @@ fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
     let delivered = runtime.drain_deliveries().deliveries.remove(0).state;
     assert_eq!(delivered.evaluation_stamp, completion.input_stamp);
     assert_eq!(delivered.content_stamp, completion.content_stamp);
+    runtime
+        .advance(&RuntimeFrameInput {
+            now_ns: 32,
+            date: [0.0; 4],
+            mouse: [0.0; 4],
+            resolution: [640.0, 360.0, 1.0],
+        })
+        .unwrap();
+    assert_eq!(
+        runtime
+            .drain_commands()
+            .iter()
+            .map(|command| command.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["renderer"]
+    );
     let mut stale = completion;
     stale.graph_revision = 0;
     assert!(runtime.submit_completion(stale).is_err());
@@ -325,16 +367,16 @@ impl HostBackend for FailingRemoveBackend {
         &mut self,
         _: &ResourceDescriptor,
         _: u64,
-    ) -> Result<(), open_quartz::ffi::SdkError> {
+    ) -> Result<(), open_quartz::SdkError> {
         Ok(())
     }
-    fn remove_resource(&mut self, _: &str, _: u64) -> Result<(), open_quartz::ffi::SdkError> {
-        Err(open_quartz::ffi::SdkError::new(
-            open_quartz::ffi::SdkErrorCode::InvalidResource,
+    fn remove_resource(&mut self, _: &str, _: u64) -> Result<(), open_quartz::SdkError> {
+        Err(open_quartz::SdkError::new(
+            open_quartz::SdkErrorCode::InvalidResource,
             "release failed",
         ))
     }
-    fn present(&mut self, _: &PresentationSet) -> Result<(), open_quartz::ffi::SdkError> {
+    fn present(&mut self, _: &PresentationSet) -> Result<(), open_quartz::SdkError> {
         Ok(())
     }
 }
@@ -355,4 +397,145 @@ fn failed_backend_release_keeps_runtime_resource_owned() {
     assert!(runtime.remove_resource("owned").is_err());
     assert!(runtime.remove_resource("owned").is_err());
     assert!(runtime.dispose().is_err());
+}
+
+#[test]
+fn canonical_runtime_is_send_and_selects_native_video_bindings() {
+    fn assert_send<T: Send>() {}
+    assert_send::<Runtime>();
+
+    let graph: Graph = serde_json::from_value(json!({
+        "nodes": [
+            {
+                "id": "video",
+                "type": "input",
+                "position": { "x": 0.0, "y": 0.0 },
+                "data": {
+                    "type": "input",
+                    "label": "Video",
+                    "shaderCode": "",
+                    "inputs": [],
+                    "outputs": [{
+                        "id": "video_out",
+                        "label": "output",
+                        "dataType": "sampler2D",
+                        "direction": "output"
+                    }],
+                    "uniforms": {},
+                    "inputMode": "video",
+                    "inputDataType": "sampler2D"
+                }
+            },
+            {
+                "id": "shader",
+                "type": "shader",
+                "position": { "x": 1.0, "y": 0.0 },
+                "data": {
+                    "type": "shader",
+                    "label": "Copy",
+                    "shaderCode": "@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { return textureSample(inputImage, inputImageSampler, uv); }",
+                    "inputs": [{
+                        "id": "shader_in",
+                        "label": "inputImage",
+                        "dataType": "sampler2D",
+                        "direction": "input"
+                    }],
+                    "outputs": [],
+                    "uniforms": {}
+                }
+            }
+        ],
+        "edges": [{
+            "id": "video-to-shader",
+            "source": "video",
+            "sourceHandle": "video_out",
+            "target": "shader",
+            "targetHandle": "shader_in"
+        }]
+    }))
+    .unwrap();
+
+    let mut browser = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    browser.set_graph(&graph).unwrap();
+    let browser_shader = browser
+        .execution_plan()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|node| node.id == "shader")
+        .unwrap()
+        .shader
+        .as_ref()
+        .unwrap();
+    assert!(browser_shader
+        .external_texture_bindings
+        .contains_key("inputImage"));
+
+    let mut native = Runtime::new_native(RuntimeCapabilities { data_paths: vec![] });
+    native.set_graph(&graph).unwrap();
+    let native_shader = native
+        .execution_plan()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|node| node.id == "shader")
+        .unwrap()
+        .shader
+        .as_ref()
+        .unwrap();
+    assert!(native_shader.external_texture_bindings.is_empty());
+    assert!(native_shader.texture_bindings.contains_key("inputImage"));
+}
+
+struct RecordingGpuFacade(Arc<AtomicU64>);
+
+impl GpuFacade for RecordingGpuFacade {
+    fn execute(
+        &mut self,
+        _plan: &ExecutionPlan,
+        commands: &[ExecutionCommand],
+    ) -> Result<(), open_quartz::SdkError> {
+        self.0.store(commands.len() as u64, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[test]
+fn runtime_dispatches_engine_work_through_the_gpu_facade() {
+    let graph: Graph = serde_json::from_value(json!({
+        "nodes": [{
+            "id": "shader",
+            "type": "shader",
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": {
+                "type": "shader",
+                "label": "Color",
+                "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
+                "inputs": [],
+                "outputs": [],
+                "uniforms": {}
+            }
+        }],
+        "edges": []
+    }))
+    .unwrap();
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    runtime.set_graph(&graph).unwrap();
+    runtime.play(100).unwrap();
+    runtime
+        .advance(&RuntimeFrameInput {
+            now_ns: 116,
+            date: [0.0; 4],
+            mouse: [0.0; 4],
+            resolution: [640.0, 360.0, 1.0],
+        })
+        .unwrap();
+    let commands = runtime.drain_commands();
+    let observed = Arc::new(AtomicU64::new(0));
+    let mut facade = RecordingGpuFacade(observed.clone());
+
+    runtime.execute_gpu(&mut facade, &commands).unwrap();
+
+    assert_eq!(observed.load(Ordering::Acquire), commands.len() as u64);
+    assert!(!commands.is_empty());
 }

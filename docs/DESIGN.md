@@ -775,16 +775,16 @@ Rust 不是一个 Cargo workspace 内的多个业务 crate；当前是三个独�
 |---|---|---|
 | `open_quartz` | `crates/open_quartz` | 可复用 Rust SDK、WASM binding、graph/engine/GPU/ONNX primitives |
 | `app` | `src-tauri` | Tauri shell、native runtime 组合、FFmpeg、WebView2、screen saver export |
-| `open-quartz-screensaver-stub` | `crates/open-quartz-screensaver-stub` | 轻量 `.scr` launcher/config host |
+| `open-quartz-screensaver-stub` | `crates/open-quartz-screensaver-stub` | 自包含 Win32 `.scr` runtime/config host；直接组合共享 Runtime + wgpu executor |
 
 依赖方向：
 
 ```mermaid
 flowchart LR
     App[app / src-tauri] --> SDK[open_quartz]
-    Stub[screen saver stub] -. launches installed app .-> App
+    Stub[screen saver native host] --> SDK
     SDK -. no dependency .-> App
-    Stub -. no Rust link dependency .-> SDK
+    SDK -. no dependency .-> Stub
 ```
 
 这里的“分仓”主要指 `open_quartz` crate 内模块分层，而不是 Cargo crate 间的强制编译边界。模块可见性较宽，靠文档约束不足以阻止逆向依赖。
@@ -933,18 +933,18 @@ flowchart TD
 
 ### 8.3 结构风险在目标架构下的状态与防回退措施
 
-新架构图本身不会自动消除风险。A、B 在目标结构完整落地后应被删除；C、D 仍需要协议和编译边界才能消除。迁移期间四项风险都仍然存在。
+迁移已消除 A、B 的生产执行分叉和已知 Rust 逆向依赖；preview、capture、Math、Browser/Native ONNX logical output 均先进入 `OutputDeliveryBatch`，宿主 callback 只保留 delivery projection。
 
-| 风险 | 当前 | 目标架构落地后 | 是否会复发 |
-|---|---|---|---|
-| A. Native 第二个 Runtime | 存在 | 应消除 | host adapter 重新拥有 clock/scheduler/resource policy 时会复发 |
-| B. Browser 第二份 execution semantics | 存在 | 应消除 | Web adapter 重新解析 graph、topology、dirty/feedback 时会复发 |
-| C. output contract 未统一 | 存在 | 仅靠 facade 设计不能消除 | 新增 host-specific callback/event 时会复发 |
-| D. 同 crate 模块环 | 存在 | 逻辑图不能消除 | 没有编译边界时随时会复发 |
+| 风险 | 当前 | 防回退 |
+|---|---|---|
+| A. Native 第二个 Runtime | 已消除：Tauri host 持有 canonical `Runtime`，只组合平台资源 | 禁止 host 自建 clock/scheduler/revision policy |
+| B. Browser 第二份 execution semantics | 已消除：Browser 从 WASM 读取 canonical `ExecutionPlan`/work batch | Browser adapter 不得自行 topology sort 或编译 graph contract |
+| C. output contract 未统一 | 已收敛 output value/preview/capture：宿主 callback 由 `OutputDeliveryBatch` 投影；frame heartbeat 只报告 cadence | 新 transport 必须先进入 `OutputSubscription` |
+| D. 同 crate 模块环 | 已消除已知 `runtime → ffi`、`wgsl → gpu` 逆向依赖 | 编译边界测试和模块图审计 |
 
 #### A. Native runtime 是第二个 runtime
 
-当前 `src-tauri/src/native_runtime.rs` 同时拥有 clock、worker、graph/resource reconciliation、video/ONNX lifecycle、output selection 和 presentation policy，超出薄 adapter 边界。
+`src-tauri/src/native_runtime.rs` 仍拥有 worker、video/ONNX resource 和 platform presentation orchestration，但 lifecycle、clock、scheduler、revision/generation、dirty propagation、async completion 与 output registry 已由共享 `Runtime` 唯一拥有。
 
 目标结构通过以下不变量消除：
 
@@ -961,7 +961,7 @@ Other native host ┘
 
 #### B. Browser 仍有第二份 execution semantics
 
-当前 Rust `Runtime.advance()` 生成 `ExecutionCommand`，但 TypeScript `WebGPUExecutionEngine.prepare()` 仍处理 topology、plan、resource 和 ONNX policy。
+Browser `Runtime.advance()` 生成 canonical `ExecutionCommand`，`Runtime.executionPlan()` 提供 topology、port binding、target 与已编译 WGSL descriptor；TypeScript 只 materialize WebGPU 对象并执行 work batch。
 
 目标结构通过以下不变量消除：
 
@@ -970,11 +970,11 @@ Other native host ┘
 - Browser backend 的输入必须是 typed work/resource descriptor，不能接收完整 Zustand Store，也不能导入 `src/store`、node catalog 或自行拓扑排序。
 - 同一 graph 的 Browser/Native work contract test 必须比较 node order、port binding、target descriptor、generation 和 completion stamp。
 
-#### C. 通用 output contract 尚未成为生产观察边界
+#### C. 通用 output contract 是生产观察边界
 
-`OutputKey/OutputState/OutputSubscription/OutputDeliveryBatch` 已存在，但生产仍依赖 `onFrame/onOutput/onOutputSize/onOutputData` 和 `native-runtime-*` 特例。
+`OutputKey/OutputState/OutputSubscription/OutputDeliveryBatch` 负责 preview、capture、Math 和 ONNX logical output。Browser Worker 与 Native Tauri event 在 drain 后投影既有 UI callback；callback 不再是 output 状态来源。
 
-避免方式：
+防回退规则：
 
 - Runtime 只发布 `OutputDeliveryBatch`、structured event 和 presentation delivery。
 - Worker message、Tauri event、C/WASM callback 只是同一 delivery schema 的 transport 编码，不能新增宿主专属 output semantics。
@@ -983,7 +983,7 @@ Other native host ┘
 
 #### D. 同 crate 模块环隐藏分层错误
 
-当前 `runtime ↔ ffi`、`wgsl ↔ gpu` 在单 crate 内可编译，架构图无法阻止逆向依赖。
+已知 `runtime -> ffi`、`wgsl -> gpu` 逆向依赖已移除；剩余风险来自同 crate 宽可见性，必须继续用 dependency policy 与最终 Cargo 编译边界防回退。
 
 避免方式：
 
@@ -1095,77 +1095,48 @@ open_quartz_bindings
 
 不要先机械拆 crate；当前环依赖未清除时拆分只会制造 facade 和 re-export。
 
-### 专项 TODO：自包含 Windows Screen Saver Host
+### 专项状态：自包含 Windows Screen Saver Host
 
-**当前实现（必须替换）**：
-
-```text
-exported .scr launcher
-  -> manifest.application_path
-  -> 启动已安装的 OpenQuartz Tauri app
-  -> ScreenSaverApp / PipelineService / NativePipelineRuntime
-```
-
-当前 `open-quartz-screensaver-stub` 只是 Win32 launcher/config host，没有链接 `open_quartz`；导出包依赖原安装路径，移动或卸载 OpenQuartz 后不能独立运行。这是过渡实现，不是目标架构。
-
-**目标实现**：
+当前最小 capability profile 已切换为真正的 native host：
 
 ```text
 Windows Screen Saver Control
-  -> self-contained .scr native host
-  -> shared Rust Runtime
-  -> Engine
-  -> gpu/media/inference/presentation facades
-  -> native platform implementations
-  -> screen saver HWND / preview parent HWND
+  -> self-contained .scr
+  -> Win32 /s or /p child window
+  -> open_quartz::Runtime
+  -> Engine -> GpuExecutor -> wgpu DX12
+  -> bounded RGBA presentation through Win32 GDI
 ```
 
-`.scr` 直接读取内嵌 graph/package、初始化共享 Rust kernel 和 native backend、创建输出窗口并运行；不得启动 Tauri、WebView、React、`PipelineService` 或已安装的 OpenQuartz。
+`.scr` 直接读取自身尾部的 version-3 manifest，初始化共享 Rust kernel 和 GPU executor，并拥有窗口、Runtime、GPU device 与 presenter 生命周期；不启动 Tauri、WebView、React、`PipelineService` 或已安装的 OpenQuartz。
 
-#### 前置条件
+#### 已完成
 
-- [ ] 完成 Phase 1：解除 `runtime ↔ ffi`、`wgsl ↔ gpu` 等逆向依赖。
-- [ ] 完成 Phase 2：Native 使用 canonical `Runtime`，不再由 Tauri `NativeGpuRuntime` 持有第二套 scheduler/policy。
-- [ ] 将可复用 native backend 从 `src-tauri` 下沉到共享 Rust module/crate：wgpu executor、native media、native inference、native presenter、resource bootstrap。
-- [ ] 定义不依赖 Tauri/WebView 的 native window/surface presenter contract。
+- [x] 解除 `runtime -> ffi`、`wgsl -> gpu` 逆向依赖；Tauri Native 使用 canonical `Runtime`。
+- [x] `open-quartz-screensaver-stub` 直接依赖 `open_quartz`，不依赖 `app` crate。
+- [x] manifest 删除 `application_path`，magic/schema 升级到 version 3；旧包返回明确的版本错误。
+- [x] `/s` 创建全屏 Win32 popup；`/p <HWND>` 创建并嵌入 native child window；`/c [HWND]` 保留纯 Win32 设置流程。
+- [x] package 内嵌 graph manifest、Renderer ID、导出默认值和 exposed resource descriptors。
+- [x] image override 只替换 resource path，不修改 graph topology/semantics。
+- [x] 最小 profile 覆盖 shader、image、math、feedback、renderer；release host 实测 5,167,616 bytes（不含 manifest）。
+- [x] 自动 GPU smoke 直接构造 `Runtime + GpuExecutor` 并验证 2x2 bit-exact 红色输出。
+- [x] package 测试验证 version 3、自身前缀保留、manifest 可回读且不含 `applicationPath`。
 
-#### Host 与 package
+#### 明确未打包的 capability profile
 
-- [ ] 将 `open-quartz-screensaver-stub` 从 launcher 改为真正的 native runtime host，直接依赖共享 Rust Runtime/native backend。
-- [ ] 从 manifest 删除 `application_path`，升级 screen saver package schema/version，并提供旧 package 的明确拒绝信息。
-- [ ] `/s`：直接创建全屏 Win32 host window，按当前显示器物理像素运行选定 Renderer。
-- [ ] `/p <HWND>`：直接把 native child window 嵌入 Windows Screen Saver Control Panel 的 preview parent。
-- [ ] `/c [HWND]`：保留纯 Win32 配置流程和 per-export settings，不启动 renderer/Tauri。
-- [ ] package 内嵌 graph manifest、Renderer 选择和导出默认值；媒体和模型采用显式 resource descriptor，不写入 UI/Tauri state。
-- [ ] package 可移动、可复制，运行不依赖 OpenQuartz 安装目录、注册表安装记录或用户机器上的 `app.exe`。
+- [ ] Video profile：需要把 Tauri 当前 FFmpeg/native decoder adapter 下沉为共享 native media implementation，并定义 DLL/codec payload closure。
+- [ ] ONNX profile：需要定义 ORT/DirectML runtime、模型 payload、provider fallback 与 package closure。
+- [ ] 导出器按 graph 实际节点选择 minimum/video/ONNX profile；当前导出器与 host 均明确拒绝 video/ONNX graph，不静默跳过节点。
+- [ ] native surface presenter：minimum profile 目前使用 GPU readback + GDI；未来共享 DXGI presenter 后可移除逐帧 readback。
 
-#### 能力与体积
+#### 验收状态
 
-- [ ] 定义最小 capability profile：shader、image、math、feedback、renderer，只携带 native host + Rust kernel + wgpu 路径。
-- [ ] 定义 video profile：明确 FFmpeg/native codec 的静态链接、sidecar 或 package payload 策略。
-- [ ] 定义 ONNX profile：明确 ORT/DirectML runtime、模型文件和 provider fallback 的 package 策略。
-- [ ] 导出器按 graph 实际节点计算 capability/resource closure，不为未使用的 video/ONNX 能力打包 runtime。
-- [ ] 删除“完整自包含 `.scr` 固定约 264 KB”的假设；分别记录 host、kernel、video runtime、inference runtime 和资源 payload 体积。
-
-#### 生命周期与数据正确性
-
-- [ ] screen saver host 直接拥有 Runtime、Engine、GPU device、decoder/session 和 presenter 生命周期。
-- [ ] graph revision、node generation、async completion、output delivery 与桌面 Native host 使用同一 contract。
-- [ ] `/s`、`/p` 退出时释放 window/surface、GPU、video、ORT worker、presenter lease 和 resource handle。
-- [ ] native backend capability/fallback 必须可观察；缺失 video/ONNX runtime 时在启动前给出结构化错误，不能静默降级为不运行。
-- [ ] 配置中重新选择的媒体路径只改变 resource descriptor，不改变 graph semantics。
-
-#### 验收
-
-- [ ] 在未安装 OpenQuartz、PATH 中没有 `app.exe` 的干净 Windows 环境运行导出的 `.scr`。
-- [ ] 移动 `.scr` 后 `/s`、`/p`、`/c` 仍可工作。
-- [ ] shader/image graph 在 `/s` 和 `/p <HWND>` 下按目标物理分辨率输出。
-- [ ] video graph 验证 decode、loop、pause/exit 和资源释放。
+- [x] stub 无 `Command::new(app.exe)`、无 Tauri/app 依赖，直接构造共享 Runtime。
+- [x] Rust GPU smoke 覆盖 graph plan、work batch、wgpu submit 和 readback。
+- [x] `/s`、`/p`、`/c` 参数解析与 package version 拒绝有自动测试。
+- [ ] 在未安装 OpenQuartz 的干净 Windows VM 手工验证移动后的 `.scr` `/s`、`/p`、`/c`。
+- [ ] Video graph 验证 decode、loop、pause/exit 和资源释放。
 - [ ] ONNX graph 验证模型加载、provider capability、stale completion 拒绝和下游 GPU continuation。
-- [ ] 自动测试确认 manifest 不再含 `applicationPath`，stub 不再 `Command::new(app.exe)`，screen saver host 直接构造共享 Runtime。
-- [ ] 删除 Tauri `ScreenSaverApp` renderer 启动路径、`application_binary()` 和旧 launcher 兼容代码，不保留双实现。
-
----
 
 ## 11. 性能与正确性不变量
 

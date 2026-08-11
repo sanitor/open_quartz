@@ -16,7 +16,13 @@ use open_quartz::gpu::{
     SharedTextureFrame, TextureFormat,
 };
 use open_quartz::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
-use open_quartz::Engine;
+use open_quartz::runtime::{
+    AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey,
+    OutputPayload, OutputSubscription, OutputTransport, Runtime, RuntimeCapabilities,
+    RuntimeFrameInput,
+};
+use open_quartz::types::{DataType, Graph, NodeType};
+use open_quartz::SdkError;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(windows)]
@@ -58,6 +64,7 @@ struct NativeOnnxCompletion {
     node_id: String,
     revision: u32,
     generation: u32,
+    input_stamp: FrameStamp,
     result: Result<NativeOnnxImageOutput, String>,
 }
 
@@ -294,16 +301,16 @@ static PREVIEW_PERF: LazyLock<Mutex<PreviewPerf>> =
 
 struct NativeGpuRuntime {
     executor: GpuExecutor,
-    engine: Engine,
+    runtime: Runtime,
     output_node_id: Option<String>,
-    started_at: Instant,
-    previous_frame_at: Instant,
+    clock_origin: Instant,
     presentation_started_at: Instant,
-    frame: u64,
     mouse: [f32; 4],
     videos: HashMap<String, NativeVideoSource>,
     onnx_resources: HashMap<String, NativeOnnxResource>,
     onnx_pending: HashSet<String>,
+    onnx_outputs: HashMap<String, Vec<(OutputKey, DataType)>>,
+    onnx_event_subscriptions: HashMap<String, String>,
     onnx_sender: mpsc::Sender<NativeOnnxCompletion>,
     onnx_receiver: mpsc::Receiver<NativeOnnxCompletion>,
     output_events: Vec<NativeOutputEvent>,
@@ -315,6 +322,10 @@ struct NativeGpuRuntime {
     presentation_scaler: GpuPreviewReader,
     #[cfg(windows)]
     shared_texture_enabled: bool,
+}
+
+fn runtime_error(error: SdkError) -> String {
+    error.to_json()
 }
 
 impl NativeGpuRuntime {
@@ -387,16 +398,22 @@ impl NativeGpuRuntime {
         Ok((
             Self {
                 executor,
-                engine: Engine::new_native(),
+                runtime: Runtime::new_native(RuntimeCapabilities {
+                    data_paths: if shared_texture {
+                        vec![DataPathMode::NativePresent]
+                    } else {
+                        vec![DataPathMode::CpuCopy]
+                    },
+                }),
                 output_node_id: None,
-                started_at: now,
-                previous_frame_at: now,
+                clock_origin: now,
                 presentation_started_at: now,
-                frame: 0,
                 mouse: [0.0; 4],
                 videos: HashMap::new(),
                 onnx_resources: HashMap::new(),
                 onnx_pending: HashSet::new(),
+                onnx_outputs: HashMap::new(),
+                onnx_event_subscriptions: HashMap::new(),
                 onnx_sender,
                 onnx_receiver,
                 output_events: Vec::new(),
@@ -414,10 +431,65 @@ impl NativeGpuRuntime {
     }
 
     fn set_graph(&mut self, graph_json: &str) -> Result<u32, String> {
-        let revision = self.engine.set_graph_json(graph_json)?;
+        let graph: Graph = serde_json::from_str(graph_json)
+            .map_err(|error| format!("Invalid native graph JSON: {error}"))?;
+        for subscription_id in self.onnx_event_subscriptions.values() {
+            self.runtime
+                .unsubscribe_output(subscription_id)
+                .map_err(runtime_error)?;
+        }
+        self.onnx_event_subscriptions.clear();
+        self.onnx_outputs = graph
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == NodeType::Onnx)
+            .map(|node| {
+                let outputs = node
+                    .data
+                    .outputs
+                    .iter()
+                    .map(|port| {
+                        (
+                            OutputKey::new(node.id.clone(), port.id.clone()),
+                            port.data_type,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (node.id.clone(), outputs)
+            })
+            .collect();
+        let revision = self.runtime.set_graph(&graph).map_err(runtime_error)?;
+        for (node_id, outputs) in &self.onnx_outputs {
+            let selected = outputs
+                .iter()
+                .find(|(_, data_type)| {
+                    matches!(data_type, DataType::Roi | DataType::Mesh | DataType::Json)
+                })
+                .or_else(|| outputs.first());
+            let Some((output, data_type)) = selected else {
+                continue;
+            };
+            let subscription_id = format!("native-output-{node_id}");
+            self.runtime
+                .subscribe_output(OutputSubscription {
+                    subscription_id: subscription_id.clone(),
+                    output: output.clone(),
+                    delivery: DeliveryPolicy::OnChange,
+                    transport: if matches!(data_type, DataType::Sampler2d | DataType::SamplerCube) {
+                        OutputTransport::Preview
+                    } else {
+                        OutputTransport::Value
+                    },
+                    max_width: None,
+                    max_height: None,
+                })
+                .map_err(runtime_error)?;
+            self.onnx_event_subscriptions
+                .insert(node_id.clone(), subscription_id);
+        }
         let (output_node_id, node_ids) = {
             let plan = self
-                .engine
+                .runtime
                 .execution_plan()
                 .ok_or_else(|| "Native engine did not retain an execution plan".to_owned())?;
             self.executor
@@ -440,9 +512,7 @@ impl NativeGpuRuntime {
         self.output_events
             .retain(|event| node_ids.contains(&event.node_id));
         self.sync_video_nodes()?;
-        self.started_at = Instant::now();
-        self.previous_frame_at = self.started_at;
-        self.frame = 0;
+        self.clock_origin = Instant::now();
         Ok(revision)
     }
 
@@ -453,11 +523,13 @@ impl NativeGpuRuntime {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
-        self.engine.node_generation(node_id)?;
+        self.runtime
+            .node_generation(node_id)
+            .map_err(runtime_error)?;
         self.executor
             .upload_rgba(node_id, rgba, width, height)
             .map_err(|error| error.to_string())?;
-        self.engine.mark_dirty(node_id)
+        self.runtime.mark_dirty(node_id).map_err(runtime_error)
     }
 
     fn remove_texture(&mut self, node_id: &str) {
@@ -512,12 +584,14 @@ impl NativeGpuRuntime {
         node_id: &str,
         config: NativeVideoConfig,
     ) -> Result<NativeVideoInfo, String> {
-        self.engine.node_generation(node_id)?;
+        self.runtime
+            .node_generation(node_id)
+            .map_err(runtime_error)?;
         let source = NativeVideoSource::open(config)?;
         let info = source.info().clone();
         self.videos.insert(node_id.to_owned(), source);
         self.sync_video_nodes()?;
-        self.engine.mark_dirty(node_id)?;
+        self.runtime.mark_dirty(node_id).map_err(runtime_error)?;
         Ok(info)
     }
 
@@ -529,9 +603,9 @@ impl NativeGpuRuntime {
 
     fn sync_video_nodes(&mut self) -> Result<(), String> {
         let node_ids = self.videos.keys().cloned().collect::<Vec<_>>();
-        let json = serde_json::to_string(&node_ids)
-            .map_err(|error| format!("Cannot serialize native video nodes: {error}"))?;
-        self.engine.set_video_nodes_json(&json)
+        self.runtime
+            .set_video_nodes(&node_ids)
+            .map_err(runtime_error)
     }
 
     fn upload_video_frames(&mut self) -> Result<(), String> {
@@ -552,7 +626,7 @@ impl NativeGpuRuntime {
             }
         }
         for node_id in dirty {
-            self.engine.mark_dirty(&node_id)?;
+            self.runtime.mark_dirty(&node_id).map_err(runtime_error)?;
         }
         Ok(())
     }
@@ -565,11 +639,15 @@ impl NativeGpuRuntime {
 
     fn start_playback(&mut self) -> Result<(), String> {
         self.resume_videos()?;
-        let now = Instant::now();
-        self.started_at = now;
-        self.previous_frame_at = now;
-        self.frame = 0;
-        Ok(())
+        let now_ns = self.clock_now_ns();
+        self.runtime.play(now_ns).map_err(runtime_error)
+    }
+
+    fn clock_now_ns(&self) -> u64 {
+        self.clock_origin
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64
     }
 
     fn resume_videos(&mut self) -> Result<(), String> {
@@ -585,7 +663,9 @@ impl NativeGpuRuntime {
         session: OnnxSession,
         config: NativeOnnxConfig,
     ) -> Result<open_quartz::onnx::OnnxSessionInfo, String> {
-        self.engine.node_generation(&node_id)?;
+        self.runtime
+            .node_generation(&node_id)
+            .map_err(runtime_error)?;
         let info = session.info().clone();
         self.onnx_resources.insert(
             node_id.clone(),
@@ -595,7 +675,7 @@ impl NativeGpuRuntime {
                 backend: info.backend.clone(),
             },
         );
-        self.engine.mark_dirty(&node_id)?;
+        self.runtime.mark_dirty(&node_id).map_err(runtime_error)?;
         Ok(info)
     }
 
@@ -617,8 +697,8 @@ impl NativeGpuRuntime {
         self.onnx_workers = running;
         while let Ok(completion) = self.onnx_receiver.try_recv() {
             self.onnx_pending.remove(&completion.node_id);
-            let current_generation = self.engine.node_generation(&completion.node_id).ok();
-            if completion.revision != self.engine.revision()
+            let current_generation = self.runtime.node_generation(&completion.node_id).ok();
+            if completion.revision != self.runtime.revision()
                 || current_generation != Some(completion.generation)
             {
                 continue;
@@ -637,36 +717,65 @@ impl NativeGpuRuntime {
                 .get(&completion.node_id)
                 .map(|resource| resource.backend.clone())
                 .unwrap_or_else(|| "native".to_owned());
-            self.output_events.push(NativeOutputEvent {
-                node_id: completion.node_id.clone(),
-                width: output.width,
-                height: output.height,
-                backend,
-                data: output.data,
-            });
-            let downstream = self
-                .engine
-                .execution_plan()
-                .map(|plan| {
-                    plan.nodes
-                        .iter()
-                        .filter(|node| {
-                            node.upstream
-                                .values()
-                                .any(|source| source == &completion.node_id)
-                        })
-                        .map(|node| node.id.clone())
-                        .collect::<Vec<_>>()
+            let completion_outputs = self
+                .onnx_outputs
+                .get(&completion.node_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, data_type)| {
+                    let payload = match data_type {
+                        DataType::Sampler2d | DataType::SamplerCube => OutputPayload::Resource {
+                            handle: u64::from(completion.generation),
+                        },
+                        DataType::Roi | DataType::Mesh | DataType::Json | DataType::Auto => {
+                            OutputPayload::Json(
+                                output.data.clone().unwrap_or(serde_json::Value::Null),
+                            )
+                        }
+                        _ => return None,
+                    };
+                    Some((key.clone(), payload))
                 })
-                .unwrap_or_default();
-            for node_id in downstream {
-                self.engine.mark_dirty(&node_id)?;
+                .collect();
+            self.runtime
+                .submit_completion(AsyncCompletionEnvelope {
+                    node_id: completion.node_id.clone(),
+                    graph_revision: completion.revision,
+                    node_generation: completion.generation,
+                    input_stamp: completion.input_stamp.clone(),
+                    content_stamp: ContentStamp {
+                        epoch: completion.input_stamp.epoch,
+                        timeline_ns: completion.input_stamp.timeline_ns,
+                        media_pts_ns: None,
+                    },
+                    outputs: completion_outputs,
+                })
+                .map_err(runtime_error)?;
+            let expected_subscription = self.onnx_event_subscriptions.get(&completion.node_id);
+            let delivered = self
+                .runtime
+                .drain_deliveries()
+                .deliveries
+                .iter()
+                .any(|delivery| Some(&delivery.subscription_id) == expected_subscription);
+            if delivered {
+                self.output_events.push(NativeOutputEvent {
+                    node_id: completion.node_id,
+                    width: output.width,
+                    height: output.height,
+                    backend,
+                    data: output.data,
+                });
             }
         }
         Ok(())
     }
 
-    fn schedule_onnx(&mut self, command: &ExecutionCommand) -> Result<(), String> {
+    fn schedule_onnx(
+        &mut self,
+        command: &ExecutionCommand,
+        input_stamp: &FrameStamp,
+    ) -> Result<(), String> {
         if self.onnx_pending.contains(&command.node_id) {
             return Ok(());
         }
@@ -687,8 +796,12 @@ impl NativeGpuRuntime {
         let config = resource.config.clone();
         let sender = self.onnx_sender.clone();
         let node_id = command.node_id.clone();
-        let revision = self.engine.revision();
-        let generation = self.engine.node_generation(&node_id)?;
+        let revision = self.runtime.revision();
+        let generation = self
+            .runtime
+            .node_generation(&node_id)
+            .map_err(runtime_error)?;
+        let input_stamp = input_stamp.clone();
         self.onnx_pending.insert(node_id.clone());
         let worker = std::thread::Builder::new()
             .name(format!("open-quartz-onnx-{node_id}"))
@@ -713,6 +826,7 @@ impl NativeGpuRuntime {
                     node_id,
                     revision,
                     generation,
+                    input_stamp,
                     result,
                 });
             })
@@ -723,19 +837,19 @@ impl NativeGpuRuntime {
 
     fn execute_runtime_commands(
         &mut self,
-        plan: &open_quartz::engine::ExecutionPlan,
         commands: &[ExecutionCommand],
+        input_stamp: &FrameStamp,
     ) -> Result<(), String> {
         let mut batch = Vec::new();
         for command in commands {
             if command.kind == "onnx" {
                 if !batch.is_empty() {
-                    self.executor
-                        .execute_commands(plan, &batch)
-                        .map_err(|error| error.to_string())?;
+                    self.runtime
+                        .execute_gpu(&mut self.executor, &batch)
+                        .map_err(runtime_error)?;
                     batch.clear();
                 }
-                self.schedule_onnx(command)?;
+                self.schedule_onnx(command, input_stamp)?;
                 continue;
             }
             let inputs_ready = command
@@ -747,9 +861,9 @@ impl NativeGpuRuntime {
             }
         }
         if !batch.is_empty() {
-            self.executor
-                .execute_commands(plan, &batch)
-                .map_err(|error| error.to_string())?;
+            self.runtime
+                .execute_gpu(&mut self.executor, &batch)
+                .map_err(runtime_error)?;
         }
         Ok(())
     }
@@ -797,18 +911,14 @@ impl NativeGpuRuntime {
     }
 
     fn render_next(&mut self) -> Result<NativeFrameRendered, String> {
-        let now = Instant::now();
-        let time = now.duration_since(self.started_at).as_secs_f64();
-        let delta = now.duration_since(self.previous_frame_at).as_secs_f64();
-        self.previous_frame_at = now;
-        self.frame = self.frame.saturating_add(1);
-        self.render(time, delta, self.frame)
+        let now_ns = self.clock_now_ns();
+        self.render(now_ns)
     }
 
-    fn render(&mut self, time: f64, delta: f64, frame: u64) -> Result<NativeFrameRendered, String> {
+    fn render(&mut self, now_ns: u64) -> Result<NativeFrameRendered, String> {
         let total_started = Instant::now();
         let (width, height) = self
-            .engine
+            .runtime
             .execution_plan()
             .map(|plan| (plan.default_width.max(1), plan.default_height.max(1)))
             .unwrap_or((960, 540));
@@ -818,23 +928,31 @@ impl NativeGpuRuntime {
         let engine_started = Instant::now();
         self.drain_onnx_completions()?;
         let date = utc_date_uniform(SystemTime::now());
-        self.engine.run_frame(
-            time,
-            delta,
-            frame,
-            &date,
-            &self.mouse,
-            &[width as f32, height as f32, 1.0],
-        )?;
+        let clock = self
+            .runtime
+            .advance(&RuntimeFrameInput {
+                now_ns,
+                date,
+                mouse: self.mouse,
+                resolution: [width as f32, height as f32, 1.0],
+            })
+            .map_err(runtime_error)?;
+        let frame_stamp = FrameStamp {
+            epoch: clock.epoch,
+            frame: clock.frame,
+            timeline_ns: clock.timeline_ns,
+            deadline_ns: clock.next_deadline_ns,
+        };
+        let frame = clock.frame;
         let plan = self
-            .engine
+            .runtime
             .execution_plan()
             .ok_or_else(|| "Native engine has no execution plan".to_owned())?
             .clone();
-        let commands = self.engine.pending_commands().to_vec();
+        let commands = self.runtime.drain_commands();
         let engine_plan = engine_started.elapsed();
         let execute_started = Instant::now();
-        self.execute_runtime_commands(&plan, &commands)?;
+        self.execute_runtime_commands(&commands, &frame_stamp)?;
         let execute_gpu = execute_started.elapsed();
         let output_node_id = self
             .output_node_id
@@ -847,7 +965,7 @@ impl NativeGpuRuntime {
             {
                 return Ok(NativeFrameRendered {
                     frame,
-                    revision: self.engine.revision(),
+                    revision: self.runtime.revision(),
                     output_node_id,
                     width: 0,
                     height: 0,
@@ -882,7 +1000,7 @@ impl NativeGpuRuntime {
         }
         let rendered = NativeFrameRendered {
             frame,
-            revision: self.engine.revision(),
+            revision: self.runtime.revision(),
             output_node_id,
             width: output.width,
             height: output.height,
@@ -1155,7 +1273,7 @@ fn resource_header<'a>(
 #[tauri::command]
 pub fn native_gpu_play(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
     with_runtime(&state, |runtime| {
-        if runtime.engine.execution_plan().is_none() {
+        if runtime.runtime.execution_plan().is_none() {
             return Err("Native runtime must receive a graph before play".to_owned());
         }
         runtime.start_playback()
@@ -1168,7 +1286,8 @@ pub fn native_gpu_play(state: State<'_, NativeRuntimeState>) -> Result<(), Strin
 pub fn native_gpu_pause(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
     with_runtime(&state, |runtime| {
         runtime.pause_videos();
-        runtime.engine.pause()
+        let now_ns = runtime.clock_now_ns();
+        runtime.runtime.pause(now_ns).map_err(runtime_error)
     })?;
     state.playing.store(false, Ordering::Release);
     Ok(())
@@ -1178,7 +1297,8 @@ pub fn native_gpu_pause(state: State<'_, NativeRuntimeState>) -> Result<(), Stri
 pub fn native_gpu_resume(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
     with_runtime(&state, |runtime| {
         runtime.resume_videos()?;
-        runtime.engine.resume()
+        let now_ns = runtime.clock_now_ns();
+        runtime.runtime.resume(now_ns).map_err(runtime_error)
     })?;
     state.playing.store(true, Ordering::Release);
     Ok(())
@@ -1189,7 +1309,7 @@ pub fn native_gpu_stop(state: State<'_, NativeRuntimeState>) -> Result<(), Strin
     state.playing.store(false, Ordering::Release);
     with_runtime(&state, |runtime| {
         runtime.pause_videos();
-        runtime.engine.stop()
+        runtime.runtime.stop().map_err(runtime_error)
     })
 }
 
@@ -1261,7 +1381,10 @@ pub fn native_gpu_set_mouse(
 
 #[tauri::command]
 pub fn native_gpu_drain_events(state: State<'_, NativeRuntimeState>) -> Result<String, String> {
-    with_runtime(&state, |runtime| Ok(runtime.engine.drain_events_json()))
+    with_runtime(&state, |runtime| {
+        serde_json::to_string(&runtime.runtime.drain_events())
+            .map_err(|error| format!("Cannot serialize runtime events: {error}"))
+    })
 }
 
 #[tauri::command]

@@ -5,9 +5,14 @@ edition = "2021"
 publish = false
 
 [target.'cfg(windows)'.dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+open_quartz = { path = "../open_quartz" }
+pollster = "0.4"
+wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Controls_Dialogs", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "0.61"
 
 [profile.release]

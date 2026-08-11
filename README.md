@@ -109,12 +109,12 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 - Custom titlebar (macOS traffic lights, Windows min/max/close)
 - Video file persistence via asset protocol
 - Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, Windows x64 file-source D3D12VA→P010 GPU import, and CPU/DirectML ONNX graph execution
-- `PipelineService` selects exactly one host runtime: browser uses `RealtimeHost`; Tauri uses `NativePipelineRuntime` and draws bounded native previews directly into existing Renderer canvases—no separate output window
+- `PipelineService` selects exactly one host runtime: browser uses `BrowserPipelineRuntime` with a dedicated Worker/WASM Runtime; Tauri uses `NativePipelineRuntime` and draws bounded native previews directly into existing Renderer canvases—no separate output window
 - Native graph metadata, media/model resources, decoded frames, ONNX task pixels, and per-frame commands stay on their owning side of the Tauri boundary; renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
 - Shared-texture and hardware-frame contracts cover DXGI/IOSurface/DMA-BUF. Windows x64 file-video now uses D3D12VA→wgpu P010 import and a WebView2 TextureStream consumer with StartRequested handling, reusable texture allocation, adapter-capability retry, first-frame handshake, and accurate presented-frame cadence telemetry; the tested 1920×1080 H.264 path sustains 61.31 FPS over a 10-second native benchmark with zero CPU-copy bytes. Camera/non-Windows video retains the explicit CPU-copy fallback; IOSurface, DMA-BUF, and camera hardware-frame adapters remain follow-up work.
 - WebView fallback remains lossless bounded RGBA readback. No H.264 preview path is used because Renderer output must preserve exact pixels; SAVE/screenshot always performs explicit lossless capture.
 - Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
-- Exported Windows screen savers are approximately 264 KB for a small graph because they contain only the native host and graph manifest—not Tauri, WebView2, FFmpeg, ORT, models, or media. Moving/uninstalling OpenQuartz requires re-exporting; moved media can be reselected through native screen saver settings.
+- Exported Windows screen savers use a self-contained Win32 host linked directly to the shared Rust Runtime and wgpu executor. The current minimum shader/image/math/feedback/renderer profile is about 5.2 MB before the graph manifest; `/s`, `/p <HWND>`, and `/c` do not launch or require an installed OpenQuartz/Tauri app. Video and ONNX package profiles remain explicit unsupported capabilities rather than silent fallbacks.
 
 ### Rust SDK and Structured Runtime
 - Dual-target `open_quartz` crate for native and WASM graph semantics

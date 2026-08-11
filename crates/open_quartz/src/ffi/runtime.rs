@@ -60,8 +60,8 @@ impl RuntimeBinding {
             .advance(&input)
             .and_then(|clock| {
                 serde_json::to_string(&clock).map_err(|error| {
-                    crate::ffi::SdkError::new(
-                        crate::ffi::SdkErrorCode::InvalidResource,
+                    crate::error::SdkError::new(
+                        crate::error::SdkErrorCode::InvalidResource,
                         "Cannot serialize clock state",
                     )
                     .with_details(error.to_string())
@@ -128,6 +128,24 @@ impl RuntimeBinding {
         self.inner
             .submit_completion(completion)
             .map_err(|error| error.to_json())
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = publishOutput))]
+    pub fn publish_output_json(&mut self, state_json: &str) -> Result<(), String> {
+        let state = decode_json(state_json, "output state")?;
+        self.inner
+            .publish_output(state)
+            .map_err(|error| error.to_json())
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = executionPlan))]
+    pub fn execution_plan_json(&self) -> Result<String, String> {
+        let plan = self
+            .inner
+            .execution_plan()
+            .ok_or_else(|| "Runtime must receive a graph before reading its execution plan")?;
+        serde_json::to_string(plan)
+            .map_err(|error| format!("Cannot serialize runtime execution plan: {error}"))
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = drainWork))]

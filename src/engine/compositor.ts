@@ -1,6 +1,11 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import { WebGPUExecutionEngine, type RuntimeWorkCommand, type WebGPUExecutionPlan } from './executionEngine';
+import {
+  WebGPUExecutionEngine,
+  type CanonicalExecutionPlan,
+  type RuntimeWorkCommand,
+  type WebGPUExecutionPlan,
+} from './executionEngine';
 
 export interface FrameInputs {
   time: number;
@@ -38,8 +43,9 @@ export class Compositor {
     onOutput?: (nodeId: string, dataUrl: string) => void,
     onOnnxComplete?: () => void,
     onBackendDetected?: (nodeId: string, backend: 'webgpu' | 'wasm') => void,
+    canonicalPlan?: CanonicalExecutionPlan,
   ): Promise<void>[] {
-    this.plan = this.engine.prepare(nodes, edges, onNodeError, onOutputSize, onOutputData, onOutput, onOnnxComplete, this.plan, onBackendDetected);
+    this.plan = this.engine.prepare(nodes, edges, onNodeError, onOutputSize, onOutputData, onOutput, onOnnxComplete, this.plan, onBackendDetected, canonicalPlan);
     return this.plan?.pendingTextures ?? [];
   }
 

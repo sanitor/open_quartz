@@ -25,7 +25,9 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 }
 "#;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::OnceLock;
 
 use wgpu::{Device, Extent3d, Features, Queue, TextureUsages};
 

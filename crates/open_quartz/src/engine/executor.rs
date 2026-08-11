@@ -63,6 +63,10 @@ impl ExecutionEngine {
         self.dirty.mark_dirty(node_id);
     }
 
+    pub fn mark_dependents_dirty(&mut self, node_id: &str) {
+        self.dirty.mark_dependents_dirty(node_id);
+    }
+
     pub fn replace_graph(&mut self, nodes: Vec<ProjectNode>, edges: Vec<Edge>) {
         *self = Self::prepare_with_options(nodes, edges, self.external_video_textures);
     }

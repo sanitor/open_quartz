@@ -1,6 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod native_host;
+
+#[cfg(windows)]
 mod windows_host {
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -9,7 +12,6 @@ mod windows_host {
     use std::io::{Read, Seek, SeekFrom};
     use std::mem::size_of;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Controls::Dialogs::{
         GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -20,7 +22,7 @@ mod windows_host {
     };
     use windows_core::{PCWSTR, PWSTR};
 
-    const MAGIC: &[u8; 16] = b"OQSCRPKG00000002";
+    const MAGIC: &[u8; 16] = b"OQSCRPKG00000003";
     const FOOTER_LEN: u64 = 24;
 
     #[derive(Debug, Deserialize)]
@@ -29,7 +31,8 @@ mod windows_host {
         version: u32,
         export_id: String,
         name: String,
-        application_path: String,
+        project_json: String,
+        renderer_node_id: String,
         exposed_inputs: Vec<ExposedInput>,
     }
 
@@ -43,7 +46,7 @@ mod windows_host {
 
     enum LaunchMode {
         Configure(Option<HWND>),
-        Run,
+        Run(Option<HWND>),
     }
 
     pub fn main() {
@@ -60,7 +63,7 @@ mod windows_host {
     fn run() -> Result<(), String> {
         let package_path = env::current_exe().map_err(|error| error.to_string())?;
         let manifest = read_manifest(&package_path)?;
-        if manifest.version != 2 {
+        if manifest.version != 3 {
             return Err(format!(
                 "Unsupported screen saver version {}",
                 manifest.version
@@ -68,7 +71,7 @@ mod windows_host {
         }
         match parse_mode(&env::args().skip(1).collect::<Vec<_>>()) {
             LaunchMode::Configure(owner) => configure(&manifest, owner),
-            LaunchMode::Run => launch_renderer(&manifest, &package_path),
+            LaunchMode::Run(parent) => launch_renderer(&manifest, parent),
         }
     }
 
@@ -102,14 +105,18 @@ mod windows_host {
         let mut index = 0;
         while index < args.len() {
             let argument = args[index].to_ascii_lowercase();
-            if argument == "/s"
-                || argument == "-s"
-                || argument == "/p"
-                || argument == "-p"
-                || argument.starts_with("/p:")
-                || argument.starts_with("-p:")
+            if argument == "/s" || argument == "-s" {
+                return LaunchMode::Run(None);
+            }
+            if argument == "/p" || argument == "-p" {
+                let parent = args.get(index + 1).and_then(|value| parse_hwnd(value));
+                return LaunchMode::Run(parent);
+            }
+            if let Some(value) = argument
+                .strip_prefix("/p:")
+                .or_else(|| argument.strip_prefix("-p:"))
             {
-                return LaunchMode::Run;
+                return LaunchMode::Run(parse_hwnd(value));
             }
             if argument == "/c" || argument == "-c" {
                 let owner = args.get(index + 1).and_then(|value| parse_hwnd(value));
@@ -133,28 +140,14 @@ mod windows_host {
             .map(|value| HWND(value as *mut _))
     }
 
-    fn launch_renderer(manifest: &ScreenSaverManifest, package_path: &Path) -> Result<(), String> {
-        let application = PathBuf::from(&manifest.application_path);
-        if !application.is_file() {
-            return Err(format!(
-                "OpenQuartz is no longer available at {}. Re-export this screen saver after reinstalling OpenQuartz.",
-                application.display()
-            ));
-        }
-        let status = Command::new(&application)
-            .current_dir(application.parent().unwrap_or_else(|| Path::new(".")))
-            .arg("--open-quartz-screen-saver-package")
-            .arg(package_path)
-            .args(env::args_os().skip(1))
-            .status()
-            .map_err(|error| format!("Cannot start OpenQuartz screen saver runtime: {error}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "OpenQuartz screen saver runtime exited with status {status}"
-            ))
-        }
+    fn launch_renderer(manifest: &ScreenSaverManifest, parent: Option<HWND>) -> Result<(), String> {
+        let settings = read_settings(&settings_path(&manifest.export_id)?)?;
+        crate::native_host::run(
+            &manifest.project_json,
+            &manifest.renderer_node_id,
+            parent,
+            &settings,
+        )
     }
 
     fn configure(manifest: &ScreenSaverManifest, owner: Option<HWND>) -> Result<(), String> {
@@ -298,10 +291,10 @@ mod windows_host {
         #[test]
         fn parses_standard_modes() {
             assert!(matches!(parse_mode(&[]), LaunchMode::Configure(None)));
-            assert!(matches!(parse_mode(&["/s".into()]), LaunchMode::Run));
+            assert!(matches!(parse_mode(&["/s".into()]), LaunchMode::Run(None)));
             assert!(matches!(
                 parse_mode(&["/p".into(), "42".into()]),
-                LaunchMode::Run
+                LaunchMode::Run(Some(_))
             ));
             assert!(matches!(
                 parse_mode(&["/c:73".into()]),

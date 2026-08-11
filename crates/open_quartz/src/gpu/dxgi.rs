@@ -5,12 +5,12 @@ use windows_graphics::core::Interface;
 
 use windows_graphics::Win32::Foundation::{CloseHandle, BOOL, GENERIC_ALL, HANDLE, WAIT_OBJECT_0};
 use windows_graphics::Win32::Graphics::Direct3D12::{
-    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device,
-    ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
+    ID3D12GraphicsCommandList, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
     D3D12_COMMAND_QUEUE_DESC, D3D12_FENCE_FLAG_NONE, D3D12_FENCE_FLAG_SHARED,
-    D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
-    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_NONE,
-    D3D12_RESOURCE_STATE_COMMON, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
+    D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_UNKNOWN,
 };
 use windows_graphics::Win32::Graphics::Dxgi::Common::{
@@ -327,37 +327,39 @@ fn detach_video_subresource(
                 &mut detached,
             )
             .map_err(|error| format!("Cannot allocate detached D3D12 video resource: {error}"))?;
-        let detached = detached.ok_or_else(|| "D3D12 returned no detached video resource".to_owned())?;
+        let detached =
+            detached.ok_or_else(|| "D3D12 returned no detached video resource".to_owned())?;
         let source_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(source.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: subresource_index },
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: subresource_index,
+            },
         };
         let destination_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(detached.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
         };
-        list.CopyTextureRegion(
-            &destination_location,
-            0,
-            0,
-            0,
-            &source_location,
-            None,
-        );
+        list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
         list.Close()
             .map_err(|error| format!("Cannot close D3D12 detach command list: {error}"))?;
-        queue.ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()
-            .map_err(|error| format!("Cannot cast D3D12 detach command list: {error}"))?)]);
+        queue.ExecuteCommandLists(&[Some(
+            list.cast::<ID3D12CommandList>()
+                .map_err(|error| format!("Cannot cast D3D12 detach command list: {error}"))?,
+        )]);
         let fence: ID3D12Fence = device
             .CreateFence(0, D3D12_FENCE_FLAG_NONE)
             .map_err(|error| format!("Cannot create D3D12 detach fence: {error}"))?;
-        queue.Signal(&fence, 1)
+        queue
+            .Signal(&fence, 1)
             .map_err(|error| format!("Cannot signal D3D12 detach fence: {error}"))?;
         let event = CreateEventW(None, BOOL(0), BOOL(0), None)
             .map_err(|error| format!("Cannot create D3D12 detach event: {error}"))?;
-        fence.SetEventOnCompletion(1, event)
+        fence
+            .SetEventOnCompletion(1, event)
             .map_err(|error| format!("Cannot arm D3D12 detach fence: {error}"))?;
         let wait = WaitForSingleObject(event, 5_000);
         let _ = CloseHandle(event);
@@ -410,7 +412,11 @@ impl D3d12VideoFrame {
         let format = match description.Format {
             DXGI_FORMAT_NV12 => D3d12VideoFormat::Nv12,
             DXGI_FORMAT_P010 => D3d12VideoFormat::P010,
-            format => return Err(format!("D3D12VA produced unsupported DXGI format {format:?}")),
+            format => {
+                return Err(format!(
+                    "D3D12VA produced unsupported DXGI format {format:?}"
+                ))
+            }
         };
         let array_layers = u32::from(description.DepthOrArraySize);
         if subresource_index >= array_layers {
@@ -526,13 +532,21 @@ impl GpuBackend {
             label: Some("open-quartz-d3d12-yuv-bindings"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&y_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&uv_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&y_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("open-quartz-d3d12-yuv-detach"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("open-quartz-d3d12-yuv-detach"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("open-quartz-d3d12-yuv-detach-pass"),
@@ -540,7 +554,10 @@ impl GpuBackend {
                     view: &output.view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

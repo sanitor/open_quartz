@@ -4,8 +4,8 @@
 
 ### Features
 
-- **Lightweight Windows screen saver export** — File groups Load/Save/Save As and exports a selected Renderer as an approximately 264 KB native `.scr`; media stays path-referenced, output follows the active screen or preview resolution, and `/s` or `/p <HWND>` reuse the installed OpenQuartz renderer without embedding Tauri, FFmpeg, ORT, or media payloads.
-- **Native screen saver settings** — `/c` runs entirely in the Win32 host, exposes the selected image/video inputs through native file dialogs, supports restoring exported defaults, and persists overrides per export under `%APPDATA%`.
+- **Self-contained Windows screen saver host** — File groups Load/Save/Save As and exports a selected Renderer into a version-3 native `.scr` that directly owns the shared Rust Runtime, wgpu executor, Win32 fullscreen/preview child window, and graph manifest; it no longer launches or depends on an installed OpenQuartz/Tauri application.
+- **Native screen saver settings** — `/c` runs entirely in the Win32 host, exposes selected image inputs through native file dialogs, supports restoring exported defaults, and persists overrides per export under `%APPDATA%`.
 
 ### Fixes
 
@@ -16,8 +16,8 @@
 
 ### Tests
 
-- **Automated suites** — 998 Vitest tests across 43 files, 83 application/core Rust tests, and 2 native screen saver host tests pass; TypeScript type-check and Rust format checks pass.
-- **Native screen saver smoke** — a graph referencing a nominal 100 GB video exports to 264,027 bytes; native `/c` settings save successfully, and `/p` renders the selected graph at the preview's physical resolution.
+- **Automated suites** — 998 Vitest tests across 43 files, 56 browser WebGPU shader tests, 87 application/core Rust tests, and 4 native screen saver host tests pass; TypeScript type-check, browser production build, native build, and Rust/WASM compilation pass.
+- **Native screen saver smoke** — the 5,167,616-byte minimum-profile host renders a bit-exact frame through `open_quartz::Runtime` + `GpuExecutor`; package schema v3 contains no application path, and `/s`, `/p`, and `/c` are implemented by the `.scr` process itself.
 
 ## [0.18.0b] -- 2026-08-06
 

@@ -125,9 +125,10 @@ impl GpuPreviewReader {
             .max(1) as u32;
         let height = ((u64::from(source.height) * u64::from(scale_dimension)) / u64::from(largest))
             .max(1) as u32;
-        let recreate = self.target.as_ref().is_none_or(|target| {
-            target.width != width || target.height != height
-        });
+        let recreate = self
+            .target
+            .as_ref()
+            .is_none_or(|target| target.width != width || target.height != height);
         if recreate {
             self.target = Some(self.backend.create_target(
                 width,

@@ -8,10 +8,10 @@ use wasm_bindgen::prelude::*;
 use crate::engine::{ExecutionCommand, ExecutionEngine, ExecutionPlan, FrameInputs};
 use crate::types::{Edge, Graph, ProjectNode};
 
-use super::error::{SdkError, SdkErrorCode};
-use super::event::{EngineEvent, EngineState};
+use crate::error::{SdkError, SdkErrorCode};
+use crate::event::{EngineEvent, EngineState};
 
-pub const SDK_API_VERSION: u32 = 1;
+pub const SDK_API_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +159,19 @@ impl Engine {
             );
         }
         self.prepared_mut()?.mark_dirty(node_id);
+        Ok(())
+    }
+
+    pub fn mark_dependents_dirty(&mut self, node_id: &str) -> Result<(), String> {
+        self.ensure_active().map_err(|error| error.to_json())?;
+        if !self.node_generations.contains_key(node_id) {
+            return Err(
+                SdkError::new(SdkErrorCode::UnknownNode, "Unknown graph node")
+                    .for_node(node_id)
+                    .to_json(),
+            );
+        }
+        self.prepared_mut()?.mark_dependents_dirty(node_id);
         Ok(())
     }
 
@@ -407,6 +420,20 @@ impl Engine {
 
     pub fn drain_commands(&mut self) -> Vec<ExecutionCommand> {
         std::mem::take(&mut self.pending_commands)
+    }
+
+    pub fn execute_gpu(
+        &self,
+        facade: &mut dyn crate::engine::GpuFacade,
+        commands: &[ExecutionCommand],
+    ) -> Result<(), SdkError> {
+        let plan = self.execution_plan().ok_or_else(|| {
+            SdkError::new(
+                SdkErrorCode::NotPrepared,
+                "Engine must receive a graph before GPU execution",
+            )
+        })?;
+        facade.execute(plan, commands)
     }
 }
 

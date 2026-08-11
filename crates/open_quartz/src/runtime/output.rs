@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::ffi::{SdkError, SdkErrorCode};
+use crate::error::{SdkError, SdkErrorCode};
 use crate::types::DataType;
 
 use super::{

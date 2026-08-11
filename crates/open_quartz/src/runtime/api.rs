@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ffi::{Engine, EngineEvent, EngineState, SdkError, SdkErrorCode};
+use crate::engine::{Engine, ExecutionCommand, ExecutionPlan, GpuFacade};
+use crate::error::{SdkError, SdkErrorCode};
+use crate::event::{EngineEvent, EngineState};
 use crate::types::{DataType, Graph};
 
 use super::{
@@ -31,7 +33,7 @@ pub trait FramePacer {
     fn pacing_timestamp_ns(&mut self) -> Result<u64, SdkError>;
 }
 
-pub trait HostBackend {
+pub trait HostBackend: Send {
     fn capabilities(&self) -> RuntimeCapabilities;
     fn register_resource(
         &mut self,
@@ -61,8 +63,16 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(capabilities: RuntimeCapabilities) -> Self {
+        Self::with_engine(capabilities, Engine::new())
+    }
+
+    pub fn new_native(capabilities: RuntimeCapabilities) -> Self {
+        Self::with_engine(capabilities, Engine::new_native())
+    }
+
+    fn with_engine(capabilities: RuntimeCapabilities, engine: Engine) -> Self {
         Self {
-            engine: Engine::new(),
+            engine,
             resources: BTreeMap::new(),
             output_contracts: BTreeMap::new(),
             outputs: OutputRegistry::default(),
@@ -140,7 +150,7 @@ impl Runtime {
     }
 
     pub fn advance(&mut self, input: &RuntimeFrameInput) -> Result<ClockState, SdkError> {
-        crate::ffi::sdk_log(
+        crate::logging::sdk_log(
             "debug",
             "runtime-advance",
             &format!(
@@ -193,7 +203,7 @@ impl Runtime {
             )?;
         }
         self.dispatch_presentations(stamp)?;
-        crate::ffi::sdk_log(
+        crate::logging::sdk_log(
             "debug",
             "runtime-work",
             &format!(
@@ -294,6 +304,7 @@ impl Runtime {
             )
             .for_node(completion.node_id));
         }
+        let completed_node_id = completion.node_id.clone();
         for (output, payload) in &completion.outputs {
             if output.node_id != completion.node_id {
                 return Err(SdkError::new(
@@ -312,6 +323,9 @@ impl Runtime {
                 payload,
             )?;
         }
+        self.engine
+            .mark_dependents_dirty(&completed_node_id)
+            .map_err(decode_engine_error)?;
         self.dispatch_presentations(completion.input_stamp)
     }
 
@@ -369,6 +383,39 @@ impl Runtime {
         self.engine
             .node_generation(node_id)
             .map_err(decode_engine_error)
+    }
+
+    pub fn mark_dirty(&mut self, node_id: &str) -> Result<(), SdkError> {
+        self.engine.mark_dirty(node_id).map_err(decode_engine_error)
+    }
+
+    pub fn set_video_nodes(&mut self, node_ids: &[String]) -> Result<(), SdkError> {
+        let json = serde_json::to_string(node_ids).map_err(|error| {
+            SdkError::new(
+                SdkErrorCode::InvalidResource,
+                "Cannot serialize video node configuration",
+            )
+            .with_details(error.to_string())
+        })?;
+        self.engine
+            .set_video_nodes_json(&json)
+            .map_err(decode_engine_error)
+    }
+
+    pub fn execution_plan(&self) -> Option<&ExecutionPlan> {
+        self.engine.execution_plan()
+    }
+
+    pub fn drain_commands(&mut self) -> Vec<ExecutionCommand> {
+        self.engine.drain_commands()
+    }
+
+    pub fn execute_gpu(
+        &self,
+        facade: &mut dyn GpuFacade,
+        commands: &[ExecutionCommand],
+    ) -> Result<(), SdkError> {
+        self.engine.execute_gpu(facade, commands)
     }
 
     pub fn state(&self) -> EngineState {

@@ -1,32 +1,11 @@
-mod engine;
-mod error;
-mod event;
 mod runtime;
 
-pub use engine::{api_version, capabilities_json, Engine, SdkCapabilities, SDK_API_VERSION};
-pub use error::{SdkError, SdkErrorCode};
-pub use event::{EngineEvent, EngineState};
 pub use runtime::RuntimeBinding;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(
-    inline_js = "export function runtime_log(level, event, fields) { const fn = console[level] || console.log; fn('[oq:wasm] ' + event, fields || {}); }"
-)]
-extern "C" {
-    fn runtime_log(level: &str, event: &str, fields: &str);
-}
-
-pub fn sdk_log(level: &str, event: &str, fields: &str) {
-    #[cfg(target_arch = "wasm32")]
-    runtime_log(level, event, fields);
-    #[cfg(not(target_arch = "wasm32"))]
-    eprintln!("[oq:rust] {level} {event} {fields}");
-}
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn hello() -> String {

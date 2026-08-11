@@ -15,6 +15,7 @@ import type {
   OutputDeliveryBatch,
   FrameStamp,
   OutputSubscription,
+  OutputState,
   RuntimePublicSurface,
   SdkCapabilities,
 } from './contract';
@@ -56,10 +57,12 @@ interface RawRuntime {
   subscribeOutput(subscriptionJson: string): void;
   updateOutputSubscription(subscriptionJson: string): void;
   unsubscribeOutput(subscriptionId: string): void;
+  publishOutput(stateJson: string): void;
   subscribePresentation(subscriptionJson: string): void;
   updatePresentation(subscriptionJson: string): void;
   unsubscribePresentation(subscriptionId: string): boolean;
   submitCompletion(completionJson: string): void;
+  executionPlan(): string;
   drainWork(): string;
   drainDeliveries(): string;
   drainEvents(): string;
@@ -198,6 +201,10 @@ export class WasmRuntimeContract {
       deadlineNs: this.clock.nextDeadlineNs,
     };
   }
+  executionPlan<T = unknown>(): T {
+    return JSON.parse(invoke(() => this.raw.executionPlan())) as T;
+  }
+
   drainWork<T = unknown>(): T {
     return JSON.parse(invoke(() => this.raw.drainWork())) as T;
   }
@@ -212,6 +219,10 @@ export class WasmRuntimeContract {
 
   unsubscribeOutput(subscriptionId: string): void {
     invoke(() => this.raw.unsubscribeOutput(subscriptionId));
+  }
+
+  publishOutput(state: OutputState): void {
+    invoke(() => this.raw.publishOutput(JSON.stringify(state)));
   }
 
   drainDeliveries(): OutputDeliveryBatch {

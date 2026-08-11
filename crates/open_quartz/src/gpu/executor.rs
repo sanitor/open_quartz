@@ -3,6 +3,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::engine::{ExecutionCommand, ExecutionPlan, FrameResult, NodeExecutionPlan};
+use crate::error::{SdkError, SdkErrorCode};
 use crate::wgsl::compiler::BindingDescriptor;
 
 use super::{GpuBackend, RenderTarget, TextureFormat, TextureHandle};
@@ -611,6 +612,22 @@ impl GpuExecutor {
         }
         resources.output_index = write_index;
         Ok(())
+    }
+}
+
+impl crate::engine::GpuFacade for GpuExecutor {
+    fn execute(
+        &mut self,
+        plan: &ExecutionPlan,
+        commands: &[ExecutionCommand],
+    ) -> Result<(), SdkError> {
+        self.execute_commands(plan, commands).map_err(|error| {
+            let sdk_error = SdkError::new(SdkErrorCode::InvalidResource, error.message);
+            match error.node_id {
+                Some(node_id) => sdk_error.for_node(node_id),
+                None => sdk_error,
+            }
+        })
     }
 }
 

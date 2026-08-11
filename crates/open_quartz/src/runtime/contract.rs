@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ffi::SDK_API_VERSION;
+use crate::engine::SDK_API_VERSION;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -204,12 +204,14 @@ pub fn public_surface_manifest() -> PublicSurfaceManifest {
             "play",
             "advance",
             "subscribe_output",
+            "publish_output",
             "update_output_subscription",
             "unsubscribe_output",
             "subscribe_presentation",
             "update_presentation",
             "unsubscribe_presentation",
             "submit_completion",
+            "execution_plan",
             "drain_work",
             "drain_deliveries",
             "drain_events",
