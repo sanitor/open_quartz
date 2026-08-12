@@ -273,6 +273,7 @@ fn read_settings(root: &Path) -> Result<HashMap<String, String>, String> {
 #[cfg(windows)]
 fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<(), String> {
     let graph = parse_export_graph(&request.project_json)?;
+    validate_shader_sources(&graph)?;
     let output = PathBuf::from(&request.output_path);
     if output
         .extension()
@@ -313,6 +314,26 @@ fn parse_export_graph(project_json: &str) -> Result<Graph, String> {
     let graph_value = value.get("graph").unwrap_or(&value);
     serde_json::from_value(graph_value.clone())
         .map_err(|error| format!("Invalid screen saver graph: {error}"))
+}
+
+#[cfg(windows)]
+fn validate_shader_sources(graph: &Graph) -> Result<(), String> {
+    let missing = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.node_type == NodeType::Shader && node.data.shader_code.trim().is_empty()
+        })
+        .map(|node| node.data.label.as_str())
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Screen saver export contains shader nodes without embedded source: {}",
+            missing.join(", ")
+        ))
+    }
 }
 
 #[cfg(windows)]
@@ -560,6 +581,31 @@ mod tests {
     fn rejects_unsafe_export_ids() {
         assert!(settings_root("safe-id_1").is_ok());
         assert!(settings_root("../unsafe").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_shader_nodes_without_embedded_source() {
+        let graph: Graph = serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "hue",
+                "type": "shader",
+                "position": { "x": 0.0, "y": 0.0 },
+                "data": {
+                    "type": "shader",
+                    "label": "Hue Rotate",
+                    "shaderTemplateId": "Hue Rotate",
+                    "shaderCode": "",
+                    "inputs": [],
+                    "outputs": [],
+                    "uniforms": {}
+                }
+            }],
+            "edges": []
+        }))
+        .unwrap();
+        let error = validate_shader_sources(&graph).unwrap_err();
+        assert!(error.contains("Hue Rotate"));
     }
 
     #[cfg(windows)]

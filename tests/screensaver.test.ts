@@ -112,6 +112,24 @@ describe('screen saver export graph', () => {
       .toBe('C:\\media\\clip.mp4');
   });
 
+  it('materializes predefined shader source into the self-contained package', () => {
+    const prebuilt = node('hue', {
+      type: 'shader',
+      shaderTemplateId: 'Hue Rotate',
+      shaderCode: '',
+      outputs: [{ id: 'out', label: 'color', dataType: 'sampler2D', direction: 'output' }],
+    });
+    const result = collectScreenSaverGraph(
+      project(
+        [prebuilt, renderer],
+        [{ ...edge, source: 'hue', sourceHandle: 'out' }],
+      ),
+      'renderer',
+    );
+    const source = result.graph.nodes.find((item) => item.id === 'hue')?.data.shaderCode;
+    expect(source).toContain('@fragment fn main');
+  });
+
   it('inserts a final resample pass at the display resolution', () => {
     const result = prepareScreenSaverGraph([shader, renderer], [edge], 'renderer', 3840, 2160);
     const output = result.nodes.find((item) => item.id === '__screen_saver_output_resample');

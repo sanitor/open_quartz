@@ -72,7 +72,19 @@ export function collectScreenSaverGraph(
   return {
     ...project,
     graph: {
-      nodes: project.graph.nodes.filter((node) => keep.has(node.id)),
+      nodes: project.graph.nodes
+        .filter((node) => keep.has(node.id))
+        .map((node) => {
+          if (!node.data.shaderTemplateId || node.data.shaderCode) return node;
+          const template = SHADER_TEMPLATES.get(node.data.shaderTemplateId);
+          if (!template) {
+            throw new Error(`Shader template "${node.data.shaderTemplateId}" is unavailable.`);
+          }
+          return {
+            ...node,
+            data: { ...node.data, shaderCode: template.code },
+          };
+        }),
       edges: project.graph.edges.filter((edge) => keep.has(edge.source) && keep.has(edge.target)),
     },
   };
