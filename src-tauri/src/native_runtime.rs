@@ -4,16 +4,16 @@ use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::native_video::{
-    find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoFrame,
-    NativeVideoInfo, NativeVideoSource, NativeVideoSourceKind,
-};
 use open_quartz::engine::ExecutionCommand;
 #[cfg(windows)]
 use open_quartz::gpu::{DxgiSharedTextureExporter, SharedTexturePresenter};
 use open_quartz::gpu::{
     GpuBackend, GpuExecutor, GpuOutputHandle, GpuPresentationFrame, GpuPresenter, GpuPreviewReader,
     SharedTextureFrame, TextureFormat,
+};
+use open_quartz::native_video::{
+    find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoFrame,
+    NativeVideoInfo, NativeVideoSource, NativeVideoSourceKind,
 };
 use open_quartz::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
 use open_quartz::runtime::{
@@ -1339,7 +1339,7 @@ pub fn native_gpu_attach_video(
 pub fn native_gpu_video_metrics(
     node_id: String,
     state: State<'_, NativeRuntimeState>,
-) -> Result<crate::native_video::NativeVideoMetrics, String> {
+) -> Result<open_quartz::native_video::NativeVideoMetrics, String> {
     with_runtime(&state, |runtime| {
         runtime
             .videos

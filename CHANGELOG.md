@@ -4,8 +4,8 @@
 
 ### Features
 
-- **Self-contained Windows screen saver host** — File groups Load/Save/Save As and exports a selected Renderer into a version-3 native `.scr` that directly owns the shared Rust Runtime, wgpu executor, Win32 fullscreen/preview child window, and graph manifest; it no longer launches or depends on an installed OpenQuartz/Tauri application.
-- **Native screen saver settings** — `/c` runs entirely in the Win32 host, exposes selected image inputs through native file dialogs, supports restoring exported defaults, and persists overrides per export under `%APPDATA%`.
+- **Self-contained Windows screen saver host** — File groups Load/Save/Save As and exports a selected Renderer into a version-3 native `.scr` that directly owns the shared Rust Runtime, wgpu executor, Win32 fullscreen/preview child window, and graph/resource manifest; it no longer launches or depends on an installed OpenQuartz/Tauri application.
+- **Capability-closed screen saver packages** — Exports embed graph-required file video, FFmpeg, ONNX models, ORT, and DirectML payloads. The host restores image/video overrides, runs shared native media and ONNX task pipelines, and presents directly to a DX12 surface without per-frame GPU readback or GDI.
 
 ### Fixes
 
@@ -17,8 +17,8 @@
 
 ### Tests
 
-- **Automated suites** — 998 Vitest tests across 43 files, 56 browser WebGPU shader tests, 87 application/core Rust tests, and 4 native screen saver host tests pass; TypeScript type-check, browser production build, native build, and Rust/WASM compilation pass.
-- **Native screen saver smoke** — the 5,167,616-byte minimum-profile host renders a bit-exact frame through `open_quartz::Runtime` + `GpuExecutor`; package schema v3 contains no application path, and `/s`, `/p`, and `/c` are implemented by the `.scr` process itself.
+- **Automated suites** — 998 Vitest tests across 43 files, application/core Rust tests, and 4 native screen saver host tests pass; SCR package tests cover embedded resource offsets and extraction, while TypeScript type-check, browser production build, native build, and Rust/WASM compilation pass.
+- **Native screen saver smoke** — the 5,725,184-byte host builds successfully and owns `/s`, `/p`, `/c`, Runtime, GPU surface, media, inference, and resource closure inside the `.scr` process.
 
 ## [0.18.0b] -- 2026-08-06
 

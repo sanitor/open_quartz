@@ -28,7 +28,7 @@ tokio = { version = "1", features = ["fs", "sync"] }
 tauri = { version = "2.11.3", features = ["protocol-asset", "unstable"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
-open_quartz = { path = "../crates/open_quartz" }
+open_quartz = { path = "../crates/open_quartz", features = ["native-video-d3d12"] }
 pollster = "0.4"
 wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
 
@@ -36,4 +36,3 @@ wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12", "
 webview2-com = "=0.38.2"
 windows-core = "0.61"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D11on12", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_UI_WindowsAndMessaging"] }
-ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format"] }

@@ -6,6 +6,8 @@ pub mod gpu;
 pub mod graph;
 mod logging;
 pub mod media;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_video;
 pub mod onnx;
 pub mod runtime;
 pub mod types;

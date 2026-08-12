@@ -1105,7 +1105,7 @@ Windows Screen Saver Control
   -> Win32 /s or /p child window
   -> open_quartz::Runtime
   -> Engine -> GpuExecutor -> wgpu DX12
-  -> bounded RGBA presentation through Win32 GDI
+  -> direct DX12 wgpu Surface presentation
 ```
 
 `.scr` 直接读取自身尾部的 version-3 manifest，初始化共享 Rust kernel 和 GPU executor，并拥有窗口、Runtime、GPU device 与 presenter 生命周期；不启动 Tauri、WebView、React、`PipelineService` 或已安装的 OpenQuartz。
@@ -1118,25 +1118,26 @@ Windows Screen Saver Control
 - [x] `/s` 创建全屏 Win32 popup；`/p <HWND>` 创建并嵌入 native child window；`/c [HWND]` 保留纯 Win32 设置流程。
 - [x] package 内嵌 graph manifest、Renderer ID、导出默认值和 exposed resource descriptors。
 - [x] image override 只替换 resource path，不修改 graph topology/semantics。
-- [x] 最小 profile 覆盖 shader、image、math、feedback、renderer；release host 实测 5,167,616 bytes（不含 manifest）。
-- [x] 自动 GPU smoke 直接构造 `Runtime + GpuExecutor` 并验证 2x2 bit-exact 红色输出。
-- [x] package 测试验证 version 3、自身前缀保留、manifest 可回读且不含 `applicationPath`。
+- [x] shader、image、math、feedback、renderer、file-video、ONNX 共用同一 host；release host 实测 5,725,184 bytes（不含按图嵌入的资源）。
+- [x] exporter 按实际 graph 收集 file video、FFmpeg、ONNX model、ORT 和 DirectML，写入带 offset/length/task 的资源闭包。
+- [x] package/extraction 测试验证 version 3、自身前缀、资源 offset/length、runtime 环境路径和 manifest 回读。
 
-#### 明确未打包的 capability profile
+#### Capability profile closure
 
-- [ ] Video profile：需要把 Tauri 当前 FFmpeg/native decoder adapter 下沉为共享 native media implementation，并定义 DLL/codec payload closure。
-- [ ] ONNX profile：需要定义 ORT/DirectML runtime、模型 payload、provider fallback 与 package closure。
-- [ ] 导出器按 graph 实际节点选择 minimum/video/ONNX profile；当前导出器与 host 均明确拒绝 video/ONNX graph，不静默跳过节点。
-- [ ] native surface presenter：minimum profile 目前使用 GPU readback + GDI；未来共享 DXGI presenter 后可移除逐帧 readback。
+- [x] Video profile：`NativeVideoSource` 已下沉到共享 crate；SCR package 内嵌文件视频和 FFmpeg，host 复用 loop/rate/pause/drop 生命周期。
+- [x] ONNX profile：package 内嵌模型、ORT/DirectML；host 复用 Rust task preprocess/postprocess 与 DirectML→CPU fallback。
+- [x] 导出器按 graph 实际节点选择资源，不需要的媒体/推理 payload 不进入 `.scr`。
+- [x] native surface presenter：Renderer texture 通过 fullscreen blit render pass 直接进入 wgpu DX12 Surface，无逐帧 readback/GDI。
+- [x] Camera profile 明确拒绝；导出时无法保存确定性的物理 camera source。
 
 #### 验收状态
 
 - [x] stub 无 `Command::new(app.exe)`、无 Tauri/app 依赖，直接构造共享 Runtime。
-- [x] Rust GPU smoke 覆盖 graph plan、work batch、wgpu submit 和 readback。
-- [x] `/s`、`/p`、`/c` 参数解析与 package version 拒绝有自动测试。
+- [x] Rust/SCR tests 覆盖 graph plan、resource closure、runtime path extraction、mode parsing 和 package version 拒绝。
+- [x] `/s`、`/p`、`/c` 均由 self-contained host 实现，退出路径显式销毁窗口并 drop media/session/GPU resources。
 - [ ] 在未安装 OpenQuartz 的干净 Windows VM 手工验证移动后的 `.scr` `/s`、`/p`、`/c`。
-- [ ] Video graph 验证 decode、loop、pause/exit 和资源释放。
-- [ ] ONNX graph 验证模型加载、provider capability、stale completion 拒绝和下游 GPU continuation。
+- [ ] 用真实视频 graph 做 decode/loop/exit 长时间稳定性验证。
+- [ ] 用真实 ONNX graph 做模型加载、provider fallback 与下游 GPU continuation 验证。
 
 ## 11. 性能与正确性不变量
 

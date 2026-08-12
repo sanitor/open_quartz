@@ -24,6 +24,16 @@ mod windows_host {
 
     const MAGIC: &[u8; 16] = b"OQSCRPKG00000003";
     const FOOTER_LEN: u64 = 24;
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ScreenSaverResource {
+        node_id: Option<String>,
+        kind: String,
+        file_name: String,
+        offset: u64,
+        length: u64,
+        task: Option<String>,
+    }
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -34,6 +44,7 @@ mod windows_host {
         project_json: String,
         renderer_node_id: String,
         exposed_inputs: Vec<ExposedInput>,
+        resources: Vec<ScreenSaverResource>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -142,12 +153,63 @@ mod windows_host {
 
     fn launch_renderer(manifest: &ScreenSaverManifest, parent: Option<HWND>) -> Result<(), String> {
         let settings = read_settings(&settings_path(&manifest.export_id)?)?;
+        let package_path = env::current_exe().map_err(|error| error.to_string())?;
+        let resources = extract_resources(&package_path, manifest)?;
         crate::native_host::run(
             &manifest.project_json,
             &manifest.renderer_node_id,
             parent,
             &settings,
+            &resources,
         )
+    }
+
+    fn extract_resources(
+        package_path: &Path,
+        manifest: &ScreenSaverManifest,
+    ) -> Result<HashMap<String, String>, String> {
+        let root = env::temp_dir()
+            .join("OpenQuartz")
+            .join("ScreenSavers")
+            .join(&manifest.export_id)
+            .join("runtime");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let mut package = File::open(package_path).map_err(|error| error.to_string())?;
+        let mut paths = HashMap::new();
+        for resource in &manifest.resources {
+            let file_name = Path::new(&resource.file_name)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "Invalid packaged resource name".to_owned())?;
+            let target = root.join(file_name);
+            let needs_extract = fs::metadata(&target)
+                .map(|metadata| metadata.len() != resource.length)
+                .unwrap_or(true);
+            if needs_extract {
+                package
+                    .seek(SeekFrom::Start(resource.offset))
+                    .map_err(|error| error.to_string())?;
+                let mut bytes = vec![0_u8; resource.length as usize];
+                package
+                    .read_exact(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                fs::write(&target, bytes).map_err(|error| error.to_string())?;
+            }
+            if resource.kind == "runtime" {
+                if resource.file_name.eq_ignore_ascii_case("ffmpeg.exe") {
+                    env::set_var("OPEN_QUARTZ_FFMPEG_PATH", &target);
+                } else if resource.file_name.eq_ignore_ascii_case("onnxruntime.dll") {
+                    env::set_var("ORT_DYLIB_PATH", &target);
+                }
+            }
+            if let Some(node_id) = &resource.node_id {
+                paths.insert(node_id.clone(), target.to_string_lossy().into_owned());
+                if let Some(task) = &resource.task {
+                    paths.insert(format!("{node_id}:task"), task.clone());
+                }
+            }
+        }
+        Ok(paths)
     }
 
     fn configure(manifest: &ScreenSaverManifest, owner: Option<HWND>) -> Result<(), String> {
@@ -306,6 +368,51 @@ mod windows_host {
         fn rejects_unsafe_export_ids() {
             assert!(settings_path("safe-id_1").is_ok());
             assert!(settings_path("../unsafe").is_err());
+        }
+
+        #[test]
+        fn extracts_packaged_resources_and_configures_runtime_paths() {
+            let root = env::temp_dir().join(format!(
+                "open-quartz-screen-saver-resource-test-{}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let package = root.join("sample.scr");
+            fs::write(&package, b"stubffmpeg-model").unwrap();
+            let manifest = ScreenSaverManifest {
+                version: 3,
+                export_id: format!("resource-test-{}", std::process::id()),
+                name: "Test".to_owned(),
+                project_json: "{}".to_owned(),
+                renderer_node_id: "renderer".to_owned(),
+                exposed_inputs: Vec::new(),
+                resources: vec![
+                    ScreenSaverResource {
+                        node_id: None,
+                        kind: "runtime".to_owned(),
+                        file_name: "ffmpeg.exe".to_owned(),
+                        offset: 4,
+                        length: 6,
+                        task: None,
+                    },
+                    ScreenSaverResource {
+                        node_id: Some("onnx".to_owned()),
+                        kind: "onnx-model".to_owned(),
+                        file_name: "model.onnx".to_owned(),
+                        offset: 11,
+                        length: 5,
+                        task: Some("generic".to_owned()),
+                    },
+                ],
+            };
+            let resources = extract_resources(&package, &manifest).unwrap();
+            assert_eq!(fs::read(resources.get("onnx").unwrap()).unwrap(), b"model");
+            assert_eq!(resources.get("onnx:task").unwrap(), "generic");
+            assert_eq!(
+                fs::read(env::var_os("OPEN_QUARTZ_FFMPEG_PATH").unwrap()).unwrap(),
+                b"ffmpeg"
+            );
+            fs::remove_dir_all(root).unwrap();
         }
     }
 }

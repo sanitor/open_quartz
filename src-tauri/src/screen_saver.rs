@@ -28,6 +28,16 @@ pub struct ScreenSaverExposedInput {
     label: String,
     kind: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenSaverResource {
+    node_id: Option<String>,
+    kind: String,
+    file_name: String,
+    offset: u64,
+    length: u64,
+    task: Option<String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +48,7 @@ struct ScreenSaverManifest {
     project_json: String,
     renderer_node_id: String,
     exposed_inputs: Vec<ScreenSaverExposedInput>,
+    resources: Vec<ScreenSaverResource>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -261,7 +272,7 @@ fn read_settings(root: &Path) -> Result<HashMap<String, String>, String> {
 
 #[cfg(windows)]
 fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<(), String> {
-    validate_minimum_profile(&request.project_json)?;
+    let graph = parse_export_graph(&request.project_json)?;
     let output = PathBuf::from(&request.output_path);
     if output
         .extension()
@@ -281,6 +292,8 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
             .map_err(|error| error.to_string())?
             .as_nanos(),
     );
+    let stub = screen_saver_stub(app)?;
+    let resources = collect_resources(app, &graph)?;
     let manifest = ScreenSaverManifest {
         version: 3,
         export_id,
@@ -288,51 +301,179 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
         project_json: request.project_json,
         renderer_node_id: request.renderer_node_id,
         exposed_inputs: request.exposed_inputs,
+        resources: Vec::new(),
     };
-    let manifest = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
-    write_package(&screen_saver_stub(app)?, &output, &manifest)
+    write_package(&stub, &output, manifest, &resources)
 }
 
 #[cfg(windows)]
-fn validate_minimum_profile(project_json: &str) -> Result<(), String> {
+fn parse_export_graph(project_json: &str) -> Result<Graph, String> {
     let value: serde_json::Value = serde_json::from_str(project_json)
         .map_err(|error| format!("Invalid screen saver project JSON: {error}"))?;
     let graph_value = value.get("graph").unwrap_or(&value);
-    let graph: Graph = serde_json::from_value(graph_value.clone())
-        .map_err(|error| format!("Invalid screen saver graph: {error}"))?;
-    let unsupported = graph
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            let capability = if node.node_type == NodeType::Onnx {
-                Some("ONNX")
-            } else if node.node_type == NodeType::Input
-                && node.data.input_mode == Some(InputMode::Video)
-            {
-                Some("video")
-            } else {
-                None
-            };
-            capability.map(|capability| format!("{} ({capability})", node.data.label))
-        })
-        .collect::<Vec<_>>();
-    if unsupported.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "This graph requires screen saver capability profiles that are not packaged yet: {}",
-            unsupported.join(", ")
-        ))
+    serde_json::from_value(graph_value.clone())
+        .map_err(|error| format!("Invalid screen saver graph: {error}"))
+}
+
+#[cfg(windows)]
+fn collect_resources(
+    app: &AppHandle,
+    graph: &Graph,
+) -> Result<Vec<(ScreenSaverResource, PathBuf)>, String> {
+    let runtime_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Cannot resolve runtime resources: {error}"))?
+        .join("runtime");
+    let source_runtime_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    let runtime_file = |name: &str| {
+        let bundled = runtime_dir.join(name);
+        if bundled.is_file() {
+            bundled
+        } else {
+            source_runtime_dir.join(name)
+        }
+    };
+    let mut resources = Vec::new();
+    let mut needs_ffmpeg = false;
+    let mut needs_onnx = false;
+    for node in &graph.nodes {
+        if node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Video) {
+            needs_ffmpeg = true;
+            if node.data.video_source_type == Some(open_quartz::types::VideoSourceType::Camera) {
+                return Err(format!(
+                    "Camera node '{}' cannot be exported as a deterministic screen saver input",
+                    node.data.label
+                ));
+            }
+            if let Some(path) = node.data.video_file_path.as_deref() {
+                push_resource(
+                    &mut resources,
+                    Some(&node.id),
+                    "video",
+                    Path::new(path),
+                    None,
+                )?;
+            }
+        }
+        if node.node_type == NodeType::Onnx {
+            needs_onnx = true;
+            let model_id = node
+                .data
+                .onnx_model_id
+                .as_deref()
+                .or(node.data.onnx_catalog_id.as_deref())
+                .ok_or_else(|| format!("ONNX node '{}' has no model ID", node.data.label))?;
+            let model_path = node
+                .data
+                .onnx_custom_path
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or(crate::models_dir(app)?.join(format!("{model_id}.onnx")));
+            push_resource(
+                &mut resources,
+                Some(&node.id),
+                "onnx-model",
+                &model_path,
+                Some(onnx_task(model_id)),
+            )?;
+        }
+    }
+    if needs_ffmpeg {
+        push_resource(
+            &mut resources,
+            None,
+            "runtime",
+            &runtime_file("ffmpeg.exe"),
+            None,
+        )?;
+    }
+    if needs_onnx {
+        for name in ["onnxruntime.dll", "DirectML.dll"] {
+            push_resource(&mut resources, None, "runtime", &runtime_file(name), None)?;
+        }
+    }
+    Ok(resources)
+}
+
+#[cfg(windows)]
+fn push_resource(
+    resources: &mut Vec<(ScreenSaverResource, PathBuf)>,
+    node_id: Option<&str>,
+    kind: &str,
+    path: &Path,
+    task: Option<&str>,
+) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!(
+            "Required screen saver resource is missing: {}",
+            path.display()
+        ));
+    }
+    let length = fs::metadata(path).map_err(|error| error.to_string())?.len();
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("Invalid resource file name: {}", path.display()))?
+        .to_owned();
+    resources.push((
+        ScreenSaverResource {
+            node_id: node_id.map(str::to_owned),
+            kind: kind.to_owned(),
+            file_name,
+            offset: 0,
+            length,
+            task: task.map(str::to_owned),
+        },
+        path.to_owned(),
+    ));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn onnx_task(model_id: &str) -> &'static str {
+    match model_id {
+        "yolov8n" => "detection",
+        "super-resolution-3x" | "realesrgan-x4" => "super-resolution",
+        "u2netp" | "modnet" => "background-removal",
+        "midas-small" => "depth-estimation",
+        "yolo26n-sem" => "segmentation",
+        _ => "generic",
     }
 }
 
-fn write_package(stub: &Path, output: &Path, manifest: &[u8]) -> Result<(), String> {
+#[cfg(windows)]
+
+fn write_package(
+    stub: &Path,
+    output: &Path,
+    mut manifest: ScreenSaverManifest,
+    resources: &[(ScreenSaverResource, PathBuf)],
+) -> Result<(), String> {
     let temporary = output.with_extension("scr.tmp");
     let mut destination = File::create(&temporary).map_err(|error| error.to_string())?;
     let mut stub_file = File::open(stub).map_err(|error| error.to_string())?;
     std::io::copy(&mut stub_file, &mut destination).map_err(|error| error.to_string())?;
+    for (resource, path) in resources {
+        let offset = destination
+            .stream_position()
+            .map_err(|error| error.to_string())?;
+        let mut source = File::open(path).map_err(|error| error.to_string())?;
+        let copied =
+            std::io::copy(&mut source, &mut destination).map_err(|error| error.to_string())?;
+        if copied != resource.length {
+            return Err(format!(
+                "Resource changed while exporting: {}",
+                path.display()
+            ));
+        }
+        let mut descriptor = resource.clone();
+        descriptor.offset = offset;
+        manifest.resources.push(descriptor);
+    }
+    let manifest = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
     destination
-        .write_all(manifest)
+        .write_all(&manifest)
         .map_err(|error| error.to_string())?;
     destination
         .write_all(&(manifest.len() as u64).to_le_bytes())
@@ -423,25 +564,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn rejects_unpacked_screen_saver_capabilities_before_export() {
-        let graph = serde_json::json!({
-            "nodes": [{
-                "id": "onnx",
-                "type": "onnx",
-                "position": { "x": 0.0, "y": 0.0 },
-                "data": {
-                    "type": "onnx", "label": "Detector", "shaderCode": "",
-                    "inputs": [], "outputs": [], "uniforms": {}
-                }
-            }],
-            "edges": []
-        });
-        let error = validate_minimum_profile(&graph.to_string()).unwrap_err();
-        assert!(error.contains("Detector (ONNX)"));
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn writes_a_self_contained_version_three_package() {
         let root = std::env::temp_dir().join(format!(
             "open-quartz-screen-saver-test-{}",
@@ -451,6 +573,8 @@ mod tests {
         let stub = root.join("host.exe");
         let package = root.join("sample.scr");
         fs::write(&stub, b"native-host").unwrap();
+        let resource = root.join("model.onnx");
+        fs::write(&resource, b"onnx-model").unwrap();
         let manifest = ScreenSaverManifest {
             version: 3,
             export_id: "test-export".to_owned(),
@@ -458,12 +582,26 @@ mod tests {
             project_json: "{\"nodes\":[],\"edges\":[]}".to_owned(),
             renderer_node_id: "renderer".to_owned(),
             exposed_inputs: Vec::new(),
+            resources: Vec::new(),
         };
-        write_package(&stub, &package, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let descriptor = ScreenSaverResource {
+            node_id: Some("onnx".to_owned()),
+            kind: "onnx-model".to_owned(),
+            file_name: "model.onnx".to_owned(),
+            offset: 0,
+            length: 10,
+            task: Some("generic".to_owned()),
+        };
+        write_package(&stub, &package, manifest.clone(), &[(descriptor, resource)]).unwrap();
         let decoded = read_manifest(&package).unwrap();
         assert_eq!(decoded.version, 3);
         assert_eq!(decoded.project_json, manifest.project_json);
-        assert_eq!(&fs::read(&package).unwrap()[..11], b"native-host");
+        assert_eq!(decoded.resources.len(), 1);
+        assert_eq!(decoded.resources[0].length, 10);
+        let package_bytes = fs::read(&package).unwrap();
+        let offset = decoded.resources[0].offset as usize;
+        assert_eq!(&package_bytes[..11], b"native-host");
+        assert_eq!(&package_bytes[offset..offset + 10], b"onnx-model");
         fs::remove_dir_all(root).unwrap();
     }
 }
