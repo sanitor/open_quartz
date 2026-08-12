@@ -11,7 +11,7 @@ if (process.platform !== 'win32') {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = resolve(root, 'crates', 'open-quartz-screensaver-stub', 'Cargo.toml');
-const targetDir = resolve(root, 'crates', 'open-quartz-screensaver-stub', 'target');
+const targetDir = resolve(root, 'src-tauri', 'target');
 const executable = resolve(targetDir, 'release', 'open-quartz-screensaver-stub.exe');
 const destination = resolve(root, 'src-tauri', 'runtime', 'open-quartz-screensaver-stub.exe');
 

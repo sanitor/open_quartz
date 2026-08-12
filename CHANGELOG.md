@@ -13,6 +13,7 @@
 - **HEVC D3D12 surface ownership** — retain decoder-owned surfaces through direct GPU import so borrowed texture-array subresources remain valid.
 - **Native video replacement and replay** — live H.265→H.264 changes detach the old decoder before attaching the replacement, ready graphs restart with PLAY, and retained TextureStream consumers resume after STOP or PAUSE.
 - **Stable 8K D3D12VA conversion** — render NV12/P010 conversion directly into the persistent graph output texture, eliminating the observed per-frame temporary 8K RGBA allocation and copy.
+- **Development build isolation** — `tauri dev` no longer builds the Windows screen saver host; SCR compilation runs only for Tauri production builds or the explicit `build:screensaver-stub` command, and shares `src-tauri/target` so common Rust dependencies reuse Cargo artifacts.
 
 ### Tests
 

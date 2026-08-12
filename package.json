@@ -21,7 +21,8 @@
     "copy:ort": "node scripts/copy-ort.mjs",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
     "build:screensaver-stub": "node scripts/build-screensaver-stub.mjs",
-    "prepare:runtime": "npm run build:sdk && npm run copy:ort && npm run copy:ffmpeg && npm run build:screensaver-stub",
+    "prepare:runtime": "npm run build:sdk && npm run copy:ort && npm run copy:ffmpeg",
+    "build:tauri": "npm run build:screensaver-stub && npm run build",
     "clean": "rm -rf dist node_modules/.vite src-tauri/target src-tauri/runtime public/open_quartz-sdk"
   },
   "dependencies": {
