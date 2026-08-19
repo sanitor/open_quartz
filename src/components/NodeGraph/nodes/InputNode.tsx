@@ -4,7 +4,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { ShaderNodeData, DataType, FramebufferFormat } from '../../../types';
 import { useGraphStore } from '../../../store/useGraphStore';
 import { generateRawPreview } from '../../../utils/rawPreview';
-import { checkIsTauri, tauriOpenVideoFile, tauriReadVideoThumbnail } from '../../../utils/tauri';
+import { checkIsTauri, isTauriRuntime, tauriOpenVideoFile, tauriReadVideoThumbnail } from '../../../utils/tauri';
 
 const VEC_COMPONENTS: Record<string, string[]> = {
   vec2: ['x', 'y'],
@@ -50,6 +50,7 @@ function formatSystemValue(source: string | undefined, time: number, frame: numb
 export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
   const nodeErrors = useGraphStore((s) => s.nodeErrors);
+  const setNodeError = useGraphStore((s) => s.setNodeError);
   const currentTime = useGraphStore((s) => s.currentTime);
   const currentFrame = useGraphStore((s) => s.currentFrame);
   const loopState = useGraphStore((s) => s.loopState);
@@ -57,6 +58,8 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rawFileInputRef = useRef<HTMLInputElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
+  const ownedVideoUrlRef = useRef<string | null>(null);
+  const videoLoadGenerationRef = useRef(0);
   const [videoFileSrc, setVideoFileSrc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +76,12 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
     });
     return () => { active = false; };
   }, [data.videoFilePath]);
+  useEffect(() => () => {
+    videoLoadGenerationRef.current += 1;
+    const url = ownedVideoUrlRef.current;
+    if (url) URL.revokeObjectURL(url);
+    ownedVideoUrlRef.current = null;
+  }, []);
   const videoThumbnail = videoFileSrc;
 
   const currentType = (data.inputDataType ?? 'float') as DataType;
@@ -119,55 +128,66 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
   );
 
   const loadVideoFromUrl = useCallback((url: string, fileName: string) => {
+    const generation = ++videoLoadGenerationRef.current;
     const video = document.createElement('video');
     video.preload = 'metadata';
-    video.onloadedmetadata = () => {
+    const releaseProbe = (): void => {
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute('src');
+      video.load();
+    };
+    const commit = (includeDimensions: boolean): void => {
+      if (generation !== videoLoadGenerationRef.current) {
+        URL.revokeObjectURL(url);
+        releaseProbe();
+        return;
+      }
       updateNodeData(id, {
         videoSourceType: 'file',
         videoUrl: url,
         videoFileName: fileName,
-        imageWidth: video.videoWidth,
-        imageHeight: video.videoHeight,
+        ...(includeDimensions ? {
+          imageWidth: video.videoWidth,
+          imageHeight: video.videoHeight,
+        } : {}),
         videoLoop: data.videoLoop ?? true,
         videoPlaybackRate: data.videoPlaybackRate ?? 1,
       });
+      releaseProbe();
     };
-    video.onerror = () => {
-      updateNodeData(id, {
-        videoSourceType: 'file',
-        videoUrl: url,
-        videoFileName: fileName,
-        videoLoop: data.videoLoop ?? true,
-        videoPlaybackRate: data.videoPlaybackRate ?? 1,
-      });
-    };
+    video.onloadedmetadata = () => commit(true);
+    video.onerror = () => commit(false);
     video.src = url;
   }, [id, data.videoLoop, data.videoPlaybackRate, updateNodeData]);
 
   const handleVideoClick = useCallback(() => {
-    checkIsTauri().then((tauri) => {
-      if (!tauri) {
-        videoFileInputRef.current?.click();
-        return;
-      }
-      tauriOpenVideoFile().then((filePath) => {
-        if (!filePath) return;
-        const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
-        updateNodeData(id, {
-          videoSourceType: 'file',
-          videoFilePath: filePath,
-          videoUrl: undefined,
-          videoFileName: fileName,
-        });
+    if (!isTauriRuntime()) {
+      videoFileInputRef.current?.click();
+      return;
+    }
+    void tauriOpenVideoFile().then((filePath) => {
+      if (!filePath) return;
+      const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+      updateNodeData(id, {
+        videoSourceType: 'file',
+        videoFilePath: filePath,
+        videoUrl: undefined,
+        videoFileName: fileName,
       });
+    }).catch((error: unknown) => {
+      setNodeError(id, error instanceof Error ? error.message : String(error));
     });
-  }, [id, updateNodeData, loadVideoFromUrl]);
+  }, [id, setNodeError, updateNodeData]);
 
   const handleVideoFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       const url = URL.createObjectURL(file);
+      const previousUrl = ownedVideoUrlRef.current;
+      ownedVideoUrlRef.current = url;
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
       loadVideoFromUrl(url, file.name);
       e.target.value = '';
     },
@@ -256,7 +276,7 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
       ) : currentType === 'sampler2D' && isVideo ? (
         <div className="flex items-stretch">
           <div onClick={handleVideoClick} className="cursor-pointer flex-1 min-w-0">
-            <input ref={videoFileInputRef} type="file" accept="video/*" onChange={handleVideoFileChange} className="hidden" />
+            <input ref={videoFileInputRef} type="file" accept="video/*" onClick={(event) => event.stopPropagation()} onChange={handleVideoFileChange} className="hidden" />
             {data.videoFilePath && outputPreviews[id] ? (
               <div className="p-2">
                 <img src={outputPreviews[id]} alt="video preview" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
@@ -271,15 +291,22 @@ export function InputNode({ id, data, selected }: NodeProps<InputNodeType>) {
                   {data.videoFileName ?? 'loaded'}
                 </div>
               </div>
-            ) : data.videoUrl ? (
+            ) : data.videoUrl && loopState === 'stopped' ? (
               <div className="p-2">
-                <video src={`${data.videoUrl}#t=0.1`} muted playsInline preload="metadata" className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
+                <video src={`${data.videoUrl}#t=0.1`} muted playsInline preload="metadata"
+                  onClick={(event) => event.stopPropagation()}
+                  className="w-full h-24 object-contain rounded border border-[#e8e8ed]" />
                 <div className="text-[10px] text-[#86868b] text-center mt-1 truncate px-2">
                   {data.videoFileName ?? 'loaded'}
                 </div>
               </div>
+            ) : data.videoUrl ? (
+              <div className="flex flex-col items-center justify-center text-[#86868b] mx-3 my-2 border border-[#e8e8ed] rounded" style={{ height: 80 }}>
+                <span className="text-[10px] truncate px-2">{data.videoFileName ?? 'Video loaded'}</span>
+                <span className="text-[9px] mt-1">Preview appears while playing</span>
+              </div>
             ) : data.videoFilePath || data.videoFileName ? (
-              <div onClick={handleVideoClick} className="flex flex-col items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#ff9500] rounded cursor-pointer" style={{ height: 80 }}>
+              <div className="flex flex-col items-center justify-center text-[11px] text-[#aeaeb2] mx-3 my-2 border-2 border-dashed border-[#ff9500] rounded cursor-pointer" style={{ height: 80 }}>
                 <span className="text-[10px] truncate px-2">{data.videoFileName ?? data.videoFilePath}</span>
                 <span className="text-[9px] mt-1">Click to reload</span>
               </div>

@@ -42,7 +42,6 @@ const BUILTIN_UNIFORMS = new Set([
 ]);
 
 export interface CanonicalExecutionPlan {
-  revision: number;
   sortedIds: string[];
   nodes: Array<{
     id: string;
@@ -105,7 +104,7 @@ export interface BackendInterface {
   setSize(width: number, height: number): void;
   createTarget(id: string, width: number, height: number, float?: boolean): RenderTarget;
   loadImageTexture(id: string, dataUrl: string): Promise<TextureHandle>;
-  uploadVideoFrame(nodeId: string, video: HTMLVideoElement): TextureHandle | null;
+  uploadVideoFrame(nodeId: string, video: HTMLVideoElement | ImageBitmap): TextureHandle | null;
   readTargetToRgba(target: RenderTarget): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }>;
   writeRgbaToTarget(rgba: Uint8ClampedArray, target: RenderTarget): void;
   renderPass(pipeline: GPURenderPipeline, bindGroup: GPUBindGroup, target: RenderTarget | null): void;
@@ -428,7 +427,7 @@ export class WebGPUExecutionEngine {
     // will import directly at bind-group time below.
     if (builtins.videoElements) {
       for (const [nodeId, video] of builtins.videoElements) {
-        if (video.readyState < 2) continue;
+        if ('readyState' in video && video.readyState < 2) continue;
         const handle = this.backend.uploadVideoFrame(nodeId, video);
         if (handle) {
           plan.textureSources.set(nodeId, { kind: 'image', handle });
@@ -496,33 +495,37 @@ export class WebGPUExecutionEngine {
       // Build bind group entries from upstream textures + uniforms
       const entries: GPUBindGroupEntry[] = [];
       const upstreamSamplers = plan.upstreamSamplerBindings.get(nodeId);
+      let texturesReady = true;
 
-      // Texture bindings (texture_2d<f32> — images and render targets)
-      if (upstreamSamplers) {
-        for (const [uniformName, sourceNodeId] of upstreamSamplers) {
-          // Skip if this input uses texture_external (handled below)
-          if (compiled.externalTextureBindings.has(uniformName)) continue;
-          const texBinding = compiled.textureBindings.get(uniformName);
-          if (texBinding === undefined) continue;
-          const src = plan.textureSources.get(sourceNodeId);
-          if (!src) continue;
-          const view = src.kind === 'target' ? src.target.view : src.handle.view;
-          const sampler = src.kind === 'target' ? src.target.sampler : src.handle.sampler;
-          entries.push({ binding: texBinding, resource: view });
-          entries.push({ binding: texBinding + 1, resource: sampler });
+      // Texture bindings (texture_2d<f32> — images, video uploads, and render targets).
+      // A shader cannot create its bind group until every declared texture has a source.
+      for (const [uniformName, texBinding] of compiled.textureBindings) {
+        const sourceNodeId = upstreamSamplers?.get(uniformName);
+        const src = sourceNodeId ? plan.textureSources.get(sourceNodeId) : undefined;
+        if (!src) {
+          texturesReady = false;
+          break;
         }
+        const view = src.kind === 'target' ? src.target.view : src.handle.view;
+        const sampler = src.kind === 'target' ? src.target.sampler : src.handle.sampler;
+        entries.push({ binding: texBinding, resource: view });
+        entries.push({ binding: texBinding + 1, resource: sampler });
       }
-
       // External texture bindings (texture_external — zero-copy video) + sampler
-      if (upstreamSamplers && builtins.videoElements) {
+      if (texturesReady) {
         for (const [uniformName, bindingIdx] of compiled.externalTextureBindings) {
-          const sourceNodeId = upstreamSamplers.get(uniformName);
-          if (!sourceNodeId) continue;
-          const video = builtins.videoElements.get(sourceNodeId);
-          if (!video || video.readyState < 2) continue;
+          const sourceNodeId = upstreamSamplers?.get(uniformName);
+          if (!sourceNodeId) {
+            texturesReady = false;
+            break;
+          }
+          const video = builtins.videoElements?.get(sourceNodeId);
+          if (!video || !('readyState' in video) || video.readyState < 2) {
+            texturesReady = false;
+            break;
+          }
           const externalTex = device.importExternalTexture({ source: video });
           entries.push({ binding: bindingIdx, resource: externalTex });
-          // Sampler at next binding (needed by textureSampleBaseClampToEdge)
           const fallbackSrc = plan.textureSources.get(sourceNodeId);
           const sampler = fallbackSrc
             ? (fallbackSrc.kind === 'target' ? fallbackSrc.target.sampler : fallbackSrc.handle.sampler)
@@ -530,6 +533,8 @@ export class WebGPUExecutionEngine {
           entries.push({ binding: bindingIdx + 1, resource: sampler });
         }
       }
+
+      if (!texturesReady) continue;
 
       // Feedback previousFrame binding
       if (isFeedback && compiled.previousFrameBinding !== null) {

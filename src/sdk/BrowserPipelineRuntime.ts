@@ -9,6 +9,7 @@ import type {
   BrowserWorkerRequest,
   BrowserWorkerRequestPayload,
   BrowserWorkerResponse,
+  BrowserWorkerVideoFrame,
 } from './browserWorkerProtocol';
 
 type PendingRequest = {
@@ -16,13 +17,27 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+type BrowserVideoSource = {
+  nodeId: string;
+  key: string;
+  video: HTMLVideoElement;
+  stream: MediaStream | null;
+  frameCallback: number | null;
+  fallbackTimer: number | null;
+  capturePending: boolean;
+  inFlightFrameId: number | null;
+  active: boolean;
+};
+
 /** Main-thread projection of the Rust/WASM runtime hosted in a dedicated worker. */
 export class BrowserPipelineRuntime implements PipelineHostRuntime {
   readonly frameScheduling = 'runtime' as const;
   private worker: Worker | null = null;
   private nextId = 1;
+  private nextVideoFrameId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly callbacks: PipelineRuntimeCallbacks;
+  private readonly videoSources = new Map<string, BrowserVideoSource>();
 
   constructor(callbacks: PipelineRuntimeCallbacks = {}) {
     this.callbacks = callbacks;
@@ -47,16 +62,37 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
   }
 
   async play(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void> {
+    await this.reconcileVideoSources(nodes);
     await this.request({ type: 'play', nodes, edges });
   }
 
   async updateGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): Promise<void> {
+    await this.reconcileVideoSources(nodes);
     await this.request({ type: 'update-graph', nodes, edges });
   }
 
-  async pause(): Promise<void> { await this.request({ type: 'pause' }); }
-  async resume(): Promise<void> { await this.request({ type: 'resume' }); }
+  async pause(): Promise<void> {
+    for (const source of this.videoSources.values()) source.video.pause();
+    await this.request({ type: 'pause' });
+  }
+
+  async resume(): Promise<void> {
+    const sources = [...this.videoSources.values()];
+    const playback = Promise.allSettled(sources.map((source) => source.video.play()));
+    await this.request({ type: 'resume' });
+    const results = await playback;
+    results.forEach((result, index) => {
+      if (result.status !== 'rejected') return;
+      const error = result.reason;
+      this.callbacks.onNodeError?.(
+        sources[index].nodeId,
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }
+
   async stop(): Promise<void> {
+    this.disposeVideoSources();
     if (this.worker) await this.request({ type: 'stop' });
   }
   setPreviewNode(nodeId: string | null): void {
@@ -81,6 +117,7 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
   async close(): Promise<void> {
     const worker = this.worker;
     if (!worker) return;
+    this.disposeVideoSources();
     try {
       await this.request({ type: 'close' });
     } finally {
@@ -88,6 +125,159 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
       this.worker = null;
       this.rejectAll(new Error('Browser runtime worker closed'));
     }
+  }
+
+  private async reconcileVideoSources(nodes: Node<ShaderNodeData>[]): Promise<void> {
+    const wanted = new Map(
+      nodes
+        .filter((node) => node.data.type === 'input' && node.data.inputMode === 'video')
+        .map((node) => [node.id, node] as const),
+    );
+    for (const [nodeId, source] of this.videoSources) {
+      if (wanted.has(nodeId)) continue;
+      this.disposeVideoSource(source);
+      this.videoSources.delete(nodeId);
+    }
+    for (const [nodeId, node] of wanted) {
+      const key = this.videoSourceKey(node.data);
+      const previous = this.videoSources.get(nodeId);
+      if (!key) {
+        if (previous) {
+          this.disposeVideoSource(previous);
+          this.videoSources.delete(nodeId);
+        }
+        continue;
+      }
+      if (previous?.key === key) {
+        previous.video.loop = node.data.videoLoop ?? true;
+        previous.video.playbackRate = node.data.videoPlaybackRate ?? 1;
+        continue;
+      }
+      const next = await this.createVideoSource(nodeId, node.data, key);
+      this.videoSources.set(nodeId, next);
+      this.scheduleVideoCapture(nodeId, next);
+      if (previous) this.disposeVideoSource(previous);
+    }
+  }
+
+  private videoSourceKey(data: ShaderNodeData): string | null {
+    if (data.videoSourceType === 'camera') {
+      return `camera:${data.videoDeviceId ?? 'default'}`;
+    }
+    return data.videoUrl ? `file:${data.videoUrl}` : null;
+  }
+
+  private async createVideoSource(
+    nodeId: string,
+    data: ShaderNodeData,
+    key: string,
+  ): Promise<BrowserVideoSource> {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.loop = data.videoLoop ?? true;
+    video.playbackRate = data.videoPlaybackRate ?? 1;
+    video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none';
+    let stream: MediaStream | null = null;
+    if (data.videoSourceType === 'camera') {
+      const videoConstraint: MediaTrackConstraints | boolean = data.videoDeviceId
+        ? { deviceId: { exact: data.videoDeviceId } }
+        : true;
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false });
+      video.srcObject = stream;
+    } else {
+      const url = data.videoUrl;
+      if (!url) throw new Error(`Video input ${nodeId} has no browser-loadable URL`);
+      video.src = url;
+    }
+    document.body.append(video);
+    const source: BrowserVideoSource = {
+      nodeId,
+      key,
+      video,
+      stream,
+      frameCallback: null,
+      fallbackTimer: null,
+      capturePending: false,
+      inFlightFrameId: null,
+      active: true,
+    };
+    video.addEventListener('loadedmetadata', () => {
+      if (source.active && video.videoWidth > 0 && video.videoHeight > 0) {
+        this.callbacks.onOutputSize?.(nodeId, video.videoWidth, video.videoHeight);
+      }
+    }, { once: true });
+    try {
+      await video.play();
+      return source;
+    } catch (error) {
+      this.disposeVideoSource(source);
+      throw error;
+    }
+  }
+
+  private scheduleVideoCapture(nodeId: string, source: BrowserVideoSource): void {
+    const capture = (): void => {
+      if (!source.active) return;
+      if (!source.capturePending && source.inFlightFrameId === null && !source.video.paused
+        && source.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        source.capturePending = true;
+        void createImageBitmap(source.video).then((frame) => {
+          source.capturePending = false;
+          const worker = this.worker;
+          if (!source.active || !worker) {
+            frame.close();
+            return;
+          }
+          const frameId = this.nextVideoFrameId++;
+          source.inFlightFrameId = frameId;
+          const message: BrowserWorkerVideoFrame = { type: 'video-frame', nodeId, frameId, frame };
+          try {
+            worker.postMessage(message, [frame]);
+          } catch (error) {
+            source.inFlightFrameId = null;
+            frame.close();
+            this.callbacks.onNodeError?.(
+              nodeId,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }).catch((error: unknown) => {
+          source.capturePending = false;
+          this.callbacks.onNodeError?.(
+            nodeId,
+            error instanceof Error ? error.message : String(error),
+          );
+        });
+      }
+      if ('requestVideoFrameCallback' in source.video) {
+        source.frameCallback = source.video.requestVideoFrameCallback(capture);
+      }
+    };
+    if ('requestVideoFrameCallback' in source.video) {
+      source.frameCallback = source.video.requestVideoFrameCallback(capture);
+    } else {
+      source.fallbackTimer = window.setInterval(capture, 33);
+    }
+  }
+
+  private disposeVideoSource(source: BrowserVideoSource): void {
+    source.active = false;
+    if (source.frameCallback !== null && 'cancelVideoFrameCallback' in source.video) {
+      source.video.cancelVideoFrameCallback(source.frameCallback);
+    }
+    if (source.fallbackTimer !== null) window.clearInterval(source.fallbackTimer);
+    source.video.pause();
+    source.video.srcObject = null;
+    source.video.removeAttribute('src');
+    source.video.remove();
+    for (const track of source.stream?.getTracks() ?? []) track.stop();
+  }
+
+  private disposeVideoSources(): void {
+    for (const source of this.videoSources.values()) this.disposeVideoSource(source);
+    this.videoSources.clear();
   }
 
   private readonly handleMessage = (event: MessageEvent<BrowserWorkerResponse>): void => {
@@ -104,6 +294,11 @@ export class BrowserPipelineRuntime implements PipelineHostRuntime {
       case 'frame':
         this.callbacks.onFrame?.(message);
         break;
+      case 'video-frame-consumed': {
+        const source = this.videoSources.get(message.nodeId);
+        if (source?.inFlightFrameId === message.frameId) source.inFlightFrameId = null;
+        break;
+      }
       case 'output':
         this.drawOutputToMirrors(message.nodeId, message.dataUrl);
         this.callbacks.onOutput?.(message.nodeId, message.dataUrl);

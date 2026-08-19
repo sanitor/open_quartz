@@ -621,6 +621,36 @@ describe('useGraphStore', () => {
       expect(useGraphStore.getState().edges).toHaveLength(0);
     });
 
+    it('replaces an existing input edge with a new matching source', () => {
+      const { connection } = setupConnectionTest('input', 'float', 'shader', 'float', 'float');
+      useGraphStore.getState().onConnect(connection);
+      const replacementSource: Node<ShaderNodeData> = {
+        id: 'time_2', type: 'input', position: { x: 0, y: 100 },
+        data: {
+          type: 'input', label: 'Time', shaderCode: '', inputs: [],
+          outputs: [{ id: 'time_out', label: 'value', dataType: 'float', direction: 'output' }],
+          uniforms: {}, inputMode: 'system', inputDataType: 'float', systemSource: 'time',
+        },
+      };
+      useGraphStore.setState((state) => ({ nodes: [...state.nodes, replacementSource] }));
+
+      useGraphStore.getState().onConnect({
+        source: replacementSource.id,
+        sourceHandle: 'time_out',
+        target: connection.target,
+        targetHandle: connection.targetHandle,
+      });
+
+      expect(useGraphStore.getState().edges).toEqual([
+        expect.objectContaining({
+          source: replacementSource.id,
+          sourceHandle: 'time_out',
+          target: connection.target,
+          targetHandle: connection.targetHandle,
+        }),
+      ]);
+    });
+
     it('allows connection when source/target nodes are not found (no type check)', () => {
       useGraphStore.setState({ nodes: [], edges: [] });
       const connection: Connection = {

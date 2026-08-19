@@ -10,6 +10,11 @@ interface PipelineServiceOptions {
   nativeTextureStream?: boolean;
 }
 
+interface RendererRemountDetail {
+  nodeId?: string;
+  fullscreen?: boolean;
+}
+
 export class PipelineService {
   private readonly options: PipelineServiceOptions;
   private runtime: PipelineHostRuntime | null = null;
@@ -216,16 +221,25 @@ export class PipelineService {
   }
 
 
-  private mountRendererStream(nodeId: string, video: HTMLVideoElement | null): void {
+  private mountRendererStream(nodeId: string, video: HTMLVideoElement | null, preferFullscreen = true): void {
     if (!video) return;
-    const target = [
-      document.getElementById(`renderer-stream-slot-fullscreen-${nodeId}`),
+    const standardTargets = [
       document.getElementById(`renderer-stream-slot-sidepanel-${nodeId}`),
       document.getElementById(`renderer-stream-slot-node-${nodeId}`),
-    ].find((slot) => slot !== null);
+    ];
+    const target = (preferFullscreen
+      ? [document.getElementById(`renderer-stream-slot-fullscreen-${nodeId}`), ...standardTargets]
+      : standardTargets
+    ).find((slot) => slot !== null);
     if (!target || video.parentElement === target) return;
     video.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block';
     target.replaceChildren(video);
+    void video.play().catch((error: unknown) => {
+      runtimeLog('native', 'warn', 'renderer-stream-resume-failed', {
+        nodeId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
 
@@ -293,9 +307,14 @@ export class PipelineService {
     return presented;
   }
 
-  private handleRendererRemount = (): void => {
-    if (this.rendererStream) {
-      this.mountRendererStream(this.rendererStream.nodeId, this.rendererStream.video);
+  private handleRendererRemount = (event: Event): void => {
+    const detail = (event as CustomEvent<RendererRemountDetail>).detail;
+    if (this.rendererStream && (!detail?.nodeId || detail.nodeId === this.rendererStream.nodeId)) {
+      this.mountRendererStream(
+        this.rendererStream.nodeId,
+        this.rendererStream.video,
+        detail?.fullscreen !== false,
+      );
     }
     if (this.lastNativeRendererFrame) {
       this.drawRendererFrame(this.lastNativeRendererFrame.nodeId, this.lastNativeRendererFrame.frame);

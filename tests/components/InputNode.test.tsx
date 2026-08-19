@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('@xyflow/react', () => ({
   Handle: ({ type, position, id }: { type: string; position: string; id: string }) => (
@@ -9,9 +9,11 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 const mockUpdateNodeData = vi.fn();
-const { mockCheckIsTauri, mockReadVideoThumbnail } = vi.hoisted(() => ({
+const { mockCheckIsTauri, mockIsTauriRuntime, mockReadVideoThumbnail, mockUiState } = vi.hoisted(() => ({
   mockCheckIsTauri: vi.fn(() => Promise.resolve(true)),
+  mockIsTauriRuntime: vi.fn(() => false),
   mockReadVideoThumbnail: vi.fn(() => Promise.resolve('data:image/jpeg;base64,thumbnail')),
+  mockUiState: { loopState: 'stopped' as 'stopped' | 'playing' | 'paused' },
 }));
 
 vi.mock('../../src/store/useGraphStore', () => ({
@@ -19,8 +21,10 @@ vi.mock('../../src/store/useGraphStore', () => ({
     if (typeof selector === 'function') {
       const state = {
         updateNodeData: mockUpdateNodeData,
+        setNodeError: vi.fn(),
         nodeErrors: {} as Record<string, string>,
         outputPreviews: {} as Record<string, string>,
+        loopState: mockUiState.loopState,
       };
       return (selector as (s: typeof state) => unknown)(state);
     }
@@ -34,6 +38,7 @@ vi.mock('../../src/utils/rawPreview', () => ({
 
 vi.mock('../../src/utils/tauri', () => ({
   checkIsTauri: mockCheckIsTauri,
+  isTauriRuntime: mockIsTauriRuntime,
   tauriOpenVideoFile: vi.fn(),
   tauriReadVideoThumbnail: mockReadVideoThumbnail,
 }));
@@ -86,6 +91,7 @@ function makeNodeProps(dataOverrides: Partial<ShaderNodeData> = {}) {
 describe('InputNode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUiState.loopState = 'stopped';
   });
 
   it('renders float input with text field', () => {
@@ -209,6 +215,44 @@ describe('InputNode', () => {
     const thumbnail = await screen.findByAltText('video preview');
     expect(thumbnail).toHaveAttribute('src', 'data:image/jpeg;base64,thumbnail');
     expect(mockReadVideoThumbnail).toHaveBeenCalledWith('D:\\Video\\clip.mp4');
+  });
+
+  it('shows a browser video thumbnail only while stopped', () => {
+    const props = makeNodeProps({
+      inputDataType: 'sampler2D',
+      inputMode: 'video',
+      videoSourceType: 'file',
+      videoUrl: 'blob:web-video',
+      videoFileName: 'clip.mp4',
+      inputs: [],
+      outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
+    });
+    const stopped = render(<InputNode {...props} />);
+    expect(stopped.container.querySelector('video')).not.toBeNull();
+    stopped.unmount();
+
+    mockUiState.loopState = 'playing';
+    const playing = render(<InputNode {...props} />);
+    expect(playing.container.querySelector('video')).toBeNull();
+    expect(screen.getByText('Preview appears while playing')).toBeInTheDocument();
+  });
+
+  it('opens the browser file chooser once without bubbling recursively', () => {
+    const props = makeNodeProps({
+      inputDataType: 'sampler2D',
+      inputMode: 'video',
+      videoSourceType: 'file',
+      inputs: [],
+      outputs: [makePort({ dataType: 'sampler2D', label: 'out', direction: 'output' })],
+    });
+    const { container } = render(<InputNode {...props} />);
+    const input = container.querySelector<HTMLInputElement>('input[type="file"][accept="video/*"]');
+    expect(input).not.toBeNull();
+    const click = vi.spyOn(input!, 'click');
+
+    fireEvent.click(screen.getByText('Click to load video'));
+
+    expect(click).toHaveBeenCalledOnce();
   });
 
   it('renders output handle for scalar types', () => {

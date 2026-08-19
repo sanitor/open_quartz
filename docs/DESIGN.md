@@ -171,16 +171,17 @@ flowchart TB
     end
 
     subgraph Browser[Browser current]
-        BAdapter[BrowserPipelineRuntime]
+        BAdapter[BrowserPipelineRuntime / DOM media owner]
         Worker[BrowserRuntimeWorker]
         BRuntime[Rust Runtime via WASM]
         BWork[drainWork / work batch]
         BHost[TS WebGPUExecutionEngine]
-        BMedia[HTML video / WebCodecs]
+        BMedia[HTML video / transferable ImageBitmap]
         BOnnx[ORT-Web]
+        BAdapter --> BMedia
         BAdapter <-->|postMessage| Worker
+        BMedia -->|video-frame / consumed ack| Worker
         Worker --> BRuntime --> BWork --> BHost
-        BHost --> BMedia
         BHost --> BOnnx
     end
 
@@ -220,7 +221,7 @@ flowchart TB
 | `ffi`/binding | `wasm-bindgen` | Tauri command/direct Rust | transport 不同，语义应相同 |
 | `runtime::Runtime` | Browser Worker 生产使用 | Native 尚未使用 | 当前最大分叉 |
 | `gpu` | TypeScript WebGPU backend | Rust `GpuExecutor` | 宿主实现分叉；Browser 仍重复部分 policy |
-| `media` | DOM/WebCodecs/HTML video | `NativeVideoSource`/FFmpeg | 合理的宿主分叉 |
+| `media` | main-thread DOM media adapter → transferable frame → Worker sampled texture | `NativeVideoSource`/FFmpeg | 合理的宿主分叉 |
 | `onnx` | ORT-Web + TS task glue | Rust ORT/DirectML | 推理执行分叉；任务语义应共享 |
 | `output/presentation` | Rust 类型存在，callback 仍占主导 | native event + presenter | 尚未统一 delivery |
 
@@ -310,7 +311,7 @@ flowchart TD
 | `src/components` | 展示、用户输入、节点编辑、项目菜单 | graph 调度、GPU/decoder/session 所有权 |
 | `src/store` | project/UI state、播放意图、预览和错误投影 | frame clock、runtime lifecycle、GPU handle |
 | `src/services` | 监听 Store、串行化 runtime 操作、将 callback 投影回 Store | host-specific GPU/ONNX 算法 |
-| `src/sdk` | host adapter、WASM binding、Worker/Tauri transport、协议类型 | 第二份 graph semantics |
+| `src/sdk` | host adapter、Browser DOM media ownership、WASM binding、Worker/Tauri transport、协议类型 | 第二份 graph semantics |
 | `src/engine` | **当前** Browser Worker 的 WebGPU、媒体、ORT-Web adapter；包含尚未迁出的执行逻辑 | 继续扩展 topology、dirty、clock、generation 等 canonical policy |
 | `src/catalog` | UI catalog 与创建节点所需 descriptor | runtime resource/session ownership |
 | `src/types` | TypeScript project/node/port schema | 平台对象和运行时资源 |
@@ -321,7 +322,7 @@ flowchart TD
 | 类 | 状态 | 生产入口 | 说明 |
 |---|---|---|---|
 | `PipelineService` | 当前 | `App`、`ScreenSaverApp` | 唯一 Store↔runtime bridge |
-| `BrowserPipelineRuntime` | 当前 | `PipelineService` | main-thread Worker proxy |
+| `BrowserPipelineRuntime` | 当前 | `PipelineService` | main-thread Worker proxy；拥有 Browser DOM video source 与 bounded frame transfer |
 | `BrowserRuntimeWorker` | 当前 | `BrowserPipelineRuntime` | Browser clock/work/GPU host |
 | `WasmRuntimeContract` | 当前 | Browser Worker | Rust `RuntimeBinding` 的 typed projection |
 | `Compositor` | 当前 | Browser Worker | 包装 TS WebGPU execution engine |
@@ -459,7 +460,7 @@ classDiagram
 | Composition clock | Rust `Runtime::CompositionClock` | `NativeGpuRuntime` 的 `Instant/frame` | 仅投影 time/frame |
 | GPU device/queue | `WebGPUBackend` | `GpuBackend` | 否 |
 | GPU target/texture | `WebGPUExecutionEngine` | `GpuExecutor` | 否 |
-| Video decoder | Browser engine/DOM/Web APIs | `NativeVideoSource` | 只保存 source descriptor/path |
+| Video decoder | `BrowserPipelineRuntime` 的 DOM media adapter | `NativeVideoSource` | 只保存 source descriptor/path |
 | ONNX session | browser inference layer | `NativeOnnxResource` | 只保存 model descriptor/path |
 | Output subscription registry | Rust Runtime 存在，生产未完整使用 | 未接入 Native | 否 |
 | Preview image | Worker readback → data URL | bounded binary readback | Store 保存最近 UI 投影 |
@@ -572,6 +573,8 @@ Dedicated Worker
 Rust RuntimeBinding -> Runtime -> Engine
 ```
 
+Browser 的 DOM media 是这个边界上的宿主对象：`BrowserPipelineRuntime` 在 main thread 持有唯一的 `HTMLVideoElement` decoder，只把 transferable `ImageBitmap` 帧送入 Worker；Runtime、Compositor、graph 求值和 GPU submission 仍全部留在 Worker。Component 和 Store 不拥有 decoder 或逐帧对象。
+
 #### Main thread ↔ Worker
 
 请求：
@@ -585,7 +588,9 @@ Rust RuntimeBinding -> Runtime -> Engine
 | `set-preview` | node ID/null | ack |
 | `capture` | node ID | data URL/null |
 
-事件：`frame`、`output`、`output-size`、`output-data`、`node-error`、`backend`。
+高频媒体流不是 request/response RPC：main thread 发送 transferable `video-frame { nodeId, frameId, ImageBitmap }`，Worker 收到后立即返回 `video-frame-consumed`。每个节点最多一个未确认帧，Worker 只保留最新待渲染帧；像素不经过 JSON，也不进入 Store。
+
+事件：`frame`、`video-frame-consumed`、`output`、`output-size`、`output-data`、`node-error`、`backend`。
 
 #### Worker ↔ Rust/WASM
 
@@ -593,6 +598,7 @@ Rust RuntimeBinding -> Runtime -> Engine
 
 ```text
 Runtime.setGraph
+Runtime.setVideoNodes
 Runtime.play
 Runtime.advance
 Runtime.drainWork
@@ -917,7 +923,7 @@ flowchart TD
 | UI ↔ runtime | component 不直接驱动 runtime | App 只创建 `PipelineService`；常规 graph/play 经 Store 监听 | 保持 | 继续守护；screen saver 专用 invoke 可留在专用 UI |
 | Store ↔ runtime | Store 只保存 intent/projection | GPU/decoder/ORT 未进入 Store；但 Store helper 持 model/session manager | 部分漂移 | 将 model/session lifecycle 移出 Store |
 | Service ↔ adapter | `PipelineService` 是唯一通用桥 | Browser/Native 都实现 `PipelineHostRuntime` | 保持 | 扩展接口时先定义 canonical command/event |
-| Browser main ↔ Worker | 主线程不做逐帧执行 | runtime/Compositor 在 Worker；main 只收事件和绘制投影 | 保持 | 避免把 GPU work 搬回主线程 |
+| Browser main ↔ Worker | 主线程不做 graph/GPU 逐帧执行 | runtime/Compositor 在 Worker；main 仅负责控制/事件投影，以及 DOM 限制下不可避免的视频解码与 bounded transferable frame transport | 保持 | DOM media 留在 host adapter；避免把 graph/GPU work 搬回主线程 |
 | Rust Runtime ↔ host | 两端共用一个 runtime policy | Browser 使用 `Runtime`；Native 直接使用 `Engine` + 自有 clock/scheduler | **破坏** | Native 先切到 `Runtime`，再删除 facade policy |
 | Engine ↔ GPU | Engine 生成 command，GPU executor 只执行 | Native `GpuExecutor` 注释和实现符合；Browser executor 仍自行 prepare/policy | 部分 | Browser backend 收敛为 command executor |
 | Graph ↔ resource | graph 只传 metadata | Native strip payload 后独立同步 image/video/ONNX | 保持 | 将 sync policy 从 TS adapter 下沉 runtime |

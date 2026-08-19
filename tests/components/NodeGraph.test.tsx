@@ -29,6 +29,7 @@ vi.mock('@xyflow/react', () => ({
   BaseEdge: ({ id, path }: { id: string; path: string }) => (
     <path data-testid={`edge-${id}`} d={path} />
   ),
+  reconnectEdge: vi.fn((_oldEdge: unknown, connection: unknown, edges: unknown[]) => [...edges, connection]),
 }));
 
 vi.mock('@xyflow/react/dist/style.css', () => ({}));

@@ -100,9 +100,11 @@ function makeFakeBackend(capturedReads: { rgba: Uint8ClampedArray; width: number
     format: 'rgba8unorm', sampler: fakeSampler,
   });
 
+  const device = {
+    createBindGroup: vi.fn(() => ({} as GPUBindGroup)),
+  } as unknown as GPUDevice;
   return {
-    device: {} as GPUDevice,
-    canvas: document.createElement('canvas'),
+    device,
     setSize: vi.fn(),
     createTarget: vi.fn((_id: string, w: number, h: number) => {
       targetId++;
@@ -304,6 +306,47 @@ describe('WebGPUExecutionEngine ONNX data flow', () => {
     expect(capturedReads.length).toBe(1);
     expect(capturedReads[0].rgba[0]).toBeGreaterThan(0); // R channel has data
     expect(capturedReads[0].rgba[3]).toBe(255);          // alpha = 255
+  });
+
+  it('waits for the first video texture before rendering a sampled shader', () => {
+    const capturedReads: { rgba: Uint8ClampedArray; width: number; height: number }[] = [];
+    const engine = new WebGPUExecutionEngine();
+    const backend = makeFakeBackend(capturedReads);
+    engine.initWithBackend(backend);
+    const nodes = [makeVideoNode('input_1'), makeShaderNode('shader_3')];
+    const edges = [makeEdge('input_1', 'shader_3', 'in')];
+    const plan = engine.prepare(nodes, edges);
+    expect(plan).not.toBeNull();
+    if (!plan) return;
+
+    const target = backend.createTarget('shader_3', 128, 72);
+    plan.targets.set('shader_3', target);
+    plan.upstreamSamplerBindings.set('shader_3', new Map([['inputImage', 'input_1']]));
+    plan.shaders.set('shader_3', {
+      pipeline: {} as GPURenderPipeline,
+      bindGroupLayout: {} as GPUBindGroupLayout,
+      textureBindings: new Map([['inputImage', 0]]),
+      externalTextureBindings: new Map(),
+      uniformBindings: new Map(),
+      upstreamSamplers: new Map([['inputImage', 'input_1']]),
+      previousFrameBinding: null,
+      needsFeedback: false,
+      preambleLines: 0,
+    });
+    const command = [{ nodeId: 'shader_3', kind: 'shader', uniforms: {}, clearFeedback: false }];
+    const builtins = {
+      time: 0, delta: 0, frame: 1, date: new Float32Array(4),
+      mouse: new Float32Array(4), resolution: new Float32Array([128, 72, 1]),
+    };
+
+    engine.runFrame(plan, builtins, command);
+    expect(backend.renderPass).not.toHaveBeenCalled();
+    expect(backend.device.createBindGroup).not.toHaveBeenCalled();
+
+    const frame = { width: 128, height: 72, close: vi.fn() } as unknown as ImageBitmap;
+    engine.runFrame(plan, { ...builtins, videoElements: new Map([['input_1', frame]]) }, command);
+    expect(backend.device.createBindGroup).toHaveBeenCalledOnce();
+    expect(backend.renderPass).toHaveBeenCalledOnce();
   });
 
   it('re-runs inference on frame 2 when upstream is video (does not cache black result)', async () => {

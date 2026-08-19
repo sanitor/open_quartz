@@ -50,9 +50,10 @@ interface RawEngineConstructor {
 
 interface RawRuntime {
   setGraph(graphJson: string): number;
+  setVideoNodes(nodeIdsJson: string): void;
   registerResource(descriptorJson: string, handle: number): void;
   removeResource(resourceId: string): number;
-  play(nowNs: number): void;
+  play(nowNs: bigint): void;
   advance(inputJson: string): string;
   subscribeOutput(subscriptionJson: string): void;
   updateOutputSubscription(subscriptionJson: string): void;
@@ -67,8 +68,8 @@ interface RawRuntime {
   drainDeliveries(): string;
   drainEvents(): string;
   capabilities(): string;
-  pause(nowNs: number): void;
-  resume(nowNs: number): void;
+  pause(nowNs: bigint): void;
+  resume(nowNs: bigint): void;
   stop(): void;
   dispose(): void;
 }
@@ -116,6 +117,14 @@ function invoke<T>(operation: () => T): T {
   } catch (error) {
     throw decodeSdkError(error);
   }
+}
+
+function toWasmU64(value: number): bigint {
+  const rounded = Math.round(value);
+  if (!Number.isSafeInteger(rounded) || rounded < 0) {
+    throw new RangeError(`WASM u64 value must be a non-negative safe integer, received ${value}`);
+  }
+  return BigInt(rounded);
 }
 
 /** Stage A typed wrapper over the generated wasm-bindgen module. */
@@ -185,8 +194,12 @@ export class WasmRuntimeContract {
     return invoke(() => this.raw.setGraph(JSON.stringify({ nodes, edges })));
   }
 
+  setVideoNodes(nodeIds: readonly string[]): void {
+    invoke(() => this.raw.setVideoNodes(JSON.stringify(nodeIds)));
+  }
 
-  play(nowNs: number): void { invoke(() => this.raw.play(nowNs)); }
+
+  play(nowNs: number): void { invoke(() => this.raw.play(toWasmU64(nowNs))); }
   advance(input: FrameInput): FrameStamp {
     this.clock = JSON.parse(invoke(() => this.raw.advance(JSON.stringify({
       nowNs: Math.round(input.time * 1_000_000_000),
@@ -230,11 +243,11 @@ export class WasmRuntimeContract {
   }
 
   pause(nowNs = Math.round(performance.now() * 1_000_000)): void {
-    invoke(() => this.raw.pause(nowNs));
+    invoke(() => this.raw.pause(toWasmU64(nowNs)));
   }
 
   resume(nowNs = Math.round(performance.now() * 1_000_000)): void {
-    invoke(() => this.raw.resume(nowNs));
+    invoke(() => this.raw.resume(toWasmU64(nowNs)));
   }
 
   stop(): void { invoke(() => this.raw.stop()); }

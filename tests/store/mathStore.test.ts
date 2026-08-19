@@ -33,6 +33,7 @@ vi.mock('@xyflow/react', () => ({
 
 import { useGraphStore } from '../../src/store/useGraphStore';
 import { MATH_OPS, getMathPorts } from '../../src/catalog/mathOps';
+import { SHADER_TEMPLATES } from '../../src/catalog/predefinedShaders';
 
 function resetStore() {
   useGraphStore.setState({
@@ -161,6 +162,34 @@ describe('Math and System nodes in useGraphStore', () => {
       const ids = new Set(nodes.map(n => n.id));
       expect(ids.size).toBe(5);
     });
+    it('connects the Time system output to the Hue Rotate angle input', () => {
+      const hue = SHADER_TEMPLATES.get('Hue Rotate');
+      expect(hue).toBeDefined();
+      useGraphStore.getState().addSystemNode('time');
+      useGraphStore.getState().addShaderNode(hue!.code, hue!.label);
+      const [timeNode, hueNode] = useGraphStore.getState().nodes;
+      const timeOutput = timeNode.data.outputs[0];
+      const angleInput = hueNode.data.inputs.find((port) => port.label === 'angle');
+      expect(timeOutput?.dataType).toBe('float');
+      expect(angleInput?.dataType).toBe('float');
+
+      useGraphStore.getState().onConnect({
+        source: timeNode.id,
+        sourceHandle: timeOutput.id,
+        target: hueNode.id,
+        targetHandle: angleInput!.id,
+      });
+
+      expect(useGraphStore.getState().edges).toEqual([
+        expect.objectContaining({
+          source: timeNode.id,
+          sourceHandle: timeOutput.id,
+          target: hueNode.id,
+          targetHandle: angleInput!.id,
+        }),
+      ]);
+    });
+
   });
 
   describe('onConnect auto-type rules', () => {

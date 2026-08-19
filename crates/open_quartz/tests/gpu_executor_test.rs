@@ -23,15 +23,15 @@ async fn request_backend() -> Arc<GpuBackend> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
-            force_fallback_adapter: true,
+            force_fallback_adapter: !cfg!(target_os = "macos"),
             compatible_surface: None,
         })
         .await
-        .expect("a fallback GPU adapter is required for native GPU tests");
+        .expect("a GPU adapter is required for native GPU tests");
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor::default())
         .await
-        .expect("fallback GPU device creation must succeed");
+        .expect("native GPU device creation must succeed");
     Arc::new(GpuBackend::from_device(device, queue))
 }
 
@@ -86,6 +86,63 @@ fn executes_shader_cascade_and_exposes_renderer_output() {
 
         assert_eq!(&rgba[..4], &[64, 128, 191, 255]);
         assert!(rgba.chunks_exact(4).all(|pixel| pixel == &rgba[..4]));
+    });
+}
+
+#[test]
+fn connected_system_time_updates_hue_uniform_on_native_gpu() {
+    pollster::block_on(async {
+        let nodes: Vec<ProjectNode> = serde_json::from_value(json!([
+            {
+                "id": "time", "type": "input", "position": {"x": 0.0, "y": 0.0},
+                "data": {
+                    "type": "input", "label": "Time", "shaderCode": "", "inputs": [],
+                    "outputs": [{"id": "time_out", "label": "value", "dataType": "float", "direction": "output"}],
+                    "uniforms": {}, "inputMode": "system", "inputDataType": "float", "systemSource": "time"
+                }
+            },
+            {
+                "id": "hue", "type": "shader", "position": {"x": 1.0, "y": 0.0},
+                "data": {
+                    "type": "shader", "label": "Hue Rotate",
+                    "shaderCode": "@group(0) @binding(0) var<uniform> angle: f32; @fragment fn main() -> @location(0) vec4f { return vec4f(angle, 0.0, 0.0, 1.0); }",
+                    "inputs": [{"id": "angle", "label": "angle", "dataType": "float", "direction": "input"}],
+                    "outputs": [{"id": "hue_out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                    "uniforms": {}, "autoSize": false, "width": 2, "height": 2
+                }
+            },
+            {
+                "id": "renderer", "type": "renderer", "position": {"x": 2.0, "y": 0.0},
+                "data": {
+                    "type": "renderer", "label": "Renderer", "shaderCode": "",
+                    "inputs": [{"id": "renderer_in", "label": "inputImage", "dataType": "sampler2D", "direction": "input"}],
+                    "outputs": [], "uniforms": {}
+                }
+            }
+        ])).unwrap();
+        let edges: Vec<Edge> = serde_json::from_value(json!([
+            {"id": "time_to_hue", "source": "time", "sourceHandle": "time_out", "target": "hue", "targetHandle": "angle"},
+            {"id": "hue_to_renderer", "source": "hue", "sourceHandle": "hue_out", "target": "renderer", "targetHandle": "renderer_in"}
+        ])).unwrap();
+        let mut engine = ExecutionEngine::prepare(nodes, edges);
+        let backend = request_backend().await;
+        let mut executor = GpuExecutor::new(backend.clone());
+
+        let mut first_frame = frame();
+        first_frame.time = 0.25;
+        let first_work = engine.run_frame(&first_frame);
+        executor.execute(engine.plan(), &first_work).unwrap();
+        let first = executor.read_output_rgba("renderer").await.unwrap();
+
+        let mut second_frame = frame();
+        second_frame.time = 0.75;
+        second_frame.frame = 2;
+        let second_work = engine.run_frame(&second_frame);
+        executor.execute(engine.plan(), &second_work).unwrap();
+        let second = executor.read_output_rgba("renderer").await.unwrap();
+
+        assert_eq!(&first[..4], &[64, 0, 0, 255]);
+        assert_eq!(&second[..4], &[191, 0, 0, 255]);
     });
 }
 

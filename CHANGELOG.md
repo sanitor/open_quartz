@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Web video playback** — keep one acknowledged video frame in flight per node, acknowledge Worker receipt before rendering, coalesce pending `ImageBitmap`s, and cap the Worker render loop at 60 FPS so message and GPU queues cannot run away. Browser previews no longer create duplicate media decoders; replacement sources are started before the old source is released, and stale Blob URLs are revoked.
+- **Browser video file chooser** — stop the hidden file input's synthetic click from bubbling back into its clickable node container, which recursively reopened the chooser and emitted continuous errors; browser selection now stays synchronous while Tauri continues through the native dialog plugin.
+- **Renderer fullscreen TextureStream lifecycle** — moving the canonical video consumer into fullscreen explicitly resumes playback, and closing fullscreen relocates it before React tears down the overlay so presentation does not stop.
+- **Browser runtime lifecycle clock** — convert JavaScript lifecycle timestamps to `bigint` before crossing wasm-bindgen's `u64` boundary; browser playback now starts correctly so SYSTEM TIME can drive connected uniforms such as Hue Rotate `angle`.
+- **Cross-WebView input reconnection** — remove the synthetic `mousedown` redispatch used for occupied input ports, use React Flow's supported edge reconnection API, and atomically replace an existing input edge when SYSTEM TIME is connected to Hue Rotate `angle`.
+
+### Tests
+
+- **Browser video frame bridge** — cover single-shot file chooser activation, frame-transfer backpressure, replacement decoder failure, duplicate-preview prevention, and worker-facing video-node configuration. Browser smoke validation selects and plays an MP4 with one chooser activation, one active decoder, bounded frame transport, and no runtime errors.
+- **Hue Rotate time input** — cover frontend edge replacement, Tauri graph serialization, real generated-WASM clock propagation, and native wgpu execution; the Metal-backed GPU test confirms SYSTEM TIME changes the rendered uniform output from red `64` to `191`.
+
 ## [0.19.0b] -- 2026-08-10
 
 ### Features

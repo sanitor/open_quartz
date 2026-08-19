@@ -257,4 +257,43 @@ describe('PipelineService', () => {
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
     mirror.remove();
   });
+  it('keeps the canonical texture stream playing while moving into and out of fullscreen', async () => {
+    mocks.isTauri.mockResolvedValue(true);
+    const service = new PipelineService();
+    service.attach(document.createElement('canvas'));
+    useGraphStore.getState().play();
+    await vi.waitFor(() => expect(mocks.native).toHaveLength(1));
+    const runtime = mocks.native[0]!;
+    await vi.waitFor(() => expect(runtime.play).toHaveBeenCalledOnce());
+
+    const sidePanelSlot = document.createElement('div');
+    sidePanelSlot.id = 'renderer-stream-slot-sidepanel-renderer';
+    document.body.appendChild(sidePanelSlot);
+    const video = document.createElement('video');
+    const stream = {} as MediaStream;
+    Object.defineProperty(video, 'srcObject', { configurable: true, value: stream });
+    const play = vi.spyOn(video, 'play').mockResolvedValue();
+
+    runtime.callbacks.onRendererStream?.('renderer' as never, video as never);
+    expect(video.parentElement).toBe(sidePanelSlot);
+
+    const fullscreenSlot = document.createElement('div');
+    fullscreenSlot.id = 'renderer-stream-slot-fullscreen-renderer';
+    document.body.appendChild(fullscreenSlot);
+    window.dispatchEvent(new CustomEvent('renderer-remount'));
+    expect(video.parentElement).toBe(fullscreenSlot);
+    expect(play).toHaveBeenCalled();
+
+    window.dispatchEvent(new CustomEvent('renderer-remount', {
+      detail: { nodeId: 'renderer', fullscreen: false },
+    }));
+    expect(video.parentElement).toBe(sidePanelSlot);
+    expect(video.isConnected).toBe(true);
+
+    service.detach();
+    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+    fullscreenSlot.remove();
+    sidePanelSlot.remove();
+  });
+
 });

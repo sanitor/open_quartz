@@ -1,5 +1,7 @@
 # 实时渲染循环 + 时间系统 + Video 输入 — 实现方案
 
+> **历史方案说明：** 本文记录旧 `RealtimeHost` / Three.js `VideoTexture` 方案，不是 v0.19.0b 的生产拓扑。当前生产路径、Browser Worker 边界和 Browser/Native 所有权以 [`DESIGN.md`](./DESIGN.md) 为准；`RealtimeHost` 仅作为遗留测试覆盖存在。
+
 > OpenQuartz P0 架构升级：从旧的手动单帧执行入口进化为统一的宿主驱动实时合成器
 
 ---

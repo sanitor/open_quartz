@@ -225,14 +225,12 @@ export class WebGPUBackend {
   }
 
   /**
-   * Upload the current frame of an HTMLVideoElement to a GPU texture.
-   * Creates a texture on first call (or when video dimensions change),
-   * reuses it on subsequent calls (zero-allocation per-frame update).
-   * Must be called every frame for animated video.
+   * Upload an HTML video or a transferred worker ImageBitmap to a GPU texture.
+   * The texture is reused until the source dimensions change.
    */
-  uploadVideoFrame(nodeId: string, video: HTMLVideoElement): TextureHandle | null {
-    const w = video.videoWidth;
-    const h = video.videoHeight;
+  uploadVideoFrame(nodeId: string, video: HTMLVideoElement | ImageBitmap): TextureHandle | null {
+    const w = 'videoWidth' in video ? video.videoWidth : video.width;
+    const h = 'videoHeight' in video ? video.videoHeight : video.height;
     if (w === 0 || h === 0) return null;
 
     const device = this.device;

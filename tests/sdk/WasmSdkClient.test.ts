@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SDK_API_VERSION, SdkContractError, WasmSdkClient } from '../../src/sdk';
+import { requireSdk, SDK_API_VERSION, SdkContractError, WasmSdkClient } from '../../src/sdk';
 import type { RawWasmBindings } from '../../src/sdk';
 
 const capabilities = {
@@ -94,14 +94,26 @@ class FakeEngine {
 }
 
 class FakeRuntime {
+  static last: FakeRuntime;
+  lifecycleTimestamps: bigint[] = [];
+
+  constructor() {
+    FakeRuntime.last = this;
+  }
   graphJson = '';
+  videoNodesJson = '[]';
   subscriptions: string[] = [];
 
   setGraph(graphJson: string): number {
     this.graphJson = graphJson;
     return 1;
   }
+  setVideoNodes(nodeIdsJson: string): void { this.videoNodesJson = nodeIdsJson; }
 
+  play(nowNs: unknown): void {
+    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
+    this.lifecycleTimestamps.push(nowNs);
+  }
   advance(_inputJson: string): void {}
   subscribeOutput(subscriptionJson: string): void { this.subscriptions.push(subscriptionJson); }
   updateOutputSubscription(subscriptionJson: string): void { this.subscriptions = [subscriptionJson]; }
@@ -113,8 +125,14 @@ class FakeRuntime {
     return JSON.stringify({ revision: 1, sortedIds: [], nodes: [], outputNodes: [], cycle: false });
   }
   drainDeliveries(): string { return JSON.stringify({ deliveries: [], invalidations: [] }); }
-  pause(): void {}
-  resume(): void {}
+  pause(nowNs: unknown): void {
+    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
+    this.lifecycleTimestamps.push(nowNs);
+  }
+  resume(nowNs: unknown): void {
+    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
+    this.lifecycleTimestamps.push(nowNs);
+  }
   stop(): void {}
   dispose(): void {}
 }
@@ -162,6 +180,8 @@ describe('WasmSdkClient', () => {
     const client = await WasmSdkClient.load(async () => fakeBindings());
     const runtime = client.createRuntime();
     expect(runtime.setGraph([], [])).toBe(1);
+    runtime.setVideoNodes(['video']);
+    expect(FakeRuntime.last.videoNodesJson).toBe('["video"]');
     expect(runtime.executionPlan()).toEqual({
       revision: 1,
       sortedIds: [],
@@ -176,6 +196,77 @@ describe('WasmSdkClient', () => {
       transport: 'value',
     });
     expect(runtime.drainDeliveries()).toEqual({ deliveries: [], invalidations: [] });
+  });
+
+  it('converts lifecycle timestamps to WASM u64 bigints', async () => {
+    const client = await WasmSdkClient.load(async () => fakeBindings());
+    const runtime = client.createRuntime();
+
+    runtime.play(123);
+    runtime.pause(456);
+    runtime.resume(789);
+
+    expect(FakeRuntime.last.lifecycleTimestamps).toEqual([123n, 456n, 789n]);
+  });
+
+  it('advances a connected SYSTEM TIME value through the real WASM Runtime', () => {
+    const runtime = requireSdk().createRuntime();
+    const nodes = [
+      {
+        id: 'time', type: 'input', position: { x: 0, y: 0 },
+        data: {
+          type: 'input', label: 'Time', shaderCode: '', inputs: [],
+          outputs: [{ id: 'time_out', label: 'value', dataType: 'float', direction: 'output' }],
+          uniforms: {}, inputMode: 'system', inputDataType: 'float', systemSource: 'time',
+        },
+      },
+      {
+        id: 'hue', type: 'shader', position: { x: 1, y: 0 },
+        data: {
+          type: 'shader', label: 'Hue Rotate',
+          shaderCode: '@group(0) @binding(0) var<uniform> angle: f32;\n@fragment fn main() -> @location(0) vec4f { return vec4f(angle); }',
+          inputs: [{ id: 'angle', label: 'angle', dataType: 'float', direction: 'input' }],
+          outputs: [], uniforms: {},
+        },
+      },
+    ];
+    const edges = [{
+      id: 'time_to_hue', source: 'time', sourceHandle: 'time_out',
+      target: 'hue', targetHandle: 'angle',
+    }];
+
+    runtime.setGraph(nodes as never, edges as never);
+    runtime.play(1_000_000_000);
+    runtime.advance({
+      time: 1.5,
+      delta: 0,
+      frame: 0,
+      date: new Float32Array(4),
+      mouse: new Float32Array(4),
+      resolution: new Float32Array([512, 512, 1]),
+    });
+    const first = runtime.drainWork<Array<{
+      nodeId: string;
+      uniforms: Record<string, number[]>;
+    }>>().find((command) => command.nodeId === 'hue');
+
+    runtime.advance({
+      time: 2.25,
+      delta: 0,
+      frame: 0,
+      date: new Float32Array(4),
+      mouse: new Float32Array(4),
+      resolution: new Float32Array([512, 512, 1]),
+    });
+    const second = runtime.drainWork<Array<{
+      nodeId: string;
+      uniforms: Record<string, number[]>;
+    }>>().find((command) => command.nodeId === 'hue');
+    runtime.stop();
+    runtime.dispose();
+
+    expect(first?.uniforms.angle[0]).toBeCloseTo(0.5);
+    expect(second?.uniforms.angle[0]).toBeCloseTo(1.25);
   });
 
   it('forwards typed frame inputs without frame JSON serialization', async () => {

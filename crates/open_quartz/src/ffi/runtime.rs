@@ -16,8 +16,10 @@ pub struct RuntimeBinding {
 impl RuntimeBinding {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
     pub fn new() -> Self {
+        // Dedicated workers cannot own HTMLVideoElement. Browser video arrives
+        // as transferred ImageBitmap frames and must compile as texture_2d.
         Self {
-            inner: Runtime::new(RuntimeCapabilities { data_paths: vec![] }),
+            inner: Runtime::new_native(RuntimeCapabilities { data_paths: vec![] }),
         }
     }
 
@@ -26,6 +28,14 @@ impl RuntimeBinding {
         let graph: Graph = decode_json(graph_json, "graph")?;
         self.inner
             .set_graph(&graph)
+            .map_err(|error| error.to_json())
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = setVideoNodes))]
+    pub fn set_video_nodes_json(&mut self, node_ids_json: &str) -> Result<(), String> {
+        let node_ids: Vec<String> = decode_json(node_ids_json, "video node IDs")?;
+        self.inner
+            .set_video_nodes(&node_ids)
             .map_err(|error| error.to_json())
     }
 

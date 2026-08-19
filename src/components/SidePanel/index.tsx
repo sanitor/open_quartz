@@ -69,6 +69,13 @@ export function SidePanel() {
   const startX = useRef(0);
   const startW = useRef(320);
 
+  const closeRendererFullscreen = useCallback((rendererId: string) => {
+    window.dispatchEvent(new CustomEvent('renderer-remount', {
+      detail: { nodeId: rendererId, fullscreen: false },
+    }));
+    setLightboxSrc(null);
+  }, []);
+
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     resizing.current = true;
@@ -158,10 +165,11 @@ export function SidePanel() {
       return generateRawPreview(data.rawDataUrl, (data.fbFormat ?? 'rgba8') as FramebufferFormat, data.fbWidth, data.fbHeight, data.fbStride);
     }
     if (data.inputMode === 'video') {
-      return outputPreviews[selectedNodeId!] ?? data.videoUrl ?? null;
+      return outputPreviews[selectedNodeId!]
+        ?? (loopState === 'stopped' ? data.videoUrl ?? null : null);
     }
     return data.imageDataUrl ?? null;
-  }, [data, isSampler2D, isFramebuffer, outputPreviews, selectedNodeId, data?.rawDataUrl, data?.fbFormat, data?.fbWidth, data?.fbHeight, data?.fbStride, data?.imageDataUrl, data?.videoUrl, data?.inputMode]);
+  }, [data, isSampler2D, isFramebuffer, loopState, outputPreviews, selectedNodeId]);
 
   if (!selectedNode || !data) return null;
 
@@ -658,7 +666,7 @@ export function SidePanel() {
               )
             ) : (
               <span className="text-[12px] text-[#aeaeb2]">
-                {isFramebuffer ? 'Load file and set width/height' : data.inputMode === 'video' ? 'Native preview appears while playing' : 'Load an image'}
+                {isFramebuffer ? 'Load file and set width/height' : data.inputMode === 'video' ? 'Preview appears while playing' : 'Load an image'}
               </span>
             )
           ) : outputPreviews[selectedNodeId!] ? (
@@ -769,11 +777,11 @@ export function SidePanel() {
         const rh = rNode?.data.resolvedHeight ?? 9;
         return (
           <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center"
-            onClick={() => setLightboxSrc(null)}>
+            onClick={() => closeRendererFullscreen(rid)}>
             <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
               <button onClick={async (e) => { e.stopPropagation(); const capture = useGraphStore.getState().captureScreenshot; const dataUrl = await capture?.(rid); if (!dataUrl) return; const a = document.createElement('a'); a.href = dataUrl; a.download = `renderer-${rid}.png`; a.click(); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">SAVE</button>
-              <button onClick={(e) => { e.stopPropagation(); setLightboxSrc(null); }}
+              <button onClick={(e) => { e.stopPropagation(); closeRendererFullscreen(rid); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">CLOSE</button>
             </div>
             {nativeRendererStreams[rid] ? (

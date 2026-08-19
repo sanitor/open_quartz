@@ -5,7 +5,7 @@ import type { DataType, ShaderNodeData } from '../types';
 import { Compositor, type FrameInputs } from '../engine/compositor';
 import type { CanonicalExecutionPlan, RuntimeWorkCommand } from '../engine/executionEngine';
 import { initializeSdk, type WasmRuntimeContract } from './index';
-import type { BrowserWorkerRequest, BrowserWorkerResponse } from './browserWorkerProtocol';
+import type { BrowserWorkerIncoming, BrowserWorkerRequest, BrowserWorkerResponse } from './browserWorkerProtocol';
 import type { OutputDeliveryBatch, OutputPayload } from './contract';
 import { compactRuntimeText, runtimeLog } from './runtimeLog';
 
@@ -19,6 +19,8 @@ let rendererIds = new Set<string>();
 let previewPending = false;
 let resolution = new Float32Array([512, 512, 1]);
 const PREVIEW_SUBSCRIPTION_ID = 'browser-preview';
+const FRAME_INTERVAL_MS = 1000 / 60;
+const RENDERER_PREVIEW_INTERVAL_MS = 1000 / 15;
 const outputPortByNode = new Map<string, string>();
 const rendererSourceByNode = new Map<string, string>();
 const outputGenerationByNode = new Map<string, number>();
@@ -29,6 +31,25 @@ const logicalSubscriptionByNode = new Map<string, {
 }>();
 let graphRevision = 0;
 let previewSubscribed = false;
+let nextFrameAt = 0;
+const rendererPreviewPending = new Set<string>();
+const rendererPreviewAt = new Map<string, number>();
+let activeVideoNodeIds = new Set<string>();
+type PendingVideoFrame = { frameId: number; frame: ImageBitmap };
+let pendingVideoFrames = new Map<string, PendingVideoFrame>();
+
+function acknowledgeVideoFrame(nodeId: string, frameId: number): void {
+  post({ type: 'video-frame-consumed', nodeId, frameId });
+}
+
+function releaseVideoFrame(pending: PendingVideoFrame): void {
+  pending.frame.close();
+}
+
+function clearVideoFrames(): void {
+  for (const pending of pendingVideoFrames.values()) releaseVideoFrame(pending);
+  pendingVideoFrames.clear();
+}
 
 function post(message: BrowserWorkerResponse): void {
   scope.postMessage(message);
@@ -53,8 +74,20 @@ function applyGraphContract(
   core: WasmRuntimeContract,
   nodes: Node<ShaderNodeData>[],
   plan: CanonicalExecutionPlan,
+  revision: number,
 ): void {
-  graphRevision = plan.revision;
+  graphRevision = revision;
+  activeVideoNodeIds = new Set(
+    nodes
+      .filter((node) => node.data.type === 'input' && node.data.inputMode === 'video')
+      .map((node) => node.id),
+  );
+  core.setVideoNodes([...activeVideoNodeIds]);
+  for (const [nodeId, pending] of pendingVideoFrames) {
+    if (activeVideoNodeIds.has(nodeId)) continue;
+    releaseVideoFrame(pending);
+    pendingVideoFrames.delete(nodeId);
+  }
   outputGenerationByNode.clear();
   outputPortByNode.clear();
   rendererSourceByNode.clear();
@@ -181,6 +214,24 @@ function publishPreviewDelivery(): void {
   consumeOutputDeliveries(publishResourceOutput(previewNodeId, portId));
 }
 
+function publishRendererPreview(nodeId: string, now: number): void {
+  if (rendererPreviewPending.has(nodeId)) return;
+  const lastAt = rendererPreviewAt.get(nodeId) ?? 0;
+  if (now - lastAt < RENDERER_PREVIEW_INTERVAL_MS) return;
+  rendererPreviewPending.add(nodeId);
+  rendererPreviewAt.set(nodeId, now);
+  void requireCompositor().readNodeOutput(nodeId, (outputNodeId, dataUrl) => {
+    post({ type: 'output', nodeId: outputNodeId, dataUrl });
+  }).catch((error) => {
+    runtimeLog('browser-worker', 'warn', 'renderer-preview-readback-failed', {
+      nodeId,
+      error: compactRuntimeText(error),
+    });
+  }).finally(() => {
+    rendererPreviewPending.delete(nodeId);
+  });
+}
+
 function publishLogicalOutput(nodeId: string, data: unknown): void {
   const subscription = logicalSubscriptionByNode.get(nodeId);
   if (!subscription) return;
@@ -218,6 +269,7 @@ function publishLogicalOutput(nodeId: string, data: unknown): void {
 
 function stopLoop(): void {
   running = false;
+  nextFrameAt = 0;
   if (frameTimer !== null) {
     scope.clearTimeout(frameTimer);
     frameTimer = null;
@@ -226,13 +278,15 @@ function stopLoop(): void {
 
 function scheduleFrame(): void {
   if (!running || frameTimer !== null) return;
-  frameTimer = scope.setTimeout(runFrame, 0);
+  const delay = Math.max(0, nextFrameAt - performance.now());
+  frameTimer = scope.setTimeout(runFrame, delay);
 }
 
 function runFrame(): void {
   frameTimer = null;
   if (!running) return;
   const now = performance.now();
+  nextFrameAt = now + FRAME_INTERVAL_MS;
   const date = new Date();
   const inputs = new Float32Array([
     date.getFullYear(), date.getMonth() + 1, date.getDate(),
@@ -258,6 +312,10 @@ function runFrame(): void {
       now, frame: clock.frame, commands: work.length, previewNodeId,
     });
   }
+  const frameBatch = pendingVideoFrames;
+  pendingVideoFrames = new Map();
+  const videoElements = new Map<string, ImageBitmap>();
+  for (const [nodeId, pending] of frameBatch) videoElements.set(nodeId, pending.frame);
   const builtins: FrameInputs = {
     time: clock.timelineNs / 1_000_000_000,
     delta: (clock.timelineNs - clock.previousTimelineNs) / 1_000_000_000,
@@ -265,10 +323,18 @@ function runFrame(): void {
     date: inputs,
     mouse: new Float32Array(4),
     resolution,
+    videoElements: videoElements.size > 0 ? videoElements : undefined,
   };
-  requireCompositor().render(builtins, work);
+  try {
+    requireCompositor().render(builtins, work);
+  } finally {
+    for (const pending of frameBatch.values()) releaseVideoFrame(pending);
+  }
   for (const command of work) {
-    if (command.kind === 'renderer') requireCompositor().renderRendererToScreen(command.nodeId);
+    if (command.kind === 'renderer') {
+      requireCompositor().renderRendererToScreen(command.nodeId);
+      publishRendererPreview(command.nodeId, now);
+    }
     if (command.kind === 'math' && command.scalarOutput !== undefined) {
       publishLogicalOutput(command.nodeId, command.scalarOutput);
     }
@@ -292,10 +358,10 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
     }
     case 'play': {
       const core = requireRuntime();
-      core.setGraph(message.nodes, message.edges);
+      const revision = core.setGraph(message.nodes, message.edges);
       const plan = core.executionPlan<CanonicalExecutionPlan>();
       consumeOutputDeliveries(core.drainDeliveries());
-      applyGraphContract(core, message.nodes, plan);
+      applyGraphContract(core, message.nodes, plan, revision);
       rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
       const pending = requireCompositor().prepare(
         message.nodes, message.edges,
@@ -317,10 +383,10 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
       rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
       {
         const core = requireRuntime();
-        core.setGraph(message.nodes, message.edges);
+        const revision = core.setGraph(message.nodes, message.edges);
         const plan = core.executionPlan<CanonicalExecutionPlan>();
         consumeOutputDeliveries(core.drainDeliveries());
-        applyGraphContract(core, message.nodes, plan);
+        applyGraphContract(core, message.nodes, plan, revision);
         await Promise.all(requireCompositor().prepare(
           message.nodes,
           message.edges,
@@ -343,10 +409,15 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
     case 'resume':
       requireRuntime().resume(Math.round(performance.now() * 1_000_000));
       running = true;
+      rendererPreviewPending.clear();
+      rendererPreviewAt.clear();
       scheduleFrame();
       return undefined;
     case 'stop':
       stopLoop();
+      clearVideoFrames();
+      rendererPreviewPending.clear();
+      rendererPreviewAt.clear();
       requireRuntime().stop();
       return undefined;
     case 'set-preview': {
@@ -400,6 +471,9 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
     }
     case 'close':
       stopLoop();
+      rendererPreviewPending.clear();
+      rendererPreviewAt.clear();
+      clearVideoFrames();
       runtime?.dispose();
       compositor?.dispose();
       runtime = null;
@@ -409,8 +483,21 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
   }
 }
 
-scope.onmessage = (event: MessageEvent<BrowserWorkerRequest>) => {
+scope.onmessage = (event: MessageEvent<BrowserWorkerIncoming>) => {
   const message = event.data;
+  if (message.type === 'video-frame') {
+    if (!activeVideoNodeIds.has(message.nodeId)) {
+      message.frame.close();
+      acknowledgeVideoFrame(message.nodeId, message.frameId);
+      return;
+    }
+    const previous = pendingVideoFrames.get(message.nodeId);
+    if (previous) releaseVideoFrame(previous);
+    pendingVideoFrames.set(message.nodeId, { frameId: message.frameId, frame: message.frame });
+    acknowledgeVideoFrame(message.nodeId, message.frameId);
+    scheduleFrame();
+    return;
+  }
   void handle(message).then(
     (value) => post({ id: message.id, ok: true, value }),
     (error: unknown) => post({

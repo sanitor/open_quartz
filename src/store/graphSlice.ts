@@ -115,7 +115,10 @@ export function graphSlice(
       }
       saveSnapshot();
       set((state) => {
-        state.edges = addEdge({ ...connection, type: 'bezier' }, state.edges);
+        const withoutExistingTarget = state.edges.filter(
+          (edge) => edge.target !== connection.target || edge.targetHandle !== connection.targetHandle,
+        );
+        state.edges = addEdge({ ...connection, type: 'bezier' }, withoutExistingTarget);
       });
     },
 

@@ -147,6 +147,43 @@ describe('NativePipelineRuntime', () => {
     expect(JSON.parse((graphCall.args as Record<string, string>).graphJson)).toEqual({ nodes: [], edges: [] });
   });
 
+  it('preserves SYSTEM TIME and its Hue angle edge in the native graph snapshot', async () => {
+    const bridge = new FakeBridge();
+    const runtime = new NativePipelineRuntime({}, bridge);
+    await runtime.initialize();
+    const nodes = [
+      {
+        id: 'time', type: 'input', position: { x: 0, y: 0 },
+        data: {
+          type: 'input', label: 'Time', shaderCode: '', inputs: [],
+          outputs: [{ id: 'time_out', label: 'value', dataType: 'float', direction: 'output' }],
+          uniforms: {}, inputMode: 'system', inputDataType: 'float', systemSource: 'time',
+        },
+      },
+      {
+        id: 'hue', type: 'shader', position: { x: 1, y: 0 },
+        data: {
+          type: 'shader', label: 'Hue Rotate', shaderCode: '@fragment fn main() -> @location(0) vec4f { return vec4f(angle); }',
+          inputs: [{ id: 'angle', label: 'angle', dataType: 'float', direction: 'input' }],
+          outputs: [], uniforms: {},
+        },
+      },
+    ];
+    const edges = [{
+      id: 'time_to_hue', source: 'time', sourceHandle: 'time_out',
+      target: 'hue', targetHandle: 'angle',
+    }];
+
+    await runtime.setGraph(nodes as never, edges as never);
+
+    const graphCall = bridge.calls.find(({ command }) => command === 'native_gpu_set_graph');
+    const graph = JSON.parse((graphCall?.args as Record<string, string>).graphJson);
+    expect(graph.nodes[0].data).toMatchObject({
+      inputMode: 'system', inputDataType: 'float', systemSource: 'time',
+    });
+    expect(graph.edges).toEqual([expect.objectContaining(edges[0])]);
+  });
+
   it('separates native video paths from graph snapshots and attaches once', async () => {
     const bridge = new FakeBridge();
     const runtime = new NativePipelineRuntime({}, bridge);

@@ -14,7 +14,7 @@ export interface FrameInputs {
   date: Float32Array;
   mouse: Float32Array;
   resolution: Float32Array;
-  videoElements?: Map<string, HTMLVideoElement>;
+  videoElements?: Map<string, HTMLVideoElement | ImageBitmap>;
 }
 
 export class Compositor {

@@ -9,6 +9,15 @@ export type BrowserWorkerRequest =
   | { id: number; type: 'set-preview'; nodeId: string | null }
   | { id: number; type: 'capture'; nodeId: string };
 
+export type BrowserWorkerVideoFrame = {
+  type: 'video-frame';
+  nodeId: string;
+  frameId: number;
+  frame: ImageBitmap;
+};
+
+export type BrowserWorkerIncoming = BrowserWorkerRequest | BrowserWorkerVideoFrame;
+
 
 export type BrowserWorkerRequestPayload = BrowserWorkerRequest extends infer Request
   ? Request extends { id: number }
@@ -17,6 +26,7 @@ export type BrowserWorkerRequestPayload = BrowserWorkerRequest extends infer Req
   : never;
 export type BrowserWorkerEvent =
   | { type: 'frame'; frame: number; time: number; fps: number }
+  | { type: 'video-frame-consumed'; nodeId: string; frameId: number }
   | { type: 'output'; nodeId: string; dataUrl: string }
   | { type: 'output-size'; nodeId: string; width: number; height: number }
   | { type: 'output-data'; nodeId: string; data: unknown }

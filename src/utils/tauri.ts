@@ -6,6 +6,11 @@
 
 let _isTauri: boolean | null = null;
 
+export function isTauriRuntime(): boolean {
+  return typeof globalThis !== 'undefined'
+    && Boolean((globalThis as typeof globalThis & { isTauri?: boolean }).isTauri);
+}
+
 export async function checkIsTauri(): Promise<boolean> {
   if (_isTauri !== null) return _isTauri;
   try {
