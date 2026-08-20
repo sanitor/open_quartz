@@ -2,8 +2,26 @@
 
 ## Unreleased
 
+## [0.20.0b] -- 2026-08-19
+
+### Breaking Changes
+
+- **Rust crate boundaries** — split the former monolithic runtime into substantive `open_quartz_schema`, `open_quartz_execution`, `open_quartz_host_api`, `open_quartz_sdk`, and `open_quartz_bindings` crates. `open_quartz` is now the thin native/WASM facade, and legacy internal module paths are no longer public.
+- **Thin TypeScript cutover** — remove the legacy TypeScript graph/GPU runtimes, shader materialization, Math execution callbacks, duplicate ONNX registries and pre/postprocessors, and obsolete WebGL execution types. Public TypeScript objects now proxy Rust-owned aggregates and revisions.
+
+### Features
+
+- **Rust-backed public objects** — `OpenQuartz`, `Project`, `Graph`, `Node`, and `Port` now use Rust-owned snapshots, atomic edits, monotonic revisions, rollback/redo, validation, serialization, and structured stale/disposed errors through WASM and native bindings.
+- **Rust-owned graph and project policy** — move node factories, connection/type invariants, cascade removal, Project normalization, screen saver transforms, catalog execution semantics, ONNX task planning, and host resource intents into directly tested Rust contracts.
+- **Unified Renderer previews** — keep one Renderer output across graph-node, Side Panel, fullscreen, native TextureStream, bounded native readback, and browser PNG preview paths. The Side Panel now renders actual browser output data and a named native mirror target.
+- **Measured browser path improvements** — use `FileReader` for preview Blob data URLs with an exact fallback and reuse per-frame typed arrays in the Worker; reproducible benchmark fixtures record the measured boundary without claiming unmeasured ORT/video gains.
+- **Boundary enforcement** — add dependency checks, public-proxy parity checks, compile fixtures, language conformance tests, and CI enforcement for the new Rust/TypeScript boundaries.
+
 ### Fixes
 
+- **Runtime playback state** — make Native live graph replacement restart the composition clock atomically under the runtime lock, remove the duplicate host `play` call, and recheck playback after lock acquisition so pause/stop races cannot advance a paused Runtime.
+- **Renderer preview lifecycle** — switching In-place preview while playing no longer reports `Runtime can only play from the ready state`; Browser and Native Side Panel previews now receive the active Renderer output.
+- **Graph undo/redo projection** — align Store actions with one Rust history entry so Renderer and ONNX defaults no longer create hidden extra revisions that leave nodes visible after Undo.
 - **Web video playback** — keep one acknowledged video frame in flight per node, acknowledge Worker receipt before rendering, coalesce pending `ImageBitmap`s, and cap the Worker render loop at 60 FPS so message and GPU queues cannot run away. Browser previews no longer create duplicate media decoders; replacement sources are started before the old source is released, and stale Blob URLs are revoked.
 - **Browser video file chooser** — stop the hidden file input's synthetic click from bubbling back into its clickable node container, which recursively reopened the chooser and emitted continuous errors; browser selection now stays synchronous while Tauri continues through the native dialog plugin.
 - **Renderer fullscreen TextureStream lifecycle** — moving the canonical video consumer into fullscreen explicitly resumes playback, and closing fullscreen relocates it before React tears down the overlay so presentation does not stop.
@@ -12,8 +30,8 @@
 
 ### Tests
 
-- **Browser video frame bridge** — cover single-shot file chooser activation, frame-transfer backpressure, replacement decoder failure, duplicate-preview prevention, and worker-facing video-node configuration. Browser smoke validation selects and plays an MP4 with one chooser activation, one active decoder, bounded frame transport, and no runtime errors.
-- **Hue Rotate time input** — cover frontend edge replacement, Tauri graph serialization, real generated-WASM clock propagation, and native wgpu execution; the Metal-backed GPU test confirms SYSTEM TIME changes the rendered uniform output from red `64` to `191`.
+- **Automated suites** — 704 Vitest tests across 39 files and 129 Rust tests across 43 suites pass, together with TypeScript diagnostics, production WASM/Vite builds, public-proxy parity, Rust dependency boundaries, and real Browser Renderer playback/preview smoke coverage.
+- **Runtime lifecycle regressions** — cover Rust/Store revision parity, Native pause/stop lock races, live Native graph replacement, Browser play/pause/resume/stop cycles, and Renderer In-place-to-Side-Panel preview routing.
 
 ## [0.19.0b] -- 2026-08-10
 

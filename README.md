@@ -91,8 +91,8 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 - Read-only shader viewer for prebuilt catalog shaders (code visible for learning, not editable)
 - Port inspector with color-coded type indicators and inline uniform editing
 - Per-component vector editing (x/y/z/w) for vec2-4 uniforms
-- Per-node live preview readback (selected node only, zero overhead when unselected)
-- Output preview, Auto Size, sampling config (filter/wrap)
+- Per-node live preview readback for selected shader/input nodes, plus Renderer output mirrored between the graph node, Side Panel, and fullscreen view
+- Renderer Side Panel preview uses the browser PNG output, native bounded readback mirror, or the canonical Windows TextureStream consumer without starting a second runtime
 
 ### Preview Lightbox
 - Full-screen viewer with scroll-to-zoom, drag-to-pan, double-click reset
@@ -101,27 +101,28 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 
 ### Project Management
 - Save / Save As / Load (`.quartz.json` files)
-- 50-level undo/redo with Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z
-- Windows `File → Export As Screen Saver…` selects one Renderer and the image/video inputs exposed by native `/c` settings. The lightweight `.scr` keeps media as path references, uses native Win32 configuration dialogs, and reuses the installed OpenQuartz renderer for `/s` and `/p <HWND>`.
+- Rust-owned 50-level undo/redo with Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z
+- Windows `File → Export As Screen Saver…` packages a selected Renderer into a self-contained version-3 native `.scr` with its graph-required image/video/model/runtime resources; `/s`, `/p <HWND>`, and `/c` do not require an installed OpenQuartz app.
 
 ### Desktop App (Tauri)
 - Native desktop application via Tauri 2
 - Custom titlebar (macOS traffic lights, Windows min/max/close)
 - Video file persistence via asset protocol
 - Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, Windows x64 file-source D3D12VA→P010 GPU import, and CPU/DirectML ONNX graph execution
-- `PipelineService` selects exactly one host runtime: browser uses `BrowserPipelineRuntime` with a dedicated Worker/WASM Runtime; Tauri uses `NativePipelineRuntime` and draws bounded native previews directly into existing Renderer canvases—no separate output window
-- Native graph metadata, media/model resources, decoded frames, ONNX task pixels, and per-frame commands stay on their owning side of the Tauri boundary; renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
+- `PipelineService` projects Zustand UI intent onto the public `Player`; browser uses `BrowserHost` with a dedicated Worker/WASM Runtime, while Tauri uses `NativeHost` and the same Rust lifecycle/resource contracts—no hidden dual-runtime fallback
+- Rust host resource intents own graph/resource reconciliation; TypeScript adapters retain only DOM/Tauri/WebView2 operations and opaque platform handles. Renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
 - Shared-texture and hardware-frame contracts cover DXGI/IOSurface/DMA-BUF. Windows x64 file-video now uses D3D12VA→wgpu P010 import and a WebView2 TextureStream consumer with StartRequested handling, reusable texture allocation, adapter-capability retry, first-frame handshake, and accurate presented-frame cadence telemetry; the tested 1920×1080 H.264 path sustains 61.31 FPS over a 10-second native benchmark with zero CPU-copy bytes. Camera/non-Windows video retains the explicit CPU-copy fallback; IOSurface, DMA-BUF, and camera hardware-frame adapters remain follow-up work.
 - WebView fallback remains lossless bounded RGBA readback. No H.264 preview path is used because Renderer output must preserve exact pixels; SAVE/screenshot always performs explicit lossless capture.
 - Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
 - Exported Windows screen savers use a self-contained Win32 host linked directly to the shared Rust Runtime and wgpu executor. The host renders straight into a DX12 window surface, embeds only graph-required video/model/runtime resources, and runs shader/image/math/feedback/renderer, file-video, and ONNX graphs without an installed OpenQuartz/Tauri app. Camera inputs are rejected because an export cannot preserve a deterministic camera source.
 
 ### Rust SDK and Structured Runtime
-- Dual-target `open_quartz` crate for native and WASM graph semantics
+- Real crate boundaries: `open_quartz_schema` → `open_quartz_execution` → `open_quartz_host_api` → `open_quartz_sdk`, with `open_quartz` as the thin native/WASM facade and `open_quartz_bindings` for JNI
+- Rust-backed public `OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, and `Player` aggregates with atomic edits, revision/history ownership, serialization, and structured errors
 - Rust-backed production WGSL parser/compiler validation via `naga`
-- Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, and feedback state preservation
+- Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, feedback state preservation, catalog semantics, ONNX tasks, and host resource intents
 - Native `wgpu` pipeline/target/readback primitives and a Tauri-owned render thread
-- Structured SDK capabilities, errors, lifecycle, and bounded events
+- Dependency-boundary CI plus Rust/WASM/TypeScript/Java public-proxy conformance
 
 ## Getting Started
 
@@ -135,7 +136,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 ## Testing
 
 ```bash
-npm test               # 998 unit tests across 43 files (fast, CI gate)
+npm test               # 704 unit tests across 39 files (fast, CI gate)
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```
@@ -161,7 +162,7 @@ React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6
 
 ### Rust SDK and native runtime
 
-Open Quartz shares graph and engine semantics in Rust while retaining host-specific browser and Tauri GPU/media implementations. Production host selection is explicit: browser runs `BrowserPipelineRuntime`; Tauri runs `NativePipelineRuntime` with no hidden dual-runtime fallback.
+Open Quartz owns cross-platform graph, project, catalog, lifecycle, inference-task, and resource-intent semantics in Rust. TypeScript is limited to framework projection and required Browser/Tauri/WebView2/ORT-Web platform operations; production host selection remains explicit through `BrowserHost` and `NativeHost`.
 
 | Stage | What | Status |
 |-------|------|--------|
@@ -172,6 +173,7 @@ Open Quartz shares graph and engine semantics in Rust while retaining host-speci
 | **E. Native resource/output parity** | Image/video resources, FFmpeg, preview/screenshot readback, packaging | Done |
 | **F. Native ONNX graph cutover** | Async texture/tensor execution, six-task parity, cascade, provider/output events | Done |
 | **G. Production switch** | `PipelineService` selects one explicit runtime per host | Done |
+| **H. Thin TypeScript convergence** | Rust-backed public proxies, Store graph commands, Project/screen saver/catalog/inference/resource policy, real crate boundaries | Done |
 
 ### Quartz Composer parity
 
