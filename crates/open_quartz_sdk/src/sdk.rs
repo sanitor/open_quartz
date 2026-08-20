@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use serde::{Deserialize, Serialize};
 
-use open_quartz_schema::{SdkError, SdkErrorCode};
 use open_quartz_execution::event::EngineState;
 use open_quartz_execution::runtime::{
     DeliveryPolicy, OutputKey, OutputSubscription, OutputTransport, Runtime, RuntimeCapabilities,
@@ -15,6 +14,7 @@ use open_quartz_schema::{
     NodeFactoryRequest, NodeId, NodeType, OnnxSource, Port, PortDirection, Position, ProjectFile,
     ProjectNode, ResourceId, SystemSource, PROJECT_FILE_VERSION,
 };
+use open_quartz_schema::{SdkError, SdkErrorCode};
 use serde_json::Value;
 
 const SCREEN_SAVER_RESAMPLE_NODE_ID: &str = "__screen_saver_output_resample";
@@ -77,20 +77,17 @@ impl OpenQuartz {
     }
 
     pub fn open_project_json(&self, project_json: &str) -> Result<Project, SdkError> {
-        let file: ProjectFile = serde_json::from_str(project_json)
-            .map_err(|error| {
-                SdkError::new(SdkErrorCode::InvalidState, "Cannot decode project")
-                    .with_details(error.to_string())
-            })?;
+        let file: ProjectFile = serde_json::from_str(project_json).map_err(|error| {
+            SdkError::new(SdkErrorCode::InvalidState, "Cannot decode project")
+                .with_details(error.to_string())
+        })?;
         Project::try_from_file(file)
     }
 
     pub fn normalize_project_json(&self, project_json: &str) -> Result<String, SdkError> {
         let project = self.open_project_json(project_json)?;
-        serde_json::to_string(&project.to_file()).map_err(|error| {
-            SdkError::new(SdkErrorCode::InvalidState, "Cannot encode project")
-                .with_details(error.to_string())
-        })
+        Ok(serde_json::to_string(&project.to_file())
+            .expect("ProjectFile serialization should be infallible"))
     }
 
     pub fn screen_saver_export_project_json(
@@ -102,13 +99,8 @@ impl OpenQuartz {
         project.graph = project
             .graph
             .upstream_subgraph(&NodeId::new(renderer_node_id))?;
-        serde_json::to_string(&project.to_file()).map_err(|error| {
-            SdkError::new(
-                SdkErrorCode::InvalidState,
-                "Cannot encode screen saver project",
-            )
-            .with_details(error.to_string())
-        })
+        Ok(serde_json::to_string(&project.to_file())
+            .expect("screen saver ProjectFile serialization should be infallible"))
     }
 
     pub fn player(&self, graph: &Graph) -> PlayerBuilder {
@@ -137,14 +129,13 @@ pub struct Project {
 impl Project {
     pub fn try_from_file(file: ProjectFile) -> Result<Self, SdkError> {
         if file.version != PROJECT_FILE_VERSION {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidState,
-                "Incompatible project version",
-            )
-            .with_details(format!(
-                "expected {PROJECT_FILE_VERSION}, got {}",
-                file.version
-            )));
+            return Err(
+                SdkError::new(SdkErrorCode::InvalidState, "Incompatible project version")
+                    .with_details(format!(
+                        "expected {PROJECT_FILE_VERSION}, got {}",
+                        file.version
+                    )),
+            );
         }
         file.graph.validate()?;
         Ok(Self::from_file(file))
@@ -217,7 +208,9 @@ impl Project {
             .graph
             .upstream_subgraph(&NodeId::new(renderer_node_id))?;
         graph.insert_screen_saver_resample(renderer_node_id, width, height)?;
-        graph.validate()?;
+        graph
+            .validate()
+            .expect("screen saver graph transformation should preserve validity");
         Ok(graph)
     }
 
@@ -263,7 +256,8 @@ impl Project {
                     .clone();
                 let parsed = open_quartz_execution::wgsl::parse_shader(&shader_code);
                 let inputs = remap_ports_preserving_ids(&node.data.inputs, &node.id, parsed.inputs);
-                let outputs = remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs);
+                let outputs =
+                    remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs);
                 let mut data = node.data;
                 data.shader_code = shader_code;
                 data.inputs = inputs;
@@ -300,13 +294,14 @@ impl Project {
                 let shader_code = input_shader_code(data_type);
                 let parsed = open_quartz_execution::wgsl::parse_shader(&shader_code);
                 let inputs = remap_ports_preserving_ids(&node.data.inputs, &node.id, parsed.inputs);
-                let outputs = remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs)
-                    .into_iter()
-                    .map(|mut port| {
-                        port.data_type = data_type;
-                        port
-                    })
-                    .collect();
+                let outputs =
+                    remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs)
+                        .into_iter()
+                        .map(|mut port| {
+                            port.data_type = data_type;
+                            port
+                        })
+                        .collect();
                 let mut data = node.data;
                 data.shader_code = shader_code;
                 data.input_data_type = Some(data_type);
@@ -351,7 +346,10 @@ impl Project {
     pub fn rollback_graph(&mut self, expected_revision: u32) -> Result<GraphChange, SdkError> {
         self.ensure_graph_revision(expected_revision)?;
         let previous = self.graph_history.pop().ok_or_else(|| {
-            SdkError::new(SdkErrorCode::InvalidState, "Graph has no revision to roll back")
+            SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Graph has no revision to roll back",
+            )
         })?;
         let changed_nodes = changed_node_ids(&self.graph, &previous);
         let current = self.graph.clone();
@@ -365,7 +363,10 @@ impl Project {
     pub fn redo_graph(&mut self, expected_revision: u32) -> Result<GraphChange, SdkError> {
         self.ensure_graph_revision(expected_revision)?;
         let next = self.graph_redo.pop().ok_or_else(|| {
-            SdkError::new(SdkErrorCode::InvalidState, "Graph has no revision to reapply")
+            SdkError::new(
+                SdkErrorCode::InvalidState,
+                "Graph has no revision to reapply",
+            )
         })?;
         let previous = self.graph.clone();
         let changed_nodes = changed_node_ids(&previous, &next);
@@ -415,14 +416,14 @@ impl Project {
         if expected_revision == self.graph_revision {
             return Ok(());
         }
-        Err(SdkError::new(
-            SdkErrorCode::StaleRevision,
-            "Graph revision is stale",
+        Err(
+            SdkError::new(SdkErrorCode::StaleRevision, "Graph revision is stale").with_details(
+                format!(
+                    "expected revision {expected_revision}, current revision {}",
+                    self.graph_revision
+                ),
+            ),
         )
-        .with_details(format!(
-            "expected revision {expected_revision}, current revision {}",
-            self.graph_revision
-        )))
     }
 
     fn build_graph_node(&self, request: NodeFactoryRequest) -> Result<ProjectNode, SdkError> {
@@ -438,9 +439,7 @@ impl Project {
             NodeFactoryRequest::Math { position, op } => {
                 (NodeType::Math, position, math_label(op).unwrap_or("math"))
             }
-            NodeFactoryRequest::Renderer { position } => {
-                (NodeType::Renderer, position, "renderer")
-            }
+            NodeFactoryRequest::Renderer { position } => (NodeType::Renderer, position, "renderer"),
             NodeFactoryRequest::Onnx {
                 position, label, ..
             } => (NodeType::Onnx, position, label.as_str()),
@@ -533,7 +532,11 @@ impl Project {
                     SdkError::new(SdkErrorCode::InvalidGraph, "Unknown math operation")
                         .with_details(op.clone())
                 })?;
-                data.label = format!("{}_{}", normalize_label(math_label(&op).unwrap()), numeric_suffix(&id));
+                data.label = format!(
+                    "{}_{}",
+                    normalize_label(math_label(&op).unwrap()),
+                    numeric_suffix(&id)
+                );
                 data.template_name = math_label(&op).map(str::to_owned);
                 data.math_op = Some(op);
                 data.inputs = math_ports(&id, input_count, PortDirection::Input);
@@ -595,11 +598,12 @@ impl Project {
     }
 
     fn reconcile_layout(&mut self, previous: &Graph) {
-        self.layout
-            .positions
-            .retain(|node_id, _| self.graph.nodes().iter().any(|node| {
-                node.id == node_id.as_str()
-            }));
+        self.layout.positions.retain(|node_id, _| {
+            self.graph
+                .nodes()
+                .iter()
+                .any(|node| node.id == node_id.as_str())
+        });
         for node in self.graph.nodes() {
             let changed = previous
                 .nodes()
@@ -847,7 +851,10 @@ fn remap_ports_preserving_ids(existing: &[Port], node_id: &str, ports: Vec<Port>
     ports
         .into_iter()
         .map(|mut port| {
-            if let Some(previous) = existing.iter().find(|candidate| candidate.label == port.label) {
+            if let Some(previous) = existing
+                .iter()
+                .find(|candidate| candidate.label == port.label)
+            {
                 port.id = previous.id.clone();
             } else {
                 port.id = format!("{node_id}_{}", port.label);
@@ -864,13 +871,13 @@ fn input_shader_code(data_type: DataType) -> String {
          @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { \
            return textureSample(value, valueSampler, v_uv); \
          }"
-            .replace("         ", "")
+        .replace("         ", "")
     } else {
         "@group(0) @binding(0) var<uniform> value: f32;\n\
          @fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { \
            return vec4f(value, 0.0, 0.0, 1.0); \
          }"
-            .replace("         ", "")
+        .replace("         ", "")
     }
 }
 
@@ -951,8 +958,7 @@ fn math_input_count(op: &str) -> Option<usize> {
     Some(match op {
         "negate" | "saturate" | "abs" | "sign" | "sin" | "cos" | "tan" | "asin" | "acos"
         | "atan" | "sqrt" | "exp" | "log" | "floor" | "ceil" | "round" | "fract" => 1,
-        "add" | "subtract" | "multiply" | "divide" | "modulo" | "min" | "max" | "step"
-        | "pow" => 2,
+        "add" | "subtract" | "multiply" | "divide" | "modulo" | "min" | "max" | "step" | "pow" => 2,
         "clamp" | "smoothstep" | "mix" => 3,
         _ => return None,
     })
@@ -962,7 +968,10 @@ fn math_ports(node_id: &str, count: usize, direction: PortDirection) -> Vec<Port
     let labels = ["a", "b", "c"];
     (0..count)
         .map(|index| Port {
-            id: format!("{node_id}_{}", labels.get(index).copied().unwrap_or("value")),
+            id: format!(
+                "{node_id}_{}",
+                labels.get(index).copied().unwrap_or("value")
+            ),
             label: labels.get(index).copied().unwrap_or("value").to_owned(),
             data_type: DataType::Auto,
             direction,
@@ -1087,8 +1096,11 @@ impl PlayerBuilder {
     }
 
     pub fn build(self) -> Result<Player, SdkError> {
+        self.graph.validate()?;
         let mut runtime = Runtime::new(self.environment.capabilities());
-        runtime.set_graph(&self.graph)?;
+        runtime
+            .set_graph(&self.graph)
+            .expect("validated Graph should initialize the Runtime");
         let runtime = Arc::new(Mutex::new(runtime));
         let subscription_counter = Arc::new(AtomicU64::new(1));
         let outputs = build_outputs(&self.graph, &runtime, &subscription_counter);
@@ -1129,49 +1141,51 @@ impl Player {
     }
 
     pub fn play(&mut self) -> Result<(), SdkError> {
-        self.ensure_open()?;
         let start = self.next_now();
         let first_frame = self.next_now();
-        let mut runtime = lock_runtime(&self.runtime)?;
+        let mut runtime = self.open_runtime()?;
         runtime.play(start)?;
-        runtime.advance(&RuntimeFrameInput {
-            now_ns: first_frame,
-            date: [0.0; 4],
-            mouse: [0.0; 4],
-            resolution: [1.0, 1.0, 1.0],
-        })?;
+        runtime
+            .advance(&RuntimeFrameInput {
+                now_ns: first_frame,
+                date: [0.0; 4],
+                mouse: [0.0; 4],
+                resolution: [1.0, 1.0, 1.0],
+            })
+            .expect("a newly playing Runtime should accept its first frame");
         Ok(())
     }
 
     pub fn pause(&mut self) -> Result<(), SdkError> {
-        self.ensure_open()?;
         let now = self.next_now();
-        lock_runtime(&self.runtime)?.pause(now)
+        self.open_runtime()?.pause(now)
     }
 
     pub fn resume(&mut self) -> Result<(), SdkError> {
-        self.ensure_open()?;
         let now = self.next_now();
-        lock_runtime(&self.runtime)?.resume(now)
+        self.open_runtime()?.resume(now)
     }
 
     pub fn stop(&mut self) -> Result<(), SdkError> {
-        self.ensure_open()?;
-        lock_runtime(&self.runtime)?.stop()
+        self.open_runtime()?.stop()
     }
 
     pub fn apply_graph(&mut self, graph: &Graph, _change: &GraphChange) -> Result<u32, SdkError> {
-        self.ensure_open()?;
-        let revision = lock_runtime(&self.runtime)?.set_graph(graph)?;
+        graph.validate()?;
+        let revision = self
+            .open_runtime()?
+            .set_graph(graph)
+            .expect("validated Graph should update the Runtime");
         self.outputs = build_outputs(graph, &self.runtime, &self.subscription_counter);
         Ok(revision)
     }
 
     pub fn close(&mut self) -> Result<(), SdkError> {
-        if self.state() == PlayerState::Closed {
+        let mut runtime = lock_runtime(&self.runtime)?;
+        if runtime.state() == EngineState::Disposed {
             return Ok(());
         }
-        lock_runtime(&self.runtime)?.dispose()
+        runtime.dispose()
     }
 
     pub fn graph_revision(&self) -> u32 {
@@ -1188,15 +1202,15 @@ impl Player {
         &self.resources
     }
 
-    fn ensure_open(&self) -> Result<(), SdkError> {
-        if self.state() == PlayerState::Closed {
-            Err(SdkError::new(
+    fn open_runtime(&self) -> Result<MutexGuard<'_, Runtime>, SdkError> {
+        let runtime = lock_runtime(&self.runtime)?;
+        if runtime.state() == EngineState::Disposed {
+            return Err(SdkError::new(
                 SdkErrorCode::Disposed,
                 "Player has been closed",
-            ))
-        } else {
-            Ok(())
+            ));
         }
+        Ok(runtime)
     }
 
     fn next_now(&mut self) -> u64 {
@@ -1339,3 +1353,7 @@ fn lock_runtime(runtime: &Arc<Mutex<Runtime>>) -> Result<MutexGuard<'_, Runtime>
         )
     })
 }
+
+#[cfg(test)]
+#[path = "sdk_coverage_tests.rs"]
+mod coverage_tests;

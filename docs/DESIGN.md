@@ -1400,6 +1400,35 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 
 薄TS迁移完成后，一个重要副产物是：**几乎所有非GUI、非平台专属功能都可由Rust层unit/contract tests直接覆盖。** 这不是追求虚假的100%行覆盖，而是让业务功能的失败首先在Rust tests中出现，而不是依赖React/Worker/Tauri端到端测试才发现。
 
+`open_quartz_sdk`是例外：作为跨语言public aggregate和业务入口，它实行**100%硬门禁**，而不是把“几乎所有功能可由Rust测试”当作模糊目标。CI使用单一lib coverage binary执行私有不变量和错误分支测试，并排除独立测试源码本身，强制production `sdk.rs`同时满足line、function和region coverage 100%。 facade/WASM/TypeScript/Java测试继续验证marshalling和平台集成，但不能替代SDK层contract coverage。
+
+```bash
+npm run test:sdk-coverage
+```
+
+测试归属遵循以下规则：
+
+1. `open_quartz_sdk`拥有Project/Graph/Layout/node factory/Player/resource/output/screen saver等业务契约测试。
+2. `open_quartz` facade只保留FFI、WASM和目标平台组合测试，不重复防守SDK内部业务分支。
+3. TypeScript Store/SDK tests只验证React Flow projection、transport、error mapping和语言conformance；任何跨平台业务断言必须先在Rust owning crate存在。
+4. `open_quartz_execution`、`open_quartz_host_api`和`open_quartz_schema`分别防守执行、host intent和wire schema，不把下层算法覆盖塞回SDK facade。
+
+### 10.9 测试归属与 coverage gate
+
+重构后的测试不按调用方目录归属，而按行为语义的 owner 归属：
+
+| 层 | 必须覆盖 | 测试位置 | 不应重复承担 |
+|---|---|---|---|
+| `open_quartz_sdk` | Project/Graph/Layout、node factory、revision/history、Player lifecycle、ResourceCatalog、Output/Subscription、screen saver graph transform | `crates/open_quartz_sdk/src/sdk_coverage_tests.rs` 与 `crates/open_quartz_sdk/tests/` | 不承担 DOM、React Flow、Worker、Tauri、JNI transport |
+| `open_quartz_execution` | Runtime/Engine/GPU/WGSL/ONNX/media execution与状态机 | `crates/open_quartz_execution/tests/` | 不重复 public aggregate facade 行为 |
+| `open_quartz_host_api` | image/video/ONNX resource intent与generation policy | `crates/open_quartz_host_api/tests/` | 不承担具体 DOM/Tauri/WebView2 调用 |
+| `open_quartz_schema` | wire names、serde round-trip、兼容性和 public boundary | `crates/open_quartz_schema/tests/` | 不承担执行语义 |
+| `open_quartz` facade | WASM/native FFI、binding marshalling、GPU/environment composition | `crates/open_quartz/tests/` | 不重复 SDK business contract |
+| TypeScript | React Flow projection、Store adapter、Worker/host transport、error mapping、UI interaction | `tests/sdk`、`tests/store`、`tests/components`、`tests/services` | 不再是跨平台业务规则的唯一防线 |
+| Java/platform | JNI marshalling、thread/close/error、真实 GPU/media/Windows surface | `java/sdk/src/test`、platform smoke | 不替代 Rust semantic tests |
+
+`npm run test:sdk-coverage` 是 SDK 层硬 gate：production `sdk.rs` 的 line/function/region coverage 均必须为 100%；独立 coverage test source 使用 filename filter 排除，不会把测试代码计入分母。当前 SDK gate 实测：100% regions、100% functions、100% lines。
+
 | 功能层 | 主要Rust测试 | 仍需语言/platform测试 |
 |---|---|---|
 | Project/Graph/Layout/GraphEdit | unit + property/invariant + serialization round-trip | React Flow projection与文件picker |

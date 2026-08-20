@@ -137,6 +137,7 @@ Open http://localhost:5173 in your browser. See `docs/` for architecture and des
 
 ```bash
 npm test               # 704 unit tests across 39 files (fast, CI gate)
+npm run test:sdk-coverage # open_quartz_sdk production lines/functions/regions: 100%
 npm run test:models    # 18 ONNX functional tests (real models, real inference)
 npm run test:shaders   # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
 ```

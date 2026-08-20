@@ -17,6 +17,7 @@
     "test:models": "vitest run --config vitest.functional.config.ts",
     "test:shaders": "vitest run --config vitest.shaders.config.ts",
     "test:sdk": "npm run build:sdk && node scripts/smoke-sdk.mjs",
+    "test:sdk-coverage": "cargo llvm-cov -p open_quartz_sdk --lib --ignore-filename-regex \"sdk_coverage_tests\\.rs\" --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100 --summary-only",
     "check:public-proxy": "node scripts/check-public-proxy-parity.mjs",
     "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
     "build:sdk": "wasm-pack build crates/open_quartz --target web --release --out-dir ../../public/open_quartz-sdk --out-name open_quartz",

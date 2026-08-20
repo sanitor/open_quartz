@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Tests
+
+- **Rust SDK 100% coverage gate** — move Project/Graph/node factory/Player/resource/output behavior tests into the owning `open_quartz_sdk` crate, add exhaustive private invariant and error-path contracts, and fail CI unless production `sdk.rs` remains at 100% line, function, and region coverage. The current gate passes with 1,508 regions, 1,064 functions, and 1,057 lines covered at 100%.
+- **Layered test ownership** — keep facade/WASM/TypeScript/Java suites focused on transport, marshalling, framework projection, and platform integration instead of duplicating Rust SDK business behavior.
+
 ## [0.20.0b] -- 2026-08-19
 
 ### Breaking Changes

@@ -1,4 +1,4 @@
-use open_quartz::{
+use open_quartz_sdk::{
     DataType, Edge, Graph, InputMode, NodeData, NodeId, NodeType, Port, PortDirection, PortId,
     PortKey, Position, Project, ProjectFile, ProjectNode, SdkError, SdkErrorCode,
 };
@@ -68,12 +68,7 @@ fn node(id: &str, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
     }
 }
 
-fn typed_node(
-    id: &str,
-    node_type: NodeType,
-    inputs: Vec<Port>,
-    outputs: Vec<Port>,
-) -> ProjectNode {
+fn typed_node(id: &str, node_type: NodeType, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
     let mut node = node(id, inputs, outputs);
     node.node_type = node_type;
     node.data.node_type = node_type;
@@ -231,7 +226,7 @@ fn project_try_from_file_rejects_incompatible_versions() {
 
 #[test]
 fn rust_project_io_normalizes_save_reload_to_a_stable_file_contract() {
-    let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
+    let sdk = open_quartz_sdk::OpenQuartz::new(open_quartz_sdk::Environment::headless());
     let source = ProjectFile {
         version: "0.4.0".to_owned(),
         name: "Round trip".to_owned(),
@@ -282,7 +277,7 @@ fn graph_replace_preserves_changed_positions_in_project_serialization() {
 
 #[test]
 fn project_replace_rejects_invalid_graph_without_mutating_revision() {
-    let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
+    let sdk = open_quartz_sdk::OpenQuartz::new(open_quartz_sdk::Environment::headless());
     let mut project = sdk.create_project("Validation");
     let invalid = Graph {
         nodes: vec![node("same", vec![], vec![]), node("same", vec![], vec![])],
@@ -368,9 +363,7 @@ fn screen_saver_graph_uses_rust_upstream_and_resample_semantics() {
     };
     let project = Project::try_from_file(file).unwrap();
 
-    let graph = project
-        .screen_saver_graph("renderer", 3840, 2160)
-        .unwrap();
+    let graph = project.screen_saver_graph("renderer", 3840, 2160).unwrap();
 
     assert_eq!(
         graph

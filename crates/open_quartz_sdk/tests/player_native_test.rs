@@ -1,4 +1,4 @@
-use open_quartz::{
+use open_quartz_sdk::{
     DataType, Environment, NodeData, NodeType, OpenQuartz, OutputPolicy, PlayerState, Port,
     PortDirection, Position, ProjectNode, Resource, ResourceId, ResourceKind, ResourceSource,
 };
@@ -30,11 +30,11 @@ fn invalid_player_transitions_return_structured_errors() {
     let mut player = sdk.player(project.graph()).build().unwrap();
 
     let pause = player.pause().unwrap_err();
-    assert_eq!(pause.code, open_quartz::SdkErrorCode::InvalidState);
+    assert_eq!(pause.code, open_quartz_sdk::SdkErrorCode::InvalidState);
 
     player.close().unwrap();
     let play = player.play().unwrap_err();
-    assert_eq!(play.code, open_quartz::SdkErrorCode::Disposed);
+    assert_eq!(play.code, open_quartz_sdk::SdkErrorCode::Disposed);
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn resource_catalog_rejects_duplicate_resource_ids() {
         ))
         .unwrap_err();
 
-    assert_eq!(error.code, open_quartz::SdkErrorCode::InvalidResource);
+    assert_eq!(error.code, open_quartz_sdk::SdkErrorCode::InvalidResource);
 }
 
 #[test]

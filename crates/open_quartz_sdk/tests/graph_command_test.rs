@@ -1,4 +1,4 @@
-use open_quartz::{
+use open_quartz_sdk::{
     DataType, Graph, GraphCommand, InputMode, NodeData, NodeFactoryRequest, NodeId, NodeType,
     OpenQuartz, Port, PortDirection, PortId, PortKey, Position, ProjectNode, SdkErrorCode,
 };
@@ -15,12 +15,7 @@ fn port(id: &str, data_type: DataType, direction: PortDirection) -> Port {
     }
 }
 
-fn node(
-    id: &str,
-    node_type: NodeType,
-    inputs: Vec<Port>,
-    outputs: Vec<Port>,
-) -> ProjectNode {
+fn node(id: &str, node_type: NodeType, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
     ProjectNode {
         id: id.to_owned(),
         node_type,
@@ -37,8 +32,8 @@ fn node(
     }
 }
 
-fn empty_project() -> open_quartz::Project {
-    OpenQuartz::new(open_quartz::Environment::headless()).create_project("commands")
+fn empty_project() -> open_quartz_sdk::Project {
+    OpenQuartz::new(open_quartz_sdk::Environment::headless()).create_project("commands")
 }
 
 #[test]
@@ -52,7 +47,7 @@ fn rust_factory_creates_typed_nodes_and_owns_ids() {
                        @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { \
                          return vec4f(value); \
                        }"
-                    .to_owned(),
+                .to_owned(),
                 label: "Custom".to_owned(),
                 template_name: Some("Custom".to_owned()),
                 shader_template_id: None,
@@ -216,7 +211,7 @@ fn project_shader_port_updates_emit_revision_and_preserve_previous_graph_on_fail
                               @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { \
                                 return vec4f(gain); \
                               }"
-                    .to_owned(),
+                .to_owned(),
             },
             revision,
         )
