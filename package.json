@@ -17,6 +17,8 @@
     "test:models": "vitest run --config vitest.functional.config.ts",
     "test:shaders": "vitest run --config vitest.shaders.config.ts",
     "test:sdk": "npm run build:sdk && node scripts/smoke-sdk.mjs",
+    "check:public-proxy": "node scripts/check-public-proxy-parity.mjs",
+    "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
     "build:sdk": "wasm-pack build crates/open_quartz --target web --release --out-dir ../../public/open_quartz-sdk --out-name open_quartz",
     "copy:ort": "node scripts/copy-ort.mjs",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",

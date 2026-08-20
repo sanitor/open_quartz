@@ -11,7 +11,7 @@ import * as ort from 'onnxruntime-node';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { ONNX_CATALOG } from '../../src/catalog/onnxCatalog';
+import { getOnnxModelDescriptor } from '../../src/sdk/catalog';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -20,7 +20,7 @@ import { ONNX_CATALOG } from '../../src/catalog/onnxCatalog';
 const CACHE_DIR = path.join(os.tmpdir(), 'oq-test-models');
 
 async function ensureModel(modelId: string): Promise<string> {
-  const entry = ONNX_CATALOG[modelId];
+  const entry = getOnnxModelDescriptor(modelId);
   if (!entry) throw new Error(`Unknown model: ${modelId}`);
 
   const filePath = path.join(CACHE_DIR, `${modelId}.onnx`);
@@ -104,7 +104,7 @@ describe('ONNX model lifecycle', () => {
 
     const stat = fs.statSync(filePath);
     expect(stat.size).toBeGreaterThan(100_000);
-    expect(stat.size).toBe(ONNX_CATALOG[MODEL_ID].fileSize);
+    expect(stat.size).toBe(getOnnxModelDescriptor(MODEL_ID)!.fileSize);
   });
 
   it('uses cached model on second call', async () => {
@@ -131,7 +131,7 @@ describe('ONNX model lifecycle', () => {
     const filePath = await ensureModel(MODEL_ID);
     expect(fs.existsSync(filePath)).toBe(true);
     const stat = fs.statSync(filePath);
-    expect(stat.size).toBe(ONNX_CATALOG[MODEL_ID].fileSize);
+    expect(stat.size).toBe(getOnnxModelDescriptor(MODEL_ID)!.fileSize);
   });
 });
 
@@ -373,13 +373,6 @@ describe('Custom ONNX model (using SR-3x as stand-in)', () => {
 });
 
 
-// ---------------------------------------------------------------------------
-// Detection: YOLOv8n
-// ---------------------------------------------------------------------------
-
-import { detectPostprocess } from '../../src/engine/onnx/yoloDetectionPostprocess';
-import type { Detection } from '../../src/engine/onnx/yoloDetectionPostprocess';
-
 describe('YOLOv8n (detection)', () => {
   let session: ort.InferenceSession;
 
@@ -411,30 +404,4 @@ describe('YOLOv8n (detection)', () => {
     expect(output.data.length).toBeGreaterThan(0);
   });
 
-  it('detectPostprocess decodes valid detections from raw output', async () => {
-    const w = 640, h = 640;
-    const rgba = makeTestRgba(w, h);
-    const input = rgbaToNchw(rgba, w, h);
-    const tensor = new ort.Tensor('float32', input, [1, 3, h, w]);
-    const results = await session.run({ [session.inputNames[0]]: tensor });
-    const raw = results[session.outputNames[0]].data as Float32Array;
-
-    // Use very low threshold to catch even weak detections
-    const detections: Detection[] = detectPostprocess(raw, w, h, 1, 0, 0, 0.001, 0.45);
-
-    // Verify bbox format: normalized [0,1] coordinates
-    for (const d of detections) {
-      expect(d.bbox[0]).toBeGreaterThanOrEqual(0);
-      expect(d.bbox[1]).toBeGreaterThanOrEqual(0);
-      expect(d.bbox[2]).toBeLessThanOrEqual(1);
-      expect(d.bbox[3]).toBeLessThanOrEqual(1);
-      expect(d.score).toBeGreaterThan(0);
-      expect(d.classId).toBeGreaterThanOrEqual(0);
-      expect(d.classId).toBeLessThan(80);
-    }
-
-    // Log detection counts at various thresholds for diagnostics
-    const at25 = detectPostprocess(raw, w, h, 1, 0, 0, 0.25, 0.45);
-    console.log(`[yolov8n] detections at threshold 0.001: ${detections.length}, at 0.25: ${at25.length}`);
-  });
 });

@@ -1,16 +1,3 @@
-// Mock onnxRegistry
-vi.mock('../../src/catalog/onnxRegistry', () => ({
-  ONNX_MODELS: {
-    yolov8n: {
-      id: 'yolov8n',
-      label: 'YOLOv8n Detector',
-      description: 'Test ONNX model',
-      inputs: [{ id: 'in', label: 'image', dataType: 'sampler2D', direction: 'input' }],
-      outputs: [{ id: 'out', label: 'detections', dataType: 'roi', direction: 'output' }],
-    },
-  },
-}));
-
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
@@ -42,13 +29,6 @@ vi.mock('../../src/utils/projectIO', () => ({
   downloadProject: vi.fn(),
 }));
 
-// Mock executionEngine
-vi.mock('../../src/engine/executionEngine', () => ({
-  WebGPUExecutionEngine: vi.fn().mockImplementation(() => ({
-    init: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn(),
-  })),
-}));
 
 // Store mock functions
 const mockAddNode = vi.fn();
@@ -119,13 +99,16 @@ vi.mock('../../src/store/useGraphStore', () => ({
   ),
 }));
 
-// Mock predefined shaders
-vi.mock('../../src/catalog/predefinedShaders', () => ({
+vi.mock('../../src/shaders', () => ({
   CUSTOM_SHADER_CODE: 'uniform sampler2D inputImage;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }',
   CUSTOM_2IN1_SHADER: 'uniform sampler2D inputA;\nuniform sampler2D inputB;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }',
-  predefinedShaders: [
-    { label: 'Sobel Edge Detection', code: 'sobel-code' },
-    { label: 'Gaussian Blur', code: 'blur-code' },
+  shaderGroups: [
+    { category: 'FILTER', items: [{ label: 'Sobel Edge Detection', code: 'sobel-code' }] },
+    { category: 'COLOR', items: [{ label: 'Gaussian Blur', code: 'blur-code' }] },
+    { category: 'GENERATOR', items: [] },
+    { category: 'BLEND', items: [] },
+    { category: 'DISTORTION', items: [] },
+    { category: 'FEEDBACK', items: [] },
   ],
 }));
 

@@ -9,7 +9,6 @@ import {
   useOnViewportChange,
   useConnection,
   getBezierPath,
-  reconnectEdge,
   type Node,
   type NodeTypes,
   type EdgeTypes,
@@ -20,8 +19,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../../store/useGraphStore';
-import type { ShaderNodeData, DataType } from '../../types';
-import { isLogicalType } from '../../types';
+import type { ShaderNodeData } from '../../types';
 import { ShaderNode } from './nodes/ShaderNode';
 import { OnnxNode } from './nodes/OnnxNode';
 import { InputNode } from './nodes/InputNode';
@@ -104,42 +102,6 @@ function MiniMapController() {
   );
 }
 
-function isConnectionValid(connection: Connection | Edge): boolean {
-  const { nodes } = useGraphStore.getState();
-  const sourceNode = nodes.find((n) => n.id === connection.source);
-  const targetNode = nodes.find((n) => n.id === connection.target);
-  if (!sourceNode || !targetNode) return false;
-
-  const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
-  const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
-  if (!sourcePort || !targetPort) return false;
-
-  const sourceIsAuto = sourcePort.dataType === 'auto';
-  const targetIsAuto = targetPort.dataType === 'auto';
-
-  // Auto ports accept any scalar/vector type, reject sampler
-  if (sourceIsAuto || targetIsAuto) {
-    const otherType = sourceIsAuto ? targetPort.dataType : sourcePort.dataType;
-    if (otherType === 'sampler2D' || otherType === 'samplerCube') return false;
-    if (isLogicalType(otherType as DataType)) return false;
-    return true;
-  }
-
-  if (isLogicalType(targetPort.dataType) || isLogicalType(sourcePort.dataType)) {
-    return sourcePort.dataType === targetPort.dataType;
-  }
-
-  if (targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube') {
-    if (sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube') return true;
-    const srcType = sourceNode.data.type;
-    if (srcType === 'shader' || srcType === 'constant') return true;
-    if (srcType === 'onnx') return true;
-    if (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D') return true;
-    return false;
-  }
-  return sourcePort.dataType === targetPort.dataType;
-}
-
 function ConnectionLine({ fromX, fromY, toX, toY, fromPosition, toPosition }: ConnectionLineComponentProps) {
   const { isValid } = useConnection();
 
@@ -171,6 +133,7 @@ export function NodeGraph() {
   const onNodesChange = useGraphStore((state) => state.onNodesChange);
   const onEdgesChange = useGraphStore((state) => state.onEdgesChange);
   const onConnect = useGraphStore((state) => state.onConnect);
+  const isConnectionValid = useGraphStore((state) => state.isConnectionValid);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const removeSelectedElements = useGraphStore((state) => state.removeSelectedElements);
 
@@ -252,11 +215,7 @@ export function NodeGraph() {
           type: 'bezier' as const,
         }));
 
-        store.pushHistory();
-        useGraphStore.setState((state) => {
-          state.nodes.push(...newNodes);
-          state.edges.push(...newEdges);
-        });
+        store.loadGraph([...store.nodes, ...newNodes], [...store.edges, ...newEdges]);
         return;
       }
     };
@@ -285,11 +244,13 @@ export function NodeGraph() {
 
   const onReconnect = useCallback((oldEdge: Edge, connection: Connection) => {
     const store = useGraphStore.getState();
-    store.pushHistory();
-    useGraphStore.setState((state) => {
-      state.edges = reconnectEdge(oldEdge, connection, state.edges);
-    });
-  }, []);
+    const remaining = store.edges.filter((edge) => edge.id !== oldEdge.id);
+    store.onEdgesChange([{ type: 'remove', id: oldEdge.id }]);
+    store.onConnect(connection);
+    if (!isConnectionValid(connection)) {
+      store.loadGraph(store.nodes, [...remaining, oldEdge]);
+    }
+  }, [isConnectionValid]);
 
   return (
     <ReactFlow

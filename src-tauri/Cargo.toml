@@ -28,7 +28,9 @@ tokio = { version = "1", features = ["fs", "sync"] }
 tauri = { version = "2.11.3", features = ["protocol-asset", "unstable"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
-open_quartz = { path = "../crates/open_quartz", features = ["native-video-d3d12"] }
+open_quartz = { path = "../crates/open_quartz" }
+open_quartz_execution = { path = "../crates/open_quartz_execution", features = ["native-video-d3d12"] }
+open_quartz_schema = { path = "../crates/open_quartz_schema" }
 pollster = "0.4"
 wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
 

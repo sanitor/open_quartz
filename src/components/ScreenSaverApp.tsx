@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { PipelineService } from '../services/PipelineService';
 import { useGraphStore } from '../store/useGraphStore';
-import { deserializeProject } from '../utils/projectIO';
-import { prepareScreenSaverGraph, type ScreenSaverBootstrap } from '../screensaver';
+import { OpenQuartzClient } from '../sdk';
+import type { ScreenSaverBootstrap } from '../screensaver';
 
 export function ScreenSaverApp({ bootstrap }: { bootstrap: ScreenSaverBootstrap }) {
   return <ScreenSaverPlayer bootstrap={bootstrap} />;
@@ -22,15 +22,16 @@ function ScreenSaverPlayer({ bootstrap }: { bootstrap: ScreenSaverBootstrap }) {
   useEffect(() => {
     const canvas = runtimeCanvasRef.current;
     if (!canvas) return;
-    const service = new PipelineService({ nativeTextureStream: bootstrap.mode !== 'preview' });
+    const service = new PipelineService();
     const objectUrls: string[] = [];
     let cancelled = false;
     service.attach(canvas);
 
     const start = async () => {
       const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
-      const result = await deserializeProject(bootstrap.projectJson);
-      const nodes = result.nodes;
+      const project = await new OpenQuartzClient().openProject(bootstrap.projectJson);
+      const snapshot = project.graph.snapshot();
+      const nodes = snapshot.nodes;
       for (const input of bootstrap.exposedInputs) {
         const selected = bootstrap.settings[input.nodeId];
         if (!selected) continue;
@@ -57,9 +58,8 @@ function ScreenSaverPlayer({ bootstrap }: { bootstrap: ScreenSaverBootstrap }) {
           });
         }
       }
-      const graph = prepareScreenSaverGraph(
-        nodes,
-        result.edges,
+      project.graph.replace(nodes, snapshot.edges);
+      const graph = project.screenSaverGraph(
         bootstrap.rendererNodeId,
         outputSize.width,
         outputSize.height,

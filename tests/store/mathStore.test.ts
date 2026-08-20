@@ -33,7 +33,7 @@ vi.mock('@xyflow/react', () => ({
 
 import { useGraphStore } from '../../src/store/useGraphStore';
 import { MATH_OPS, getMathPorts } from '../../src/catalog/mathOps';
-import { SHADER_TEMPLATES } from '../../src/catalog/predefinedShaders';
+import { SHADER_TEMPLATES } from '../../src/shaders';
 
 function resetStore() {
   useGraphStore.setState({

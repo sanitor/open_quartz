@@ -201,7 +201,7 @@ fn webview_texture_stream_capability(
 #[tauri::command]
 async fn native_video_thumbnail(path: String) -> Result<Vec<u8>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open_quartz::native_video::read_video_thumbnail(&path)
+        open_quartz_execution::native_video::read_video_thumbnail(&path)
     })
     .await
     .map_err(|error| format!("Video thumbnail worker failed: {error}"))?
@@ -228,6 +228,7 @@ pub fn run() {
             webview_texture_stream_capability,
             native_video_thumbnail,
             native_runtime::native_gpu_set_graph,
+            native_runtime::native_host_resource_intents,
             native_runtime::native_gpu_upload_image,
             native_runtime::native_gpu_remove_texture,
             native_runtime::native_gpu_read_output,

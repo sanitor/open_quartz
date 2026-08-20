@@ -1,0 +1,21 @@
+name: Dependency boundaries
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo test --workspace
+      - run: npm run check:rust-boundaries
+      - run: npm ci
+      - run: npm exec -- tsc -b
+      - run: npm exec -- vitest run tests/sdk/dependencyBoundary.test.ts tests/sdk/languageConformance.test.ts
+      - run: npm run check:public-proxy

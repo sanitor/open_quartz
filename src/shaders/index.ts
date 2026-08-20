@@ -1,0 +1,37 @@
+import type { ShaderEntry } from './filter';
+import { filterShaders } from './filter';
+import { colorShaders } from './color';
+import { generatorShaders } from './generator';
+import { blendShaders } from './blend';
+import { distortionShaders } from './distortion';
+import { feedbackShaders } from './feedback';
+
+export type { ShaderEntry } from './filter';
+
+export interface ShaderGroup {
+  category: string;
+  items: ShaderEntry[];
+}
+
+export { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER } from './templates';
+export { filterShaders } from './filter';
+export { colorShaders } from './color';
+export { generatorShaders } from './generator';
+export { blendShaders } from './blend';
+export { distortionShaders } from './distortion';
+export { feedbackShaders } from './feedback';
+
+export const shaderGroups: ShaderGroup[] = [
+  { category: 'FILTER', items: filterShaders },
+  { category: 'COLOR', items: colorShaders },
+  { category: 'GENERATOR', items: generatorShaders },
+  { category: 'BLEND', items: blendShaders },
+  { category: 'DISTORTION', items: distortionShaders },
+  { category: 'FEEDBACK', items: feedbackShaders },
+];
+
+export const predefinedShaders = shaderGroups.flatMap((group) => group.items);
+
+export const SHADER_TEMPLATES: ReadonlyMap<string, ShaderEntry> = new Map(
+  predefinedShaders.map((shader) => [shader.label, shader]),
+);

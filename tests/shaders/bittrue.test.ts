@@ -25,7 +25,7 @@ beforeAll(async () => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Fullscreen-triangle vertex shader — identical to the one shipped in WebGPUBackend. */
+/** Fullscreen-triangle vertex shader used for shader conformance. */
 const FULLSCREEN_VERT = /* wgsl */ `
 struct VertexOutput {
   @builtin(position) position: vec4f,

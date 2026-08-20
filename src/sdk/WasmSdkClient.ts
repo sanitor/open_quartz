@@ -1,89 +1,89 @@
-import type { Edge, Node } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import type { FrameInput, StatefulEngineCore } from './PipelineRuntime';
-import {
-  SDK_API_VERSION,
-  SdkContractError,
-  decodeCapabilities,
-  decodeEngineEvents,
-  decodeRuntimePublicSurface,
-  decodeSdkError,
-} from './contract';
+import type { FrameInput } from './internal/hostTypes';
+import { SDK_API_VERSION, SdkContractError, decodeCapabilities, decodeRuntimePublicSurface, decodeSdkError } from './contract';
 import type {
-  EngineEvent,
-  EngineState,
   OutputDeliveryBatch,
-  FrameStamp,
   OutputSubscription,
-  OutputState,
   RuntimePublicSurface,
   SdkCapabilities,
 } from './contract';
+import type { CatalogSnapshot } from './catalog';
 
-interface RawEngine {
+export interface RawGraph {
   readonly revision: number;
-  readonly lastFrame?: bigint;
-  readonly pendingCommandCount: number;
-  setGraph(graphJson: string): number;
-  markDirty(nodeId: string): void;
-  runFrame(
-    time: number,
-    delta: number,
-    frame: bigint,
-    date: Float32Array,
-    mouse: Float32Array,
-    resolution: Float32Array,
+  free?: () => void;
+  snapshotJSON(): string;
+  initialize(graphJson: string): void;
+  replace(graphJson: string, expectedRevision: number): string;
+  rollback(expectedRevision: number): string;
+  redo(expectedRevision: number): string;
+  apply(commandJson: string, expectedRevision: number): string;
+  canConnect(
+    sourceNodeId: string,
+    sourcePortId: string,
+    targetNodeId: string,
+    targetPortId: string,
   ): void;
-  setVideoNodes(nodeIdsJson: string): void;
-  nodeGeneration(nodeId: string): number;
-  pause(): void;
-  resume(): void;
-  stop(): void;
-  engineState(): string;
-  drainEvents(): string;
-  dispose(): void;
+  createNode(factoryJson: string, expectedRevision: number): string;
+  nodeJSON(nodeId: string): string | undefined;
 }
 
-interface RawEngineConstructor {
-  new(): RawEngine;
+export interface RawProject {
+  name: string;
+  free?: () => void;
+  set_name?: (name: string) => void;
+  toJSON(): string;
+  graph(): RawGraph;
+  screenSaverGraph?: (rendererNodeId: string, width: number, height: number) => string;
+  createPlayer(): unknown;
 }
 
-interface RawRuntime {
+export interface RawOpenQuartz {
+  new(): RawOpenQuartzInstance;
+}
+
+export interface RawOpenQuartzInstance {
+  createProject(name: string): RawProject;
+  openProject(projectJson: string): RawProject;
+  normalizeProject?: (projectJson: string) => string;
+  screenSaverExportProject?: (projectJson: string, rendererNodeId: string) => string;
+}
+
+interface RawBrowserPlayer {
   setGraph(graphJson: string): number;
-  setVideoNodes(nodeIdsJson: string): void;
-  registerResource(descriptorJson: string, handle: number): void;
-  removeResource(resourceId: string): number;
   play(nowNs: bigint): void;
-  advance(inputJson: string): string;
-  subscribeOutput(subscriptionJson: string): void;
-  updateOutputSubscription(subscriptionJson: string): void;
-  unsubscribeOutput(subscriptionId: string): void;
-  publishOutput(stateJson: string): void;
-  subscribePresentation(subscriptionJson: string): void;
-  updatePresentation(subscriptionJson: string): void;
-  unsubscribePresentation(subscriptionId: string): boolean;
-  submitCompletion(completionJson: string): void;
-  executionPlan(): string;
-  drainWork(): string;
-  drainDeliveries(): string;
-  drainEvents(): string;
-  capabilities(): string;
   pause(nowNs: bigint): void;
   resume(nowNs: bigint): void;
   stop(): void;
-  dispose(): void;
+  uploadFrame(nodeId: string, bitmap: ImageBitmap, timestampNs: bigint): void;
+  uploadRgba(nodeId: string, rgba: Uint8Array, width: number, height: number): void;
+  outputInfo(nodeId: string): string;
+  readOutputRgba(nodeId: string): Promise<Uint8Array>;
+  frame(inputJson: string): string;
+  subscribeOutput(subscriptionJson: string): void;
+  unsubscribeOutput(subscriptionId: string): void;
+  submitCompletion(completionJson: string): void;
+  drainDeliveries(): string;
+  close(): void;
 }
 
-interface RawClockState {
-  epoch: number;
-  timelineNs: number;
-  previousTimelineNs: number;
-  frame: number;
-  nextDeadlineNs: number;
-}
+type BrowserGraphNode = {
+  id: string;
+  type?: string;
+  position: { x: number; y: number };
+  data: ShaderNodeData;
+};
 
-interface RawRuntimeConstructor {
-  new(): RawRuntime;
+type BrowserGraphEdge = {
+  id: string;
+  source: string;
+  sourceHandle?: string | null;
+  target: string;
+  targetHandle?: string | null;
+};
+
+interface RawBrowserPlayerConstructor {
+  create(canvas: OffscreenCanvas): Promise<RawBrowserPlayer>;
 }
 
 export interface RawWasmBindings {
@@ -92,10 +92,16 @@ export interface RawWasmBindings {
   capabilities(): string;
   sdkVersion(): string;
   runtimeContract(): string;
+  catalog(): string;
+  planHostResourceIntents(requestJson: string): string;
+  planBrowserOnnxTask(requestJson: string): string;
+  encodeBrowserOnnxInput(rgba: Uint8Array, requestJson: string): string;
+  decodeBrowserOnnxOutput(sourceRgba: Uint8Array, raw: Float32Array, requestJson: string): string;
+  buildBrowserOnnxCompletion(requestJson: string): string;
   parseShader(code: string): string;
   planGraph(graphJson: string): string;
-  Runtime: RawRuntimeConstructor;
-  Engine: RawEngineConstructor;
+  BrowserPlayer: RawBrowserPlayerConstructor;
+  OpenQuartz?: RawOpenQuartz;
 }
 
 export type WasmModuleLoader = () => Promise<RawWasmBindings>;
@@ -162,12 +168,64 @@ export class WasmSdkClient {
     );
   }
 
-  createEngine(): WasmEngineContract {
-    return new WasmEngineContract(new this.bindings.Engine());
+
+  async createBrowserPlayer(canvas: OffscreenCanvas): Promise<WasmBrowserPlayerContract> {
+    const raw = await invoke(() => this.bindings.BrowserPlayer.create(canvas));
+    return new WasmBrowserPlayerContract(raw);
   }
 
-  createRuntime(): WasmRuntimeContract {
-    return new WasmRuntimeContract(new this.bindings.Runtime());
+  createProject(name: string): RawProject {
+    if (!this.bindings.OpenQuartz) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK aggregate bindings are unavailable',
+      });
+    }
+    return invoke(() => new this.bindings.OpenQuartz!().createProject(name));
+  }
+
+  openProject(projectJson: string): RawProject {
+    if (!this.bindings.OpenQuartz) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK aggregate bindings are unavailable',
+      });
+    }
+    return invoke(() => new this.bindings.OpenQuartz!().openProject(projectJson));
+  }
+
+  normalizeProject(projectJson: string): string {
+    if (!this.bindings.OpenQuartz) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK aggregate bindings are unavailable',
+      });
+    }
+    const sdk = new this.bindings.OpenQuartz!();
+    if (!sdk.normalizeProject) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK project normalization binding is unavailable',
+      });
+    }
+    return invoke(() => sdk.normalizeProject!(projectJson));
+  }
+
+  screenSaverExportProject(projectJson: string, rendererNodeId: string): string {
+    if (!this.bindings.OpenQuartz) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK aggregate bindings are unavailable',
+      });
+    }
+    const sdk = new this.bindings.OpenQuartz!();
+    if (!sdk.screenSaverExportProject) {
+      throw new SdkContractError({
+        code: 'invalid-response',
+        message: 'Rust SDK screen saver export binding is unavailable',
+      });
+    }
+    return invoke(() => sdk.screenSaverExportProject!(projectJson, rendererNodeId));
   }
 
   parseShader<T = unknown>(code: string): T {
@@ -177,157 +235,104 @@ export class WasmSdkClient {
   planGraph<T = unknown>(graph: unknown): T {
     return JSON.parse(invoke(() => this.bindings.planGraph(JSON.stringify(graph)))) as T;
   }
+
+  planHostResourceIntents<T = unknown>(request: unknown): T {
+    return JSON.parse(invoke(() => this.bindings.planHostResourceIntents(JSON.stringify(request)))) as T;
+  }
+
+  catalog(): CatalogSnapshot {
+    return JSON.parse(invoke(() => this.bindings.catalog())) as CatalogSnapshot;
+  }
+
+  planBrowserOnnxTask<T = unknown>(request: unknown): T {
+    return JSON.parse(invoke(() => this.bindings.planBrowserOnnxTask(JSON.stringify(request)))) as T;
+  }
+
+  encodeBrowserOnnxInput<T = unknown>(rgba: Uint8Array, request: unknown): T {
+    return JSON.parse(invoke(() => this.bindings.encodeBrowserOnnxInput(rgba, JSON.stringify(request)))) as T;
+  }
+
+  decodeBrowserOnnxOutput<T = unknown>(
+    sourceRgba: Uint8Array,
+    raw: Float32Array,
+    request: unknown,
+  ): T {
+    return JSON.parse(invoke(() => this.bindings.decodeBrowserOnnxOutput(sourceRgba, raw, JSON.stringify(request)))) as T;
+  }
+
+  buildBrowserOnnxCompletion<T = unknown>(request: unknown): T {
+    return JSON.parse(invoke(() => this.bindings.buildBrowserOnnxCompletion(JSON.stringify(request)))) as T;
+  }
 }
 
-export class WasmRuntimeContract {
-  private readonly raw: RawRuntime;
-  private clock: RawClockState = {
-    epoch: 0, timelineNs: 0, previousTimelineNs: 0, frame: 0, nextDeadlineNs: 0,
-  };
+interface RawClockState {
+  epoch: number;
+  timelineNs: number;
+  previousTimelineNs: number;
+  frame: number;
+  nextDeadlineNs: number;
+}
 
-  constructor(raw: RawRuntime) {
+export interface BrowserFrameResult<TTask = unknown> {
+  clock: RawClockState;
+  inferenceTasks: TTask[];
+}
+
+export class WasmBrowserPlayerContract {
+  private readonly raw: RawBrowserPlayer;
+
+  constructor(raw: RawBrowserPlayer) {
     this.raw = raw;
   }
 
-  get lastClock(): RawClockState { return this.clock; }
-  setGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): number {
+  setGraph(nodes: BrowserGraphNode[], edges: BrowserGraphEdge[]): number {
     return invoke(() => this.raw.setGraph(JSON.stringify({ nodes, edges })));
   }
 
-  setVideoNodes(nodeIds: readonly string[]): void {
-    invoke(() => this.raw.setVideoNodes(JSON.stringify(nodeIds)));
+  play(nowNs: number): void { invoke(() => this.raw.play(toWasmU64(nowNs))); }
+  pause(nowNs: number): void { invoke(() => this.raw.pause(toWasmU64(nowNs))); }
+  resume(nowNs: number): void { invoke(() => this.raw.resume(toWasmU64(nowNs))); }
+  stop(): void { invoke(() => this.raw.stop()); }
+
+  uploadFrame(nodeId: string, bitmap: ImageBitmap, timestampNs: number): void {
+    invoke(() => this.raw.uploadFrame(nodeId, bitmap, toWasmU64(timestampNs)));
   }
 
+  uploadRgba(nodeId: string, rgba: Uint8Array, width: number, height: number): void {
+    invoke(() => this.raw.uploadRgba(nodeId, rgba, width, height));
+  }
 
-  play(nowNs: number): void { invoke(() => this.raw.play(toWasmU64(nowNs))); }
-  advance(input: FrameInput): FrameStamp {
-    this.clock = JSON.parse(invoke(() => this.raw.advance(JSON.stringify({
+  outputInfo(nodeId: string): { width: number; height: number } {
+    return JSON.parse(invoke(() => this.raw.outputInfo(nodeId))) as { width: number; height: number };
+  }
+
+  readOutputRgba(nodeId: string): Promise<Uint8Array> {
+    return this.raw.readOutputRgba(nodeId);
+  }
+
+  frame<TTask = unknown>(input: FrameInput): BrowserFrameResult<TTask> {
+    return JSON.parse(invoke(() => this.raw.frame(JSON.stringify({
       nowNs: Math.round(input.time * 1_000_000_000),
       date: Array.from(input.date),
       mouse: Array.from(input.mouse),
       resolution: Array.from(input.resolution),
     }))));
-    return {
-      epoch: this.clock.epoch,
-      frame: this.clock.frame,
-      timelineNs: this.clock.timelineNs,
-      deadlineNs: this.clock.nextDeadlineNs,
-    };
-  }
-  executionPlan<T = unknown>(): T {
-    return JSON.parse(invoke(() => this.raw.executionPlan())) as T;
-  }
-
-  drainWork<T = unknown>(): T {
-    return JSON.parse(invoke(() => this.raw.drainWork())) as T;
   }
 
   subscribeOutput(subscription: OutputSubscription): void {
     invoke(() => this.raw.subscribeOutput(JSON.stringify(subscription)));
   }
 
-  updateOutputSubscription(subscription: OutputSubscription): void {
-    invoke(() => this.raw.updateOutputSubscription(JSON.stringify(subscription)));
-  }
-
   unsubscribeOutput(subscriptionId: string): void {
     invoke(() => this.raw.unsubscribeOutput(subscriptionId));
   }
 
-  publishOutput(state: OutputState): void {
-    invoke(() => this.raw.publishOutput(JSON.stringify(state)));
+  submitCompletion(completion: unknown): void {
+    invoke(() => this.raw.submitCompletion(JSON.stringify(completion)));
   }
-
   drainDeliveries(): OutputDeliveryBatch {
-    return JSON.parse(this.raw.drainDeliveries()) as OutputDeliveryBatch;
+    return JSON.parse(invoke(() => this.raw.drainDeliveries())) as OutputDeliveryBatch;
   }
 
-  pause(nowNs = Math.round(performance.now() * 1_000_000)): void {
-    invoke(() => this.raw.pause(toWasmU64(nowNs)));
-  }
-
-  resume(nowNs = Math.round(performance.now() * 1_000_000)): void {
-    invoke(() => this.raw.resume(toWasmU64(nowNs)));
-  }
-
-  stop(): void { invoke(() => this.raw.stop()); }
-  dispose(): void { invoke(() => this.raw.dispose()); }
-}
-
-/** Stateful graph/frame contract. GPU commands remain internal until Stage D. */
-export class WasmEngineContract implements StatefulEngineCore {
-  private readonly raw: RawEngine;
-
-  constructor(raw: RawEngine) {
-    this.raw = raw;
-  }
-
-  get revision(): number {
-    return this.raw.revision;
-  }
-
-  get state(): EngineState {
-    return this.raw.engineState() as EngineState;
-  }
-
-  get lastFrame(): number | null {
-    return this.raw.lastFrame === undefined ? null : Number(this.raw.lastFrame);
-  }
-
-  get pendingCommandCount(): number {
-    return this.raw.pendingCommandCount;
-  }
-
-  setGraph(nodes: Node<ShaderNodeData>[], edges: Edge[]): number {
-    return invoke(() => this.raw.setGraph(JSON.stringify({ nodes, edges })));
-  }
-
-  markDirty(nodeId: string): void {
-    invoke(() => this.raw.markDirty(nodeId));
-  }
-
-  runFrame(input: FrameInput): void {
-    if (!Number.isSafeInteger(input.frame) || input.frame < 0) {
-      throw new SdkContractError({
-        code: 'invalid-frame',
-        message: 'Frame number must be a non-negative safe integer',
-      });
-    }
-    invoke(() => this.raw.runFrame(
-      input.time,
-      input.delta,
-      BigInt(input.frame),
-      input.date,
-      input.mouse,
-      input.resolution,
-    ));
-  }
-
-  setVideoNodes(nodeIds: readonly string[]): void {
-    invoke(() => this.raw.setVideoNodes(JSON.stringify(nodeIds)));
-  }
-
-  nodeGeneration(nodeId: string): number {
-    return invoke(() => this.raw.nodeGeneration(nodeId));
-  }
-
-  pause(): void {
-    invoke(() => this.raw.pause());
-  }
-
-  resume(): void {
-    invoke(() => this.raw.resume());
-  }
-
-  stop(): void {
-    invoke(() => this.raw.stop());
-  }
-
-  drainEvents(): EngineEvent[] {
-    return decodeEngineEvents(this.raw.drainEvents());
-  }
-
-  dispose(): void {
-    this.raw.dispose();
-  }
+  close(): void { invoke(() => this.raw.close()); }
 }

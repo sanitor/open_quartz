@@ -9,7 +9,7 @@ import { generateRawPreview } from '../../utils/rawPreview';
 import { MATH_OPS, MATH_CATEGORIES, getMathPorts } from '../../catalog/mathOps';
 import { parseWgslShader } from '../../sdk/wgslParser';
 import { MENU_ICONS } from '../NodeGraph/nodes/NodeShell';
-import { listAvailableVideoDevices } from '../../services/PipelineService';
+import { capturePlayerOutput, listAvailableVideoDevices } from '../../services/PipelineService';
 
 const FB_FORMATS: { label: string; value: FramebufferFormat }[] = [
   { label: 'RGBA8', value: 'rgba8' },
@@ -55,7 +55,7 @@ export function SidePanel() {
   const nodeErrors = useGraphStore((state) => state.nodeErrors);
   const rendererFps = useGraphStore((state) => state.rendererFps);
   const rendererCadence = useGraphStore((state) => state.rendererCadence ?? {});
-  const nativeRendererStreams = useGraphStore((state) => state.nativeRendererStreams);
+  const rendererStreamActive = useGraphStore((state) => state.rendererStreamActive);
   const loopState = useGraphStore((state) => state.loopState);
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const data = selectedNode?.data;
@@ -640,15 +640,22 @@ export function SidePanel() {
       extra: previewExtra,
       content: (
         <div className="flex-1 flex items-center justify-center bg-[#f5f5f7] overflow-hidden p-2">
-          {data.type === 'renderer' && nativeRendererStreams[selectedNodeId!] ? (
+          {data.type === 'renderer' && rendererStreamActive[selectedNodeId!] ? (
             <div
               id={`renderer-stream-slot-sidepanel-${selectedNodeId}`}
               ref={() => { requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount'))); }}
               className="rounded border border-[#e8e8ed] bg-[#1d1d1f] overflow-hidden"
               style={{ width: '100%', maxHeight: '100%', aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}` }}
             />
+          ) : data.type === 'renderer' && outputPreviews[selectedNodeId!] ? (
+            <img
+              src={outputPreviews[selectedNodeId!]}
+              alt="renderer preview"
+              className="max-w-full max-h-full object-contain rounded border border-[#e8e8ed] bg-[#1d1d1f]"
+            />
           ) : data.type === 'renderer' ? (
             <canvas
+              id={`renderer-mirror-sidepanel-${selectedNodeId}`}
               width={960}
               height={Math.max(1, Math.round(960 * (data.resolvedHeight ?? 9) / (data.resolvedWidth ?? 16)))}
               style={{ width: '100%', maxHeight: '100%', aspectRatio: `${data.resolvedWidth ?? 16} / ${data.resolvedHeight ?? 9}` }}
@@ -779,12 +786,12 @@ export function SidePanel() {
           <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center"
             onClick={() => closeRendererFullscreen(rid)}>
             <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
-              <button onClick={async (e) => { e.stopPropagation(); const capture = useGraphStore.getState().captureScreenshot; const dataUrl = await capture?.(rid); if (!dataUrl) return; const a = document.createElement('a'); a.href = dataUrl; a.download = `renderer-${rid}.png`; a.click(); }}
+              <button onClick={async (e) => { e.stopPropagation(); const dataUrl = await capturePlayerOutput(rid); if (!dataUrl) return; const a = document.createElement('a'); a.href = dataUrl; a.download = `renderer-${rid}.png`; a.click(); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">SAVE</button>
               <button onClick={(e) => { e.stopPropagation(); closeRendererFullscreen(rid); }}
                 className="text-[11px] text-white/80 hover:text-white font-medium px-3 py-1 rounded bg-white/10 hover:bg-white/20">CLOSE</button>
             </div>
-            {nativeRendererStreams[rid] ? (
+            {rendererStreamActive[rid] ? (
               <div
                 id={`renderer-stream-slot-fullscreen-${rid}`}
                 ref={() => { requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('renderer-remount'))); }}

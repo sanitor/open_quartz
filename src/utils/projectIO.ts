@@ -1,46 +1,14 @@
 import type { ProjectFile } from '../types';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShaderNodeData } from '../types';
-import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
-
-const CURRENT_VERSION = '0.4.0';
+import { OpenQuartzClient, Project as SdkProject } from '../sdk';
 
 export function serializeProject(
   nodes: Node<ShaderNodeData>[],
   edges: Edge[],
   name: string = 'Untitled',
 ): ProjectFile {
-  return {
-    version: CURRENT_VERSION,
-    name,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    graph: {
-      nodes: nodes.map(n => {
-        const data = { ...n.data };
-        if (data.inputMode === 'video') {
-          delete data.videoUrl;
-        }
-        // Prebuilt shaders: strip code from project file (resolved at runtime)
-        if (data.shaderTemplateId) {
-          data.shaderCode = '';
-        }
-        return {
-          id: n.id,
-          type: n.type ?? 'shader',
-          position: { x: n.position.x, y: n.position.y },
-          data,
-        };
-      }),
-      edges: edges.map(e => ({
-        id: e.id,
-        source: e.source,
-        sourceHandle: e.sourceHandle ?? '',
-        target: e.target,
-        targetHandle: e.targetHandle ?? '',
-      })),
-    },
-  };
+  return new SdkProject(name, nodes, edges).toFile();
 }
 
 export function downloadProject(project: ProjectFile, filename?: string): string {
@@ -71,30 +39,19 @@ export async function deserializeProject(json: string): Promise<{
   nodes: Node<ShaderNodeData>[];
   edges: Edge[];
 }> {
-  const project: ProjectFile = JSON.parse(json);
-  if (!project.version) throw new Error('Invalid project file');
-  if (project.version !== CURRENT_VERSION) {
-    throw new Error(`Incompatible project version: expected ${CURRENT_VERSION}, got ${project.version}`);
-  }
+  const opened = await new OpenQuartzClient().openProject(json);
+  const project = opened.toFile();
+  const graph = opened.graph.snapshot();
+  const nodes: Node<ShaderNodeData>[] = graph.nodes.map((n) => ({
+    id: n.id,
+    type: n.type,
+    position: n.position,
+    data: n.data,
+    selected: false,
+    dragging: false,
+  }));
 
-  const nodes: Node<ShaderNodeData>[] = project.graph.nodes.map((n) => {
-    const data = { ...n.data };
-    // Restore prebuilt shader code from catalog
-    if (data.shaderTemplateId && !data.shaderCode) {
-      const tpl = SHADER_TEMPLATES.get(data.shaderTemplateId);
-      if (tpl) data.shaderCode = tpl.code;
-    }
-    return {
-      id: n.id,
-      type: n.type,
-      position: n.position,
-      data,
-      selected: false,
-      dragging: false,
-    };
-  });
-
-  const edges: Edge[] = project.graph.edges.map((e) => ({
+  const edges: Edge[] = graph.edges.map((e) => ({
     id: e.id,
     source: e.source,
     sourceHandle: e.sourceHandle,

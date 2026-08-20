@@ -3,11 +3,24 @@ import {
   predefinedShaders,
   CUSTOM_SHADER_CODE,
   CUSTOM_2IN1_SHADER,
-} from '../../src/catalog/predefinedShaders';
-import { generatorShaders } from '../../src/catalog/shaders/generator';
-import { feedbackShaders } from '../../src/catalog/shaders/feedback';
+} from '../../src/shaders';
+import { generatorShaders } from '../../src/shaders/generator';
+import { feedbackShaders } from '../../src/shaders/feedback';
 import { parseWgslShader } from '../../src/sdk/wgslParser';
-import { createDefaultShaderCode, createInputShader, makeNode } from '../../src/store/helpers';
+import { Project } from '../../src/sdk';
+
+const DEFAULT_SHADER_CODE = [
+  '@group(0) @binding(0) var inputImage: texture_2d<f32>;',
+  '@group(0) @binding(1) var inputImageSampler: sampler;',
+  '@group(0) @binding(2) var<uniform> intensity: f32;',
+  '',
+  '@fragment',
+  'fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {',
+  '  var color = textureSample(inputImage, inputImageSampler, v_uv);',
+  '  color = vec4f(color.rgb * intensity, color.a);',
+  '  return color;',
+  '}',
+].join('\n');
 
 // ---------------------------------------------------------------------------
 // Expected parse results per shader — exact labels, types, and counts
@@ -119,9 +132,11 @@ describe('CUSTOM_2IN1_SHADER', () => {
   });
 });
 
-describe('createDefaultShaderCode / createInputShader', () => {
+describe('Rust node factory shader defaults', () => {
   it('default shader: inputImage (sampler2D) + intensity (float)', () => {
-    const result = parseWgslShader(createDefaultShaderCode('shader'));
+    const project = new Project('Factory');
+    const node = project.graph.createNode({ kind: 'shader', code: DEFAULT_SHADER_CODE, label: 'shader' }).toFlowNode();
+    const result = parseWgslShader(node.data.shaderCode);
     expect(result.parseError).toBeUndefined();
     expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
       ['inputImage', 'sampler2D'],
@@ -131,7 +146,9 @@ describe('createDefaultShaderCode / createInputShader', () => {
   });
 
   it('input shader sampler2D: value (sampler2D)', () => {
-    const result = parseWgslShader(createInputShader('sampler2D'));
+    const project = new Project('Factory');
+    const node = project.graph.createNode({ kind: 'input', dataType: 'sampler2D' }).toFlowNode();
+    const result = parseWgslShader(node.data.shaderCode);
     expect(result.parseError).toBeUndefined();
     expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
       ['value', 'sampler2D'],
@@ -140,7 +157,9 @@ describe('createDefaultShaderCode / createInputShader', () => {
   });
 
   it('input shader float: value (float)', () => {
-    const result = parseWgslShader(createInputShader('float'));
+    const project = new Project('Factory');
+    const node = project.graph.createNode({ kind: 'input', dataType: 'float' }).toFlowNode();
+    const result = parseWgslShader(node.data.shaderCode);
     expect(result.parseError).toBeUndefined();
     expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
       ['value', 'float'],
@@ -149,7 +168,9 @@ describe('createDefaultShaderCode / createInputShader', () => {
   });
 
   it('constant shader: color (vec4)', () => {
-    const result = parseWgslShader(createDefaultShaderCode('constant'));
+    const project = new Project('Factory');
+    const node = project.graph.createNode({ kind: 'constant' }).toFlowNode();
+    const result = parseWgslShader(node.data.shaderCode);
     expect(result.parseError).toBeUndefined();
     expect(result.inputs.map(p => [p.label, p.dataType])).toEqual([
       ['color', 'vec4'],
@@ -158,33 +179,33 @@ describe('createDefaultShaderCode / createInputShader', () => {
   });
 });
 
-describe('makeNode output port types', () => {
+describe('Rust node factory output port types', () => {
   it('input node (float): output port is float, not vec4', () => {
-    const node = makeNode('input', undefined, 'float');
+    const node = new Project('Factory').graph.createNode({ kind: 'input', dataType: 'float' }).toFlowNode();
     expect(node.data.outputs).toHaveLength(1);
     expect(node.data.outputs[0].dataType).toBe('float');
   });
 
   it('input node (sampler2D): output port is sampler2D', () => {
-    const node = makeNode('input', undefined, 'sampler2D');
+    const node = new Project('Factory').graph.createNode({ kind: 'input', dataType: 'sampler2D' }).toFlowNode();
     expect(node.data.outputs).toHaveLength(1);
     expect(node.data.outputs[0].dataType).toBe('sampler2D');
   });
 
   it('input node (vec3): output port is vec3', () => {
-    const node = makeNode('input', undefined, 'vec3');
+    const node = new Project('Factory').graph.createNode({ kind: 'input', dataType: 'vec3' }).toFlowNode();
     expect(node.data.outputs).toHaveLength(1);
     expect(node.data.outputs[0].dataType).toBe('vec3');
   });
 
   it('constant node: output port matches uniform type (vec4)', () => {
-    const node = makeNode('constant');
+    const node = new Project('Factory').graph.createNode({ kind: 'constant' }).toFlowNode();
     expect(node.data.outputs).toHaveLength(1);
     expect(node.data.outputs[0].dataType).toBe('vec4');
   });
 
   it('shader node: output port stays vec4 (fragment color)', () => {
-    const node = makeNode('shader');
+    const node = new Project('Factory').graph.createNode({ kind: 'shader', code: DEFAULT_SHADER_CODE, label: 'shader' }).toFlowNode();
     expect(node.data.outputs).toHaveLength(1);
     expect(node.data.outputs[0].dataType).toBe('vec4');
   });

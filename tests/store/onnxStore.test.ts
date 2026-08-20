@@ -42,6 +42,7 @@ vi.mock('@xyflow/react', () => ({
 
 import { useGraphStore } from '../../src/store/useGraphStore';
 import { ONNX_CATALOG } from '../../src/catalog/onnxCatalog';
+import { getOnnxModelDescriptor } from '../../src/sdk/catalog';
 
 function resetStore() {
   useGraphStore.setState({
@@ -64,7 +65,7 @@ describe('addOnnxNode', () => {
   });
 
   it('creates a node with correct type, label, ports, and catalog metadata for yolov8n', () => {
-    const entry = ONNX_CATALOG['yolov8n'];
+    const entry = getOnnxModelDescriptor('yolov8n')!;
     useGraphStore.getState().addOnnxNode('yolov8n');
     const { nodes } = useGraphStore.getState();
 
@@ -73,7 +74,7 @@ describe('addOnnxNode', () => {
 
     expect(node.type).toBe('onnx');
     expect(node.data.type).toBe('onnx');
-      expect(node.data.templateName).toBe(entry.label);
+      expect(node.data.templateName).toBe(ONNX_CATALOG.yolov8n.label);
       expect(node.data.label).toMatch(/^yolov8n_detector_\d+$/);
 
     // Ports match catalog expectedIO
@@ -96,7 +97,7 @@ describe('addOnnxNode', () => {
     expect(node.data.onnxModelId).toBe('yolov8n');
     expect(node.data.onnxSource).toBe('catalog');
     expect(node.data.onnxCatalogId).toBe('yolov8n');
-    expect(node.data.onnxStatus).toBe('not-downloaded');
+    expect(node.data.onnxStatus).toBe('downloading');
   });
 
   it('populates default params including scoreThreshold and iouThreshold from catalog', () => {

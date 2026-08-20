@@ -1,10 +1,14 @@
+use open_quartz_schema::Graph;
 #[cfg(windows)]
-use open_quartz::types::{Graph, InputMode, NodeType};
+use open_quartz_schema::{InputMode, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(windows)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
@@ -72,6 +76,7 @@ pub struct PreparedScreenSaver {
 enum ScreenSaverLaunchMode {
     Run,
     Preview(isize),
+    Configure,
 }
 
 #[derive(Default)]
@@ -128,6 +133,7 @@ pub fn screen_saver_bootstrap(
         mode: match prepared.mode {
             ScreenSaverLaunchMode::Run => "run",
             ScreenSaverLaunchMode::Preview(_) => "preview",
+            ScreenSaverLaunchMode::Configure => "configure",
         }
         .to_owned(),
         project_json: prepared.manifest.project_json.clone(),
@@ -190,9 +196,12 @@ pub fn configure_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         ScreenSaverLaunchMode::Preview(parent) => {
             window.set_decorations(false)?;
             window.set_skip_taskbar(true)?;
+            #[cfg(not(windows))]
+            let _ = parent;
             #[cfg(windows)]
             attach_preview_window(&window, parent)?;
         }
+        ScreenSaverLaunchMode::Configure => {}
     }
     Ok(())
 }
@@ -215,6 +224,12 @@ fn parse_mode(args: Vec<String>) -> ScreenSaverLaunchMode {
             .and_then(|value| value.parse::<isize>().ok())
         {
             return ScreenSaverLaunchMode::Preview(parent);
+        }
+        if argument == "/c" || argument == "-c" || argument.starts_with("/c:") || argument.starts_with("-c:") {
+            return ScreenSaverLaunchMode::Configure;
+        }
+        if argument == "/s" || argument == "-s" {
+            return ScreenSaverLaunchMode::Run;
         }
         index += 1;
     }
@@ -272,7 +287,10 @@ fn read_settings(root: &Path) -> Result<HashMap<String, String>, String> {
 
 #[cfg(windows)]
 fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<(), String> {
-    let graph = parse_export_graph(&request.project_json)?;
+    let (graph, project_json) = collect_export_project(
+        &request.project_json,
+        &request.renderer_node_id,
+    )?;
     validate_shader_sources(&graph)?;
     let output = PathBuf::from(&request.output_path);
     if output
@@ -299,7 +317,7 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
         version: 3,
         export_id,
         name: request.name,
-        project_json: request.project_json,
+        project_json,
         renderer_node_id: request.renderer_node_id,
         exposed_inputs: request.exposed_inputs,
         resources: Vec::new(),
@@ -307,13 +325,21 @@ fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<
     write_package(&stub, &output, manifest, &resources)
 }
 
-#[cfg(windows)]
 fn parse_export_graph(project_json: &str) -> Result<Graph, String> {
     let value: serde_json::Value = serde_json::from_str(project_json)
         .map_err(|error| format!("Invalid screen saver project JSON: {error}"))?;
     let graph_value = value.get("graph").unwrap_or(&value);
     serde_json::from_value(graph_value.clone())
         .map_err(|error| format!("Invalid screen saver graph: {error}"))
+}
+
+fn collect_export_project(project_json: &str, renderer_node_id: &str) -> Result<(Graph, String), String> {
+    let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
+    let normalized = sdk
+        .screen_saver_export_project_json(project_json, renderer_node_id)
+        .map_err(|error| error.to_string())?;
+    let graph = parse_export_graph(&normalized)?;
+    Ok((graph, normalized))
 }
 
 #[cfg(windows)]
@@ -361,7 +387,7 @@ fn collect_resources(
     for node in &graph.nodes {
         if node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Video) {
             needs_ffmpeg = true;
-            if node.data.video_source_type == Some(open_quartz::types::VideoSourceType::Camera) {
+            if node.data.video_source_type == Some(open_quartz_schema::VideoSourceType::Camera) {
                 return Err(format!(
                     "Camera node '{}' cannot be exported as a deterministic screen saver input",
                     node.data.label
@@ -575,12 +601,131 @@ mod tests {
             parse_mode(vec!["/P:73".into()]),
             ScreenSaverLaunchMode::Preview(73)
         ));
+        assert!(matches!(
+            parse_mode(vec!["/c:19".into()]),
+            ScreenSaverLaunchMode::Configure
+        ));
     }
 
     #[test]
     fn rejects_unsafe_export_ids() {
         assert!(settings_root("safe-id_1").is_ok());
         assert!(settings_root("../unsafe").is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_manifest_versions() {
+        let root = std::env::temp_dir().join(format!(
+            "open-quartz-screen-saver-version-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let package = root.join("old.scr");
+        let manifest = serde_json::json!({
+            "version": 2,
+            "exportId": "test-export",
+            "name": "Test",
+            "projectJson": "{\"version\":\"0.4.0\",\"name\":\"Test\",\"createdAt\":\"\",\"updatedAt\":\"\",\"graph\":{\"nodes\":[],\"edges\":[]}}",
+            "rendererNodeId": "renderer",
+            "exposedInputs": [],
+            "resources": []
+        });
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        fs::write(
+            &package,
+            [
+                b"stub".as_slice(),
+                manifest.as_slice(),
+                &(manifest.len() as u64).to_le_bytes(),
+                MAGIC,
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let error = prepare_package(&package, vec![]).unwrap_err();
+
+        assert!(error.contains("Unsupported OpenQuartz screen saver version 2"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn export_project_uses_rust_upstream_graph_contract() {
+        let project_json = serde_json::json!({
+            "version": "0.4.0",
+            "name": "Saver",
+            "createdAt": "created",
+            "updatedAt": "updated",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "type": "shader",
+                        "position": { "x": 0.0, "y": 0.0 },
+                        "data": {
+                            "type": "shader",
+                            "label": "Source",
+                            "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
+                            "inputs": [],
+                            "outputs": [{
+                                "id": "out",
+                                "label": "out",
+                                "dataType": "sampler2D",
+                                "direction": "output"
+                            }],
+                            "uniforms": {}
+                        }
+                    },
+                    {
+                        "id": "renderer",
+                        "type": "renderer",
+                        "position": { "x": 10.0, "y": 0.0 },
+                        "data": {
+                            "type": "renderer",
+                            "label": "Renderer",
+                            "shaderCode": "",
+                            "inputs": [{
+                                "id": "in",
+                                "label": "in",
+                                "dataType": "sampler2D",
+                                "direction": "input"
+                            }],
+                            "outputs": [],
+                            "uniforms": {}
+                        }
+                    },
+                    {
+                        "id": "unused",
+                        "type": "shader",
+                        "position": { "x": 20.0, "y": 0.0 },
+                        "data": {
+                            "type": "shader",
+                            "label": "Unused",
+                            "shaderCode": "",
+                            "inputs": [],
+                            "outputs": [],
+                            "uniforms": {}
+                        }
+                    }
+                ],
+                "edges": [{
+                    "id": "source-renderer",
+                    "source": "source",
+                    "sourceHandle": "out",
+                    "target": "renderer",
+                    "targetHandle": "in"
+                }]
+            }
+        })
+        .to_string();
+
+        let (graph, normalized) = collect_export_project(&project_json, "renderer").unwrap();
+        let normalized: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(normalized["graph"]["nodes"][0]["id"], "source");
+        assert_eq!(normalized["graph"]["nodes"][1]["id"], "renderer");
+        assert_eq!(normalized["graph"]["edges"].as_array().unwrap().len(), 1);
     }
 
     #[cfg(windows)]

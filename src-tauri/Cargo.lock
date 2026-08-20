@@ -2774,6 +2774,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+ "web-sys",
  "wgpu",
  "windows 0.58.0",
 ]

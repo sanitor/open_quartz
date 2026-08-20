@@ -41,19 +41,29 @@ function makeEdge(
   return { id, source, target, sourceHandle: sourceHandle ?? null, targetHandle: targetHandle ?? null };
 }
 
+function sourceNode(id = 'source', handle = 'out'): Node<ShaderNodeData> {
+  return makeNode(id, 'shader', { x: 0, y: 0 }, {
+    outputs: [{ id: handle, label: handle, dataType: 'float', direction: 'output' }],
+  });
+}
+
+function targetNode(id = 'target', handle = 'in'): Node<ShaderNodeData> {
+  return makeNode(id, 'shader', { x: 120, y: 0 }, {
+    inputs: [{ id: handle, label: handle, dataType: 'float', direction: 'input' }],
+  });
+}
+
 describe('serializeProject', () => {
   it('creates a valid ProjectFile with version, name, timestamps, graph', () => {
-    const nodes = [makeNode('n1', 'shader')];
+    const nodes = [sourceNode('n1', 'out1'), targetNode('n2', 'in1')];
     const edges = [makeEdge('e1', 'n1', 'n2', 'out1', 'in1')];
     const result = serializeProject(nodes, edges, 'TestProject');
 
     expect(result.version).toBe('0.4.0');
     expect(result.name).toBe('TestProject');
-    expect(result.createdAt).toBeTruthy();
-    expect(result.updatedAt).toBeTruthy();
-    // ISO date format
-    expect(() => new Date(result.createdAt)).not.toThrow();
-    expect(result.graph.nodes).toHaveLength(1);
+    expect(result.createdAt).toBe('');
+    expect(result.updatedAt).toBe('');
+    expect(result.graph.nodes).toHaveLength(2);
     expect(result.graph.edges).toHaveLength(1);
   });
 
@@ -70,16 +80,17 @@ describe('serializeProject', () => {
     expect(result.graph.nodes[0].type).toBe('shader');
   });
 
-  it('maps null sourceHandle/targetHandle to empty string', () => {
-    const edge = makeEdge('e1', 'a', 'b', null, null);
-    const result = serializeProject([], [edge]);
-    expect(result.graph.edges[0].sourceHandle).toBe('');
-    expect(result.graph.edges[0].targetHandle).toBe('');
+  it('rejects edges without typed port handles at the Rust boundary', () => {
+    const edge = makeEdge('e1', 'source', 'target', null, null);
+    expect(() => serializeProject([sourceNode(), targetNode()], [edge])).toThrow();
   });
 
   it('preserves defined sourceHandle/targetHandle', () => {
-    const edge = makeEdge('e1', 'a', 'b', 'out_port', 'in_port');
-    const result = serializeProject([], [edge]);
+    const edge = makeEdge('e1', 'source', 'target', 'out_port', 'in_port');
+    const result = serializeProject(
+      [sourceNode('source', 'out_port'), targetNode('target', 'in_port')],
+      [edge],
+    );
     expect(result.graph.edges[0].sourceHandle).toBe('out_port');
     expect(result.graph.edges[0].targetHandle).toBe('in_port');
   });
@@ -119,6 +130,19 @@ describe('deserializeProject', () => {
               label: 'n1',
               shaderCode: '',
               inputs: [],
+              outputs: [{ id: 'out1', label: 'out1', dataType: 'float', direction: 'output' }],
+              uniforms: {},
+            },
+          },
+          {
+            id: 'n2',
+            type: 'shader',
+            position: { x: 30, y: 40 },
+            data: {
+              type: 'shader',
+              label: 'n2',
+              shaderCode: '',
+              inputs: [{ id: 'in1', label: 'in1', dataType: 'float', direction: 'input' }],
               outputs: [],
               uniforms: {},
             },
@@ -142,7 +166,7 @@ describe('deserializeProject', () => {
   it('restores nodes with correct fields', async () => {
     const json = makeProjectJson();
     const { nodes } = await deserializeProject(json);
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
     expect(nodes[0].id).toBe('n1');
     expect(nodes[0].type).toBe('shader');
     expect(nodes[0].position).toEqual({ x: 10, y: 20 });
@@ -175,7 +199,7 @@ describe('deserializeProject', () => {
       updatedAt: '',
       graph: { nodes: [], edges: [] },
     };
-    await expect(deserializeProject(JSON.stringify(obj))).rejects.toThrow('Invalid project file');
+    await expect(deserializeProject(JSON.stringify(obj))).rejects.toThrow('Cannot decode project');
   });
 
   it('throws on invalid JSON', async () => {
@@ -205,9 +229,11 @@ describe('round-trip serialize → deserialize', () => {
         label: 'Blur',
         shaderCode: 'uniform float x;',
         inputs: [{ id: 'p1', label: 'x', dataType: 'float', direction: 'input' }],
-        outputs: [],
+        outputs: [{ id: 'out_port', label: 'out', dataType: 'float', direction: 'output' }],
       }),
-      makeNode('o1', 'shader', { x: 300, y: 200 }),
+      makeNode('o1', 'shader', { x: 300, y: 200 }, {
+        inputs: [{ id: 'in_port', label: 'in', dataType: 'float', direction: 'input' }],
+      }),
     ];
     const edges = [makeEdge('e1', 's1', 'o1', 'out_port', 'in_port')];
 

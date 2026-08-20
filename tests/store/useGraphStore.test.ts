@@ -486,6 +486,60 @@ describe('useGraphStore', () => {
       useGraphStore.getState().addNode('constant');
       expect(useGraphStore.getState().redoStack).toHaveLength(0);
     });
+
+    it('undo removes the last Rust-created renderer and redo restores it', () => {
+      useGraphStore.getState().addInputNode('float');
+      useGraphStore.getState().addMathNode('add');
+      useGraphStore.getState().addRendererNode();
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+        'input_1',
+        'math_1',
+        'renderer_1',
+      ]);
+
+      useGraphStore.getState().undo();
+      expect(useGraphStore.getState().redoStack).toHaveLength(1);
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+        'input_1',
+        'math_1',
+      ]);
+
+      useGraphStore.getState().redo();
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+        'input_1',
+        'math_1',
+        'renderer_1',
+      ]);
+    });
+
+    it('undo and redo project Rust connection history into React Flow edges', () => {
+      useGraphStore.getState().addInputNode('float');
+      useGraphStore.getState().addMathNode('add');
+      const [input, math] = useGraphStore.getState().nodes;
+      const output = input.data.outputs[0];
+      const target = math.data.inputs[0];
+
+      useGraphStore.getState().onConnect({
+        source: input.id,
+        sourceHandle: output.id,
+        target: math.id,
+        targetHandle: target.id,
+      });
+      expect(useGraphStore.getState().edges).toHaveLength(1);
+
+      useGraphStore.getState().undo();
+      expect(useGraphStore.getState().edges).toHaveLength(0);
+
+      useGraphStore.getState().redo();
+      expect(useGraphStore.getState().edges).toEqual([
+        expect.objectContaining({
+          source: input.id,
+          sourceHandle: output.id,
+          target: math.id,
+          targetHandle: target.id,
+        }),
+      ]);
+    });
   });
 
   describe('loadGraph', () => {
@@ -651,7 +705,7 @@ describe('useGraphStore', () => {
       ]);
     });
 
-    it('allows connection when source/target nodes are not found (no type check)', () => {
+    it('rejects connection when source/target nodes are not found', () => {
       useGraphStore.setState({ nodes: [], edges: [] });
       const connection: Connection = {
         source: 'nonexistent_src',
@@ -660,17 +714,16 @@ describe('useGraphStore', () => {
         targetHandle: 'h2',
       };
       useGraphStore.getState().onConnect(connection);
-      // When nodes not found, the type check is skipped and connection proceeds
-      expect(useGraphStore.getState().edges).toHaveLength(1);
+      expect(useGraphStore.getState().edges).toHaveLength(0);
     });
 
-    it('allows connection when ports are not found (no type check)', () => {
+    it('rejects connection when ports are not found', () => {
       const { connection } = setupConnectionTest('shader', 'float', 'shader', 'float');
       // Use handles that don't match any port
       connection.sourceHandle = 'nonexistent';
       connection.targetHandle = 'nonexistent';
       useGraphStore.getState().onConnect(connection);
-      expect(useGraphStore.getState().edges).toHaveLength(1);
+      expect(useGraphStore.getState().edges).toHaveLength(0);
     });
   });
 
@@ -759,22 +812,6 @@ describe('useGraphStore', () => {
     });
   });
 
-  describe('setCaptureScreenshot', () => {
-    it('stores and retrieves screenshot function', () => {
-      const fn = (rendererId: string) => `screenshot_${rendererId}`;
-      useGraphStore.getState().setCaptureScreenshot(fn);
-      const stored = useGraphStore.getState().captureScreenshot;
-      expect(stored).not.toBeNull();
-      expect(stored!('r1')).toBe('screenshot_r1');
-    });
-
-    it('clears screenshot function with null', () => {
-      const fn = () => null;
-      useGraphStore.getState().setCaptureScreenshot(fn);
-      useGraphStore.getState().setCaptureScreenshot(null);
-      expect(useGraphStore.getState().captureScreenshot).toBeNull();
-    });
-  });
 
   describe('play/stop/pause/resume cycle', () => {
     it('play sets playing, stop resets to stopped with fps=0, currentTime=0, currentFrame=0', () => {

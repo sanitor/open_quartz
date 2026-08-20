@@ -27,8 +27,8 @@ vi.mock('../../src/utils/tauri', () => ({
   checkIsTauri: mocks.isTauri,
 }));
 
-vi.mock('../../src/sdk/BrowserPipelineRuntime', () => ({
-  BrowserPipelineRuntime: class extends mocks.FakeRuntime {
+vi.mock('../../src/sdk/internal/BrowserHost', () => ({
+  BrowserHost: class extends mocks.FakeRuntime {
     constructor(callbacks: Record<string, (...args: never[]) => void>) {
       super(callbacks);
       mocks.browser.push(this);
@@ -36,8 +36,8 @@ vi.mock('../../src/sdk/BrowserPipelineRuntime', () => ({
   },
 }));
 
-vi.mock('../../src/sdk/NativePipelineRuntime', () => ({
-  NativePipelineRuntime: class extends mocks.FakeRuntime {
+vi.mock('../../src/sdk/internal/NativeHost', () => ({
+  NativeHost: class extends mocks.FakeRuntime {
     constructor(callbacks: Record<string, (...args: never[]) => void>) {
       super(callbacks);
       mocks.native.push(this);
@@ -217,11 +217,16 @@ describe('PipelineService', () => {
     mirror.width = 2;
     mirror.height = 2;
     document.body.appendChild(mirror);
+    const sidePanelMirror = document.createElement('canvas');
+    sidePanelMirror.id = 'renderer-mirror-sidepanel-renderer';
+    sidePanelMirror.width = 2;
+    sidePanelMirror.height = 2;
+    document.body.appendChild(sidePanelMirror);
     vi.stubGlobal('ImageData', class {
       constructor(_pixels: Uint8ClampedArray, _width: number, _height: number) {}
     });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
-      return this === mirror ? mirrorContext : sourceContext;
+      return this === mirror || this === sidePanelMirror ? mirrorContext : sourceContext;
     } as typeof HTMLCanvasElement.prototype.getContext);
     const service = new PipelineService();
     service.attach(document.createElement('canvas'));
@@ -243,10 +248,11 @@ describe('PipelineService', () => {
       rgba: new Uint8Array(16), width: 2, height: 2,
     } as never);
     expect(sourceContext.putImageData).toHaveBeenCalledOnce();
+    expect(mirrorContext.drawImage).toHaveBeenCalledTimes(2);
     expect(mirrorContext.drawImage).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), 0, 0, 2, 2);
     window.dispatchEvent(new CustomEvent('renderer-remount'));
     expect(runtime.requestPreviewRefresh).toHaveBeenCalledOnce();
-    expect(mirrorContext.drawImage).toHaveBeenCalledTimes(2);
+    expect(mirrorContext.drawImage).toHaveBeenCalledTimes(4);
     expect(useGraphStore.getState().nodes[0]?.data).toMatchObject({
       onnxBackend: 'native',
       onnxNativeBackend: 'directml+cpu',
@@ -256,6 +262,7 @@ describe('PipelineService', () => {
     await service.detach();
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
     mirror.remove();
+    sidePanelMirror.remove();
   });
   it('keeps the canonical texture stream playing while moving into and out of fullscreen', async () => {
     mocks.isTauri.mockResolvedValue(true);

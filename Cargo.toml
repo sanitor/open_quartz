@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/open_quartz",
+    "crates/open_quartz_schema",
+    "crates/open_quartz_host_api",
+    "crates/open_quartz_execution",
+    "crates/open_quartz_sdk",
+    "crates/open_quartz_bindings",
+    "crates/open-quartz-screensaver-stub",
+    "src-tauri",
+]
+resolver = "2"

@@ -8,6 +8,8 @@ publish = false
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif", "tiff"] }
 open_quartz = { path = "../open_quartz" }
+open_quartz_execution = { path = "../open_quartz_execution", features = ["native-video-d3d12"] }
+open_quartz_schema = { path = "../open_quartz_schema" }
 pollster = "0.4"
 wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12"] }
 serde = { version = "1", features = ["derive"] }

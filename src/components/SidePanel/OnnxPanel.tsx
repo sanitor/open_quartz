@@ -1,10 +1,13 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { useGraphStore } from '../../store/useGraphStore';
-import { ONNX_MODELS } from '../../catalog/onnxRegistry';
-import { ONNX_CATALOG } from '../../catalog/onnxCatalog';
-import type { CatalogEntry } from '../../catalog/onnxCatalog';
-import type { OnnxDetection } from '../../engine/onnx/overlay';
-import type { OnnxModelDescriptor } from '../../catalog/onnxRegistry';
+import { getOnnxModelDescriptor, type OnnxModelDescriptor } from '../../sdk/catalog';
+
+interface OnnxDetection {
+  bbox: [number, number, number, number];
+  score: number;
+  class_id: number;
+  class_name: string;
+}
 
 interface OnnxDetectionsPayload {
   detections: OnnxDetection[];
@@ -94,17 +97,15 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
     e.target.value = '';
   }, [nodeId, loadCustomOnnxModel]);
 
-  // Resolve descriptor: catalog first, then legacy registry
-  const catalogEntry: CatalogEntry | undefined = modelId ? ONNX_CATALOG[modelId] : undefined;
-  const legacyDescriptor: OnnxModelDescriptor | undefined = modelId ? ONNX_MODELS[modelId] : undefined;
+  const catalogEntry: OnnxModelDescriptor | undefined = modelId ? getOnnxModelDescriptor(modelId) : undefined;
 
-  // Derive default thresholds from catalog params or legacy descriptor
+  // Derive default thresholds from the canonical catalog params.
   const defaultScore = catalogEntry?.defaultParams?.scoreThreshold
     ? Number(catalogEntry.defaultParams.scoreThreshold.default)
-    : legacyDescriptor?.scoreThreshold ?? 0.25;
+    : 0.25;
   const defaultIou = catalogEntry?.defaultParams?.iouThreshold
     ? Number(catalogEntry.defaultParams.iouThreshold.default)
-    : legacyDescriptor?.iouThreshold ?? 0.45;
+    : 0.45;
 
   const [scoreDraft, setScoreDraft] = useState<string>(String(score ?? defaultScore));
   const [iouDraft, setIouDraft] = useState<string>(String(iou ?? defaultIou));
@@ -130,8 +131,8 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
     updateNodeData(nodeId, { onnxIouThreshold: Math.max(0, Math.min(1, n)) });
   };
 
-  const effectiveSource = source ?? (catalogEntry ? 'catalog' : legacyDescriptor ? 'catalog' : 'custom');
-  const label = catalogEntry?.label ?? legacyDescriptor?.label ?? modelId ?? 'Unknown Model';
+  const effectiveSource = source ?? (catalogEntry ? 'catalog' : 'custom');
+  const label = catalogEntry?.label ?? modelId ?? 'Unknown Model';
 
   return (
     <div className="flex flex-col min-h-0 border-t border-[#e8e8ed]">
@@ -185,14 +186,6 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
           </div>
         )}
 
-        {/* Legacy descriptor fallback info */}
-        {effectiveSource === 'catalog' && !catalogEntry && legacyDescriptor && (
-          <div className="text-[10px] text-[#86868b] mb-3">
-            <div>Model: <span className="font-mono">{legacyDescriptor.modelUrl}</span></div>
-            <div>Input size: {legacyDescriptor.targetSize}×{legacyDescriptor.targetSize}</div>
-          </div>
-        )}
-
         {/* Custom model info */}
         {effectiveSource === 'custom' && (
           <div className="text-[10px] text-[#86868b] mb-3">
@@ -216,7 +209,7 @@ export function OnnxPanel({ nodeId, modelId, source, status, backend, score, iou
         )}
 
         {/* Catalog params (score/iou thresholds) — detection only */}
-        {!isSegmentation && (catalogEntry?.defaultParams || legacyDescriptor) && (
+        {!isSegmentation && catalogEntry?.defaultParams && (
           <div className="flex items-center gap-3 mb-2">
             <div className="flex-1">
               <label className="block text-[10px] text-[#86868b] font-medium mb-0.5">Score ≥</label>

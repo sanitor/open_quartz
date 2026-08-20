@@ -1,10 +1,11 @@
 import { useGraphStore } from '../store/useGraphStore';
-import { serializeProject, deserializeProject, saveFileAs, saveFile } from '../utils/projectIO';
+import { saveFileAs, saveFile } from '../utils/projectIO';
+import { OpenQuartzClient, Project as SdkProject } from '../sdk';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { VERSION } from '../version';
 import type { DataType, InputMode, ShaderNodeData } from '../types';
-import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../catalog/shaders'
+import { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER, shaderGroups } from '../shaders';
 import { ONNX_CATALOG, CATALOG_CATEGORIES } from '../catalog/onnxCatalog';
 import { MATH_CATEGORIES, MATH_OPS } from '../catalog/mathOps';
 import { parseWgslShader } from '../sdk/wgslParser';
@@ -111,7 +112,7 @@ export function Header() {
 
   const handleSave = () => {
     if (!savedFilePath) return;
-    const project = serializeProject(nodes, edges, projectName);
+    const project = new SdkProject(projectName, nodes, edges).toFile();
     saveFile(project, savedFilePath);
   };
 
@@ -123,7 +124,7 @@ export function Header() {
     const raw = saveAsInputRef.current?.value.trim();
     if (!raw) { setSaveAsOpen(false); return; }
     const filename = raw.endsWith('.quartz.json') ? raw : `${raw}.quartz.json`;
-    const project = serializeProject(nodes, edges, projectName);
+    const project = new SdkProject(projectName, nodes, edges).toFile();
     saveFileAs(project, filename);
     const baseName = filename.replace(/\.quartz\.json$/i, '');
     setSavedFilePath(filename);
@@ -141,9 +142,10 @@ export function Header() {
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const result = await deserializeProject(ev.target?.result as string);
+        const project = await new OpenQuartzClient().openProject(ev.target?.result as string);
+        const graph = project.graph.snapshot();
         const baseName = file.name.replace(/\.quartz\.json$/i, '');
-        loadGraph(result.nodes, result.edges);
+        loadGraph(graph.nodes, graph.edges);
         setProjectName(baseName);
         setSavedFilePath(file.name);
         fitAfterLoad();
@@ -683,7 +685,7 @@ export function Header() {
         <ScreenSaverExportDialog
           nodes={nodes}
           edges={edges}
-          project={serializeProject(nodes, edges, projectName)}
+          project={new SdkProject(projectName, nodes, edges).toFile()}
           activeRendererId={activeRendererId}
           onClose={() => setScreenSaverExportOpen(false)}
         />

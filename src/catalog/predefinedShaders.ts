@@ -1,13 +1,13 @@
-export type { ShaderEntry as ShaderTemplate } from './shaders';
-export { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER } from './shaders';
-export { shaderGroups } from './shaders';
+import { catalogSnapshot } from '../sdk/catalog';
+import type { ShaderGroupDescriptor, ShaderTemplateDescriptor } from '../sdk/catalog';
 
-import { shaderGroups } from './shaders';
-import type { ShaderEntry } from './shaders';
+export type ShaderTemplate = ShaderTemplateDescriptor;
 
-export const predefinedShaders = shaderGroups.flatMap(g => g.items);
+const snapshot = catalogSnapshot();
 
-/** Lookup map: templateId (label) → ShaderEntry. */
-export const SHADER_TEMPLATES: ReadonlyMap<string, ShaderEntry> = new Map(
-  predefinedShaders.map(s => [s.label, s]),
+export const shaderGroups: ShaderGroupDescriptor[] = snapshot.shaderGroups;
+export const predefinedShaders: ShaderTemplateDescriptor[] = shaderGroups.flatMap((group) => group.items);
+
+export const SHADER_TEMPLATES: ReadonlyMap<string, ShaderTemplateDescriptor> = new Map(
+  predefinedShaders.map((shader) => [shader.label, shader]),
 );

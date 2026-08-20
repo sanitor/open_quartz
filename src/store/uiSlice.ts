@@ -12,8 +12,7 @@ export function uiSlice(
     nodeErrors: {} as Record<string, string>,
     rendererFps: {} as Record<string, number>,
     rendererCadence: {},
-    nativeRendererStreams: {} as Record<string, MediaStream | null>,
-    captureScreenshot: null as ((rendererId: string) => Promise<string | null>) | null,
+    rendererStreamActive: {} as Record<string, boolean>,
 
     setSelectedNode: (id: string | null) => set((state) => { state.selectedNodeId = id; }),
     setActiveRenderer: (id: string | null) => set((state) => { state.activeRendererId = id; }),
@@ -24,9 +23,9 @@ export function uiSlice(
     setRendererCadence: (nodeId: string, metrics: GraphState['rendererCadence'][string]) => set((state) => {
       state.rendererCadence[nodeId] = metrics;
     }),
-    setNativeRendererStream: (nodeId: string, stream: MediaStream | null) => set((state) => {
-      if (stream) state.nativeRendererStreams[nodeId] = stream;
-      else delete state.nativeRendererStreams[nodeId];
+    setRendererStreamActive: (nodeId: string, active: boolean) => set((state) => {
+      if (active) state.rendererStreamActive[nodeId] = true;
+      else delete state.rendererStreamActive[nodeId];
     }),
     clearRendererFps: () => set((state) => { state.rendererFps = {}; state.rendererCadence = {}; }),
     setNodeError: (nodeId: string, error: string | null) => set((state) => {
@@ -37,8 +36,5 @@ export function uiSlice(
       }
     }),
     clearNodeErrors: () => set((state) => { state.nodeErrors = {}; }),
-    setCaptureScreenshot: (fn: ((rendererId: string) => Promise<string | null>) | null) => set((state) => {
-      state.captureScreenshot = fn as never;
-    }),
   };
 }

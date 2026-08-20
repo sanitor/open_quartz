@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { requireSdk, SDK_API_VERSION, SdkContractError, WasmSdkClient } from '../../src/sdk';
-import type { RawWasmBindings } from '../../src/sdk';
+import { SDK_API_VERSION, SdkContractError } from '../../src/sdk/contract';
+import { WasmSdkClient, type RawWasmBindings } from '../../src/sdk/WasmSdkClient';
 
 const capabilities = {
   structuredEngine: true,
@@ -21,120 +21,45 @@ const runtimeContract = {
   methods: ['set_graph', 'subscribe_output', 'update_presentation', 'drain_deliveries'],
 };
 
-class FakeEngine {
-  revision = 0;
-  lastFrame?: bigint;
-  pendingCommandCount = 0;
+
+class FakeBrowserPlayer {
+  static last: FakeBrowserPlayer;
   graphJson = '';
-  videoNodesJson = '[]';
-  events: unknown[] = [];
-  state = 'empty';
-
-  setGraph(graphJson: string): number {
-    this.graphJson = graphJson;
-    this.revision += 1;
-    this.state = 'ready';
-    this.events.push({ type: 'graph-ready', revision: this.revision });
-    this.events.push({ type: 'state', state: 'ready' });
-    return this.revision;
-  }
-
-  markDirty(nodeId: string): void {
-    if (this.state === 'disposed') {
-      throw JSON.stringify({ code: 'disposed', message: 'Engine has been disposed', nodeId });
-    }
-  }
-
-  runFrame(_time: number, _delta: number, frame: bigint): void {
-    this.lastFrame = frame;
-    this.pendingCommandCount = 1;
-    this.state = 'running';
-    this.events.push({
-      type: 'frame-planned',
-      frame: Number(frame),
-      revision: this.revision,
-      commandCount: 1,
-      dirtyNodeCount: 1,
-    });
-  }
-
-  setVideoNodes(nodeIdsJson: string): void {
-    this.videoNodesJson = nodeIdsJson;
-  }
-
-  nodeGeneration(_nodeId: string): number {
-    return 1;
-  }
-
-  pause(): void {
-    this.state = 'paused';
-  }
-
-  resume(): void {
-    this.state = 'running';
-  }
-
-  stop(): void {
-    this.state = 'stopped';
-  }
-
-  engineState(): string {
-    return this.state;
-  }
-
-  drainEvents(): string {
-    const result = JSON.stringify(this.events);
-    this.events = [];
-    return result;
-  }
-
-  dispose(): void {
-    this.state = 'disposed';
-  }
-}
-
-class FakeRuntime {
-  static last: FakeRuntime;
-  lifecycleTimestamps: bigint[] = [];
-
-  constructor() {
-    FakeRuntime.last = this;
-  }
-  graphJson = '';
-  videoNodesJson = '[]';
+  timestamps: bigint[] = [];
   subscriptions: string[] = [];
 
-  setGraph(graphJson: string): number {
-    this.graphJson = graphJson;
-    return 1;
+  static async create(_canvas: OffscreenCanvas): Promise<FakeBrowserPlayer> {
+    const player = new FakeBrowserPlayer();
+    FakeBrowserPlayer.last = player;
+    return player;
   }
-  setVideoNodes(nodeIdsJson: string): void { this.videoNodesJson = nodeIdsJson; }
 
-  play(nowNs: unknown): void {
-    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
-    this.lifecycleTimestamps.push(nowNs);
-  }
-  advance(_inputJson: string): void {}
-  subscribeOutput(subscriptionJson: string): void { this.subscriptions.push(subscriptionJson); }
-  updateOutputSubscription(subscriptionJson: string): void { this.subscriptions = [subscriptionJson]; }
-  unsubscribeOutput(subscriptionId: string): void {
-    this.subscriptions = this.subscriptions.filter((item) => JSON.parse(item).subscriptionId !== subscriptionId);
-  }
-  publishOutput(_stateJson: string): void {}
-  executionPlan(): string {
-    return JSON.stringify({ revision: 1, sortedIds: [], nodes: [], outputNodes: [], cycle: false });
-  }
-  drainDeliveries(): string { return JSON.stringify({ deliveries: [], invalidations: [] }); }
-  pause(nowNs: unknown): void {
-    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
-    this.lifecycleTimestamps.push(nowNs);
-  }
-  resume(nowNs: unknown): void {
-    if (typeof nowNs !== 'bigint') throw new TypeError('WASM u64 timestamp must be a bigint');
-    this.lifecycleTimestamps.push(nowNs);
-  }
+  setGraph(graphJson: string): number { this.graphJson = graphJson; return 2; }
+  play(nowNs: bigint): void { this.timestamps.push(nowNs); }
+  pause(nowNs: bigint): void { this.timestamps.push(nowNs); }
+  resume(nowNs: bigint): void { this.timestamps.push(nowNs); }
   stop(): void {}
-  dispose(): void {}
+  uploadFrame(_nodeId: string, _bitmap: ImageBitmap, timestampNs: bigint): void {
+    this.timestamps.push(timestampNs);
+  }
+  uploadRgba(): void {}
+  async readOutputRgba(): Promise<Uint8Array> { return new Uint8Array([64, 128, 191, 255]); }
+  outputInfo(): string { return JSON.stringify({ width: 1, height: 1 }); }
+  frame(): string {
+    return JSON.stringify({
+      clock: { epoch: 1, frame: 2, timelineNs: 3, previousTimelineNs: 2, nextDeadlineNs: 4 },
+      inferenceTasks: [{ nodeId: 'onnx', graphRevision: 2, nodeGeneration: 1 }],
+    });
+  }
+  subscribeOutput(subscriptionJson: string): void { this.subscriptions.push(subscriptionJson); }
+  unsubscribeOutput(subscriptionId: string): void {
+    this.subscriptions = this.subscriptions.filter(
+      (item) => JSON.parse(item).subscriptionId !== subscriptionId,
+    );
+  }
+  submitCompletion(): void {}
+  drainDeliveries(): string { return JSON.stringify({ deliveries: [], invalidations: [] }); }
+  close(): void {}
 }
 
 function fakeBindings(apiVersion = SDK_API_VERSION): RawWasmBindings {
@@ -144,10 +69,15 @@ function fakeBindings(apiVersion = SDK_API_VERSION): RawWasmBindings {
     capabilities: () => JSON.stringify(capabilities),
     sdkVersion: () => '0.16.0',
     runtimeContract: () => JSON.stringify(runtimeContract),
+    catalog: () => JSON.stringify({ mathCategories: [], mathOps: [], onnxCategories: [], onnxModels: [], shaderGroups: [] }),
+    planHostResourceIntents: (requestJson) => requestJson,
+    planBrowserOnnxTask: (requestJson) => requestJson,
+    encodeBrowserOnnxInput: (_rgba, requestJson) => JSON.stringify({ request: JSON.parse(requestJson), tensor: [1] }),
+    decodeBrowserOnnxOutput: (_sourceRgba, _raw, requestJson) => JSON.stringify({ request: JSON.parse(requestJson), width: 1, height: 1 }),
+    buildBrowserOnnxCompletion: (requestJson) => JSON.stringify({ nodeId: JSON.parse(requestJson).nodeId }),
     parseShader: (code) => JSON.stringify({ code }),
     planGraph: (graphJson) => graphJson,
-    Runtime: FakeRuntime,
-    Engine: FakeEngine,
+    BrowserPlayer: FakeBrowserPlayer,
   };
 }
 
@@ -160,169 +90,50 @@ describe('WasmSdkClient', () => {
     expect(client.sdkVersion).toBe('0.16.0');
     expect(client.capabilities).toEqual(capabilities);
     expect(client.runtimeContract).toEqual(runtimeContract);
+    expect(client.catalog()).toEqual({ mathCategories: [], mathOps: [], onnxCategories: [], onnxModels: [], shaderGroups: [] });
     expect(client.parseShader<{ code: string }>('shader').code).toBe('shader');
+    expect(client.planHostResourceIntents<{ host: string }>({ host: 'browser' }).host).toBe('browser');
+    expect(client.planBrowserOnnxTask<{ modelId: string }>({ modelId: 'yolov8n' }).modelId).toBe('yolov8n');
+    expect(client.encodeBrowserOnnxInput<{ tensor: number[] }>(new Uint8Array(4), {}).tensor).toEqual([1]);
+    expect(client.decodeBrowserOnnxOutput<{ width: number }>(new Uint8Array(4), new Float32Array(1), {}).width).toBe(1);
+    expect(client.buildBrowserOnnxCompletion<{ nodeId: string }>({ nodeId: 'onnx' }).nodeId).toBe('onnx');
   });
 
-  it('serializes graph snapshots and decodes engine events', async () => {
+
+
+  it('projects BrowserPlayer lifecycle, frame, GPU readback, and subscriptions', async () => {
     const client = await WasmSdkClient.load(async () => fakeBindings());
-    const engine = client.createEngine();
+    const player = await client.createBrowserPlayer({} as OffscreenCanvas);
 
-    expect(engine.setGraph([], [])).toBe(1);
-    expect(engine.state).toBe('ready');
-    expect(engine.drainEvents()).toEqual([
-      { type: 'graph-ready', revision: 1 },
-      { type: 'state', state: 'ready' },
-    ]);
-    expect(engine.drainEvents()).toEqual([]);
-  });
-
-  it('projects the canonical Runtime subscription API without host-specific methods', async () => {
-    const client = await WasmSdkClient.load(async () => fakeBindings());
-    const runtime = client.createRuntime();
-    expect(runtime.setGraph([], [])).toBe(1);
-    runtime.setVideoNodes(['video']);
-    expect(FakeRuntime.last.videoNodesJson).toBe('["video"]');
-    expect(runtime.executionPlan()).toEqual({
-      revision: 1,
-      sortedIds: [],
-      nodes: [],
-      outputNodes: [],
-      cycle: false,
-    });
-    runtime.subscribeOutput({
-      subscriptionId: 'math',
-      output: { nodeId: 'math-1', portId: 'result' },
-      delivery: 'on-change',
-      transport: 'value',
-    });
-    expect(runtime.drainDeliveries()).toEqual({ deliveries: [], invalidations: [] });
-  });
-
-  it('converts lifecycle timestamps to WASM u64 bigints', async () => {
-    const client = await WasmSdkClient.load(async () => fakeBindings());
-    const runtime = client.createRuntime();
-
-    runtime.play(123);
-    runtime.pause(456);
-    runtime.resume(789);
-
-    expect(FakeRuntime.last.lifecycleTimestamps).toEqual([123n, 456n, 789n]);
-  });
-
-  it('advances a connected SYSTEM TIME value through the real WASM Runtime', () => {
-    const runtime = requireSdk().createRuntime();
-    const nodes = [
-      {
-        id: 'time', type: 'input', position: { x: 0, y: 0 },
-        data: {
-          type: 'input', label: 'Time', shaderCode: '', inputs: [],
-          outputs: [{ id: 'time_out', label: 'value', dataType: 'float', direction: 'output' }],
-          uniforms: {}, inputMode: 'system', inputDataType: 'float', systemSource: 'time',
-        },
-      },
-      {
-        id: 'hue', type: 'shader', position: { x: 1, y: 0 },
-        data: {
-          type: 'shader', label: 'Hue Rotate',
-          shaderCode: '@group(0) @binding(0) var<uniform> angle: f32;\n@fragment fn main() -> @location(0) vec4f { return vec4f(angle); }',
-          inputs: [{ id: 'angle', label: 'angle', dataType: 'float', direction: 'input' }],
-          outputs: [], uniforms: {},
-        },
-      },
-    ];
-    const edges = [{
-      id: 'time_to_hue', source: 'time', sourceHandle: 'time_out',
-      target: 'hue', targetHandle: 'angle',
-    }];
-
-    runtime.setGraph(nodes as never, edges as never);
-    runtime.play(1_000_000_000);
-    runtime.advance({
-      time: 1.5,
+    expect(player.setGraph([], [])).toBe(2);
+    player.play(10);
+    player.pause(20);
+    player.resume(30);
+    player.uploadFrame('video', {} as ImageBitmap, 40);
+    expect(FakeBrowserPlayer.last.timestamps).toEqual([10n, 20n, 30n, 40n]);
+    expect(player.frame({
+      time: 0.016,
       delta: 0,
       frame: 0,
       date: new Float32Array(4),
       mouse: new Float32Array(4),
-      resolution: new Float32Array([512, 512, 1]),
+      resolution: new Float32Array([4, 4, 1]),
+    })).toMatchObject({
+      clock: { frame: 2 },
+      inferenceTasks: [{ nodeId: 'onnx', graphRevision: 2, nodeGeneration: 1 }],
     });
-    const first = runtime.drainWork<Array<{
-      nodeId: string;
-      uniforms: Record<string, number[]>;
-    }>>().find((command) => command.nodeId === 'hue');
-
-    runtime.advance({
-      time: 2.25,
-      delta: 0,
-      frame: 0,
-      date: new Float32Array(4),
-      mouse: new Float32Array(4),
-      resolution: new Float32Array([512, 512, 1]),
-    });
-    const second = runtime.drainWork<Array<{
-      nodeId: string;
-      uniforms: Record<string, number[]>;
-    }>>().find((command) => command.nodeId === 'hue');
-    runtime.stop();
-    runtime.dispose();
-
-    expect(first?.uniforms.angle[0]).toBeCloseTo(0.5);
-    expect(second?.uniforms.angle[0]).toBeCloseTo(1.25);
-  });
-
-  it('forwards typed frame inputs without frame JSON serialization', async () => {
-    const client = await WasmSdkClient.load(async () => fakeBindings());
-    const engine = client.createEngine();
-    engine.setGraph([], []);
-    engine.drainEvents();
-
-    engine.setVideoNodes(['video']);
-    engine.runFrame({
-      time: 1,
-      delta: 1 / 60,
-      frame: 42,
-      date: new Float32Array([2026, 7, 29, 0]),
-      mouse: new Float32Array(4),
-      resolution: new Float32Array([640, 360, 1]),
-    });
-
-    expect(engine.state).toBe('running');
-    expect(engine.lastFrame).toBe(42);
-    expect(engine.pendingCommandCount).toBe(1);
-    expect(engine.nodeGeneration('video')).toBe(1);
-    expect(engine.drainEvents()).toEqual([
-      { type: 'frame-planned', frame: 42, revision: 1, commandCount: 1, dirtyNodeCount: 1 },
-    ]);
-    engine.pause();
-    expect(engine.state).toBe('paused');
-    engine.resume();
-    engine.stop();
-    expect(engine.state).toBe('stopped');
-  });
-
-  it('rejects unsafe frame numbers before crossing the FFI boundary', async () => {
-    const engine = (await WasmSdkClient.load(async () => fakeBindings())).createEngine();
-    expect(() => engine.runFrame({
-      time: 0,
-      delta: 0,
-      frame: -1,
-      date: new Float32Array(4),
-      mouse: new Float32Array(4),
-      resolution: new Float32Array(3),
-    })).toThrowError(expect.objectContaining({ code: 'invalid-frame' }));
-  });
-
-  it('turns structured Rust failures into SdkContractError', async () => {
-    const client = await WasmSdkClient.load(async () => fakeBindings());
-    const engine = client.createEngine();
-    engine.dispose();
-
-    expect(() => engine.markDirty('shader')).toThrowError(
-      expect.objectContaining<SdkContractError>({
-        code: 'disposed',
-        message: 'Engine has been disposed',
-        nodeId: 'shader',
-      }),
+    await expect(player.readOutputRgba('renderer')).resolves.toEqual(
+      new Uint8Array([64, 128, 191, 255]),
     );
+    player.subscribeOutput({
+      subscriptionId: 'preview',
+      output: { nodeId: 'color', portId: 'out' },
+      delivery: 'latest',
+      transport: 'preview',
+    });
+    expect(FakeBrowserPlayer.last.subscriptions).toHaveLength(1);
+    player.unsubscribeOutput('preview');
+    expect(FakeBrowserPlayer.last.subscriptions).toEqual([]);
   });
 
   it('rejects incompatible API versions before creating an engine', async () => {

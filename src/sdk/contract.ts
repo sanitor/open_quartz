@@ -106,6 +106,7 @@ export type SdkErrorCode =
   | 'invalid-resource'
   | 'invalid-state'
   | 'not-prepared'
+  | 'stale-revision'
   | 'unknown-node'
   | 'protocol-mismatch'
   | 'invalid-response';

@@ -1,0 +1,13 @@
+[package]
+name = "open_quartz_bindings"
+version = "0.19.0"
+edition = "2021"
+rust-version = "1.77.2"
+license = "MIT"
+
+[lib]
+name = "open_quartz_jni"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+open_quartz = { path = "../open_quartz" }

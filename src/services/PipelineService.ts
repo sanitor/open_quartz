@@ -1,24 +1,32 @@
-/** PipelineService is the only bridge between Zustand and a host runtime. */
-import { BrowserPipelineRuntime } from '../sdk/BrowserPipelineRuntime';
-import { NativePipelineRuntime, type NativeOutputImage } from '../sdk/NativePipelineRuntime';
-import type { PipelineHostRuntime, PipelineRuntimeCallbacks } from '../sdk/PipelineRuntime';
+/** PipelineService projects Zustand intent onto the public SDK object graph. */
+import {
+  OpenQuartzClient,
+  Player,
+  Project,
+  type PlayerEvents,
+} from '../sdk';
 import { useGraphStore } from '../store/useGraphStore';
-import { checkIsTauri } from '../utils/tauri';
 import { runtimeLog } from '../sdk/runtimeLog';
 
-interface PipelineServiceOptions {
-  nativeTextureStream?: boolean;
-}
 
+
+interface NativeOutputImage {
+  rgba: Uint8Array;
+  width: number;
+  height: number;
+}
 interface RendererRemountDetail {
   nodeId?: string;
   fullscreen?: boolean;
 }
 
+let captureOutput: ((nodeId: string) => Promise<string | null>) | null = null;
+
 export class PipelineService {
-  private readonly options: PipelineServiceOptions;
-  private runtime: PipelineHostRuntime | null = null;
-  private runtimePromise: Promise<PipelineHostRuntime> | null = null;
+  private readonly sdk = new OpenQuartzClient();
+  private player: Player | null = null;
+  private playerPromise: Promise<Player> | null = null;
+  private project: Project | null = null;
   private unsub: (() => void) | null = null;
   private operations: Promise<void> = Promise.resolve();
   private generation = 0;
@@ -40,9 +48,7 @@ export class PipelineService {
     maxMs: 0,
   };
 
-  constructor(options: PipelineServiceOptions = {}) {
-    this.options = options;
-  }
+  constructor() {}
 
   attach(canvas: HTMLCanvasElement): void {
     window.addEventListener('renderer-remount', this.handleRendererRemount);
@@ -55,38 +61,34 @@ export class PipelineService {
         store.clearOutputPreviews();
         store.clearNodeErrors();
         this.enqueue(async () => {
-          const runtime = await this.ensureRuntime(canvas);
+          const player = await this.ensurePlayer(canvas);
           if (useGraphStore.getState().loopState !== 'playing') return;
-          useGraphStore.getState().setCaptureScreenshot(
-            async (nodeId) => await runtime.captureScreenshot(nodeId),
-          );
           const current = useGraphStore.getState();
-          runtime.setPreviewNode(current.selectedNodeId);
-          await runtime.play(current.nodes, current.edges);
+          player.setPreview(current.selectedNodeId ? player.output(current.selectedNodeId) : null);
+          await player.play();
         });
       }
 
       if (state.loopState === 'paused' && previous.loopState === 'playing') {
-        this.enqueue(async () => { await this.runtime?.pause(); });
+        this.enqueue(async () => { await this.player?.pause(); });
       }
 
       if (state.loopState === 'playing' && previous.loopState === 'paused') {
-        this.enqueue(async () => { await this.runtime?.resume(); });
+        this.enqueue(async () => { await this.player?.resume(); });
       }
 
       if (state.loopState === 'stopped' && previous.loopState !== 'stopped') {
         useGraphStore.getState().clearOutputPreviews();
-        this.runtime?.setPreviewNode(null);
-        this.enqueue(async () => { await this.runtime?.stop(); });
+        this.player?.setPreview(null);
+        this.enqueue(async () => { await this.player?.stop(); });
       }
 
       if (
         state.loopState === 'playing'
         && (state.edges !== previous.edges || nodesChangedForRuntime(state.nodes, previous.nodes))
       ) {
-        this.enqueue(async () => {
-          await this.runtime?.updateGraph(state.nodes, state.edges);
-        });
+        this.project?.graph.replace(state.nodes, state.edges);
+        this.enqueue(async () => { await this.player?.apply(); });
       }
 
       if (state.selectedNodeId !== previous.selectedNodeId) {
@@ -94,15 +96,12 @@ export class PipelineService {
           previous: previous.selectedNodeId,
           selected: state.selectedNodeId,
           playing: state.loopState,
-          runtime: this.runtime?.constructor.name ?? null,
-          runtimeReady: this.runtime !== null,
+          playerReady: this.player !== null,
         });
         if (state.loopState !== 'stopped') {
-          const runtime = this.runtime;
-          runtime?.setPreviewNode(state.selectedNodeId);
-          if (runtime?.requestPreviewRefresh) {
-            requestAnimationFrame(() => runtime.requestPreviewRefresh?.());
-          }
+          const player = this.player;
+          player?.setPreview(state.selectedNodeId ? player.output(state.selectedNodeId) : null);
+          if (player) requestAnimationFrame(() => player.refreshPreview());
         }
       }
     });
@@ -112,105 +111,89 @@ export class PipelineService {
     this.unsub?.();
     this.unsub = null;
     this.generation += 1;
-    useGraphStore.getState().setCaptureScreenshot(null);
-    const runtime = this.runtime;
-    this.runtime = null;
-    this.runtimePromise = null;
+    captureOutput = null;
+    const player = this.player;
+    this.player = null;
+    this.playerPromise = null;
+    this.project = null;
     window.removeEventListener('renderer-remount', this.handleRendererRemount);
     this.rendererStream = null;
-    useGraphStore.setState({ nativeRendererStreams: {} });
-    this.enqueue(async () => { await runtime?.close(); });
+    useGraphStore.setState({ rendererStreamActive: {} });
+    this.enqueue(async () => { await player?.close(); });
     this.lastNativeRendererFrame = null;
     this.rendererFrameMetrics.clear();
   }
 
-  private async ensureRuntime(canvas: HTMLCanvasElement): Promise<PipelineHostRuntime> {
-    if (this.runtime) return this.runtime;
-    if (this.runtimePromise) return await this.runtimePromise;
+  private async ensurePlayer(canvas: HTMLCanvasElement): Promise<Player> {
+    if (this.player) return this.player;
+    if (this.playerPromise) return await this.playerPromise;
+    const current = useGraphStore.getState();
+    this.project = new Project('Live composition', current.nodes, current.edges);
     const generation = this.generation;
-    this.runtimePromise = this.createRuntime(canvas).then((runtime) => {
+    this.playerPromise = this.sdk.player(this.project, {
+      canvas,
+      events: this.playerEvents(),
+    }).then((player) => {
       if (generation !== this.generation) {
-        void runtime.close();
-        throw new Error('Pipeline runtime initialization was superseded');
+        void player.close();
+        throw new Error('Player initialization was superseded');
       }
-      this.runtime = runtime;
-      return runtime;
+      this.player = player;
+      captureOutput = async (nodeId) => await player.output(nodeId).capture();
+      return player;
     }).finally(() => {
-      this.runtimePromise = null;
+      this.playerPromise = null;
     });
-    return await this.runtimePromise;
+    return await this.playerPromise;
   }
 
-  private async createRuntime(canvas: HTMLCanvasElement): Promise<PipelineHostRuntime> {
-    if (await checkIsTauri()) {
-      this.resetNativeFrameMetrics();
-      const runtime = new NativePipelineRuntime({
-        onFrame: (frame) => {
-          const now = performance.now();
-          if (frame.frame < this.nativeFpsWindowFrame) this.resetNativeFrameMetrics(now);
-          const elapsed = now - this.nativeFpsWindowAt;
-          if (elapsed >= 500) {
-            this.nativeFps = (frame.frame - this.nativeFpsWindowFrame) * 1000 / elapsed;
-            this.nativeFpsWindowAt = now;
-            this.nativeFpsWindowFrame = frame.frame;
-          }
-          this.handleFrame({
-            frame: frame.frame,
-            time: (now - this.nativeStartedAt) / 1000,
-            fps: this.nativeFps,
-          });
-        },
-        onRendererFrame: (nodeId, frame) => {
-          this.lastNativeRendererFrame = { nodeId, frame };
-          if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
-        },
-        onRendererStream: (nodeId, video) => {
-          if (video) this.rendererStream = { nodeId, video };
-          else this.rendererStream = null;
-          const stream = video?.srcObject as MediaStream | null;
-          const current = useGraphStore.getState().nativeRendererStreams[nodeId] ?? null;
-          if (current !== stream) {
-            useGraphStore.getState().setNativeRendererStream(nodeId, stream);
-            this.mountRendererStream(nodeId, video);
-          }
-        },
-        onRendererVideoFrame: (nodeId) => {
-          this.recordRendererPresentation(nodeId);
-        },
-        onRendererCadence: (nodeId, cadence) => {
-          useGraphStore.getState().setRendererCadence(nodeId, {
-            graphFps: this.nativeFps,
-            ...cadence,
-          });
-        },
-        onError: (error) => this.handleError(null, error),
-        onOutput: (nodeId, dataUrl) => this.handleOutput(nodeId, dataUrl),
-        onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
-        onOutputData: (nodeId, data) => useGraphStore.getState().setOutputData(nodeId, data),
-        onBackendDetected: (nodeId) => this.handleBackend(nodeId, 'native'),
-        onNativeBackendDetected: (nodeId, backend) => {
-          const store = useGraphStore.getState();
-          store.updateNodeData(nodeId, { onnxBackend: 'native', onnxNativeBackend: backend });
-        },
-      }, undefined, undefined, this.options.nativeTextureStream !== false);
-      await runtime.initialize(canvas);
-      return runtime;
-    }
-
-    const runtime = new BrowserPipelineRuntime(this.callbacks());
-    await runtime.initialize(canvas);
-    return runtime;
-  }
-
-  private callbacks(): PipelineRuntimeCallbacks {
+  private playerEvents(): PlayerEvents {
     return {
-      onFrame: (frame) => this.handleFrame(frame),
+      onFrame: (frame) => {
+        if (Number.isFinite(frame.time) && Number.isFinite(frame.fps)) {
+          this.handleFrame(frame);
+          return;
+        }
+        const now = performance.now();
+        if (frame.frame < this.nativeFpsWindowFrame) this.resetNativeFrameMetrics(now);
+        const elapsed = now - this.nativeFpsWindowAt;
+        if (elapsed >= 500) {
+          this.nativeFps = (frame.frame - this.nativeFpsWindowFrame) * 1000 / elapsed;
+          this.nativeFpsWindowAt = now;
+          this.nativeFpsWindowFrame = frame.frame;
+        }
+        this.handleFrame({
+          frame: frame.frame,
+          time: (now - this.nativeStartedAt) / 1000,
+          fps: this.nativeFps,
+        });
+      },
+      onRendererFrame: (nodeId, frame) => {
+        this.lastNativeRendererFrame = { nodeId, frame };
+        if (this.drawRendererFrame(nodeId, frame)) this.recordRendererPresentation(nodeId);
+      },
+      onRendererStream: (nodeId, video) => {
+        this.rendererStream = video ? { nodeId, video } : null;
+        useGraphStore.getState().setRendererStreamActive(nodeId, video !== null);
+        this.mountRendererStream(nodeId, video);
+      },
+      onRendererVideoFrame: (nodeId) => this.recordRendererPresentation(nodeId),
+      onRendererCadence: (nodeId, cadence) => {
+        useGraphStore.getState().setRendererCadence(nodeId, {
+          graphFps: this.nativeFps,
+          ...cadence,
+        });
+      },
       onRendererPresented: (nodeId) => this.recordRendererPresentation(nodeId),
       onOutput: (nodeId, dataUrl) => this.handleOutput(nodeId, dataUrl),
       onNodeError: (nodeId, error) => this.handleError(nodeId, error),
       onOutputSize: (nodeId, width, height) => this.handleOutputSize(nodeId, width, height),
       onOutputData: (nodeId, data) => useGraphStore.getState().setOutputData(nodeId, data),
       onBackendDetected: (nodeId, backend) => this.handleBackend(nodeId, backend),
+      onNativeBackendDetected: (nodeId, backend) => {
+        const store = useGraphStore.getState();
+        store.updateNodeData(nodeId, { onnxBackend: 'native', onnxNativeBackend: backend });
+      },
     };
   }
 
@@ -319,7 +302,7 @@ export class PipelineService {
     if (this.lastNativeRendererFrame) {
       this.drawRendererFrame(this.lastNativeRendererFrame.nodeId, this.lastNativeRendererFrame.frame);
     }
-    this.runtime?.requestPreviewRefresh?.();
+    this.player?.refreshPreview();
   };
 
   private recordRendererPresentation(nodeId: string, now = performance.now()): void {
@@ -424,13 +407,10 @@ function nodesChangedForRuntime(
   });
 }
 
+export async function capturePlayerOutput(nodeId: string): Promise<string | null> {
+  return await captureOutput?.(nodeId) ?? null;
+}
+
 export async function listAvailableVideoDevices(): Promise<Array<{ id: string; label: string }>> {
-  if (await checkIsTauri()) return await new NativePipelineRuntime().listVideoDevices();
-  const devices = await navigator.mediaDevices?.enumerateDevices?.() ?? [];
-  return devices
-    .filter((device) => device.kind === 'videoinput')
-    .map((device, index) => ({
-      id: device.deviceId,
-      label: device.label || `Camera ${index + 1}`,
-    }));
+  return await new OpenQuartzClient().listVideoDevices();
 }

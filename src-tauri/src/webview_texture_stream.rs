@@ -47,7 +47,7 @@ impl TextureStreamCapabilityState {
 #[cfg(windows)]
 mod platform {
     use super::{TextureStreamCapability, TextureStreamTestFrame};
-    use open_quartz::gpu::SharedTextureFrame;
+    use open_quartz_execution::gpu::SharedTextureFrame;
     use std::{
         cell::RefCell,
         collections::HashMap,

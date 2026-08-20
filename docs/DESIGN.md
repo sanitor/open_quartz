@@ -1171,14 +1171,13 @@ platform implementation -> injected provider traits + platform APIs
 
 ### 10.1 当前完成度与真实阻塞
 
-早期重构已完成Rust execution cutover，但薄TypeScript SDK仍是当前主阻塞。后续按以下顺序推进：
+Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Graph command、Project I/O、screen saver transform、catalog、Browser inference和host resource policy均已切到Rust-owned contract；`open_quartz_sdk`、`open_quartz_host_api`、`open_quartz_execution`也已形成真实crate边界。
 
-1. TypeScript public objects改为真实Rust aggregate proxy，移除React Flow/domain revision泄漏。
-2. Store graph mutation、Project I/O、screen saver transform和catalog执行语义迁入Rust SDK。
-3. Browser inference的task/pre-postprocess和host resource reconciliation迁入Rust typed intent。
-4. 清除TS遗留算法后继续拆Rust public SDK/host API/execution编译边界。
-5. Web性能问题保持已知且暂缓专项修复；每次迁移必须证明没有退化现有功能与可测性能基线。
-6. Java完整JNI与平台环境仍需独立贯通。
+当前剩余工作不再属于Phase 7业务语义下沉：
+
+1. Java完整JNI、真实动态库与平台surface仍需独立贯通。
+2. 干净Windows VM上的screen saver `/s`、`/p`、`/c`手工验证，以及真实video/ONNX长时间稳定性验证仍未完成。
+3. Web性能已建立可复现benchmark，并完成preview Blob编码边界和Worker逐帧typed-array分配优化；ORT tensor transfer、video `ImageBitmap` transfer和timer调度仍需在具备真实Browser API与GPU的环境继续profile，不得宣称未经测量的性能提升。
 
 ### 10.2 阶段状态
 
@@ -1190,10 +1189,10 @@ platform implementation -> injected provider traits + platform APIs
 | 3 WASM | **功能完成，性能未通过** | Rust wgpu Browser execution已生产使用；Web 性能问题已记录并暂缓 |
 | 4 TypeScript execution cutover | **完成** | React adapter、App/ScreenSaver cutover、legacy TS execution删除 |
 | 5 Java/JNI | **部分** | public facade和tests完成；完整ABI、真实动态库与平台surface未完成 |
-| 6 Boundaries | **部分** | schema/bindings crate与CI完成；sdk/host_api/execution尚未完全拆分 |
-| 7 Thin TS convergence | **待执行** | Rust-backed proxy、Store command下沉、Project/screen saver/catalog/inference/resource policy下沉和TS遗留清理 |
+| 6 Boundaries | **完成** | schema、bindings、`open_quartz_sdk`、`open_quartz_host_api`、`open_quartz_execution`真实crate边界及dependency/proxy CI已建立 |
+| 7 Thin TS convergence | **完成** | Rust-backed proxy、Store command、Project/screen saver/catalog/inference/resource policy下沉和TS遗留清理均已完成；Web剩余性能项已有benchmark基线 |
 
-以下Phase 0–6条目保留为历史实施规格；下一步以Phase 7路线为准。
+以下Phase 0–7条目保留为历史实施规格；后续工作以Java/platform integration、Windows实机验证和基于测量的Web性能优化为准。
 
 ### Phase 0：冻结 public object API，完成高风险 spike
 
@@ -1372,6 +1371,8 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 | 7 | Host resource intent | Rust Player输出resolve/attach/detach/load/unload/present typed intent和generation policy | DOM/Tauri/WebView2具体调用及opaque handle | image/video/model replace/remove/stop/close tests；Browser/Native同fixture；platform smoke |
 | 8 | Schema与crate边界 | 拆 `open_quartz_sdk/host_api/execution`，移除UI/runtime projection字段 | GUI projection单独TS type | `cargo test --workspace`、compile-fail/dependency tests、TS diagnostics、project compatibility fixtures |
 | 9 | Web性能专项 | 在正确边界上优化readback/encode/tensor/video/scheduler | 必要Web API与instrumentation | 优化前后同一benchmark；像素/输出/stamp回归；不得以关闭功能换指标 |
+
+**实施状态：已完成。** 九个change-set已按回归先行方式落地；Web性能项只记录可复现实测结论，未对缺少真实Browser API/GPU证据的ORT/video/scheduler路径宣称提升。
 
 完成判据：
 
@@ -1554,17 +1555,17 @@ npm run check:public-proxy
 | Native video | `src-tauri/src/native_video.rs`、`crates/open_quartz/src/native_video.rs` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
 | Rust schema crate | `crates/open_quartz_schema` |
-| Rust public object/core crate | `crates/open_quartz/src/lib.rs`、`crates/open_quartz/src/sdk.rs` |
-| Runtime/Engine/GPU/ONNX | `crates/open_quartz/src/runtime`、`crates/open_quartz/src/engine`、`crates/open_quartz/src/gpu`、`crates/open_quartz/src/onnx` |
-| Browser Rust wgpu environment | `crates/open_quartz/src/wasm_environment.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
+| Rust public object/core crate | `crates/open_quartz_sdk/src`、`crates/open_quartz/src/lib.rs` |
+| Rust host intent API | `crates/open_quartz_host_api/src` |
+| Runtime/Engine/GPU/ONNX execution | `crates/open_quartz_execution/src` |
+| Browser Rust wgpu environment | `crates/open_quartz_execution/src/wasm_environment.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
 | Boundary/parity CI | `.github/workflows/dependency-boundaries.yml`、`scripts/check-public-proxy-parity.mjs` |
 
 ### 12.3 当前基线总结
 
-- **已成立**：Rust public object API；Rust/WASM wgpu Browser execution；共享Rust lifecycle/clock/graph execution policy；旧TS graph/GPU engine删除；schema/bindings crate与boundary/parity CI。
-- **部分成立**：TypeScript public facade和生产cutover，但尚非真实Rust-backed薄proxy；Store/host/provider仍持部分domain/resource/inference policy；Java facade/JNI lifecycle；Rust host API/execution编译边界。
-- **已知问题、暂缓**：Web生产链路性能。候选热点为preview readback/PNG/base64、ORT readback-upload、video `ImageBitmap` transfer、Worker timer/GC；迁移每一步不得退化现有基线。
-- **下一主线**：执行Phase 7，按回归先行方式迁Rust-backed proxy、Store Graph command、Project/screen saver/catalog、ONNX task与resource intent；预期副产物是Rust tests直接覆盖几乎所有非GUI功能。
-- **尚未完成**：完整Java JNI/platform integration；独立`open_quartz_sdk/open_quartz_host_api/open_quartz_execution`边界；干净Windows VM的screen saver手工与长稳验证。
+- **已成立**：Rust-backed public object API与薄TypeScript proxy；Rust/WASM wgpu Browser execution；Rust-owned Graph command、Project/screen saver/catalog、ONNX task与host resource intent；旧TS graph/GPU和重复业务算法删除；`open_quartz_schema/open_quartz_sdk/open_quartz_host_api/open_quartz_execution/open_quartz_bindings`真实crate边界及boundary/proxy CI。
+- **已测量、继续优化**：Web preview Blob编码优先使用`FileReader`并保留等价fallback；Worker复用逐帧typed array。Node benchmark只证明fallback parity与allocation差异，不代表Browser PNG、ORT或video生产性能；后续必须在真实Browser API/GPU上profile ORT readback-upload、video `ImageBitmap` transfer和timer/GC。
+- **下一主线**：完整Java JNI/platform integration，以及真实Browser/Native/Windows环境的功能、长稳和性能验证。
+- **尚未完成**：Java真实动态库与平台surface；干净Windows VM的screen saver `/s`、`/p`、`/c`手工验证；真实video/ONNX graph长稳验证；真实Browser ONNX和preview性能smoke。
 
 后续任何性能或边界优化若改变上述状态，必须同时更新总图、逐帧数据流、copy 特征、阶段状态和源码索引。

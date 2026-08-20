@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import type { Edge, Node } from '@xyflow/react';
 import type { ProjectFile, ShaderNodeData } from '../types';
 import {
-  collectScreenSaverGraph,
   rendererCandidates,
   screenSaverInputCandidates,
   type ScreenSaverExportRequest,
@@ -54,13 +53,10 @@ export function ScreenSaverExportDialog({
       });
       if (!selected) return;
       const outputPath = selected.toLowerCase().endsWith('.scr') ? selected : `${selected}.scr`;
-      const exportedProject = collectScreenSaverGraph(structuredClone(project), rendererNodeId);
-
-
       const request: ScreenSaverExportRequest = {
         outputPath,
-        name: exportedProject.name,
-        projectJson: JSON.stringify(exportedProject),
+        name: project.name,
+        projectJson: JSON.stringify(project),
         rendererNodeId,
         exposedInputs: inputs.filter((input) => exposed.has(input.nodeId)),
       };

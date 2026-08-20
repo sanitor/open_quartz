@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { OnnxDetection } from '../../src/engine/onnx/overlay';
+
+interface OnnxDetection {
+  bbox: [number, number, number, number];
+  score: number;
+  class_id: number;
+  class_name: string;
+}
 
 interface StoreState {
   updateNodeData: ReturnType<typeof vi.fn>;

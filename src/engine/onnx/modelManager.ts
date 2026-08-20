@@ -1,4 +1,4 @@
-import type { CatalogEntry } from '../../catalog/onnxCatalog';
+import type { OnnxModelDescriptor } from '../../sdk/catalog';
 
 // ---------------------------------------------------------------------------
 // Model lifecycle status
@@ -69,7 +69,7 @@ export class OnnxModelManager {
   // Download
   // -----------------------------------------------------------------------
 
-  async downloadModel(entry: CatalogEntry): Promise<ArrayBuffer> {
+  async downloadModel(entry: OnnxModelDescriptor): Promise<ArrayBuffer> {
     const cached = this.bufferCache.get(entry.id);
     if (cached) {
       this.updateState(entry.id, { status: 'downloaded', progress: 1, modelBuffer: cached });
@@ -101,7 +101,7 @@ export class OnnxModelManager {
   // Tauri download: Rust-side reqwest, no CORS restrictions
   // -----------------------------------------------------------------------
 
-  private async downloadViaTauri(entry: CatalogEntry): Promise<ArrayBuffer> {
+  private async downloadViaTauri(entry: OnnxModelDescriptor): Promise<ArrayBuffer> {
     // Dynamic import: @tauri-apps/api only exists in Tauri runtime, not in
     // plain browser environments. This is a platform-specific exception.
     const { invoke } = await import('@tauri-apps/api/core');
@@ -150,7 +150,7 @@ export class OnnxModelManager {
   // Fetch download: browser-only, subject to CORS
   // -----------------------------------------------------------------------
 
-  private async downloadViaFetch(entry: CatalogEntry): Promise<ArrayBuffer> {
+  private async downloadViaFetch(entry: OnnxModelDescriptor): Promise<ArrayBuffer> {
     const response = await fetch(entry.downloadUrl);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);

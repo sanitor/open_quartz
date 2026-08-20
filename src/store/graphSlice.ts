@@ -1,329 +1,356 @@
-import type { Node, Edge } from '@xyflow/react';
+import type { Connection, Edge, Node, NodeChange, EdgeChange } from '@xyflow/react';
 import {
-  applyNodeChanges,
   applyEdgeChanges,
-  addEdge,
+  applyNodeChanges,
 } from '@xyflow/react';
-import type { ShaderNodeData, DataType, InputMode, Port } from '../types';
-import { parseWgslShader } from '../sdk/wgslParser';
+import type { ShaderNodeData, DataType, InputMode } from '../types';
 import { SHADER_TEMPLATES } from '../catalog/predefinedShaders';
-import { MATH_OPS, getMathPorts } from '../catalog/mathOps';
 import { ONNX_CATALOG } from '../catalog/onnxCatalog';
-import { OnnxInferenceSession } from '../engine/onnx/inference';
-import { introspectOnnxModel, metaToDefaultPorts } from '../engine/onnx/introspect';
+import { Resource } from '../sdk';
+import { getOnnxModelDescriptor } from '../sdk/catalog';
 import type { GraphState } from './index';
-import {
-  counters,
-  makeNode,
-  syncCounters,
-  createInputShader,
-  modelManager,
-  downloadCatalogModel,
-  SYSTEM_SOURCES,
-} from './helpers';
+import { StoreGraphAdapter } from './graphAdapter';
+import { downloadCatalogModel } from './helpers';
+
+let graphDomain: StoreGraphAdapter | null = null;
+
+function domainFor(state: GraphState): StoreGraphAdapter {
+  if (!graphDomain) graphDomain = new StoreGraphAdapter(state.projectName);
+  graphDomain.ensureMatches({ nodes: state.nodes, edges: state.edges });
+  return graphDomain;
+}
+
+function projectDomain(
+  set: (fn: (state: GraphState) => void) => void,
+  domain: StoreGraphAdapter,
+): void {
+  const snapshot = domain.snapshot();
+  set((state) => {
+    const previous = new Map(state.nodes.map((node) => [node.id, node]));
+    state.nodes = snapshot.nodes.map((node) => {
+      const existing = previous.get(node.id);
+      return existing
+        ? { ...node, position: existing.position, selected: existing.selected }
+        : node;
+    });
+    state.edges = snapshot.edges;
+  });
+}
+
+function pushHistory(
+  set: (fn: (state: GraphState) => void) => void,
+  revision = graphDomain?.graph.revision ?? 0,
+): void {
+  set((state) => {
+    state.undoStack.push({ revision, nodes: [], edges: [] });
+    state.redoStack = [];
+    if (state.undoStack.length > 50) state.undoStack.shift();
+  });
+}
+
+function runCommand(
+  set: (fn: (state: GraphState) => void) => void,
+  get: () => GraphState,
+  command: Parameters<StoreGraphAdapter['apply']>[0],
+  record = true,
+): boolean {
+  const domain = domainFor(get());
+  try {
+    domain.apply(command);
+    if (record) pushHistory(set, domain.graph.revision);
+    projectDomain(set, domain);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runNodeFactory(
+  set: (fn: (state: GraphState) => void) => void,
+  get: () => GraphState,
+  request: Parameters<StoreGraphAdapter['createNode']>[0],
+): Node<ShaderNodeData> | null {
+  const domain = domainFor(get());
+  try {
+    const node = domain.createNode(request);
+    pushHistory(set, domain.graph.revision);
+    projectDomain(set, domain);
+    return node;
+  } catch {
+    return null;
+  }
+}
+
+function updateNodeData(
+  set: (fn: (state: GraphState) => void) => void,
+  get: () => GraphState,
+  id: string,
+  data: Partial<ShaderNodeData>,
+): boolean {
+  const current = get().nodes.find((node) => node.id === id);
+  if (!current) return false;
+  const nextData = { ...current.data, ...data } as ShaderNodeData;
+  const command = data.shaderCode !== undefined
+    ? { kind: 'updateShaderCode' as const, nodeId: id, shaderCode: data.shaderCode }
+    : { kind: 'updateNodeData' as const, nodeId: id, data: nextData };
+  const changed = runCommand(set, get, command, data.shaderCode !== undefined);
+  if (changed) {
+    const projected = get().nodes.find((node) => node.id === id);
+    const parseError = projected?.data.parseError;
+    set((state) => {
+      if (parseError) state.nodeErrors[id] = String(parseError);
+      else delete state.nodeErrors[id];
+    });
+  }
+  return changed;
+}
 
 export function graphSlice(
   set: (fn: (state: GraphState) => void) => void,
   get: () => GraphState,
 ) {
-  function saveSnapshot() {
-    const { nodes, edges } = get();
-    const entry = { nodes: structuredClone(nodes), edges: structuredClone(edges) };
+  function applyUiNodeChanges(changes: NodeChange[]): void {
     set((state) => {
-      state.undoStack.push(entry);
-      state.redoStack = [];
-      if (state.undoStack.length > 50) state.undoStack.shift();
+      state.nodes = applyNodeChanges(changes, state.nodes) as Node<ShaderNodeData>[];
+    });
+  }
+
+  function applyUiEdgeChanges(changes: EdgeChange[]): void {
+    set((state) => {
+      state.edges = applyEdgeChanges(changes, state.edges);
     });
   }
 
   return {
     nodes: [] as Node<ShaderNodeData>[],
     edges: [] as Edge[],
-    undoStack: [] as { nodes: Node<ShaderNodeData>[]; edges: Edge[] }[],
-    redoStack: [] as { nodes: Node<ShaderNodeData>[]; edges: Edge[] }[],
+    undoStack: [] as { revision: number; nodes: Node<ShaderNodeData>[]; edges: Edge[] }[],
+    redoStack: [] as { revision: number; nodes: Node<ShaderNodeData>[]; edges: Edge[] }[],
 
-    pushHistory: saveSnapshot,
+    pushHistory: () => {
+      pushHistory(set, graphDomain?.graph.revision ?? 0);
+    },
 
     undo: () => {
       const { undoStack } = get();
       if (undoStack.length === 0) return;
+      const domain = domainFor(get());
+      try {
+        domain.undo();
+      } catch {
+        return;
+      }
       set((state) => {
-        const prev = state.undoStack.pop()!;
-        state.redoStack.push({ nodes: structuredClone(get().nodes), edges: structuredClone(get().edges) });
-        state.nodes = prev.nodes;
-        state.edges = prev.edges;
+        state.undoStack.pop();
+        state.redoStack.push({ revision: domain.graph.revision, nodes: [], edges: [] });
         state.selectedNodeId = null;
       });
-      syncCounters(get().nodes);
+      projectDomain(set, domain);
     },
 
     redo: () => {
       const { redoStack } = get();
       if (redoStack.length === 0) return;
+      const domain = domainFor(get());
+      try {
+        domain.redo();
+      } catch {
+        return;
+      }
       set((state) => {
-        const next = state.redoStack.pop()!;
-        state.undoStack.push({ nodes: structuredClone(get().nodes), edges: structuredClone(get().edges) });
-        state.nodes = next.nodes;
-        state.edges = next.edges;
+        state.redoStack.pop();
+        state.undoStack.push({ revision: domain.graph.revision, nodes: [], edges: [] });
         state.selectedNodeId = null;
       });
-      syncCounters(get().nodes);
+      projectDomain(set, domain);
     },
 
     onNodesChange: (changes: Parameters<GraphState['onNodesChange']>[0]) => {
-      set((state) => {
-        state.nodes = applyNodeChanges(changes, state.nodes) as unknown as Node<ShaderNodeData>[];
-      });
+      const removes = changes.filter((change): change is NodeChange & { type: 'remove'; id: string } =>
+        change.type === 'remove');
+      for (const change of removes) {
+        runCommand(set, get, { kind: 'removeNode', nodeId: change.id });
+      }
+      const uiChanges = changes.filter((change) => change.type !== 'remove');
+      if (uiChanges.length > 0) applyUiNodeChanges(uiChanges);
     },
 
     onEdgesChange: (changes: Parameters<GraphState['onEdgesChange']>[0]) => {
-      set((state) => {
-        state.edges = applyEdgeChanges(changes, state.edges);
-      });
+      const removes = changes.filter((change): change is EdgeChange & { type: 'remove'; id: string } =>
+        change.type === 'remove');
+      for (const change of removes) {
+        if (!runCommand(set, get, { kind: 'disconnect', edgeId: change.id })) {
+          applyUiEdgeChanges([change]);
+        }
+      }
+      const uiChanges = changes.filter((change) => change.type !== 'remove');
+      if (uiChanges.length > 0) applyUiEdgeChanges(uiChanges);
     },
 
     onConnect: (connection: Parameters<GraphState['onConnect']>[0]) => {
-      const { nodes } = get();
-      const sourceNode = nodes.find((n) => n.id === connection.source);
-      const targetNode = nodes.find((n) => n.id === connection.target);
-      if (sourceNode && targetNode) {
-        const sourcePort = sourceNode.data.outputs.find((p) => p.id === connection.sourceHandle);
-        const targetPort = targetNode.data.inputs.find((p) => p.id === connection.targetHandle);
-        if (sourcePort && targetPort) {
-          const sourceIsAuto = sourcePort.dataType === 'auto';
-          const targetIsAuto = targetPort.dataType === 'auto';
-          const targetIsSampler = targetPort.dataType === 'sampler2D' || targetPort.dataType === 'samplerCube';
-          const sourceIsSampler = sourcePort.dataType === 'sampler2D' || sourcePort.dataType === 'samplerCube';
-          if (targetIsSampler) {
-            // Reject auto→sampler and sampler→auto
-            if (sourceIsAuto) return;
-            const srcType = sourceNode.data.type;
-            const srcIsTextureProducer = sourceIsSampler
-              || srcType === 'shader' || srcType === 'constant'
-              || (srcType === 'input' && sourceNode.data.inputDataType === 'sampler2D');
-            if (!srcIsTextureProducer) return;
-          } else if (sourceIsSampler && targetIsAuto) {
-            // Reject sampler→auto
-            return;
-          } else if (sourceIsAuto || targetIsAuto) {
-            // Allow any scalar/vector ↔ auto connection
-          } else if (sourcePort.dataType !== targetPort.dataType) {
-            return;
-          }
-        }
-
-      }
-      saveSnapshot();
-      set((state) => {
-        const withoutExistingTarget = state.edges.filter(
-          (edge) => edge.target !== connection.target || edge.targetHandle !== connection.targetHandle,
-        );
-        state.edges = addEdge({ ...connection, type: 'bezier' }, withoutExistingTarget);
+      if (!connection.sourceHandle || !connection.targetHandle) return;
+      runCommand(set, get, {
+        kind: 'connect',
+        source: { nodeId: connection.source, portId: connection.sourceHandle },
+        target: { nodeId: connection.target, portId: connection.targetHandle },
       });
+    },
+
+    isConnectionValid: (connection: Connection | Edge) => {
+      if (!connection.sourceHandle || !connection.targetHandle) return false;
+      const domain = domainFor(get());
+      return domain.canConnect(
+        connection.source,
+        connection.sourceHandle,
+        connection.target,
+        connection.targetHandle,
+      );
     },
 
     addNode: (type: ShaderNodeData['type'], position?: { x: number; y: number }) => {
-      saveSnapshot();
-      const node = makeNode(type, position);
-      set((state) => { state.nodes.push(node); });
+      if (type === 'input') {
+        runNodeFactory(set, get, { kind: 'input', position, dataType: 'float' });
+      } else if (type === 'shader') {
+        runNodeFactory(set, get, {
+          kind: 'shader',
+          position,
+          code: defaultShaderCode(),
+          label: 'shader',
+        });
+      } else if (type === 'constant') {
+        runNodeFactory(set, get, { kind: 'constant', position });
+      } else if (type === 'renderer') {
+        runNodeFactory(set, get, { kind: 'renderer', position });
+      } else if (type === 'math') {
+        runNodeFactory(set, get, { kind: 'math', position, op: 'add' });
+      } else if (type === 'onnx') {
+        runNodeFactory(set, get, { kind: 'customOnnx', position });
+      }
     },
 
-    addInputNode: (dataType: DataType, position?: { x: number; y: number }, inputMode?: InputMode) => {
-      saveSnapshot();
-      const node = makeNode('input', position, dataType, undefined, undefined, inputMode);
-      set((state) => { state.nodes.push(node); });
+    addInputNode: (
+      dataType: DataType,
+      position?: { x: number; y: number },
+      inputMode?: InputMode,
+    ) => {
+      runNodeFactory(set, get, { kind: 'input', position, dataType, inputMode });
     },
 
     addShaderNode: (code: string, label: string, position?: { x: number; y: number }) => {
-      saveSnapshot();
-      const node = makeNode('shader', position, undefined, code, label);
-      if (SHADER_TEMPLATES.has(label)) {
-        node.data.shaderTemplateId = label;
-      }
-      set((state) => { state.nodes.push(node); });
+      runNodeFactory(set, get, {
+        kind: 'shader',
+        position,
+        code,
+        label,
+        templateName: label,
+        shaderTemplateId: SHADER_TEMPLATES.has(label) ? label : undefined,
+      });
     },
 
-    addSystemNode: (source: NonNullable<ShaderNodeData['systemSource']>, position?: { x: number; y: number }) => {
-      saveSnapshot();
-      const def = SYSTEM_SOURCES[source];
-      const node = makeNode('input', position, def.dataType, def.code, def.label, 'system');
-      node.data.inputMode = 'system';
-      node.data.systemSource = source;
-      set((state) => { state.nodes.push(node); });
+    addSystemNode: (
+      source: NonNullable<ShaderNodeData['systemSource']>,
+      position?: { x: number; y: number },
+    ) => {
+      runNodeFactory(set, get, { kind: 'system', position, source });
     },
 
     addOnnxNode: (catalogId: string, position?: { x: number; y: number }) => {
-      const entry = ONNX_CATALOG[catalogId];
-      if (!entry) return;
-      saveSnapshot();
-      counters.node++;
-      const id = `onnx_${counters.node}`;
-      const cascade = counters.cascade++ * 28;
-      const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
-      const onnxParams: Record<string, number | boolean> = {};
-      let onnxScoreThreshold: number | undefined;
-      let onnxIouThreshold: number | undefined;
-      if (entry.defaultParams) {
+      const catalogEntry = ONNX_CATALOG[catalogId];
+      const entry = getOnnxModelDescriptor(catalogId);
+      if (!catalogEntry || !entry) return;
+      const node = runNodeFactory(set, get, {
+        kind: 'onnx',
+        position,
+        label: catalogEntry.label,
+        templateName: catalogEntry.label,
+        modelId: catalogId,
+        catalogId,
+        inputs: entry.expectedIO.inputs,
+        outputs: entry.expectedIO.outputs,
+      });
+      if (node && entry.defaultParams) {
+        const onnxParams: Record<string, number | boolean> = {};
         for (const [key, desc] of Object.entries(entry.defaultParams)) {
           onnxParams[key] = desc.default;
         }
-        if ('scoreThreshold' in entry.defaultParams) {
-          onnxScoreThreshold = entry.defaultParams.scoreThreshold.default as number;
-        }
-        if ('iouThreshold' in entry.defaultParams) {
-          onnxIouThreshold = entry.defaultParams.iouThreshold.default as number;
-        }
+        set((state) => {
+          const current = state.nodes.find((candidate) => candidate.id === node.id);
+          if (!current) return;
+          current.data.onnxParams = Object.keys(onnxParams).length > 0 ? onnxParams : undefined;
+          current.data.onnxScoreThreshold = typeof onnxParams.scoreThreshold === 'number'
+            ? onnxParams.scoreThreshold
+            : undefined;
+          current.data.onnxIouThreshold = typeof onnxParams.iouThreshold === 'number'
+            ? onnxParams.iouThreshold
+            : undefined;
+        });
       }
-      const node: Node<ShaderNodeData> = {
-        id,
-        type: 'onnx',
-        position: pos,
-        data: {
-          type: 'onnx',
-          label: `${entry.label.toLowerCase().replace(/\s+/g, '_')}_${counters.node}`,
-          templateName: entry.label,
-          shaderCode: '',
-          inputs: entry.expectedIO.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
-          outputs: entry.expectedIO.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
-          uniforms: {},
-          onnxModelId: catalogId,
-          onnxSource: 'catalog',
-          onnxCatalogId: catalogId,
-          onnxStatus: 'not-downloaded',
-          onnxParams: Object.keys(onnxParams).length > 0 ? onnxParams : undefined,
-          onnxScoreThreshold,
-          onnxIouThreshold,
-        },
-      };
-      set((state) => { state.nodes.push(node); });
-      // Fire-and-forget: download model, update node status/progress.
-      void downloadCatalogModel(id, entry, set);
+      if (node) void downloadCatalogModel(node.id, entry, set);
     },
 
     addCustomOnnxNode: (position?: { x: number; y: number }) => {
-      saveSnapshot();
-      counters.node++;
-      const id = `onnx_${counters.node}`;
-      const cascade = counters.cascade++ * 28;
-      const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
-      const node: Node<ShaderNodeData> = {
-        id,
-        type: 'onnx',
-        position: pos,
-        data: {
-          type: 'onnx',
-          label: 'Custom ONNX',
-          shaderCode: '',
-          inputs: [],
-          outputs: [],
-          uniforms: {},
-          onnxSource: 'custom',
-          onnxStatus: undefined,
-        },
-      };
-      set((state) => { state.nodes.push(node); });
+      runNodeFactory(set, get, { kind: 'customOnnx', position });
     },
 
     loadCustomOnnxModel: (nodeId: string, buffer: ArrayBuffer, fileName: string) => {
-      const modelId = `custom_${nodeId}`;
-      set((state) => {
-        const node = state.nodes.find((n) => n.id === nodeId);
-        if (node) {
-          node.data.onnxStatus = 'introspecting';
-          node.data.onnxCustomFileName = fileName;
-        }
+      updateNodeData(set, get, nodeId, {
+        onnxStatus: 'introspecting',
+        onnxCustomFileName: fileName,
       });
       void (async () => {
         try {
-          // Introspect model → derive ports and task
-          const meta = await introspectOnnxModel(buffer);
-          const ports = metaToDefaultPorts(meta);
-          // Prefix port IDs with node ID
-          const inputs = ports.inputs.map((p) => ({ ...p, id: `${nodeId}_${p.label}` }));
-          const outputs = ports.outputs.map((p) => ({ ...p, id: `${nodeId}_${p.label}` }));
-          // Cache buffer so the execution engine can load it
-          modelManager.cacheBuffer(modelId, buffer);
-          set((state) => {
-            const node = state.nodes.find((n) => n.id === nodeId);
-            if (node) {
-              node.data.label = fileName.replace(/\.onnx$/i, '');
-              node.data.inputs = inputs;
-              node.data.outputs = outputs;
-              node.data.onnxModelId = modelId;
-              node.data.onnxStatus = 'ready';
-            }
+          const prepared = await Resource.prepareCustomOnnx(`custom_${nodeId}`, buffer);
+          const inputs = (prepared.inputs ?? []).map((port) => ({
+            ...port,
+            id: `${nodeId}_${port.label}`,
+          }));
+          const outputs = (prepared.outputs ?? []).map((port) => ({
+            ...port,
+            id: `${nodeId}_${port.label}`,
+          }));
+          updateNodeData(set, get, nodeId, {
+            label: fileName.replace(/\.onnx$/i, ''),
+            inputs,
+            outputs,
+            onnxModelId: `custom_${nodeId}`,
+            onnxStatus: 'ready',
+            onnxBackend: prepared.backend,
           });
-          // Probe backend
-          const session = new OnnxInferenceSession();
-          try {
-            await session.loadFromBuffer(buffer);
-            const backend = await session.probeBackend(3);
-            set((state) => {
-              const node = state.nodes.find((n) => n.id === nodeId);
-              if (node) node.data.onnxBackend = backend;
-            });
-          } finally {
-            session.dispose();
-          }
-        } catch (err) {
-          set((state) => {
-            const node = state.nodes.find((n) => n.id === nodeId);
-            if (node) {
-              node.data.onnxStatus = 'error';
-              node.data.onnxError = err instanceof Error ? err.message : String(err);
-            }
+        } catch (error) {
+          updateNodeData(set, get, nodeId, {
+            onnxStatus: 'error',
+            onnxError: error instanceof Error ? error.message : String(error),
           });
         }
       })();
     },
 
     addMathNode: (mathOp: string, position?: { x: number; y: number }) => {
-      saveSnapshot();
-      counters.node++;
-      const id = `math_${counters.node}`;
-      const cascade = counters.cascade++ * 28;
-      const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
-      const op = MATH_OPS[mathOp];
-      if (!op) return;
-      const ports = getMathPorts(op);
-      const node: Node<ShaderNodeData> = {
-        id,
-        type: 'math',
-        position: pos,
-        data: {
-          type: 'math',
-          label: `${op.label.toLowerCase()}_${counters.node}`,
-          templateName: op.label,
-          shaderCode: '',
-          inputs: ports.inputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
-          outputs: ports.outputs.map((p) => ({ ...p, id: `${id}_${p.label}` })),
-          uniforms: {},
-          mathOp: mathOp,
-        },
-      };
-      set((state) => { state.nodes.push(node); });
+      runNodeFactory(set, get, { kind: 'math', position, op: mathOp });
     },
 
     removeNode: (id: string) => {
-      saveSnapshot();
-      set((state) => {
-        state.nodes = state.nodes.filter((n) => n.id !== id);
-        state.edges = state.edges.filter((e) => e.source !== id && e.target !== id);
-        if (state.selectedNodeId === id) state.selectedNodeId = null;
-      });
+      if (runCommand(set, get, { kind: 'removeNode', nodeId: id })) {
+        set((state) => {
+          if (state.selectedNodeId === id) state.selectedNodeId = null;
+        });
+      }
     },
 
     removeSelectedElements: () => {
       const { nodes, edges } = get();
-      const selectedNodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
-      const selectedEdgeIds = edges.filter((e) => e.selected).map((e) => e.id);
+      const selectedNodeIds = nodes.filter((node) => node.selected).map((node) => node.id);
+      const selectedEdgeIds = edges.filter((edge) => edge.selected).map((edge) => edge.id);
       if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) return;
-      saveSnapshot();
+      for (const id of selectedNodeIds) runCommand(set, get, { kind: 'removeNode', nodeId: id });
+      for (const id of selectedEdgeIds) {
+        if (!runCommand(set, get, { kind: 'disconnect', edgeId: id })) {
+          set((state) => {
+            state.edges = state.edges.filter((edge) => edge.id !== id);
+          });
+        }
+      }
       set((state) => {
-        state.nodes = state.nodes.filter((n) => !selectedNodeIds.includes(n.id));
-        state.edges = state.edges.filter(
-          (e) => !selectedEdgeIds.includes(e.id) && !selectedNodeIds.includes(e.source) && !selectedNodeIds.includes(e.target)
-        );
         if (state.selectedNodeId && selectedNodeIds.includes(state.selectedNodeId)) {
           state.selectedNodeId = null;
         }
@@ -331,86 +358,76 @@ export function graphSlice(
     },
 
     updateNodeData: (id: string, data: Partial<ShaderNodeData>) => {
-      if (data.shaderCode !== undefined) saveSnapshot();
-      set((state) => {
-        const node = state.nodes.find((n) => n.id === id);
-        if (!node) return;
-        if (data.shaderCode !== undefined) {
-          const parsed = parseWgslShader(data.shaderCode, node.data.inputs, node.data.outputs);
-          node.data = { ...node.data, ...data, inputs: parsed.inputs, outputs: parsed.outputs };
-          // Surface Rust/naga syntax errors immediately
-          if (parsed.parseError) {
-            state.nodeErrors[id] = parsed.parseError;
-          } else {
-            delete state.nodeErrors[id];
-          }
-        } else {
-          Object.assign(node.data, data);
-        }
-      });
+      updateNodeData(set, get, id, data);
     },
 
     updateNodeInputType: (id: string, dataType: DataType) => {
-      saveSnapshot();
-      set((state) => {
-        const node = state.nodes.find((n) => n.id === id);
-        if (!node || node.data.type !== 'input') return;
-        const shaderCode = createInputShader(dataType);
-        const parsed = parseWgslShader(shaderCode, node.data.inputs, node.data.outputs);
-        node.data.shaderCode = shaderCode;
-        node.data.inputDataType = dataType;
-        node.data.inputs = parsed.inputs;
-        node.data.outputs = parsed.outputs.map((p: Port) => ({ ...p, dataType: dataType }));
-        node.data.uniforms = {};
+      const node = get().nodes.find((candidate) => candidate.id === id);
+      if (!node || node.data.type !== 'input') return;
+      runCommand(set, get, {
+        kind: 'updateInputType',
+        nodeId: id,
+        dataType,
+        inputMode: dataType === 'sampler2D' ? 'image' : undefined,
       });
     },
 
     addRendererNode: (position?: { x: number; y: number }) => {
-      saveSnapshot();
-      counters.node++;
-      const id = `renderer_${counters.node}`;
-      const cascade = counters.cascade++ * 28;
-      const pos = position ?? { x: 100 + cascade, y: 100 + cascade };
-      const node: Node<ShaderNodeData> = {
-        id,
-        type: 'renderer',
-        position: pos,
-        data: {
-          type: 'renderer',
-          label: `renderer_${counters.node}`,
-          shaderCode: '',
-          inputs: [{ id: 'input_inputTexture', label: 'inputTexture', dataType: 'sampler2D', direction: 'input' }],
-          outputs: [],
-          uniforms: {},
-          expanded: true,
-        },
-      };
-      set((state) => { state.nodes.push(node); });
+      runNodeFactory(set, get, { kind: 'renderer', position });
     },
 
     loadGraph: (nodes: Node<ShaderNodeData>[], edges: Edge[]) => {
-      saveSnapshot();
-      set((state) => {
-        state.nodes = nodes;
-        state.edges = edges.map((e) => ({ ...e, type: 'bezier' }));
-        state.selectedNodeId = null;
-      });
-      syncCounters(nodes);
+      const domain = domainFor(get());
+      try {
+        domain.replace({ nodes, edges });
+        pushHistory(set, domain.graph.revision);
+        projectDomain(set, domain);
+      } catch {
+        domain.reset({ nodes, edges });
+        set((state) => {
+          state.nodes = nodes;
+          state.edges = edges.map((edge) => ({ ...edge, type: 'bezier' }));
+          state.selectedNodeId = null;
+        });
+      }
+      set((state) => { state.selectedNodeId = null; });
     },
 
     clearGraph: () => {
-      saveSnapshot();
+      const domain = domainFor(get());
+      try {
+        domain.replace({ nodes: [], edges: [] });
+        pushHistory(set, domain.graph.revision);
+        projectDomain(set, domain);
+      } catch {
+        domain.reset({ nodes: [], edges: [] });
+        set((state) => {
+          state.nodes = [];
+          state.edges = [];
+        });
+      }
       set((state) => {
-        state.nodes = [];
-        state.edges = [];
         state.selectedNodeId = null;
         state.outputPreviews = {};
         state.outputData = {};
         state.savedFilePath = null;
         state.projectName = 'Untitled';
       });
-      counters.node = 0;
-      counters.cascade = 0;
     },
   };
+}
+
+function defaultShaderCode(): string {
+  return [
+    '@group(0) @binding(0) var inputImage: texture_2d<f32>;',
+    '@group(0) @binding(1) var inputImageSampler: sampler;',
+    '@group(0) @binding(2) var<uniform> intensity: f32;',
+    '',
+    '@fragment',
+    'fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {',
+    '  var color = textureSample(inputImage, inputImageSampler, v_uv);',
+    '  color = vec4f(color.rgb * intensity, color.a);',
+    '  return color;',
+    '}',
+  ].join('\n');
 }

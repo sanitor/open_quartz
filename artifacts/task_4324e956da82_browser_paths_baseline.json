@@ -1,0 +1,69 @@
+{
+  "taskId": "task_4324e956da82",
+  "variant": "baseline",
+  "timestamp": "2026-08-20T06:34:09.511Z",
+  "runtime": {
+    "node": "v26.0.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "fileReaderAvailable": false,
+    "offscreenCanvasAvailable": false,
+    "imageBitmapAvailable": false
+  },
+  "notes": [
+    "Data URL fixture measures the existing worker byte-string path after PNG bytes already exist.",
+    "nodeNativeReference is a correctness and lower-bound reference only; it is not a browser production path.",
+    "Frame input fixture measures the per-frame Date plus vec4 construction used by BrowserRuntimeWorker."
+  ],
+  "dataUrl": [
+    {
+      "name": "preview-png-256kib",
+      "byteLength": 262144,
+      "iterations": 80,
+      "currentBrowserByteString": {
+        "iterations": 80,
+        "totalMs": 311.145333,
+        "meanMs": 3.8893166624999997,
+        "checksum": 0
+      },
+      "nodeNativeReference": {
+        "iterations": 80,
+        "totalMs": 11.976500000000044,
+        "meanMs": 0.14970625000000054,
+        "checksum": 0
+      }
+    },
+    {
+      "name": "preview-png-2mib",
+      "byteLength": 2097152,
+      "iterations": 16,
+      "currentBrowserByteString": {
+        "iterations": 16,
+        "totalMs": 462.24316699999997,
+        "meanMs": 28.890197937499998,
+        "checksum": 0
+      },
+      "nodeNativeReference": {
+        "iterations": 16,
+        "totalMs": 7.32854199999997,
+        "meanMs": 0.45803387499999815,
+        "checksum": 0
+      }
+    }
+  ],
+  "frameInputs": {
+    "iterations": 1000000,
+    "currentAllocatingInputs": {
+      "iterations": 1000000,
+      "totalMs": 98.55766699999981,
+      "meanMs": 0.00009855766699999981,
+      "checksum": 0
+    },
+    "reusedTypedArrayInputs": {
+      "iterations": 1000000,
+      "totalMs": 84.3514580000001,
+      "meanMs": 0.00008435145800000009,
+      "checksum": 0
+    }
+  }
+}

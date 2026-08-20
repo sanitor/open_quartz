@@ -1,4 +1,4 @@
-use open_quartz::types::{DataType, ProjectFile, PROJECT_FILE_VERSION};
+use open_quartz::{DataType, ProjectFile, PROJECT_FILE_VERSION};
 use serde_json::json;
 
 #[test]
@@ -45,6 +45,17 @@ fn project_file_round_trips_the_typescript_contract() {
                     "outputs": [],
                     "uniforms": { "gain": 0.5 },
                     "onnxParams": { "enabled": true, "threshold": 0.25 },
+                    "collapsed": true,
+                    "expanded": false,
+                    "resolvedWidth": 1920,
+                    "resolvedHeight": 1080,
+                    "onnxStatus": "ready",
+                    "onnxProgress": 1,
+                    "onnxBackend": "wasm",
+                    "onnxCustomFileName": "model.onnx",
+                    "imageFileName": "image.png",
+                    "rawFileName": "frame.bin",
+                    "videoFileName": "clip.mp4",
                     "pluginMetadata": { "owner": "test" }
                 }
             }],
@@ -62,7 +73,4 @@ fn project_file_round_trips_the_typescript_contract() {
     let encoded = serde_json::to_value(project).unwrap();
 
     assert_eq!(encoded, fixture);
-    assert!(encoded["graph"]["nodes"][0]["data"]
-        .get("collapsed")
-        .is_none());
 }

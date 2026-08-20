@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect } from '@xyflow/react';
+import type { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect, Connection } from '@xyflow/react';
 import type { ShaderNodeData, DataType, InputMode, RendererCadenceMetrics } from '../types';
 import type { HistoryEntry } from './helpers';
 import { graphSlice } from './graphSlice';
@@ -9,7 +9,6 @@ import { projectSlice } from './projectSlice';
 import { uiSlice } from './uiSlice';
 
 export type { HistoryEntry } from './helpers';
-export { modelManager } from './helpers';
 
 export interface GraphState {
   nodes: Node<ShaderNodeData>[];
@@ -24,7 +23,7 @@ export interface GraphState {
   fps: number;
   rendererFps: Record<string, number>;
   rendererCadence: Record<string, RendererCadenceMetrics>;
-  nativeRendererStreams: Record<string, MediaStream | null>;
+  rendererStreamActive: Record<string, boolean>;
   currentTime: number;
   currentFrame: number;
   activeRendererId: string | null;
@@ -38,6 +37,7 @@ export interface GraphState {
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
   onConnect: OnConnect;
+  isConnectionValid: (connection: Connection | Edge) => boolean;
   addNode: (type: ShaderNodeData['type'], position?: { x: number; y: number }) => void;
   addInputNode: (dataType: DataType, position?: { x: number; y: number }, inputMode?: InputMode) => void;
   addSystemNode: (source: NonNullable<ShaderNodeData['systemSource']>, position?: { x: number; y: number }) => void;
@@ -62,7 +62,7 @@ export interface GraphState {
   setFps: (fps: number) => void;
   setRendererFps: (nodeId: string, fps: number) => void;
   setRendererCadence: (nodeId: string, metrics: RendererCadenceMetrics) => void;
-  setNativeRendererStream: (nodeId: string, stream: MediaStream | null) => void;
+  setRendererStreamActive: (nodeId: string, active: boolean) => void;
   clearRendererFps: () => void;
   setCurrentTime: (t: number) => void;
   setCurrentFrame: (frame: number) => void;
@@ -73,8 +73,6 @@ export interface GraphState {
   clearNodeErrors: () => void;
   loadGraph: (nodes: Node<ShaderNodeData>[], edges: Edge[]) => void;
   clearGraph: () => void;
-  captureScreenshot: ((rendererId: string) => Promise<string | null>) | null;
-  setCaptureScreenshot: (fn: ((rendererId: string) => Promise<string | null>) | null) => void;
 }
 
 type SliceSet = (fn: (state: GraphState) => void) => void;

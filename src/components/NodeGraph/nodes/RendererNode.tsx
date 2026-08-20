@@ -12,7 +12,7 @@ export function RendererNode({ id, data, selected }: NodeProps<RendererNodeType>
   const nodeErrors = useGraphStore((s) => s.nodeErrors);
   const loopState = useGraphStore((s) => s.loopState);
   const isPlaying = loopState !== 'stopped';
-  const nativeStream = useGraphStore((s) => s.nativeRendererStreams?.[id] ?? null);
+  const nativeStream = useGraphStore((s) => s.rendererStreamActive?.[id] ?? false);
   const cadence = useGraphStore((s) => s.rendererCadence?.[id]);
   const error = nodeErrors[id];
 

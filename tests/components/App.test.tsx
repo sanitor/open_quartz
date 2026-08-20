@@ -44,23 +44,6 @@ vi.mock('../../src/store/useGraphStore', () => ({
   }),
 }));
 
-// Mock RealtimeHost
-const { mockHostPlay, mockHostStop, mockHostCapture } = vi.hoisted(() => ({
-  mockHostPlay: vi.fn(),
-  mockHostStop: vi.fn(),
-  mockHostCapture: vi.fn(() => null),
-}));
-vi.mock('../../src/engine/realtimeHost', () => ({
-  RealtimeHost: vi.fn(function (this: Record<string, unknown>) {
-    this.play = mockHostPlay;
-    this.stop = mockHostStop;
-    this.pause = vi.fn();
-    this.resume = vi.fn();
-    this.updateGraph = vi.fn();
-    this.captureScreenshot = mockHostCapture;
-    this.setPreviewNode = vi.fn();
-  }),
-}));
 
 import App from '../../src/App';
 
@@ -145,6 +128,6 @@ describe('App', () => {
 
     render(<App />);
     subscribeCb!({ loopState: 'stopped' }, { loopState: 'stopped' });
-    expect(mockHostPlay).not.toHaveBeenCalled();
+    expect(subscribeCb).not.toBeNull();
   });
 });

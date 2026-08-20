@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
-use open_quartz::gpu::D3d12VideoFrame;
+use open_quartz_execution::gpu::D3d12VideoFrame;
 
 pub enum NativeVideoFrame<'a> {
     Rgba(&'a [u8]),

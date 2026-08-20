@@ -1,45 +1,54 @@
 /// <reference lib="webworker" />
 
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { DataType, ShaderNodeData } from '../types';
-import { Compositor, type FrameInputs } from '../engine/compositor';
-import type { CanonicalExecutionPlan, RuntimeWorkCommand } from '../engine/executionEngine';
-import { initializeSdk, type WasmRuntimeContract } from './index';
+import { initializeSdk } from './runtime';
+import type { WasmBrowserPlayerContract } from './WasmSdkClient';
 import type { BrowserWorkerIncoming, BrowserWorkerRequest, BrowserWorkerResponse } from './browserWorkerProtocol';
-import type { OutputDeliveryBatch, OutputPayload } from './contract';
+import type { OutputDeliveryBatch } from './contract';
+import { BrowserInferenceProvider, type BrowserInferenceTask } from './internal/BrowserInferenceProvider';
 import { compactRuntimeText, runtimeLog } from './runtimeLog';
+import { cacheOnnxModel } from './internal/OnnxResourceRegistry';
+import { blobToDataUrl } from './internal/browserPreviewEncoding';
 
 const scope = self as DedicatedWorkerGlobalScope;
-let compositor: Compositor | null = null;
-let runtime: WasmRuntimeContract | null = null;
-let frameTimer: number | null = null;
-let running = false;
-let previewNodeId: string | null = null;
-let rendererIds = new Set<string>();
-let previewPending = false;
-let resolution = new Float32Array([512, 512, 1]);
+const inference = new BrowserInferenceProvider();
 const PREVIEW_SUBSCRIPTION_ID = 'browser-preview';
 const FRAME_INTERVAL_MS = 1000 / 60;
 const RENDERER_PREVIEW_INTERVAL_MS = 1000 / 15;
+
+let player: WasmBrowserPlayerContract | null = null;
+let frameTimer: number | null = null;
+let running = false;
+let previewNodeId: string | null = null;
+let previewSubscribed = false;
+let previewPending = false;
+let resolution = new Float32Array([512, 512, 1]);
+const dateInput = new Float32Array(4);
+const mouseInput = new Float32Array(4);
+let nextFrameAt = 0;
+let previousTimelineNs = 0;
+let activeVideoNodeIds = new Set<string>();
+let rendererIds = new Set<string>();
 const outputPortByNode = new Map<string, string>();
 const rendererSourceByNode = new Map<string, string>();
-const outputGenerationByNode = new Map<string, number>();
 const logicalSubscriptionByNode = new Map<string, {
   subscriptionId: string;
   portId: string;
   dataType: DataType;
 }>();
-let graphRevision = 0;
-let previewSubscribed = false;
-let nextFrameAt = 0;
-const rendererPreviewPending = new Set<string>();
 const rendererPreviewAt = new Map<string, number>();
-let activeVideoNodeIds = new Set<string>();
+const rendererPreviewPending = new Set<string>();
 type PendingVideoFrame = { frameId: number; frame: ImageBitmap };
 let pendingVideoFrames = new Map<string, PendingVideoFrame>();
 
-function acknowledgeVideoFrame(nodeId: string, frameId: number): void {
-  post({ type: 'video-frame-consumed', nodeId, frameId });
+function post(message: BrowserWorkerResponse): void {
+  scope.postMessage(message);
+}
+
+function requirePlayer(): WasmBrowserPlayerContract {
+  if (!player) throw new Error('Browser Player is not initialized');
+  return player;
 }
 
 function releaseVideoFrame(pending: PendingVideoFrame): void {
@@ -51,44 +60,23 @@ function clearVideoFrames(): void {
   pendingVideoFrames.clear();
 }
 
-function post(message: BrowserWorkerResponse): void {
-  scope.postMessage(message);
-  if ('id' in message) {
-    runtimeLog('browser-worker', 'debug', 'response', { id: message.id });
-  } else {
-    runtimeLog('browser-worker', 'debug', 'event', { type: message.type });
-  }
-}
-
-function requireCompositor(): Compositor {
-  if (!compositor) throw new Error('Browser worker is not initialized');
-  return compositor;
-}
-
-function requireRuntime(): WasmRuntimeContract {
-  if (!runtime) throw new Error('Browser worker runtime is not initialized');
-  return runtime;
-}
-
-function applyGraphContract(
-  core: WasmRuntimeContract,
-  nodes: Node<ShaderNodeData>[],
-  plan: CanonicalExecutionPlan,
-  revision: number,
-): void {
-  graphRevision = revision;
+function applyGraphContract(nodes: Node<ShaderNodeData>[], edges: Edge[]): void {
+  const core = requirePlayer();
   activeVideoNodeIds = new Set(
     nodes
       .filter((node) => node.data.type === 'input' && node.data.inputMode === 'video')
       .map((node) => node.id),
   );
-  core.setVideoNodes([...activeVideoNodeIds]);
+  rendererIds = new Set(
+    nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id),
+  );
+  inference.reconcile(nodes);
   for (const [nodeId, pending] of pendingVideoFrames) {
     if (activeVideoNodeIds.has(nodeId)) continue;
     releaseVideoFrame(pending);
     pendingVideoFrames.delete(nodeId);
   }
-  outputGenerationByNode.clear();
+
   outputPortByNode.clear();
   rendererSourceByNode.clear();
   const desiredLogical = new Map<string, {
@@ -119,27 +107,24 @@ function applyGraphContract(
   }
   for (const [nodeId, desired] of desiredLogical) {
     const current = logicalSubscriptionByNode.get(nodeId);
-    if (current && current.subscriptionId !== desired.subscriptionId) {
-      core.unsubscribeOutput(current.subscriptionId);
-      logicalSubscriptionByNode.delete(nodeId);
-    }
-    const subscription = {
+    if (current?.subscriptionId === desired.subscriptionId) continue;
+    if (current) core.unsubscribeOutput(current.subscriptionId);
+    core.subscribeOutput({
       subscriptionId: desired.subscriptionId,
       output: { nodeId, portId: desired.portId },
-      delivery: 'on-change' as const,
-      transport: 'value' as const,
-    };
-    if (logicalSubscriptionByNode.has(nodeId)) {
-      core.updateOutputSubscription(subscription);
-    } else {
-      core.subscribeOutput(subscription);
-      logicalSubscriptionByNode.set(nodeId, desired);
-    }
+      delivery: 'on-change',
+      transport: 'value',
+    });
+    logicalSubscriptionByNode.set(nodeId, desired);
   }
-  for (const node of plan.nodes) {
-    if (node.nodeType !== 'renderer') continue;
-    const sourceNodeId = Object.values(node.upstream)[0];
-    if (sourceNodeId) rendererSourceByNode.set(node.id, sourceNodeId);
+  for (const rendererId of rendererIds) {
+    const sourceNodeId = edges.find((edge) => edge.target === rendererId)?.source;
+    if (sourceNodeId) rendererSourceByNode.set(rendererId, sourceNodeId);
+  }
+  for (const node of nodes) {
+    if (node.data.type === 'shader' || node.data.type === 'renderer') {
+      post({ type: 'backend', nodeId: node.id, backend: 'webgpu' });
+    }
   }
 }
 
@@ -164,107 +149,51 @@ function consumeOutputDeliveries(batch: OutputDeliveryBatch): void {
         data: delivery.state.payload.value,
       });
     }
+    if (delivery.subscriptionId === PREVIEW_SUBSCRIPTION_ID && !previewPending) {
+      void publishPreview(delivery.state.output.nodeId);
+    }
   }
-  const previewDelivery = batch.deliveries.find(
-    (item) => item.subscriptionId === PREVIEW_SUBSCRIPTION_ID,
-  );
-  if (!previewDelivery || previewPending) return;
+}
+
+async function readOutputDataUrl(nodeId: string): Promise<string> {
+  const core = requirePlayer();
+  const { width, height } = core.outputInfo(nodeId);
+  const rgba = await core.readOutputRgba(nodeId);
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Cannot create preview canvas');
+  context.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+  return await blobToDataUrl(await canvas.convertToBlob({ type: 'image/png' }));
+}
+
+async function publishPreview(nodeId: string): Promise<void> {
   previewPending = true;
-  void requireCompositor()
-    .readNodeOutput(previewDelivery.state.output.nodeId, (nodeId, dataUrl) => {
-      previewPending = false;
-      post({ type: 'output', nodeId, dataUrl });
-    })
-    .catch((error) => {
-      previewPending = false;
-      runtimeLog('browser-worker', 'warn', 'preview-readback-failed', {
-        error: compactRuntimeText(error),
-      });
+  try {
+    post({ type: 'output', nodeId, dataUrl: await readOutputDataUrl(nodeId) });
+  } catch (error) {
+    runtimeLog('browser-worker', 'warn', 'preview-readback-failed', {
+      nodeId,
+      error: compactRuntimeText(error),
     });
-}
-
-function publishResourceOutput(nodeId: string, portId: string): OutputDeliveryBatch {
-  const core = requireRuntime();
-  const clock = core.lastClock;
-  const outputGeneration = (outputGenerationByNode.get(nodeId) ?? 0) + 1;
-  outputGenerationByNode.set(nodeId, outputGeneration);
-  core.publishOutput({
-    output: { nodeId, portId },
-    graphRevision,
-    outputGeneration,
-    evaluationStamp: {
-      epoch: clock.epoch,
-      frame: clock.frame,
-      timelineNs: clock.timelineNs,
-      deadlineNs: clock.nextDeadlineNs,
-    },
-    contentStamp: {
-      epoch: clock.epoch,
-      timelineNs: clock.timelineNs,
-    },
-    payload: { kind: 'resource', value: { handle: outputGeneration } },
-  });
-  return core.drainDeliveries();
-}
-
-function publishPreviewDelivery(): void {
-  if (!previewSubscribed || !previewNodeId || previewPending) return;
-  const portId = outputPortByNode.get(previewNodeId);
-  if (!portId) return;
-  consumeOutputDeliveries(publishResourceOutput(previewNodeId, portId));
+  } finally {
+    previewPending = false;
+  }
 }
 
 function publishRendererPreview(nodeId: string, now: number): void {
   if (rendererPreviewPending.has(nodeId)) return;
   const lastAt = rendererPreviewAt.get(nodeId) ?? 0;
   if (now - lastAt < RENDERER_PREVIEW_INTERVAL_MS) return;
-  rendererPreviewPending.add(nodeId);
   rendererPreviewAt.set(nodeId, now);
-  void requireCompositor().readNodeOutput(nodeId, (outputNodeId, dataUrl) => {
-    post({ type: 'output', nodeId: outputNodeId, dataUrl });
-  }).catch((error) => {
+  rendererPreviewPending.add(nodeId);
+  void readOutputDataUrl(nodeId).then((dataUrl) => {
+    post({ type: 'output', nodeId, dataUrl });
+  }).catch((error: unknown) => {
     runtimeLog('browser-worker', 'warn', 'renderer-preview-readback-failed', {
       nodeId,
       error: compactRuntimeText(error),
     });
-  }).finally(() => {
-    rendererPreviewPending.delete(nodeId);
-  });
-}
-
-function publishLogicalOutput(nodeId: string, data: unknown): void {
-  const subscription = logicalSubscriptionByNode.get(nodeId);
-  if (!subscription) return;
-  let payload: OutputPayload;
-  if (subscription.dataType === 'float') {
-    payload = { kind: 'float', value: Number(data) };
-  } else if (subscription.dataType === 'int') {
-    payload = { kind: 'int', value: Number(data) };
-  } else if (subscription.dataType === 'uint') {
-    payload = { kind: 'uint', value: Number(data) };
-  } else if (subscription.dataType === 'bool') {
-    payload = { kind: 'bool', value: Boolean(data) };
-  } else {
-    payload = { kind: 'json', value: data };
-  }
-  const core = requireRuntime();
-  const clock = core.lastClock;
-  const outputGeneration = (outputGenerationByNode.get(nodeId) ?? 0) + 1;
-  outputGenerationByNode.set(nodeId, outputGeneration);
-  core.publishOutput({
-    output: { nodeId, portId: subscription.portId },
-    graphRevision,
-    outputGeneration,
-    evaluationStamp: {
-      epoch: clock.epoch,
-      frame: clock.frame,
-      timelineNs: clock.timelineNs,
-      deadlineNs: clock.nextDeadlineNs,
-    },
-    contentStamp: { epoch: clock.epoch, timelineNs: clock.timelineNs },
-    payload,
-  });
-  consumeOutputDeliveries(core.drainDeliveries());
+  }).finally(() => rendererPreviewPending.delete(nodeId));
 }
 
 function stopLoop(): void {
@@ -278,8 +207,7 @@ function stopLoop(): void {
 
 function scheduleFrame(): void {
   if (!running || frameTimer !== null) return;
-  const delay = Math.max(0, nextFrameAt - performance.now());
-  frameTimer = scope.setTimeout(runFrame, delay);
+  frameTimer = scope.setTimeout(runFrame, Math.max(0, nextFrameAt - performance.now()));
 }
 
 function runFrame(): void {
@@ -288,61 +216,47 @@ function runFrame(): void {
   const now = performance.now();
   nextFrameAt = now + FRAME_INTERVAL_MS;
   const date = new Date();
-  const inputs = new Float32Array([
-    date.getFullYear(), date.getMonth() + 1, date.getDate(),
-    date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds(),
-  ]);
+  dateInput[0] = date.getFullYear();
+  dateInput[1] = date.getMonth() + 1;
+  dateInput[2] = date.getDate();
+  dateInput[3] = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+  mouseInput.fill(0);
+  const frameBatch = pendingVideoFrames;
+  pendingVideoFrames = new Map();
   try {
-    requireRuntime().advance({
+    for (const [nodeId, pending] of frameBatch) {
+      requirePlayer().uploadFrame(nodeId, pending.frame, Math.round(now * 1_000_000));
+    }
+    const result = requirePlayer().frame<BrowserInferenceTask>({
       time: now / 1000,
       delta: 0,
       frame: 0,
-      date: inputs,
-      mouse: new Float32Array(4),
+      date: dateInput,
+      mouse: mouseInput,
       resolution,
     });
-  } catch (error) {
-    runtimeLog('browser-worker', 'error', 'frame-advance-failed', { error: compactRuntimeText(error) });
-    throw error;
-  }
-  const work = requireRuntime().drainWork<RuntimeWorkCommand[]>();
-  const clock = requireRuntime().lastClock;
-  if (clock.frame % 60 === 0) {
-    runtimeLog('browser-worker', 'debug', 'frame', {
-      now, frame: clock.frame, commands: work.length, previewNodeId,
+    consumeOutputDeliveries(requirePlayer().drainDeliveries());
+    for (const task of result.inferenceTasks) {
+      void inference.execute(task, requirePlayer(), (nodeId, backend) => {
+        post({ type: 'backend', nodeId, backend });
+      }).then(scheduleFrame).catch((error: unknown) => {
+        post({ type: 'node-error', nodeId: task.nodeId, error: compactRuntimeText(error) });
+      });
+    }
+    for (const rendererId of rendererIds) publishRendererPreview(rendererId, now);
+    const deltaNs = result.clock.timelineNs - previousTimelineNs;
+    previousTimelineNs = result.clock.timelineNs;
+    post({
+      type: 'frame',
+      frame: result.clock.frame,
+      time: result.clock.timelineNs / 1_000_000_000,
+      fps: deltaNs > 0 ? 1_000_000_000 / deltaNs : 0,
     });
-  }
-  const frameBatch = pendingVideoFrames;
-  pendingVideoFrames = new Map();
-  const videoElements = new Map<string, ImageBitmap>();
-  for (const [nodeId, pending] of frameBatch) videoElements.set(nodeId, pending.frame);
-  const builtins: FrameInputs = {
-    time: clock.timelineNs / 1_000_000_000,
-    delta: (clock.timelineNs - clock.previousTimelineNs) / 1_000_000_000,
-    frame: clock.frame,
-    date: inputs,
-    mouse: new Float32Array(4),
-    resolution,
-    videoElements: videoElements.size > 0 ? videoElements : undefined,
-  };
-  try {
-    requireCompositor().render(builtins, work);
+  } catch (error) {
+    post({ type: 'node-error', nodeId: null, error: compactRuntimeText(error) });
   } finally {
     for (const pending of frameBatch.values()) releaseVideoFrame(pending);
   }
-  for (const command of work) {
-    if (command.kind === 'renderer') {
-      requireCompositor().renderRendererToScreen(command.nodeId);
-      publishRendererPreview(command.nodeId, now);
-    }
-    if (command.kind === 'math' && command.scalarOutput !== undefined) {
-      publishLogicalOutput(command.nodeId, command.scalarOutput);
-    }
-  }
-  if (previewNodeId && work.some((command) => command.nodeId === previewNodeId)) {
-    publishPreviewDelivery();
-  }
-  post({ type: 'frame', frame: clock.frame, time: builtins.time, fps: builtins.delta > 0 ? 1 / builtins.delta : 0 });
   scheduleFrame();
 }
 
@@ -350,86 +264,50 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
   switch (message.type) {
     case 'initialize': {
       const sdk = await initializeSdk();
-      runtime = sdk.createRuntime();
-      compositor = new Compositor();
-      await compositor.init(message.canvas);
+      player = await sdk.createBrowserPlayer(message.canvas);
       resolution = new Float32Array([message.canvas.width, message.canvas.height, 1]);
       return undefined;
     }
+    case 'register-onnx-model':
+      cacheOnnxModel(message.modelId, message.buffer);
+      return undefined;
     case 'play': {
-      const core = requireRuntime();
-      const revision = core.setGraph(message.nodes, message.edges);
-      const plan = core.executionPlan<CanonicalExecutionPlan>();
-      consumeOutputDeliveries(core.drainDeliveries());
-      applyGraphContract(core, message.nodes, plan, revision);
-      rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
-      const pending = requireCompositor().prepare(
-        message.nodes, message.edges,
-        (nodeId, error) => post({ type: 'node-error', nodeId, error }),
-        (nodeId, width, height) => post({ type: 'output-size', nodeId, width, height }),
-        publishLogicalOutput,
-        undefined,
-        scheduleFrame,
-        (nodeId, backend) => post({ type: 'backend', nodeId, backend }),
-        plan,
-      );
-      await Promise.all(pending);
+      const core = requirePlayer();
+      core.setGraph(message.nodes, message.edges);
+      applyGraphContract(message.nodes, message.edges);
       core.play(Math.round(performance.now() * 1_000_000));
+      previousTimelineNs = 0;
       running = true;
       scheduleFrame();
       return undefined;
     }
     case 'update-graph':
-      rendererIds = new Set(message.nodes.filter((node) => node.data.type === 'renderer').map((node) => node.id));
-      {
-        const core = requireRuntime();
-        const revision = core.setGraph(message.nodes, message.edges);
-        const plan = core.executionPlan<CanonicalExecutionPlan>();
-        consumeOutputDeliveries(core.drainDeliveries());
-        applyGraphContract(core, message.nodes, plan, revision);
-        await Promise.all(requireCompositor().prepare(
-          message.nodes,
-          message.edges,
-          (nodeId, error) => post({ type: 'node-error', nodeId, error }),
-          (nodeId, width, height) => post({ type: 'output-size', nodeId, width, height }),
-          publishLogicalOutput,
-          undefined,
-          scheduleFrame,
-          (nodeId, backend) => post({ type: 'backend', nodeId, backend }),
-          plan,
-        ));
-      }
+      requirePlayer().setGraph(message.nodes, message.edges);
+      applyGraphContract(message.nodes, message.edges);
       scheduleFrame();
       return undefined;
     case 'pause':
-      previewPending = false;
       stopLoop();
-      requireRuntime().pause(Math.round(performance.now() * 1_000_000));
+      requirePlayer().pause(Math.round(performance.now() * 1_000_000));
       return undefined;
     case 'resume':
-      requireRuntime().resume(Math.round(performance.now() * 1_000_000));
+      requirePlayer().resume(Math.round(performance.now() * 1_000_000));
       running = true;
-      rendererPreviewPending.clear();
-      rendererPreviewAt.clear();
       scheduleFrame();
       return undefined;
     case 'stop':
       stopLoop();
       clearVideoFrames();
-      rendererPreviewPending.clear();
-      rendererPreviewAt.clear();
-      requireRuntime().stop();
+      requirePlayer().stop();
       return undefined;
     case 'set-preview': {
-      const core = requireRuntime();
-      if (previewSubscribed) {
-        core.unsubscribeOutput(PREVIEW_SUBSCRIPTION_ID);
-        previewSubscribed = false;
-      }
+      const core = requirePlayer();
+      if (previewSubscribed) core.unsubscribeOutput(PREVIEW_SUBSCRIPTION_ID);
       const requested = message.nodeId;
       previewNodeId = requested && !rendererIds.has(requested) && outputPortByNode.has(requested)
         ? requested
         : null;
+      previewSubscribed = false;
       previewPending = false;
       if (previewNodeId) {
         core.subscribeOutput({
@@ -439,45 +317,21 @@ async function handle(message: BrowserWorkerRequest): Promise<unknown> {
           transport: 'preview',
         });
         previewSubscribed = true;
-        publishPreviewDelivery();
+        void publishPreview(previewNodeId);
       }
-      runtimeLog('browser-worker', 'info', 'set-preview-node', {
-        requested, effective: previewNodeId, rendererSelection: !!requested && rendererIds.has(requested),
-      });
       return undefined;
     }
     case 'capture': {
-      const core = requireRuntime();
       const nodeId = rendererSourceByNode.get(message.nodeId) ?? message.nodeId;
-      const portId = outputPortByNode.get(nodeId);
-      if (!portId) return null;
-      const subscriptionId = `browser-capture-${message.id}`;
-      core.subscribeOutput({
-        subscriptionId,
-        output: { nodeId, portId },
-        delivery: 'latest',
-        transport: 'capture',
-      });
-      try {
-        const batch = publishResourceOutput(nodeId, portId);
-        consumeOutputDeliveries(batch);
-        if (!batch.deliveries.some((delivery) => delivery.subscriptionId === subscriptionId)) {
-          return null;
-        }
-        return await requireCompositor().captureScreenshot(message.nodeId);
-      } finally {
-        core.unsubscribeOutput(subscriptionId);
-      }
+      if (!outputPortByNode.has(nodeId) && !rendererIds.has(message.nodeId)) return null;
+      return await readOutputDataUrl(message.nodeId);
     }
     case 'close':
       stopLoop();
-      rendererPreviewPending.clear();
-      rendererPreviewAt.clear();
       clearVideoFrames();
-      runtime?.dispose();
-      compositor?.dispose();
-      runtime = null;
-      compositor = null;
+      inference.close();
+      player?.close();
+      player = null;
       scope.close();
       return undefined;
   }
@@ -488,13 +342,13 @@ scope.onmessage = (event: MessageEvent<BrowserWorkerIncoming>) => {
   if (message.type === 'video-frame') {
     if (!activeVideoNodeIds.has(message.nodeId)) {
       message.frame.close();
-      acknowledgeVideoFrame(message.nodeId, message.frameId);
+      post({ type: 'video-frame-consumed', nodeId: message.nodeId, frameId: message.frameId });
       return;
     }
     const previous = pendingVideoFrames.get(message.nodeId);
     if (previous) releaseVideoFrame(previous);
     pendingVideoFrames.set(message.nodeId, { frameId: message.frameId, frame: message.frame });
-    acknowledgeVideoFrame(message.nodeId, message.frameId);
+    post({ type: 'video-frame-consumed', nodeId: message.nodeId, frameId: message.frameId });
     scheduleFrame();
     return;
   }

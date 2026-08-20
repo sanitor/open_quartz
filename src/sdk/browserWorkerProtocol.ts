@@ -5,6 +5,7 @@ export type BrowserWorkerRequest =
   | { id: number; type: 'initialize'; canvas: OffscreenCanvas }
   | { id: number; type: 'play'; nodes: Node<ShaderNodeData>[]; edges: Edge[] }
   | { id: number; type: 'update-graph'; nodes: Node<ShaderNodeData>[]; edges: Edge[] }
+  | { id: number; type: 'register-onnx-model'; modelId: string; buffer: ArrayBuffer }
   | { id: number; type: 'pause' | 'resume' | 'stop' | 'close' }
   | { id: number; type: 'set-preview'; nodeId: string | null }
   | { id: number; type: 'capture'; nodeId: string };

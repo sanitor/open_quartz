@@ -1,4 +1,4 @@
-use open_quartz::validate_gpu_texture;
+use open_quartz::ffi::validate_gpu_texture;
 
 #[test]
 fn validates_gpu_texture_rgba_descriptor() {

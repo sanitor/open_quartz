@@ -61,6 +61,8 @@ const defaultStoreState = {
   outputPreviews: {} as Record<string, string>,
   nodeErrors: {} as Record<string, string>,
   rendererFps: {} as Record<string, number>,
+  rendererCadence: {} as Record<string, never>,
+  rendererStreamActive: {} as Record<string, boolean>,
   loopState: 'stopped' as 'stopped' | 'playing' | 'paused',
   edges: [] as Array<{ id: string; source: string; target: string }>,
 };
@@ -498,6 +500,34 @@ describe('SidePanel', () => {
 
     expect(screen.getByText('Display callback rate')).toBeInTheDocument();
     expect(screen.getByText('60 FPS')).toBeInTheDocument();
+  });
+
+  it('renders the browser Renderer output in the side-panel preview', () => {
+    renderSidePanel({
+      selectedNodeId: 'renderer',
+      nodes: [{
+        id: 'renderer', type: 'renderer', position: { x: 0, y: 0 },
+        data: makeShaderNodeData({ type: 'renderer', expanded: false, inputs: [], outputs: [] }),
+      }],
+      outputPreviews: { renderer: 'data:image/png;base64,preview' },
+    });
+
+    expect(screen.getByRole('img', { name: 'renderer preview' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,preview',
+    );
+  });
+
+  it('exposes a named side-panel mirror canvas for native Renderer readback', () => {
+    const { container } = renderSidePanel({
+      selectedNodeId: 'renderer',
+      nodes: [{
+        id: 'renderer', type: 'renderer', position: { x: 0, y: 0 },
+        data: makeShaderNodeData({ type: 'renderer', expanded: false, inputs: [], outputs: [] }),
+      }],
+    });
+
+    expect(container.querySelector('#renderer-mirror-sidepanel-renderer')).toBeInstanceOf(HTMLCanvasElement);
   });
 
   it('shows graph, presentation, callback, and cadence metrics separately', () => {
