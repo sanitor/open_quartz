@@ -15,20 +15,25 @@ not change the production Tauri app.
 - Forces DX12 on Windows; uses primary backends elsewhere.
 - Builds a real execution graph: `Time` input -> animated WGSL shader -> `Renderer`.
 - Runs `ExecutionEngine` and `GpuExecutor` on the shared device/queue every UI tick.
-- Imports the actual 640x360 `Rgba8Unorm` renderer output into `slint::Image`.
+- Imports the actual `Rgba8Unorm` renderer output into `slint::Image`.
 - Auto-closes with `--seconds N`, or runs until the window closes.
+- `--stress` cycles output sizes 640x360 -> 960x540 -> 1280x720 every 2 s,
+  minimize/restore every 4 s, and fullscreen every 7 s while rendering.
+- `--solid` replaces the animated shader with `vec4f(0.25, 0.5, 0.75, 1.0)` for color probes.
 
 It does **not** yet prove:
 
 - production native-host wiring, project loading, or command/event flow;
-- resize, format/color-space, minimize/restore, or surface-loss behavior;
+- device-loss/surface-recovery behavior (minimize/restore is covered);
 - macOS/Linux/Android/iOS behavior;
-- long-run stability or performance parity with the Tauri app.
+- performance parity with the Tauri app.
 
 ## Run
 
 ```powershell
 cargo run --release -- --seconds 10
+cargo run --release -- --seconds 20 --stress
+cargo run --release -- --seconds 5 --solid
 ```
 
 Expected output on Windows:
@@ -37,8 +42,16 @@ Expected output on Windows:
 adapter: ... | backend=Dx12 | type=DiscreteGpu
 slint: wgpu 30 backend selected with manual device/queue
 PASS: imported open_quartz_execution output 640x360 Rgba8Unorm into slint::Image
-spike: frames=... elapsed=... fps=...
-spike: completed ... frames in ...s
+spike: frames=... elapsed=... fps=... cpu_avg=...ms cpu_max=...ms size=640x360
+spike: completed ... frames in ...s avg_fps=... avg_cpu=...ms max_cpu=...ms validation_errors=0
+```
+
+With `--stress`, the log also contains:
+
+```text
+stress: output resize -> 960x540
+stress: minimized=true
+stress: fullscreen=true
 ```
 
 ![Windows DX12 execution output](artifacts/slint-phase1b-execution-windows-dx12.png)
@@ -53,12 +66,18 @@ Slint 1.18.1, wgpu 30.0.1.
 - [x] `ExecutionEngine` + `GpuExecutor` run on the shared device/queue
 - [x] `Image::try_from` accepts the real renderer output
 - [x] Texture updates are visible frame over frame
+- [x] Output resize 640x360 -> 960x540 -> 1280x720, with a new graph/target per size
+- [x] Minimize/restore and fullscreen toggles while the frame timer is running
+- [x] Solid-color probe: shader `0.25/0.5/0.75` reads back as `64,127,191`
 - [x] Window auto-closes and process exits cleanly
-- [x] No validation error in a 5-second release run
+- [x] No validation error in 5-second, 20-second stress, or 10-minute runs
 - [x] Screenshot captured
 
-Release run observed 288 frames in 5.01 s (~57 FPS) on a 640x360 output. This is a 16 ms
-UI-timer loop, not a renderer benchmark.
+A 5-second release run observed 288 frames in 5.01 s (~57 FPS) on a 640x360 output. The
+20-second stress run observed 1193 frames, 59.6 average FPS, 0.68 ms average CPU per frame
+(21.19 ms max, first frame), and 0 validation errors. The 10-minute steady run observed
+36682 frames, 61.1 average FPS, 0.36 ms average CPU per frame (16.88 ms max, first frame),
+and 0 validation errors. This is a 16 ms UI-timer loop, not a renderer benchmark.
 
 ## Findings
 
@@ -81,10 +100,17 @@ workspace previously pinned. The execution and SDK crates now pin `wasm-bindgen 
 
 The renderer output is `Rgba8Unorm`, which `Image::try_from` accepts as long as the texture
 has both `TEXTURE_BINDING` and `RENDER_ATTACHMENT` usage. Both requirements are satisfied by
-`open_quartz_execution` render targets.
+`open_quartz_execution` render targets. Slint also supports `Rgba8UnormSrgb` imports; float
+formats are rejected by `Image::try_from`.
+
+The color probe matters for correctness. A shader output of `(0.25, 0.5, 0.75)` appears as
+`(64, 127, 191)` in the composited window, i.e. the raw 8-bit values. Slint does not apply an
+extra linear-to-sRGB conversion when sampling the imported `Rgba8Unorm` texture, so graph
+output must already be sRGB-encoded bytes. The current renderer does exactly that, matching
+the Tauri presentation path.
 
 ## Next
 
 1. Extract the Tauri-free native host and drive a real project graph through Slint.
-2. Add resize, format/color, minimize/restore, and 10-minute validation runs.
+2. Add device-loss/surface-recovery validation and a long stress run.
 3. Validate macOS/Linux/Android/iOS, then decide whether to enter Phase 3.
