@@ -1,5 +1,10 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use open_quartz_execution::engine::{ExecutionEngine, FrameInputs};
+use open_quartz_execution::gpu::{GpuBackend, GpuExecutor};
+use open_quartz_schema::{Edge, ProjectNode};
+use serde_json::json;
 use slint::wgpu_30::{wgpu, WGPUConfiguration};
 
 slint::slint! {
@@ -32,6 +37,9 @@ slint::slint! {
     }
 }
 
+const OUTPUT_WIDTH: u32 = 640;
+const OUTPUT_HEIGHT: u32 = 360;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seconds = parse_args()?;
 
@@ -62,37 +70,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     }))?;
 
-    let size = wgpu::Extent3d {
-        width: 640,
-        height: 360,
-        depth_or_array_layers: 1,
-    };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("spike-output"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
+    let backend = Arc::new(GpuBackend::from_shared(
+        Arc::new(device.clone()),
+        Arc::new(queue.clone()),
+    ));
+    let mut executor = GpuExecutor::new(backend);
+    let mut engine = build_engine();
 
     slint::BackendSelector::new()
         .require_wgpu_30(WGPUConfiguration::Manual {
             instance,
             adapter,
-            device: device.clone(),
-            queue: queue.clone(),
+            device,
+            queue,
         })
         .select()?;
     eprintln!("slint: wgpu 30 backend selected with manual device/queue");
 
     let window = SpikeWindow::new()?;
-    window.set_status(format!("shared wgpu 30 texture: starting | format={format:?}").into());
+    window.set_status("open_quartz_execution output: starting".into());
 
     let weak = window.as_weak();
     let start = Instant::now();
@@ -115,34 +111,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
 
-            let pixels = make_frame(size.width, size.height, elapsed.as_secs_f32());
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size.width * 4),
-                    rows_per_image: Some(size.height),
-                },
-                size,
+            let inputs = FrameInputs {
+                time: elapsed.as_secs_f64(),
+                delta: 1.0 / 60.0,
+                frame: frames + 1,
+                date: [2026.0, 10.0, 25.0, 0.0],
+                mouse: [0.0; 4],
+                resolution: [OUTPUT_WIDTH as f32, OUTPUT_HEIGHT as f32, 1.0],
+                video_nodes: Vec::new(),
+            };
+            let work = engine.run_frame(&inputs);
+            if let Err(error) = executor.execute(engine.plan(), &work) {
+                eprintln!("FAIL: execution failed: {error}");
+                let _ = slint::quit_event_loop();
+                return;
+            }
+
+            let Some(output) = executor.output_handle("renderer") else {
+                eprintln!("FAIL: renderer produced no GPU output");
+                let _ = slint::quit_event_loop();
+                return;
+            };
+            let dimensions = format!(
+                "{}x{} {:?}",
+                output.width, output.height, output.format
             );
 
-            match slint::Image::try_from(texture.clone()) {
+            match slint::Image::try_from((*output.texture).clone()) {
                 Ok(image) => {
                     if first_import {
-                        eprintln!("PASS: imported wgpu texture into slint::Image");
+                        eprintln!(
+                            "PASS: imported open_quartz_execution output {dimensions} into slint::Image"
+                        );
                         first_import = false;
                     }
                     if let Some(window) = weak.upgrade() {
                         window.set_frame(image);
                         window.set_status(
                             format!(
-                                "shared wgpu 30 texture OK | frame {frames} | {:.0} ms",
+                                "execution output {dimensions} | frame {frames} | {:.0} ms",
                                 elapsed.as_secs_f64() * 1000.0
                             )
                             .into(),
@@ -172,6 +179,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn build_engine() -> ExecutionEngine {
+    let nodes: Vec<ProjectNode> = serde_json::from_value(json!([
+        {
+            "id": "time",
+            "type": "input",
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": {
+                "type": "input",
+                "label": "Time",
+                "shaderCode": "",
+                "inputs": [],
+                "outputs": [
+                    {
+                        "id": "time_out",
+                        "label": "value",
+                        "dataType": "float",
+                        "direction": "output"
+                    }
+                ],
+                "uniforms": {},
+                "inputMode": "system",
+                "inputDataType": "float",
+                "systemSource": "time"
+            }
+        },
+        {
+            "id": "pulse",
+            "type": "shader",
+            "position": { "x": 1.0, "y": 0.0 },
+            "data": {
+                "type": "shader",
+                "label": "Pulse",
+                "shaderCode": "@group(0) @binding(0) var<uniform> time: f32;\n\n@fragment\nfn main(@location(0) uv: vec2f) -> @location(0) vec4f {\n    let p = (uv - vec2f(0.5, 0.5)) * 2.0;\n    let radius = length(p);\n    let angle = atan2(p.y, p.x);\n    let wave = 0.5 + 0.5 * sin(radius * 24.0 - time * 3.0);\n    let rays = 0.5 + 0.5 * sin(angle * 8.0 + time);\n    let vignette = 1.0 - smoothstep(0.25, 1.25, radius);\n    return vec4f(wave * vignette, rays * vignette, (1.0 - wave * rays) * vignette, 1.0);\n}\n",
+                "inputs": [
+                    {
+                        "id": "time_in",
+                        "label": "time",
+                        "dataType": "float",
+                        "direction": "input"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "id": "pulse_out",
+                        "label": "output",
+                        "dataType": "sampler2D",
+                        "direction": "output"
+                    }
+                ],
+                "uniforms": {},
+                "autoSize": false,
+                "width": OUTPUT_WIDTH,
+                "height": OUTPUT_HEIGHT
+            }
+        },
+        {
+            "id": "renderer",
+            "type": "renderer",
+            "position": { "x": 2.0, "y": 0.0 },
+            "data": {
+                "type": "renderer",
+                "label": "Renderer",
+                "shaderCode": "",
+                "inputs": [
+                    {
+                        "id": "renderer_in",
+                        "label": "inputImage",
+                        "dataType": "sampler2D",
+                        "direction": "input"
+                    }
+                ],
+                "outputs": [],
+                "uniforms": {}
+            }
+        }
+    ]))
+    .expect("spike graph nodes must deserialize");
+    let edges: Vec<Edge> = serde_json::from_value(json!([
+        {
+            "id": "time_to_pulse",
+            "source": "time",
+            "sourceHandle": "time_out",
+            "target": "pulse",
+            "targetHandle": "time_in"
+        },
+        {
+            "id": "pulse_to_renderer",
+            "source": "pulse",
+            "sourceHandle": "pulse_out",
+            "target": "renderer",
+            "targetHandle": "renderer_in"
+        }
+    ]))
+    .expect("spike graph edges must deserialize");
+    ExecutionEngine::prepare(nodes, edges)
+}
+
 fn parse_args() -> Result<f64, String> {
     let mut seconds = 0.0;
     let mut args = std::env::args().skip(1);
@@ -194,20 +298,4 @@ fn parse_args() -> Result<f64, String> {
         }
     }
     Ok(seconds)
-}
-
-fn make_frame(width: u32, height: u32, phase: f32) -> Vec<u8> {
-    let mut pixels = vec![0_u8; (width * height * 4) as usize];
-    let bar_x = ((phase * 140.0) as u32) % width;
-    for y in 0..height {
-        for x in 0..width {
-            let offset = ((y * width + x) * 4) as usize;
-            let in_bar = x.abs_diff(bar_x) < width / 24;
-            pixels[offset] = if in_bar { 255 } else { (x * 255 / width) as u8 };
-            pixels[offset + 1] = (y * 255 / height) as u8;
-            pixels[offset + 2] = (((x + y) / 2 + (phase * 60.0) as u32) % 256) as u8;
-            pixels[offset + 3] = 255;
-        }
-    }
-    pixels
 }

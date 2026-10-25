@@ -1,28 +1,29 @@
 # Slint render spike
 
-Phase 1a proof for the [Slint UI refactor](../../docs/SLINT_UI_REFACTOR.md): verify that
-Slint 1.18.1 can render with the same wgpu 30 `Device`/`Queue` as an external producer and
-import a `wgpu::Texture` through `slint::Image::try_from`.
+Phase 1 proof for the [Slint UI refactor](../../docs/SLINT_UI_REFACTOR.md): verify that
+Slint 1.18.1 can render with the same wgpu 30 `Device`/`Queue` as the real
+`open_quartz_execution` renderer and import its output texture through
+`slint::Image::try_from`.
 
-This is an isolated Cargo workspace. It does not depend on the main Open Quartz workspace
-and does not change the production Tauri app.
+This is an isolated Cargo workspace with its own lockfile and target directory. It uses the
+main workspace's `open_quartz_execution` and `open_quartz_schema` crates by path, but does
+not change the production Tauri app.
 
 ## Scope
 
 - Creates its own wgpu 30 instance/adapter/device/queue.
 - Forces DX12 on Windows; uses primary backends elsewhere.
-- Selects Slint's wgpu 30 backend with `WGPUConfiguration::Manual`.
-- Updates a 640x360 `Rgba8UnormSrgb` texture on every UI tick.
-- Imports the texture into `slint::Image` and displays it in a Slint window.
+- Builds a real execution graph: `Time` input -> animated WGSL shader -> `Renderer`.
+- Runs `ExecutionEngine` and `GpuExecutor` on the shared device/queue every UI tick.
+- Imports the actual 640x360 `Rgba8Unorm` renderer output into `slint::Image`.
 - Auto-closes with `--seconds N`, or runs until the window closes.
 
 It does **not** yet prove:
 
-- import of the real `open_quartz_execution` renderer output;
-- zero-copy from the production render graph;
-- resize/format compatibility with the real renderer;
+- production native-host wiring, project loading, or command/event flow;
+- resize, format/color-space, minimize/restore, or surface-loss behavior;
 - macOS/Linux/Android/iOS behavior;
-- production performance.
+- long-run stability or performance parity with the Tauri app.
 
 ## Run
 
@@ -35,12 +36,12 @@ Expected output on Windows:
 ```text
 adapter: ... | backend=Dx12 | type=DiscreteGpu
 slint: wgpu 30 backend selected with manual device/queue
-PASS: imported wgpu texture into slint::Image
+PASS: imported open_quartz_execution output 640x360 Rgba8Unorm into slint::Image
 spike: frames=... elapsed=... fps=...
 spike: completed ... frames in ...s
 ```
 
-![Windows DX12 spike](artifacts/slint-phase1-windows-dx12.png)
+![Windows DX12 execution output](artifacts/slint-phase1b-execution-windows-dx12.png)
 
 ## Verified
 
@@ -49,16 +50,17 @@ Slint 1.18.1, wgpu 30.0.1.
 
 - [x] `cargo check`
 - [x] Slint selects wgpu 30 with a manually supplied `Device`/`Queue`
-- [x] `Image::try_from(texture)` succeeds
+- [x] `ExecutionEngine` + `GpuExecutor` run on the shared device/queue
+- [x] `Image::try_from` accepts the real renderer output
 - [x] Texture updates are visible frame over frame
 - [x] Window auto-closes and process exits cleanly
 - [x] No validation error in a 5-second release run
 - [x] Screenshot captured
 
-Release run observed 291 frames in 5.01 s. This includes CPU test-pattern generation on
-the UI tick and is not a renderer performance benchmark.
+Release run observed 288 frames in 5.01 s (~57 FPS) on a 640x360 output. This is a 16 ms
+UI-timer loop, not a renderer benchmark.
 
-## Finding
+## Findings
 
 `unstable-wgpu-30` alone is not enough with Slint's default femtovg setup. Without the
 `renderer-femtovg-wgpu` feature, Slint keeps the OpenGL renderer and fails at runtime with:
@@ -73,8 +75,16 @@ The spike therefore enables both features:
 slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
 ```
 
+Slint's web stack requires newer `wasm-bindgen`/`js-sys`/`web-sys` versions than the main
+workspace previously pinned. The execution and SDK crates now pin `wasm-bindgen = "=0.2.129"`;
+`cargo check --target wasm32-unknown-unknown` still passes.
+
+The renderer output is `Rgba8Unorm`, which `Image::try_from` accepts as long as the texture
+has both `TEXTURE_BINDING` and `RENDER_ATTACHMENT` usage. Both requirements are satisfied by
+`open_quartz_execution` render targets.
+
 ## Next
 
-1. Upgrade the main workspace from wgpu 27 to wgpu 30 and keep core tests green.
-2. Feed the actual `open_quartz_execution` output texture into this spike path.
-3. Add resize, format/color, minimize/restore, and 10-minute validation runs.
+1. Extract the Tauri-free native host and drive a real project graph through Slint.
+2. Add resize, format/color, minimize/restore, and 10-minute validation runs.
+3. Validate macOS/Linux/Android/iOS, then decide whether to enter Phase 3.
