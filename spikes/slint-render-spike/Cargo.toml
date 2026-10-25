@@ -1,0 +1,11 @@
+[package]
+name = "slint-render-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+pollster = "0.4"
+slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }

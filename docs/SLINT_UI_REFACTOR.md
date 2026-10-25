@@ -331,7 +331,7 @@ sequenceDiagram
 | Rust | `rust-version = 1.77.2` | **1.92**（Slint 1.18.1 MSRV） |
 | wgpu | 27 | **30**（29 为 fallback） |
 | naga | 27 | 与 wgpu 同步 |
-| Slint wgpu feature | 无 | `unstable-wgpu-30` |
+| Slint wgpu feature | 无 | `unstable-wgpu-30` + `renderer-femtovg-wgpu` |
 
 事实：
 
@@ -339,6 +339,7 @@ sequenceDiagram
 - Slint 1.17 已把 `unstable-wgpu-27/28` 替换为 29。
 - 若必须保留 wgpu 27，只能固定 Slint 1.16.x；但 iOS 的 GPU 质量和后续修复不足，不适合作为最终目标。
 - 因此 **iOS 目标实际上强制要求 wgpu 29/30 升级**。
+- 仅启用 `unstable-wgpu-30` 不够：Slint 默认可能仍选 OpenGL femtovg renderer，运行时报 `WGPU 30.x rendering is not supported with an OpenGL renderer`；必须同时启用 `renderer-femtovg-wgpu`。Windows DX12 已在 `spikes/slint-render-spike` 验证。
 
 建议：
 
@@ -965,6 +966,7 @@ Rust:
 
 | 主题 | 建议路径 |
 |---|---|
+| Phase 1 spike | `spikes/slint-render-spike` |
 | Slint app | `apps/open_quartz_slint` |
 | Slint UI | `apps/open_quartz_slint/ui` |
 | AppController | `apps/open_quartz_slint/src/app_controller.rs` |
@@ -996,7 +998,8 @@ Rust:
 | Slint 版本/MSRV/授权 | 已核对 |
 | Slint 编辑器能力 | 已核对 |
 | Slint Web 纹理限制 | 已核对 |
-| 五平台共享纹理 | **未验证**，Phase 1 必测 |
+| Windows DX12 共享纹理导入 | **已验证**：`spikes/slint-render-spike` |
+| 其余平台共享纹理 | **未验证**，Phase 1 必测 |
 | iOS 外部纹理导入 | **未验证**，Phase 1 必测 |
 | 节点图 100/300 节点性能 | **未验证**，Phase 3 原型 |
 | 移动端文件/相机/生命周期 | **未验证**，Phase 6 |
