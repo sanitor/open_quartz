@@ -6,12 +6,13 @@ use open_quartz_execution::gpu::{
 };
 
 async fn output() -> open_quartz_execution::gpu::GpuOutputHandle {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             force_fallback_adapter: !cfg!(target_os = "macos"),
             compatible_surface: None,
+            apply_limit_buckets: false,
         })
         .await
         .expect("a GPU adapter is required for presenter tests");

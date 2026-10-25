@@ -109,9 +109,9 @@ impl NativeRenderer {
         resource_overrides: &HashMap<String, String>,
         packaged_resources: &HashMap<String, String>,
     ) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let raw_window = Win32WindowHandle::new(
             std::num::NonZeroIsize::new(window.0 as isize)
@@ -119,7 +119,7 @@ impl NativeRenderer {
         );
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+                raw_display_handle: Some(RawDisplayHandle::Windows(WindowsDisplayHandle::new())),
                 raw_window_handle: RawWindowHandle::Win32(raw_window),
             })
         }
@@ -128,6 +128,7 @@ impl NativeRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: Some(&surface),
+            apply_limit_buckets: false,
         }))
         .map_err(|error| format!("Cannot create screen saver GPU adapter: {error}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -190,6 +191,10 @@ impl NativeRenderer {
                 NativeVideoFrame::Rgba(rgba) => self
                     .executor
                     .upload_rgba(node_id, rgba, width, height)
+                    .map_err(|error| error.to_string()),
+                NativeVideoFrame::D3d12(frame) => self
+                    .executor
+                    .upload_d3d12_yuv(node_id, frame)
                     .map_err(|error| error.to_string()),
             })? {
                 dirty.push(node_id.clone());
@@ -290,17 +295,25 @@ impl NativeRenderer {
             .output_handle(&self.renderer_node_id)
             .ok_or_else(|| "Screen saver renderer has no GPU output".to_owned())?;
         let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(
                     self.executor.backend().device.as_ref(),
                     &self.surface_config,
                 );
-                self.surface
-                    .get_current_texture()
-                    .map_err(|error| format!("Cannot acquire screen saver surface: {error}"))?
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                    error => {
+                        return Err(format!("Cannot acquire screen saver surface: {error:?}"));
+                    }
+                }
             }
-            Err(error) => return Err(format!("Cannot acquire screen saver surface: {error}")),
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(());
+            }
+            error => return Err(format!("Cannot acquire screen saver surface: {error:?}")),
         };
         let bind_group =
             self.executor
@@ -343,13 +356,14 @@ impl NativeRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.present_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.executor.backend().queue.submit([encoder.finish()]);
-        frame.present();
+        self.executor.backend().queue.present(frame);
         Ok(())
     }
 }
@@ -386,8 +400,8 @@ fn create_present_pipeline(
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("open-quartz-screen-saver-present-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
     let vertex = backend
         .device
@@ -425,7 +439,7 @@ fn create_present_pipeline(
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
     (bind_group_layout, pipeline)

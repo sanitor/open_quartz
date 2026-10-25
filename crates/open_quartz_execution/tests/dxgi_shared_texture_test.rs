@@ -6,21 +6,22 @@ use open_quartz_execution::gpu::{
     DxgiSharedTextureExporter, GpuBackend, GpuPresentationFrame, SharedTextureExporter,
     TextureFormat,
 };
-use windows_graphics::Win32::Foundation::{CloseHandle, BOOL, HANDLE, WAIT_OBJECT_0};
+use windows_graphics::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_graphics::Win32::Graphics::Direct3D12::{ID3D12Fence, ID3D12Resource};
 use windows_graphics::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 use windows_graphics::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 async fn dx12_backend() -> Arc<GpuBackend> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::DX12,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         })
         .await
         .expect("a DX12 adapter is required for shared texture tests");
@@ -78,7 +79,7 @@ fn dxgi_export_opens_resource_and_signals_shared_fence() {
         assert_eq!((desc.Width, desc.Height), (8, 6));
         assert_eq!(desc.Format, DXGI_FORMAT_R8G8B8A8_UNORM);
 
-        let event = unsafe { CreateEventW(None, BOOL(0), BOOL(0), None) }.unwrap();
+        let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
         unsafe {
             fence
                 .unwrap()

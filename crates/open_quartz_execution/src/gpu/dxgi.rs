@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use windows_graphics::core::Interface;
 
-use windows_graphics::Win32::Foundation::{CloseHandle, BOOL, GENERIC_ALL, HANDLE, WAIT_OBJECT_0};
+use windows_graphics::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, WAIT_OBJECT_0};
 use windows_graphics::Win32::Graphics::Direct3D12::{
     ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
     ID3D12GraphicsCommandList, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -41,7 +41,7 @@ impl SharedTextureSlot {
         if self.fence_value == 0 || unsafe { self.fence.GetCompletedValue() } >= self.fence_value {
             return;
         }
-        let Ok(event) = (unsafe { CreateEventW(None, BOOL(0), BOOL(0), None) }) else {
+        let Ok(event) = (unsafe { CreateEventW(None, false, false, None) }) else {
             return;
         };
         unsafe {
@@ -185,6 +185,7 @@ impl DxgiSharedTextureExporter {
                         usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
                         view_formats: &[],
                     },
+                    wgpu::TextureUses::UNINITIALIZED,
                 )
         };
 
@@ -356,7 +357,7 @@ fn detach_video_subresource(
         queue
             .Signal(&fence, 1)
             .map_err(|error| format!("Cannot signal D3D12 detach fence: {error}"))?;
-        let event = CreateEventW(None, BOOL(0), BOOL(0), None)
+        let event = CreateEventW(None, false, false, None)
             .map_err(|error| format!("Cannot create D3D12 detach event: {error}"))?;
         fence
             .SetEventOnCompletion(1, event)
@@ -433,7 +434,7 @@ impl D3d12VideoFrame {
         std::mem::forget(borrowed_fence);
         let completed = fence.GetCompletedValue();
         if completed < fence_value {
-            let wait_event = CreateEventW(None, BOOL(0), BOOL(0), None)
+            let wait_event = CreateEventW(None, false, false, None)
                 .map_err(|error| format!("Cannot create D3D12 decode wait event: {error}"))?;
             fence
                 .SetEventOnCompletion(fence_value, wait_event)
@@ -509,6 +510,7 @@ impl GpuBackend {
                     usage: wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 },
+                wgpu::TextureUses::UNINITIALIZED,
             )
         };
         let y_view = source.create_view(&wgpu::TextureViewDescriptor {
@@ -562,6 +564,7 @@ impl GpuBackend {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
@@ -607,8 +610,8 @@ fn create_p010_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("open-quartz-p010-pipeline-layout"),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("open-quartz-p010-pipeline"),
@@ -632,7 +635,7 @@ fn create_p010_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::
         primitive: Default::default(),
         depth_stencil: None,
         multisample: Default::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     (layout, pipeline)

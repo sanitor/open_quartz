@@ -188,7 +188,9 @@ impl GpuBackend {
             .await
             .map_err(|error| format!("GPU readback callback dropped: {error}"))??;
 
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|error| format!("Cannot access mapped readback buffer: {error}"))?;
         let rgba = copy_padded_rgba(&mapped, width, height, bytes_per_row)?;
         drop(mapped);
         readback.unmap();

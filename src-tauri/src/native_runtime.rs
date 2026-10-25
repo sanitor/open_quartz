@@ -330,15 +330,16 @@ fn runtime_error(error: SdkError) -> String {
 
 impl NativePlayerHost {
     async fn new() -> Result<(Self, NativeRuntimeInfo), String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: native_backends(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .map_err(|error| format!("Cannot find a native GPU adapter: {error}"))?;

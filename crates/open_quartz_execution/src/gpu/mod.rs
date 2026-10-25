@@ -2,6 +2,7 @@ pub mod backend;
 #[cfg(windows)]
 pub mod dxgi;
 pub mod executor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod presenter;
 pub mod preview;
 pub mod readback;
@@ -11,6 +12,7 @@ pub use backend::{GpuBackend, TextureHandle, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV}
 #[cfg(windows)]
 pub use dxgi::{D3d12VideoFormat, D3d12VideoFrame, DxgiSharedTextureExporter};
 pub use executor::{GpuExecutionError, GpuExecutor, GpuOutput, GpuOutputHandle};
+#[cfg(not(target_arch = "wasm32"))]
 pub use presenter::{
     GpuPresentationFrame, GpuPresenter, LatestFrameMailbox, PresentationBackendKind,
     PresentationCapabilities, PresentationQueueStats, PresentationSubmitStats, PresenterRegistry,

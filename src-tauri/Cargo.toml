@@ -32,7 +32,7 @@ open_quartz = { path = "../crates/open_quartz" }
 open_quartz_execution = { path = "../crates/open_quartz_execution", features = ["native-video-d3d12"] }
 open_quartz_schema = { path = "../crates/open_quartz_schema" }
 pollster = "0.4"
-wgpu = { version = "27", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"

@@ -56,9 +56,9 @@ impl BrowserGpuEnvironment {
     pub async fn from_offscreen_canvas(canvas: web_sys::OffscreenCanvas) -> Result<Self, SdkError> {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas))
@@ -74,6 +74,7 @@ impl BrowserGpuEnvironment {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
+                apply_limit_buckets: false,
             })
             .await
             .map_err(|error| {
@@ -111,6 +112,7 @@ impl BrowserGpuEnvironment {
             &wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: surface_format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
                 width,
                 height,
                 present_mode: wgpu::PresentMode::Fifo,
@@ -189,13 +191,17 @@ impl BrowserGpuEnvironment {
     }
 
     pub fn present(&self, output: &GpuOutputHandle) -> Result<(), SdkError> {
-        let frame = self.surface.get_current_texture().map_err(|error| {
-            SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Cannot acquire browser surface frame",
-            )
-            .with_details(error.to_string())
-        })?;
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            error => {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidResource,
+                    "Cannot acquire browser surface frame",
+                )
+                .with_details(format!("{error:?}")));
+            }
+        };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -233,13 +239,14 @@ impl BrowserGpuEnvironment {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.present_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        frame.present();
+        self.queue.present(frame);
         Ok(())
     }
 }
@@ -271,8 +278,8 @@ fn create_present_pipeline(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("open-quartz-browser-present-pipeline-layout"),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("open-quartz-browser-present-vertex"),
@@ -304,7 +311,7 @@ fn create_present_pipeline(
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     (layout, pipeline)
