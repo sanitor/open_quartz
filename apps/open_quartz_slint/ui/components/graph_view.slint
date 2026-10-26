@@ -1,5 +1,12 @@
-import { ScrollView } from "std-widgets.slint";
+import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+
+export struct GraphPort {
+    port-id: string,
+    label: string,
+    y: float,
+    output: bool,
+}
 
 export struct GraphNode {
     node-id: string,
@@ -10,9 +17,11 @@ export struct GraphNode {
     width: float,
     height: float,
     selected: bool,
+    ports: [GraphPort],
 }
 
 export struct GraphEdge {
+    edge-id: string,
     source-index: int,
     target-index: int,
     source-x: float,
@@ -32,6 +41,19 @@ export component GraphView inherits Rectangle {
     in property <bool> busy;
     callback node-selected(string);
     callback node-moved(string, float, float);
+    in property <string> selected-edge-id;
+    in property <string> pending-node-id;
+    in property <string> pending-port-id;
+    in property <bool> connection-active;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    callback port-selected(string, string, bool);
+    callback edge-selected(string);
+    callback reconnect-edge();
+    callback delete-edge();
+    callback cancel-connection();
+    callback undo();
+    callback redo();
 
     private property <int> drag-node-index: -1;
     private property <length> drag-offset-x: 0px;
@@ -48,6 +70,21 @@ export component GraphView inherits Rectangle {
             text: "Graph · " + root.summary;
             color: Theme.foreground;
             font-size: 17px;
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            Button { text: "Undo"; enabled: !root.busy && root.can-undo; clicked => { root.undo(); } }
+            Button { text: "Redo"; enabled: !root.busy && root.can-redo; clicked => { root.redo(); } }
+            Button { text: "Reconnect"; enabled: !root.busy && root.selected-edge-id != ""; clicked => { root.reconnect-edge(); } }
+            Button { text: "Delete edge"; enabled: !root.busy && root.selected-edge-id != ""; clicked => { root.delete-edge(); } }
+            Button { text: "Cancel"; enabled: !root.busy && root.connection-active; clicked => { root.cancel-connection(); } }
+        }
+        Text {
+            text: root.connection-active ? "Choose an input to connect; choose an output to change source. Cancel keeps the graph unchanged." : "Output then input connects/replaces. Click a connected input or link marker to select an edge.";
+            color: Theme.secondary;
+            wrap: word-wrap;
+            font-size: 11px;
         }
 
         ScrollView {
@@ -82,7 +119,7 @@ export component GraphView inherits Rectangle {
                     width: canvas.width;
                     height: canvas.height;
                     fit: preserve;
-                    stroke: #56708f;
+                    stroke: root.selected-edge-id == edge.edge-id ? Theme.accent : #56708f;
                     stroke-width: 2px;
                     MoveTo {
                         x: edge.source-x + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
@@ -96,6 +133,19 @@ export component GraphView inherits Rectangle {
                         x: edge.target-x + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
                         y: edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
                     }
+                }
+
+                for edge in root.edges: Button {
+                    x: (edge.source-x + edge.target-x) / 2 * 1px + root.origin-x * 1px
+                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-x / 2 : 0px) - 12px;
+                    y: (edge.source-y + edge.target-y) / 2 * 1px + root.origin-y * 1px
+                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-y / 2 : 0px) - 12px;
+                    width: 24px;
+                    height: 24px;
+                    text: root.selected-edge-id == edge.edge-id ? "●" : "○";
+                    accessible-label: "Select connection " + edge.edge-id;
+                    enabled: !root.busy;
+                    clicked => { root.edge-selected(edge.edge-id); }
                 }
 
                 for node[index] in root.nodes: node-area := TouchArea {
@@ -155,25 +205,42 @@ export component GraphView inherits Rectangle {
                         border-width: self.highlighted ? 2px : 1px;
                         border-radius: 7px;
 
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 5px;
-                            Text {
-                                text: node.label;
-                                color: Theme.accent;
-                                font-size: 15px;
-                                overflow: elide;
+                        Text {
+                            x: 10px; y: 8px; width: parent.width - 20px; height: 22px;
+                            text: node.label;
+                            color: Theme.accent;
+                            font-size: 15px;
+                            overflow: elide;
+                        }
+                        Text {
+                            x: 10px; y: 32px; width: parent.width - 20px; height: 18px;
+                            text: node.kind;
+                            color: Theme.secondary;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                        for port in node.ports: port-area := TouchArea {
+                            x: port.output ? parent.width / 2 : 0px;
+                            y: port.y * 1px - 11px;
+                            width: parent.width / 2;
+                            height: 22px;
+                            enabled: !root.busy;
+                            accessible-role: button;
+                            accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
+                            clicked => { root.port-selected(node.node-id, port.port-id, port.output); }
+                            Rectangle {
+                                x: port.output ? parent.width - 5px : -5px;
+                                y: 6px; width: 10px; height: 10px;
+                                border-radius: 5px;
+                                background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : #89a9ce;
                             }
                             Text {
-                                text: node.kind;
-                                color: Theme.foreground;
-                                font-size: 12px;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: node.node-id + " · (" + node.x + ", " + node.y + ")";
-                                color: Theme.secondary;
-                                font-size: 11px;
+                                x: 8px; width: parent.width - 16px; height: parent.height;
+                                text: port.label;
+                                color: port-area.has-hover ? Theme.accent : Theme.foreground;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                horizontal-alignment: port.output ? right : left;
                                 overflow: elide;
                             }
                         }

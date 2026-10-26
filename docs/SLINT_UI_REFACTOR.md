@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView 首个切片已实现并完成 Rust 验收，尚未切换默认入口
+> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView、端口连线编辑和撤销/重做已实现，通过 Rust、Slint 软件指针 smoke 与 Metal 拓扑切换验证，尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -716,16 +716,18 @@ Spike 范围：
 - **macOS 验收**：Apple M4 Pro / Metal 上 `cargo check`、`cargo build` 和 Slint app 单测通过；默认 640×360 graph 通过共享 `Device/Queue` 和 `Image::try_from` 正确显示，窗口从 1180×760 缩放到 900×650 后输出保持正确。已实际验证 SDK Save/Open、缺失文件错误保持当前项目、空 graph 启动和原生窗口干净关闭。
 - **回归验收**：`cargo test --workspace` 276 tests / 45 suites 通过；`cargo test -p open_quartz_native_host --all-features --offline`、`cargo check -p app --lib` 通过。CI 以 `macos-latest` 编译 Slint app。
 - **已知工具链问题**：wgpu-core 30 的 debug-only lock tracer 与 Slint thread-local backend 在 macOS 存在 TLS 析构顺序冲突；仅对 Slint app 的 dev profile 关闭 `wgpu-core` debug assertions，release 原本不启用该 tracer，OpenQuartz/Slint/app assertions 不受影响。
-- **下一步**：进入 Phase 3 后续连线编辑、撤销/重做和视口控制；Linux 与移动端证据后补。
+- **下一步**：继续 Phase 3 视口控制、复制粘贴及性能验收；Linux 与移动端证据后补。
 
 ### 8.5 Phase 3：节点图
 
 - **已实现首切片**：Slint 空间画布按 Project 坐标放置节点，以 `Path` 绘制 Bezier 边；支持单选、拖动预览和滚动访问完整世界坐标。
 - **Rust-owned mutation**：拖动低于 3px 只选择；有效拖动在松手时只提交一次 `GraphCommand::SetNodePosition`，不重启 Renderer；同位置提交不会增加 revision。
-- **持久化与错误路径**：位置通过 SDK `Project::to_file()` 保存并可重载；项目 I/O 期间禁用并拒绝选择/拖动，避免旧 project 或旧 save snapshot 覆盖编辑。
+- **已实现第二切片**：按真实端口行投影节点高度与边端点；点击输出再点击输入建立/替换连接，点击已连接输入或边中点选中连线，提供删除、重连和取消。重连可更换源或目标，旧边直到 SDK 原子事务成功才被替换；类型不兼容、cycle 或不存在的端口不会丢失旧边。
+- **撤销/重做**：复用 SDK graph history；移动、连线、重连和删除均可恢复，新成功编辑清空 redo，失败/no-op 不清空；打开项目重置当前编辑历史，fixture 构造不作为用户操作撤销。拓扑历史更新 NativeHost，纯布局历史不重启 Renderer。
+- **持久化与错误路径**：坐标和连接通过 SDK `Project::to_file()` 保存并可重载；项目 I/O 期间禁用并拒绝选择、拖动、连线与历史操作，避免旧 project 或旧 save snapshot 覆盖编辑。
 - **性能基线**：`--graph-stress` 默认生成确定性的 100 节点/150 边有效 graph，上限 300；Apple M4 Pro debug test 中 Rust projection 为 294µs。当前数字不包含 Slint layout/rasterization，不宣称达到 60 FPS gate。
-- **验收**：Slint app 22 tests 通过，覆盖 edge endpoint、负坐标边界、位置持久化、单选/no-op revision、100 节点 fixture、CLI 边界。macOS 可见 UI stress/drag 因本轮显示会话不可用未重复采样；Phase 2 Metal/shared-texture 实机证据仍有效。
-- **待实现**：端口连线/重连/删除、复制粘贴、撤销重做、zoom/Fit view/MiniMap、100/300 节点 Slint 帧率测量和移动端手势。
+- **验收**：Slint app 25 tests 通过，覆盖真实多端口端点、负坐标边界、位置/连线持久化、no-op revision、重连与占用输入替换的单步历史、类型/cycle 错误原子性及原有 stress/CLI 边界。临时真实 Slint 软件渲染 smoke 通过指针事件验证选择/删除/连接/重连/取消、Undo/Redo、busy guard、拖动及异步 Save/Open；已检查 1180×760、800×540 和 300 节点/450 边截图。Apple M4 Pro/Metal smoke 确认断连错误清图，重连和 redo 后恢复 640×360 GPU 纹理。当前 macOS 会话未暴露原生可访问窗口，因此上述软件截图不计作原生窗口验收或 60 FPS 证据。
+- **待实现**：复制粘贴、zoom/Fit view/MiniMap、100/300 节点原生 Slint 帧率测量和移动端手势。
 - 移动端手势在桌面稳定后补。
 
 ### 8.6 Phase 4：Inspector 与编辑器
@@ -1009,7 +1011,7 @@ Rust:
 | macOS Metal 共享纹理导入 | **已验证**：Apple M4 Pro；真实 `NativeHost` graph、Slint `Image::try_from`、640×360 输出、项目 I/O、空 graph、关闭路径均通过 |
 | Linux/Android 共享纹理 | **未验证**，按当前计划后置 |
 | iOS 外部纹理导入 | **运行时未验证**；`open_quartz_native_host` 已选择 Metal，`aarch64-apple-ios` compile check 通过，Phase 6 前仍须真机验证纹理导入 |
-| 节点图 100/300 节点性能 | **首个基线**：100 节点/150 边确定性 fixture；Rust projection 294µs（Apple M4 Pro debug），Slint layout/rasterization 与 60 FPS gate 尚未测量 |
+| 节点图 100/300 节点性能 | **初始基线**：100 节点/150 边 Rust projection 294µs（Apple M4 Pro debug）；已检查 300 节点/450 边软件渲染截图，原生 layout/rasterization 与 60 FPS gate 尚未验收 |
 | 移动端文件/相机/生命周期 | **未验证**，Phase 6 |
 
 ---

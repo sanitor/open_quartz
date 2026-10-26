@@ -22,6 +22,10 @@ pub struct AppController {
     renderer: Option<RenderBridge>,
     selected_node_id: Option<String>,
     graph_stress_count: Option<usize>,
+    selected_edge_id: Option<String>,
+    pending_connection: Option<PendingConnection>,
+    undo_edits: Vec<EditKind>,
+    redo_edits: Vec<EditKind>,
     files: ProjectIo,
     busy: bool,
     timer: slint::Timer,
@@ -32,6 +36,17 @@ struct ProjectionStats {
     node_count: usize,
     edge_count: usize,
     duration_micros: u128,
+}
+
+struct PendingConnection {
+    source: PortKey,
+    edge_id: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum EditKind {
+    Layout,
+    Topology,
 }
 
 impl AppController {
@@ -56,6 +71,10 @@ impl AppController {
             renderer,
             selected_node_id: None,
             graph_stress_count,
+            selected_edge_id: None,
+            pending_connection: None,
+            undo_edits: Vec::new(),
+            redo_edits: Vec::new(),
             files: ProjectIo::new()?,
             busy: false,
             timer: slint::Timer::default(),
@@ -94,6 +113,55 @@ impl AppController {
                 controller
                     .borrow_mut()
                     .move_node(node_id.as_str(), f64::from(x), f64::from(y));
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_port_selected(move |node_id, port_id, output| {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .select_port(node_id.as_str(), port_id.as_str(), output);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_edge_selected(move |edge_id| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().select_edge(edge_id.as_str());
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_reconnect_edge(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().reconnect_edge();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_delete_edge(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().delete_edge();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_cancel_connection(move || {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.edits_blocked() {
+                    controller.pending_connection = None;
+                    controller.publish_edit_state();
+                    controller.set_edit_status("Connection cancelled; project unchanged.");
+                }
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_undo(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().restore_edit(false);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_redo(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().restore_edit(true);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -180,6 +248,7 @@ impl AppController {
         window.set_graph_content_height(projection.content_height);
         window.set_graph_origin_x(projection.origin_x);
         window.set_graph_origin_y(projection.origin_y);
+        self.publish_edit_state();
         Some(stats)
     }
 
@@ -202,6 +271,7 @@ impl AppController {
             .any(|node| node.id == node_id)
         {
             self.selected_node_id = Some(node_id.to_owned());
+            self.selected_edge_id = None;
             self.publish_graph_projection();
         }
     }
@@ -223,6 +293,11 @@ impl AppController {
         match result {
             Ok(changed) => {
                 self.selected_node_id = Some(node_id.to_owned());
+                self.selected_edge_id = None;
+                if changed {
+                    self.undo_edits.push(EditKind::Layout);
+                    self.redo_edits.clear();
+                }
                 let projection = self.publish_graph_projection();
                 let timing = projection
                     .map(|stats| format!(" · projection {} µs", stats.duration_micros))
@@ -242,6 +317,224 @@ impl AppController {
                     )
                     .into(),
                 );
+            }
+        }
+    }
+
+    fn edits_blocked(&self) -> bool {
+        if self.busy {
+            self.set_edit_status(
+                "Cannot edit while project I/O is in progress; project unchanged.",
+            );
+        }
+        self.busy
+    }
+
+    fn set_edit_status(&self, status: &str) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_io_status(status.into());
+        }
+    }
+
+    fn publish_edit_state(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window
+                .set_selected_edge_id(self.selected_edge_id.as_deref().unwrap_or_default().into());
+            window.set_connection_active(self.pending_connection.is_some());
+            let source = self
+                .pending_connection
+                .as_ref()
+                .map(|pending| &pending.source);
+            window.set_pending_node_id(
+                source
+                    .map(|source| source.node_id().as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            window.set_pending_port_id(
+                source
+                    .map(|source| source.port_id().as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            window.set_can_undo(!self.undo_edits.is_empty());
+            window.set_can_redo(!self.redo_edits.is_empty());
+        }
+    }
+
+    fn select_port(&mut self, node_id: &str, port_id: &str, output: bool) {
+        if self.edits_blocked() {
+            return;
+        }
+        let key = PortKey::new(NodeId::new(node_id), PortId::new(port_id));
+        if output {
+            // A source click during reconnection changes the source without losing the old edge.
+            let edge_id = self
+                .pending_connection
+                .take()
+                .and_then(|pending| pending.edge_id);
+            self.pending_connection = Some(PendingConnection {
+                source: key,
+                edge_id,
+            });
+            self.publish_edit_state();
+            self.set_edit_status("Output selected. Click an input to connect, or Cancel.");
+            return;
+        }
+        let Some(pending) = &self.pending_connection else {
+            let edge_id = self
+                .project
+                .graph()
+                .edges()
+                .iter()
+                .find(|edge| edge.target == node_id && edge.target_handle == port_id)
+                .map(|edge| edge.id.clone());
+            if let Some(edge_id) = edge_id {
+                self.select_edge(&edge_id);
+            } else {
+                self.set_edit_status("Choose an output first, then an input. A connected input selects its existing edge.");
+            }
+            return;
+        };
+        let result = commit_connection(
+            Arc::make_mut(&mut self.project),
+            pending.source.clone(),
+            key,
+            pending.edge_id.as_deref(),
+        );
+        match result {
+            Ok(changed) => {
+                self.pending_connection = None;
+                self.selected_edge_id = None;
+                if changed {
+                    self.finish_topology_edit("Connection applied through the SDK.");
+                } else {
+                    self.publish_edit_state();
+                    self.set_edit_status("Connection unchanged; no revision created.");
+                }
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot connect; project unchanged: {}",
+                error.to_json()
+            )),
+        }
+    }
+
+    fn select_edge(&mut self, edge_id: &str) {
+        if self.edits_blocked() {
+            return;
+        }
+        if self
+            .project
+            .graph()
+            .edges()
+            .iter()
+            .any(|edge| edge.id == edge_id)
+        {
+            self.selected_edge_id = Some(edge_id.to_owned());
+            self.selected_node_id = None;
+            self.pending_connection = None;
+            self.publish_graph_projection();
+            self.set_edit_status("Connection selected. Reconnect changes its endpoints atomically; Delete edge removes it.");
+        }
+    }
+
+    fn reconnect_edge(&mut self) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some(edge) = self
+            .project
+            .graph()
+            .edges()
+            .iter()
+            .find(|edge| Some(&edge.id) == self.selected_edge_id.as_ref())
+        else {
+            return;
+        };
+        self.pending_connection = Some(PendingConnection {
+            source: PortKey::new(NodeId::new(&edge.source), PortId::new(&edge.source_handle)),
+            edge_id: Some(edge.id.clone()),
+        });
+        self.publish_edit_state();
+        self.set_edit_status("Reconnecting: choose a new input, or an output then input. The old edge remains until a valid commit.");
+    }
+
+    fn delete_edge(&mut self) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some(edge_id) = self.selected_edge_id.clone() else {
+            return;
+        };
+        let revision = self.project.graph_revision();
+        match Arc::make_mut(&mut self.project)
+            .apply_graph_command(GraphCommand::Disconnect { edge_id }, revision)
+        {
+            Ok(_) => {
+                self.selected_edge_id = None;
+                self.pending_connection = None;
+                self.finish_topology_edit("Connection deleted through the SDK.");
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot delete connection; project unchanged: {}",
+                error.to_json()
+            )),
+        }
+    }
+
+    fn finish_topology_edit(&mut self, status: &str) {
+        self.undo_edits.push(EditKind::Topology);
+        self.redo_edits.clear();
+        self.publish_project();
+        self.set_edit_status(status);
+    }
+
+    fn restore_edit(&mut self, redo: bool) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some(kind) = (if redo {
+            &self.redo_edits
+        } else {
+            &self.undo_edits
+        })
+        .last()
+        .copied() else {
+            return;
+        };
+        let revision = self.project.graph_revision();
+        let project = Arc::make_mut(&mut self.project);
+        let result = if redo {
+            project.redo_graph(revision)
+        } else {
+            project.rollback_graph(revision)
+        };
+        match result {
+            Ok(_) => {
+                if redo {
+                    self.redo_edits.pop();
+                    self.undo_edits.push(kind);
+                } else {
+                    self.undo_edits.pop();
+                    self.redo_edits.push(kind);
+                }
+                self.selected_edge_id = None;
+                self.pending_connection = None;
+                match kind {
+                    EditKind::Layout => {
+                        self.publish_graph_projection();
+                    }
+                    EditKind::Topology => self.publish_project(),
+                }
+                self.set_edit_status(if redo {
+                    "Graph edit redone."
+                } else {
+                    "Graph edit undone."
+                });
+            }
+            Err(error) => {
+                self.set_edit_status(&format!("Cannot restore graph edit: {}", error.to_json()))
             }
         }
     }
@@ -299,6 +592,10 @@ impl AppController {
                     self.project = Arc::new(project);
                     self.selected_node_id = None;
                     self.graph_stress_count = None;
+                    self.selected_edge_id = None;
+                    self.pending_connection = None;
+                    self.undo_edits.clear();
+                    self.redo_edits.clear();
                     window.set_project_path(path.to_string_lossy().as_ref().into());
                     window.set_io_status(
                         format!("Opened {} through the Rust SDK.", path.display()).into(),
@@ -367,6 +664,36 @@ fn commit_node_position(
             revision,
         )
         .map(|_| true)
+}
+
+fn commit_connection(
+    project: &mut Project,
+    source: PortKey,
+    target: PortKey,
+    reconnect_edge_id: Option<&str>,
+) -> Result<bool, SdkError> {
+    let unchanged = project.graph().edges().iter().any(|edge| {
+        edge.source == source.node_id().as_str()
+            && edge.source_handle == source.port_id().as_str()
+            && edge.target == target.node_id().as_str()
+            && edge.target_handle == target.port_id().as_str()
+            && reconnect_edge_id.is_none_or(|id| id == edge.id)
+    });
+    if unchanged {
+        return Ok(false);
+    }
+    let revision = project.graph_revision();
+    if let Some(edge_id) = reconnect_edge_id {
+        let mut graph = project.graph_snapshot();
+        graph.edit(&mut |edit| {
+            edit.disconnect(edge_id)?;
+            edit.connect(source.clone(), target.clone())
+        })?;
+        project.replace_graph(graph, revision)?;
+    } else {
+        project.apply_graph_command(GraphCommand::Connect { source, target }, revision)?;
+    }
+    Ok(true)
 }
 
 fn sample_project(sdk: &OpenQuartz) -> Result<Project, String> {
@@ -566,31 +893,60 @@ impl Drop for ProjectIo {
 
 #[cfg(test)]
 mod tests {
-    use open_quartz_sdk::{Environment, OpenQuartz, Position, SdkErrorCode};
+    use open_quartz_sdk::{
+        Environment, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey, Position,
+        SdkErrorCode,
+    };
     use slint::Model;
 
-    use super::{commit_node_position, graph_stress_project, sample_project, GraphViewModel};
+    use super::{
+        commit_connection, commit_node_position, graph_stress_project, sample_project,
+        GraphViewModel,
+    };
 
     #[test]
-    fn projection_contains_spatial_nodes_and_edge_endpoints() {
+    fn projected_edges_terminate_at_their_actual_ports() {
         let sdk = OpenQuartz::new(Environment::headless());
-        let project = sample_project(&sdk).unwrap();
+        let project = graph_stress_project(&sdk, 3).unwrap();
         let projection = GraphViewModel::from_project(&project, None);
-
-        assert_eq!(projection.node_count, 2);
-        assert_eq!(projection.edge_count, 1);
-        assert_eq!(projection.nodes.row_count(), 2);
-        assert_eq!(projection.edges.row_count(), 1);
-        let edge = projection.edges.row_data(0).unwrap();
-        assert_eq!(edge.source_index, 0);
-        assert_eq!(edge.target_index, 1);
-        assert_eq!((edge.source_x, edge.source_y), (184.0, 46.0));
-        assert_eq!((edge.target_x, edge.target_y), (320.0, 46.0));
-        assert!((0..projection.nodes.row_count()).all(|row| !projection
-            .nodes
-            .row_data(row)
-            .unwrap()
-            .selected));
+        for (index, edge) in project.graph().edges().iter().enumerate() {
+            let projected = projection.edges.row_data(index).unwrap();
+            assert_eq!(projected.edge_id.as_str(), edge.id);
+            let source = projection
+                .nodes
+                .row_data(projected.source_index as usize)
+                .unwrap();
+            let target = projection
+                .nodes
+                .row_data(projected.target_index as usize)
+                .unwrap();
+            let source_port = source
+                .ports
+                .iter()
+                .find(|port| port.output && port.port_id.as_str() == edge.source_handle)
+                .unwrap();
+            let target_port = target
+                .ports
+                .iter()
+                .find(|port| !port.output && port.port_id.as_str() == edge.target_handle)
+                .unwrap();
+            assert_eq!(
+                (projected.source_x, projected.source_y),
+                (source.x + source.width, source.y + source_port.y)
+            );
+            assert_eq!(
+                (projected.target_x, projected.target_y),
+                (target.x, target.y + target_port.y)
+            );
+            assert!(target_port.y < target.height);
+        }
+        let target = projection.nodes.row_data(2).unwrap();
+        let inputs = target
+            .ports
+            .iter()
+            .filter(|port| !port.output)
+            .collect::<Vec<_>>();
+        assert!(inputs[1].y > inputs[0].y);
     }
 
     #[test]
@@ -633,10 +989,6 @@ mod tests {
                 y: 233.25
             }
         );
-        let projection = GraphViewModel::from_project(&reloaded, Some(node_id.as_str()));
-        let edge = projection.edges.row_data(0).unwrap();
-        assert_eq!((edge.source_x, edge.source_y), (328.5, 279.25));
-        assert_eq!((edge.target_x, edge.target_y), (320.0, 46.0));
     }
 
     #[test]
@@ -724,5 +1076,107 @@ mod tests {
             assert!((edge.source_index as usize) < projection.node_count);
             assert!((edge.target_index as usize) < projection.node_count);
         }
+    }
+
+    fn port_key(
+        project: &open_quartz_sdk::Project,
+        node: usize,
+        output: bool,
+        port: usize,
+    ) -> PortKey {
+        let node = &project.graph().nodes()[node];
+        let ports = if output {
+            &node.data.outputs
+        } else {
+            &node.data.inputs
+        };
+        PortKey::new(NodeId::new(&node.id), PortId::new(&ports[port].id))
+    }
+
+    #[test]
+    fn occupied_input_replacement_is_one_undoable_persisted_edit() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = graph_stress_project(&sdk, 3).unwrap();
+        let before = project.graph_snapshot();
+        let source = port_key(&project, 0, true, 0);
+        let target = port_key(&project, 2, false, 0);
+        let revision = project.graph_revision();
+        assert!(commit_connection(&mut project, source.clone(), target.clone(), None).unwrap());
+        assert_eq!(project.graph_revision(), revision + 1);
+        assert_eq!(project.graph().edges().len(), before.edges.len());
+        let after = project.graph_snapshot();
+        assert!(after
+            .edges
+            .iter()
+            .any(|edge| edge.source == source.node_id().as_str()
+                && edge.target == target.node_id().as_str()
+                && edge.target_handle == target.port_id().as_str()));
+        let serialized = serde_json::to_string(&project.to_file()).unwrap();
+        assert_eq!(
+            sdk.open_project_json(&serialized).unwrap().graph_snapshot(),
+            after
+        );
+        assert!(!commit_connection(&mut project, source, target, None).unwrap());
+        assert_eq!(project.graph_revision(), revision + 1);
+        project.rollback_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), before);
+        project.redo_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), after);
+    }
+
+    #[test]
+    fn reconnect_moves_edge_and_replaced_input_as_one_transaction() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = graph_stress_project(&sdk, 3).unwrap();
+        let before = project.graph_snapshot();
+        let old = before.edges[0].clone();
+        let source = port_key(&project, 0, true, 0);
+        let target = port_key(&project, 2, false, 0);
+        let revision = project.graph_revision();
+        commit_connection(&mut project, source, target, Some(&old.id)).unwrap();
+        assert_eq!(project.graph_revision(), revision + 1);
+        assert!(!project.graph().edges().iter().any(|edge| edge.id == old.id));
+        assert_eq!(project.graph().edges().len(), before.edges.len() - 1);
+        let after = project.graph_snapshot();
+        project.rollback_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), before);
+
+        // This cycle is discovered only after disconnect/connect in the draft.
+        let source = port_key(&project, 2, true, 0);
+        let target = port_key(&project, 0, false, 0);
+        let revision = project.graph_revision();
+        assert!(commit_connection(&mut project, source, target, Some(&old.id)).is_err());
+        assert_eq!(project.graph_revision(), revision);
+        assert_eq!(project.graph_snapshot(), before);
+        // Failed reconnection must not clear the SDK redo stack.
+        project.redo_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), after);
+    }
+
+    #[test]
+    fn incompatible_reconnect_preserves_old_edge_and_history() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sample_project(&sdk).unwrap();
+        let initial = project.graph_snapshot();
+        project
+            .create_graph_node(
+                NodeFactoryRequest::Math {
+                    position: None,
+                    op: "add".into(),
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let before = project.graph_snapshot();
+        let source = port_key(&project, 2, true, 0);
+        let target = port_key(&project, 1, false, 0);
+        let revision = project.graph_revision();
+        let error = commit_connection(&mut project, source, target, Some(&initial.edges[0].id))
+            .unwrap_err();
+        assert_eq!(error.code, SdkErrorCode::InvalidGraph);
+        assert_eq!(project.graph_revision(), revision);
+        assert_eq!(project.graph_snapshot(), before);
+        project.rollback_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), initial);
     }
 }

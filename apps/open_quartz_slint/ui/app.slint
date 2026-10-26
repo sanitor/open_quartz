@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top_bar.slint";
-import { GraphView, GraphNode, GraphEdge } from "components/graph_view.slint";
-export { GraphNode, GraphEdge }
+import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
+export { GraphNode, GraphEdge, GraphPort }
 
 export component AppWindow inherits Window {
     title: "OpenQuartz · Slint";
@@ -29,6 +29,19 @@ export component AppWindow inherits Window {
     callback save-project(string);
     callback graph-node-selected(string);
     callback graph-node-moved(string, float, float);
+    in property <string> selected-edge-id;
+    in property <string> pending-node-id;
+    in property <string> pending-port-id;
+    in property <bool> connection-active;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    callback graph-port-selected(string, string, bool);
+    callback graph-edge-selected(string);
+    callback graph-reconnect-edge();
+    callback graph-delete-edge();
+    callback graph-cancel-connection();
+    callback graph-undo();
+    callback graph-redo();
 
     VerticalLayout {
         padding: 16px;
@@ -55,6 +68,19 @@ export component AppWindow inherits Window {
                 busy: root.busy;
                 node-selected(node-id) => { root.graph-node-selected(node-id); }
                 node-moved(node-id, x, y) => { root.graph-node-moved(node-id, x, y); }
+                selected-edge-id: root.selected-edge-id;
+                pending-node-id: root.pending-node-id;
+                pending-port-id: root.pending-port-id;
+                connection-active: root.connection-active;
+                can-undo: root.can-undo;
+                can-redo: root.can-redo;
+                port-selected(node-id, port-id, output) => { root.graph-port-selected(node-id, port-id, output); }
+                edge-selected(edge-id) => { root.graph-edge-selected(edge-id); }
+                reconnect-edge => { root.graph-reconnect-edge(); }
+                delete-edge => { root.graph-delete-edge(); }
+                cancel-connection => { root.graph-cancel-connection(); }
+                undo => { root.graph-undo(); }
+                redo => { root.graph-redo(); }
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }

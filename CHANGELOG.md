@@ -4,9 +4,11 @@
 
 ### Features
 
-- **Slint Phase 2 shell** — extract the framework-neutral `open_quartz_native_host` from the Tauri runtime and add an independent Slint 1.18.1 application shell with SDK-owned project I/O, read-only graph projection, and shared wgpu 30 renderer texture import. Tauri remains the fallback application; node editing and mobile delivery are not migrated yet.
+- **Slint Phase 2 shell** — extract the framework-neutral `open_quartz_native_host` from the Tauri runtime and add an independent Slint 1.18.1 application shell with SDK-owned project I/O, graph projection, and shared wgpu 30 renderer texture import. Tauri remains the fallback application; the full editor and mobile delivery are not migrated yet.
 
 - **Slint spatial GraphView** — add a scrollable native graph canvas with persisted node coordinates, Bezier edges, single selection, release-only SDK position commits, negative-coordinate reachability, busy-I/O edit guards, and deterministic 100/300-node stress fixtures.
+
+- **Slint connection editing** — project actual typed ports and per-port edge endpoints; add click-to-connect, occupied-input replacement, atomic endpoint reconnection, edge selection/deletion, Cancel, and SDK-backed Undo/Redo. Failed type/cycle edits preserve graph and history, topology changes refresh NativeHost, and layout-only undo leaves rendering running.
 
 ### Tests
 
