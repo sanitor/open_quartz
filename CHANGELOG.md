@@ -6,6 +6,8 @@
 
 - **Slint Phase 2 shell** — extract the framework-neutral `open_quartz_native_host` from the Tauri runtime and add an independent Slint 1.18.1 application shell with SDK-owned project I/O, read-only graph projection, and shared wgpu 30 renderer texture import. Tauri remains the fallback application; node editing and mobile delivery are not migrated yet.
 
+- **Slint spatial GraphView** — add a scrollable native graph canvas with persisted node coordinates, Bezier edges, single selection, release-only SDK position commits, negative-coordinate reachability, busy-I/O edit guards, and deterministic 100/300-node stress fixtures.
+
 ### Tests
 
 - **macOS Slint validation** — verify the Phase 2 shell on Apple Silicon/Metal with a shared wgpu device/queue, live renderer texture import, SDK save/open and error paths, empty-graph startup, and clean native-window shutdown; add a macOS CI compile gate.

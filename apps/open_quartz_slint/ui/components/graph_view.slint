@@ -5,52 +5,188 @@ export struct GraphNode {
     node-id: string,
     label: string,
     kind: string,
-    position: string,
-    ports: string,
-    connections: string,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    selected: bool,
+}
+
+export struct GraphEdge {
+    source-index: int,
+    target-index: int,
+    source-x: float,
+    source-y: float,
+    target-x: float,
+    target-y: float,
 }
 
 export component GraphView inherits Rectangle {
     in property <[GraphNode]> nodes;
+    in property <[GraphEdge]> edges;
     in property <string> summary;
+    in property <float> content-width;
+    in property <float> content-height;
+    in property <float> origin-x;
+    in property <float> origin-y;
+    in property <bool> busy;
+    callback node-selected(string);
+    callback node-moved(string, float, float);
+
+    private property <int> drag-node-index: -1;
+    private property <length> drag-offset-x: 0px;
+    private property <length> drag-offset-y: 0px;
+
     background: Theme.panel;
     border-radius: 8px;
+
     VerticalLayout {
         padding: 12px;
         spacing: 10px;
+
         Text {
             text: "Graph · " + root.summary;
             color: Theme.foreground;
             font-size: 17px;
         }
-        if root.nodes.length == 0: Text {
-            text: "This project has an empty graph. Node editing is outside Phase 2.";
-            color: Theme.secondary;
-            wrap: word-wrap;
-        }
+
         ScrollView {
-            horizontal-stretch: 1;
-            vertical-stretch: 1;
-            VerticalLayout {
-                spacing: 10px;
-                for node in root.nodes: Rectangle {
-                    background: Theme.card;
-                    border-color: Theme.border;
-                    border-width: 1px;
-                    border-radius: 6px;
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 6px;
-                        Text {
-                            text: node.label + " · " + node.kind;
-                            color: Theme.accent;
-                            font-size: 16px;
-                            wrap: word-wrap;
-                        }
-                        Text { text: node.node-id + " · " + node.position; color: Theme.secondary; wrap: word-wrap; }
-                        Text { text: node.ports; color: Theme.foreground; wrap: word-wrap; }
-                        Text { text: node.connections; color: Theme.secondary; wrap: word-wrap; }
+            content-width: root.content-width * 1px;
+            content-height: root.content-height * 1px;
+            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
+            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+            mouse-drag-pan-enabled: false;
+
+            canvas := Rectangle {
+                width: root.content-width * 1px;
+                height: root.content-height * 1px;
+                background: #121925;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 6px;
+
+                for grid-column in 64: Rectangle {
+                    x: grid-column * 64px;
+                    width: 1px;
+                    height: parent.height;
+                    background: #1d2939;
+                }
+                for grid-row in 64: Rectangle {
+                    y: grid-row * 64px;
+                    width: parent.width;
+                    height: 1px;
+                    background: #1d2939;
+                }
+
+                for edge in root.edges: Path {
+                    width: canvas.width;
+                    height: canvas.height;
+                    fit: preserve;
+                    stroke: #56708f;
+                    stroke-width: 2px;
+                    MoveTo {
+                        x: edge.source-x + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
+                        y: edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
                     }
+                    CubicTo {
+                        control-1-x: edge.source-x + 48 + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
+                        control-1-y: edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
+                        control-2-x: edge.target-x - 48 + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
+                        control-2-y: edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
+                        x: edge.target-x + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
+                        y: edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
+                    }
+                }
+
+                for node[index] in root.nodes: node-area := TouchArea {
+                    x: (node.x + root.origin-x) * 1px;
+                    y: (node.y + root.origin-y) * 1px;
+                    width: node.width * 1px;
+                    height: node.height * 1px;
+                    enabled: !root.busy;
+
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.cancel) {
+                            root.drag-node-index = -1;
+                            root.drag-offset-x = 0px;
+                            root.drag-offset-y = 0px;
+                            return;
+                        }
+                        if (event.button != PointerEventButton.left) {
+                            return;
+                        }
+                        if (event.kind == PointerEventKind.down) {
+                            root.drag-node-index = index;
+                            root.drag-offset-x = 0px;
+                            root.drag-offset-y = 0px;
+                        } else if (event.kind == PointerEventKind.up) {
+                            if (root.drag-node-index == index
+                                    && (Math.abs(root.drag-offset-x) >= 3px
+                                        || Math.abs(root.drag-offset-y) >= 3px)) {
+                                root.node-moved(
+                                    node.node-id,
+                                    node.x + root.drag-offset-x / 1px,
+                                    node.y + root.drag-offset-y / 1px,
+                                );
+                            } else if (root.drag-node-index == index) {
+                                root.node-selected(node.node-id);
+                            }
+                            root.drag-node-index = -1;
+                            root.drag-offset-x = 0px;
+                            root.drag-offset-y = 0px;
+                        }
+                    }
+
+                    moved => {
+                        if (self.pressed && root.drag-node-index == index) {
+                            root.drag-offset-x = self.mouse-x - self.pressed-x;
+                            root.drag-offset-y = self.mouse-y - self.pressed-y;
+                        }
+                    }
+
+                    Rectangle {
+                        private property <bool> highlighted: root.drag-node-index >= 0 ? root.drag-node-index == index : node.selected;
+                        x: root.drag-node-index == index ? root.drag-offset-x : 0px;
+                        y: root.drag-node-index == index ? root.drag-offset-y : 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        background: self.highlighted ? #263f56 : Theme.card;
+                        border-color: self.highlighted ? Theme.accent : Theme.border;
+                        border-width: self.highlighted ? 2px : 1px;
+                        border-radius: 7px;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 5px;
+                            Text {
+                                text: node.label;
+                                color: Theme.accent;
+                                font-size: 15px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: node.kind;
+                                color: Theme.foreground;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: node.node-id + " · (" + node.x + ", " + node.y + ")";
+                                color: Theme.secondary;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+
+                if root.nodes.length == 0: Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "This project has an empty graph.";
+                    color: Theme.secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }

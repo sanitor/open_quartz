@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top_bar.slint";
-import { GraphView, GraphNode } from "components/graph_view.slint";
-export { GraphNode }
+import { GraphView, GraphNode, GraphEdge } from "components/graph_view.slint";
+export { GraphNode, GraphEdge }
 
 export component AppWindow inherits Window {
     title: "OpenQuartz · Slint";
@@ -17,11 +17,18 @@ export component AppWindow inherits Window {
     in property <string> runtime-status;
     in property <string> graph-summary;
     in property <[GraphNode]> graph-nodes;
+    in property <[GraphEdge]> graph-edges;
+    in property <float> graph-content-width;
+    in property <float> graph-content-height;
+    in property <float> graph-origin-x;
+    in property <float> graph-origin-y;
     in property <bool> busy;
     in property <image> renderer-image;
     in property <bool> has-renderer-image;
     callback open-project(string);
     callback save-project(string);
+    callback graph-node-selected(string);
+    callback graph-node-moved(string, float, float);
 
     VerticalLayout {
         padding: 16px;
@@ -39,7 +46,15 @@ export component AppWindow inherits Window {
             spacing: 12px;
             GraphView {
                 nodes: root.graph-nodes;
+                edges: root.graph-edges;
                 summary: root.graph-summary;
+                content-width: root.graph-content-width;
+                content-height: root.graph-content-height;
+                origin-x: root.graph-origin-x;
+                origin-y: root.graph-origin-y;
+                busy: root.busy;
+                node-selected(node-id) => { root.graph-node-selected(node-id); }
+                node-moved(node-id, x, y) => { root.graph-node-moved(node-id, x, y); }
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }
