@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Engine, ExecutionCommand, ExecutionPlan, GpuFacade};
-use open_quartz_schema::{SdkError, SdkErrorCode};
 use crate::event::{EngineEvent, EngineState};
 use open_quartz_schema::{DataType, Graph};
+use open_quartz_schema::{SdkError, SdkErrorCode};
 
 use super::{
     AsyncCompletionEnvelope, ClockState, CompositionClock, ContentStamp, FrameStamp,
@@ -105,7 +105,9 @@ impl Runtime {
                 "Runtime can only pause while running",
             ));
         }
-        self.clock.pause(now_ns)?;
+        self.clock
+            .pause(now_ns)
+            .expect("running runtime owns a running clock");
         self.engine.pause().map_err(decode_engine_error)
     }
 
@@ -116,7 +118,9 @@ impl Runtime {
                 "Runtime can only resume while paused",
             ));
         }
-        self.clock.resume(now_ns)?;
+        self.clock
+            .resume(now_ns)
+            .expect("paused runtime owns a paused clock");
         self.engine.resume().map_err(decode_engine_error)
     }
 
@@ -125,10 +129,7 @@ impl Runtime {
     }
 
     pub fn set_graph(&mut self, graph: &Graph) -> Result<u32, SdkError> {
-        let json = serde_json::to_string(graph).map_err(|error| {
-            SdkError::new(SdkErrorCode::InvalidGraph, "Cannot serialize graph")
-                .with_details(error.to_string())
-        })?;
+        let json = serde_json::to_string(graph).expect("Graph serialization is infallible");
         let revision = self
             .engine
             .set_graph_json(&json)
@@ -178,7 +179,7 @@ impl Runtime {
                 &input.mouse,
                 &input.resolution,
             )
-            .map_err(decode_engine_error)?;
+            .expect("typed RuntimeFrameInput and prepared runtime are always valid");
         let stamp = FrameStamp {
             epoch: clock.epoch,
             frame: clock.frame,
@@ -278,13 +279,8 @@ impl Runtime {
         self.outputs.publish(state)
     }
     pub fn drain_work(&mut self) -> Result<String, SdkError> {
-        serde_json::to_string(&self.engine.drain_commands()).map_err(|error| {
-            SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Cannot serialize runtime work batch",
-            )
-            .with_details(error.to_string())
-        })
+        Ok(serde_json::to_string(&self.engine.drain_commands())
+            .expect("ExecutionCommand serialization is infallible"))
     }
     pub fn submit_completion(
         &mut self,
@@ -325,7 +321,7 @@ impl Runtime {
         }
         self.engine
             .mark_dependents_dirty(&completed_node_id)
-            .map_err(decode_engine_error)?;
+            .expect("validated completion node is prepared");
         self.dispatch_presentations(completion.input_stamp)
     }
 
@@ -390,13 +386,8 @@ impl Runtime {
     }
 
     pub fn set_video_nodes(&mut self, node_ids: &[String]) -> Result<(), SdkError> {
-        let json = serde_json::to_string(node_ids).map_err(|error| {
-            SdkError::new(
-                SdkErrorCode::InvalidResource,
-                "Cannot serialize video node configuration",
-            )
-            .with_details(error.to_string())
-        })?;
+        let json =
+            serde_json::to_string(node_ids).expect("video node ID serialization is infallible");
         self.engine
             .set_video_nodes_json(&json)
             .map_err(decode_engine_error)
@@ -419,15 +410,7 @@ impl Runtime {
     }
 
     pub fn state(&self) -> EngineState {
-        match self.engine.engine_state().as_str() {
-            "empty" => EngineState::Empty,
-            "ready" => EngineState::Ready,
-            "running" => EngineState::Running,
-            "paused" => EngineState::Paused,
-            "stopped" => EngineState::Stopped,
-            "disposed" => EngineState::Disposed,
-            _ => unreachable!("Engine only returns known state names"),
-        }
+        self.engine.state_value()
     }
 
     pub fn drain_events(&mut self) -> Vec<EngineEvent> {
@@ -526,3 +509,7 @@ fn decode_engine_error(error: String) -> SdkError {
         SdkError::new(SdkErrorCode::InvalidState, "Engine operation failed").with_details(error)
     })
 }
+
+#[cfg(test)]
+#[path = "api_coverage_tests.rs"]
+mod coverage_tests;

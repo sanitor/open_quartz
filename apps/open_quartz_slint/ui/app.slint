@@ -1,0 +1,79 @@
+import { Theme } from "theme.slint";
+import { TopBar } from "components/top_bar.slint";
+import { GraphView, GraphNode } from "components/graph_view.slint";
+export { GraphNode }
+
+export component AppWindow inherits Window {
+    title: "OpenQuartz · Slint";
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 800px;
+    min-height: 540px;
+    background: Theme.background;
+
+    in property <string> project-name;
+    in-out property <string> project-path;
+    in property <string> io-status;
+    in property <string> runtime-status;
+    in property <string> graph-summary;
+    in property <[GraphNode]> graph-nodes;
+    in property <bool> busy;
+    in property <image> renderer-image;
+    in property <bool> has-renderer-image;
+    callback open-project(string);
+    callback save-project(string);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        TopBar {
+            project-name: root.project-name;
+            project-path <=> root.project-path;
+            runtime-status: root.runtime-status;
+            busy: root.busy;
+            open-requested(path) => { root.open-project(path); }
+            save-requested(path) => { root.save-project(path); }
+        }
+        Text { text: root.io-status; color: Theme.foreground; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 12px;
+            GraphView {
+                nodes: root.graph-nodes;
+                summary: root.graph-summary;
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+            }
+            Rectangle {
+                background: Theme.panel;
+                border-radius: 8px;
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 10px;
+                    Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; }
+                    Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
+                    Rectangle {
+                        background: #080b11;
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                        Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: root.renderer-image;
+                            image-fit: contain;
+                        }
+                        if !root.has-renderer-image: Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "No renderer image";
+                            color: Theme.secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

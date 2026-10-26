@@ -352,3 +352,7 @@ fn json_value_to_f32(value: &Value) -> Vec<f32> {
         _ => vec![0.0],
     }
 }
+
+#[cfg(test)]
+#[path = "executor_coverage_tests.rs"]
+mod coverage_tests;

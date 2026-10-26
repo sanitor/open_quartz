@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
+use open_quartz_schema::OnnxTask;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use open_quartz_schema::OnnxTask;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,7 +36,11 @@ pub struct HostResourceIntentPlan {
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(tag = "type", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum HostResourceIntent {
     AttachVideo {
         node_id: String,
@@ -151,7 +155,7 @@ pub fn plan_host_resource_intents(
     };
     let intents = match request.host {
         HostResourceTarget::Browser => browser_intents(previous_graph, &request.graph),
-        HostResourceTarget::Native => native_intents(previous_graph, &request.graph)?,
+        HostResourceTarget::Native => native_intents(previous_graph, &request.graph),
     };
     Ok(HostResourceIntentPlan { graph, intents })
 }
@@ -196,13 +200,13 @@ fn browser_intents(
 fn native_intents(
     previous_graph: Option<&HostGraphSnapshot>,
     graph: &HostGraphSnapshot,
-) -> Result<Vec<HostResourceIntent>, String> {
+) -> Vec<HostResourceIntent> {
     let previous_video = video_resources(previous_graph, HostResourceTarget::Native);
     let current_video = video_resources(Some(graph), HostResourceTarget::Native);
     let previous_image = image_resources(previous_graph);
     let current_image = image_resources(Some(graph));
-    let previous_onnx = onnx_resources(previous_graph)?;
-    let current_onnx = onnx_resources(Some(graph))?;
+    let previous_onnx = onnx_resources(previous_graph);
+    let current_onnx = onnx_resources(Some(graph));
     let mut intents = Vec::new();
 
     for (node_id, prior) in &previous_video {
@@ -266,7 +270,7 @@ fn native_intents(
             download: resource.download,
         });
     }
-    Ok(intents)
+    intents
 }
 
 fn video_resources(
@@ -295,7 +299,9 @@ fn video_resources(
         };
         let source = match (target, kind) {
             (HostResourceTarget::Browser, VideoSourceKind::Camera) => {
-                string_field(data, "videoDeviceId").unwrap_or("default").to_owned()
+                string_field(data, "videoDeviceId")
+                    .unwrap_or("default")
+                    .to_owned()
             }
             (HostResourceTarget::Browser, VideoSourceKind::File) => {
                 let Some(url) = string_field(data, "videoUrl") else {
@@ -402,12 +408,10 @@ fn image_resources(graph: Option<&HostGraphSnapshot>) -> BTreeMap<String, ImageR
     resources
 }
 
-fn onnx_resources(
-    graph: Option<&HostGraphSnapshot>,
-) -> Result<BTreeMap<String, OnnxResource>, String> {
+fn onnx_resources(graph: Option<&HostGraphSnapshot>) -> BTreeMap<String, OnnxResource> {
     let mut resources = BTreeMap::new();
     let Some(graph) = graph else {
-        return Ok(resources);
+        return resources;
     };
     let catalog = open_quartz_execution::catalog::onnx_models()
         .into_iter()
@@ -476,12 +480,16 @@ fn onnx_resources(
             },
         );
     }
-    Ok(resources)
+    resources
 }
 
 fn strip_native_resource_payloads(graph: &HostGraphSnapshot) -> HostGraphSnapshot {
     HostGraphSnapshot {
-        nodes: graph.nodes.iter().map(strip_node_resource_payloads).collect(),
+        nodes: graph
+            .nodes
+            .iter()
+            .map(strip_node_resource_payloads)
+            .collect(),
         edges: graph.edges.clone(),
     }
 }
@@ -527,5 +535,11 @@ fn u32_field(data: &Value, field: &str) -> Option<u32> {
 }
 
 fn number_param(params: Option<&Value>, field: &str) -> Option<f64> {
-    params.and_then(|value| value.get(field)).and_then(Value::as_f64)
+    params
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_f64)
 }
+
+#[cfg(test)]
+#[path = "host_intent_coverage_tests.rs"]
+mod coverage_tests;

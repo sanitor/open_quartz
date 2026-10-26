@@ -1,0 +1,58 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct GraphNode {
+    node-id: string,
+    label: string,
+    kind: string,
+    position: string,
+    ports: string,
+    connections: string,
+}
+
+export component GraphView inherits Rectangle {
+    in property <[GraphNode]> nodes;
+    in property <string> summary;
+    background: Theme.panel;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+        Text {
+            text: "Graph · " + root.summary;
+            color: Theme.foreground;
+            font-size: 17px;
+        }
+        if root.nodes.length == 0: Text {
+            text: "This project has an empty graph. Node editing is outside Phase 2.";
+            color: Theme.secondary;
+            wrap: word-wrap;
+        }
+        ScrollView {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 10px;
+                for node in root.nodes: Rectangle {
+                    background: Theme.card;
+                    border-color: Theme.border;
+                    border-width: 1px;
+                    border-radius: 6px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 6px;
+                        Text {
+                            text: node.label + " · " + node.kind;
+                            color: Theme.accent;
+                            font-size: 16px;
+                            wrap: word-wrap;
+                        }
+                        Text { text: node.node-id + " · " + node.position; color: Theme.secondary; wrap: word-wrap; }
+                        Text { text: node.ports; color: Theme.foreground; wrap: word-wrap; }
+                        Text { text: node.connections; color: Theme.secondary; wrap: word-wrap; }
+                    }
+                }
+            }
+        }
+    }
+}

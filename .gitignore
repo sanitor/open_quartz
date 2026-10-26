@@ -43,3 +43,4 @@ tests/shaders/__screenshots__/
 /crates/open_quartz/target/
 /crates/open-quartz-screensaver-stub/target/
 /spikes/*/target/
+/apps/*/target/

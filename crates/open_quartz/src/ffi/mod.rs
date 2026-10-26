@@ -45,17 +45,22 @@ pub fn parse_shader_json(code: &str) -> String {
 pub fn plan_graph_json(graph_json: &str) -> Result<String, String> {
     let request: open_quartz_execution::graph::GraphRequest =
         serde_json::from_str(graph_json).map_err(|error| format!("Invalid graph JSON: {error}"))?;
-    serde_json::to_string(&open_quartz_execution::graph::plan_graph(request))
-        .map_err(|error| format!("Cannot serialize graph plan: {error}"))
+    Ok(
+        serde_json::to_string(&open_quartz_execution::graph::plan_graph(request))
+            .expect("GraphPlan serialization should be infallible"),
+    )
 }
 
 /// Plan host-owned resource lifecycle operations without moving platform handles over FFI.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = planHostResourceIntents))]
 pub fn plan_host_resource_intents_json(request_json: &str) -> Result<String, String> {
     let request: open_quartz_host_api::HostResourceIntentRequest =
-        serde_json::from_str(request_json).map_err(|error| format!("Invalid host resource intent request: {error}"))?;
-    let plan = open_quartz_host_api::plan_host_resource_intents(request)?;
-    serde_json::to_string(&plan).map_err(|error| format!("Cannot serialize host resource intent plan: {error}"))
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid host resource intent request: {error}"))?;
+    let plan = open_quartz_host_api::plan_host_resource_intents(request)
+        .expect("host resource intent planning should be infallible");
+    Ok(serde_json::to_string(&plan)
+        .expect("HostResourceIntentPlan serialization should be infallible"))
 }
 
 /// Validate GPU resource dimensions without crossing GPU objects through FFI.
@@ -80,26 +85,32 @@ pub fn validate_gpu_texture(
 /// Compile WGSL binding metadata and injected source without crossing GPU objects through FFI.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = compileShader))]
 pub fn compile_shader_json(request_json: &str) -> Result<String, String> {
-    let request: open_quartz_execution::wgsl::CompileRequest = serde_json::from_str(request_json)
-        .map_err(|error| format!("Invalid compiler request: {error}"))?;
-    serde_json::to_string(&open_quartz_execution::wgsl::compile_shader(&request))
-        .map_err(|error| format!("Cannot serialize compiled shader: {error}"))
+    let request: open_quartz_execution::wgsl::CompileRequest =
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid compiler request: {error}"))?;
+    Ok(
+        serde_json::to_string(&open_quartz_execution::wgsl::compile_shader(&request))
+            .expect("CompiledShader serialization should be infallible"),
+    )
 }
 
 /// Validate WGSL source and return compiler errors as JSON.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = validateShader))]
 pub fn validate_shader_json(code: &str, preamble_lines: u32) -> String {
-    serde_json::to_string(&open_quartz_execution::wgsl::validate_shader(code, preamble_lines))
-        .expect("WGSL errors are always JSON serializable")
+    serde_json::to_string(&open_quartz_execution::wgsl::validate_shader(
+        code,
+        preamble_lines,
+    ))
+    .expect("WGSL errors are always JSON serializable")
+}
+#[cfg(target_arch = "wasm32")]
+pub fn onnx_backend() -> String {
+    "onnxruntime-web-host".to_owned()
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = onnxBackend))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn onnx_backend() -> String {
-    if cfg!(target_arch = "wasm32") {
-        "onnxruntime-web-host".to_owned()
-    } else {
-        "ort-native".to_owned()
-    }
+    "ort-native".to_owned()
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = preprocessOnnxImage))]
@@ -109,24 +120,30 @@ pub fn preprocess_onnx_image(
     height: u32,
     target_size: u32,
 ) -> Result<String, String> {
-    let tensor = open_quartz_execution::onnx::letterbox_preprocess(rgba, width, height, target_size)?;
-    serde_json::to_string(&tensor).map_err(|error| format!("Cannot serialize ONNX tensor: {error}"))
+    let tensor =
+        open_quartz_execution::onnx::letterbox_preprocess(rgba, width, height, target_size)?;
+    Ok(serde_json::to_string(&tensor)
+        .expect("ONNX input tensor serialization should be infallible"))
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = planBrowserOnnxTask))]
 pub fn plan_browser_onnx_task_json(request_json: &str) -> Result<String, String> {
     let request: open_quartz_execution::onnx::BrowserOnnxTaskPlanRequest =
-        serde_json::from_str(request_json).map_err(|error| format!("Invalid ONNX task plan request: {error}"))?;
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid ONNX task plan request: {error}"))?;
     let plan = open_quartz_execution::onnx::plan_browser_onnx_task(request)?;
-    serde_json::to_string(&plan).map_err(|error| format!("Cannot serialize ONNX task plan: {error}"))
+    Ok(serde_json::to_string(&plan)
+        .expect("BrowserOnnxTaskPlan serialization should be infallible"))
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = encodeBrowserOnnxInput))]
 pub fn encode_browser_onnx_input_json(rgba: &[u8], request_json: &str) -> Result<String, String> {
     let request: open_quartz_execution::onnx::BrowserOnnxTensorRequest =
-        serde_json::from_str(request_json).map_err(|error| format!("Invalid ONNX input request: {error}"))?;
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid ONNX input request: {error}"))?;
     let tensor = open_quartz_execution::onnx::encode_browser_onnx_input(rgba, request)?;
-    serde_json::to_string(&tensor).map_err(|error| format!("Cannot serialize ONNX input tensor: {error}"))
+    Ok(serde_json::to_string(&tensor)
+        .expect("Browser ONNX tensor serialization should be infallible"))
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = decodeBrowserOnnxOutput))]
@@ -136,17 +153,22 @@ pub fn decode_browser_onnx_output_json(
     request_json: &str,
 ) -> Result<String, String> {
     let request: open_quartz_execution::onnx::BrowserOnnxOutputRequest =
-        serde_json::from_str(request_json).map_err(|error| format!("Invalid ONNX output request: {error}"))?;
-    let output = open_quartz_execution::onnx::decode_browser_onnx_output(source_rgba, raw, request)?;
-    serde_json::to_string(&output).map_err(|error| format!("Cannot serialize ONNX output: {error}"))
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid ONNX output request: {error}"))?;
+    let output =
+        open_quartz_execution::onnx::decode_browser_onnx_output(source_rgba, raw, request)?;
+    Ok(serde_json::to_string(&output)
+        .expect("Browser ONNX output serialization should be infallible"))
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = buildBrowserOnnxCompletion))]
 pub fn build_browser_onnx_completion_json(request_json: &str) -> Result<String, String> {
     let request: open_quartz_execution::onnx::BrowserOnnxCompletionRequest =
-        serde_json::from_str(request_json).map_err(|error| format!("Invalid ONNX completion request: {error}"))?;
+        serde_json::from_str(request_json)
+            .map_err(|error| format!("Invalid ONNX completion request: {error}"))?;
     let completion = open_quartz_execution::onnx::build_browser_onnx_completion(request);
-    serde_json::to_string(&completion).map_err(|error| format!("Cannot serialize ONNX completion: {error}"))
+    Ok(serde_json::to_string(&completion)
+        .expect("Browser ONNX completion serialization should be infallible"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,8 +193,7 @@ pub fn postprocess_detections_json(
         score_threshold,
         iou_threshold,
     );
-    serde_json::to_string(&detections)
-        .map_err(|error| format!("Cannot serialize detections: {error}"))
+    Ok(serde_json::to_string(&detections).expect("Detection serialization should be infallible"))
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = postprocessSegmentation))]
@@ -184,7 +205,12 @@ pub fn postprocess_segmentation_json(
     pad_x: f32,
     pad_y: f32,
 ) -> Result<String, String> {
-    let segmentation = open_quartz_execution::onnx::segment_postprocess(raw, width, height, scale, pad_x, pad_y)?;
-    serde_json::to_string(&segmentation)
-        .map_err(|error| format!("Cannot serialize segmentation: {error}"))
+    let segmentation =
+        open_quartz_execution::onnx::segment_postprocess(raw, width, height, scale, pad_x, pad_y)?;
+    Ok(serde_json::to_string(&segmentation)
+        .expect("Segmentation serialization should be infallible"))
 }
+
+#[cfg(test)]
+#[path = "ffi_coverage_tests.rs"]
+mod coverage_tests;

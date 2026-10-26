@@ -369,12 +369,11 @@ pub fn segment_postprocess(
         decoded.mask_height,
         source_width,
         source_height,
-    )?;
+    )
+    .expect("decoded segmentation mask dimensions are valid");
     let mut class_counts = vec![0; decoded.num_classes];
     for class in &resized {
-        if let Some(count) = class_counts.get_mut(*class as usize) {
-            *count += 1;
-        }
+        class_counts[*class as usize] += 1;
     }
     Ok(SegmentationResult {
         mask_rgba: mask_to_rgba(&resized, &CITYSCAPES_PALETTE),
@@ -383,4 +382,27 @@ pub fn segment_postprocess(
         class_counts,
         num_classes: decoded.num_classes,
     })
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn zero_area_iou_nms_suppression_and_segmentation_bounds_are_covered() {
+        assert_eq!(iou(&[0.0; 4], &[0.0; 4]), 0.0);
+        let detection = Detection {
+            bbox: [0.0, 0.0, 1.0, 1.0],
+            score: 1.0,
+            class_id: 0,
+        };
+        let disjoint = Detection {
+            bbox: [2.0, 2.0, 3.0, 3.0],
+            score: 0.9,
+            class_id: 0,
+        };
+        assert_eq!(nms(&[detection.clone(), disjoint, detection], 0.5).len(), 2);
+        assert!(decode_segmentation_output(&vec![0.0; 19 * 5], 1, 1, 1.0, 0.0, 0.0).is_err());
+        assert!(decode_segmentation_output(&vec![0.0; 19], 1, 1, 1.0, -1.0, -1.0).is_err());
+    }
 }

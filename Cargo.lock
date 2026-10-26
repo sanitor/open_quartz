@@ -78,6 +78,7 @@ dependencies = [
  "log",
  "open_quartz",
  "open_quartz_execution",
+ "open_quartz_native_host",
  "open_quartz_schema",
  "pollster",
  "regex",
@@ -2901,6 +2902,19 @@ dependencies = [
  "open_quartz_schema",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "open_quartz_native_host"
+version = "0.20.0"
+dependencies = [
+ "log",
+ "open_quartz_execution",
+ "open_quartz_schema",
+ "pollster",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]

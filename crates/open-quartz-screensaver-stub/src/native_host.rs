@@ -187,7 +187,7 @@ impl NativeRenderer {
     fn upload_video_frames(&mut self) -> Result<(), String> {
         let mut dirty = Vec::new();
         for (node_id, source) in &mut self.videos {
-            if source.upload_latest(|frame, width, height| match frame {
+            if source.upload_latest(&mut |frame, width, height| match frame {
                 NativeVideoFrame::Rgba(rgba) => self
                     .executor
                     .upload_rgba(node_id, rgba, width, height)

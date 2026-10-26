@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
     apply_alpha_mask, detect_postprocess, letterbox_preprocess, midas_preprocess,
-    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, OnnxSession, OnnxTask,
+    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, OnnxSession, OnnxTask, TensorRunner,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,8 +60,51 @@ pub fn run_native_image_task(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn run_native_image_task_with_runner(
+    session: &mut impl TensorRunner,
+    task: OnnxTask,
+    model_id: &str,
+    source_rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_size: u32,
+    score_threshold: f32,
+    iou_threshold: f32,
+) -> Result<NativeOnnxImageOutput, String> {
+    match task {
+        OnnxTask::SuperResolution => {
+            run_super_resolution(session, model_id, source_rgba, source_width, source_height)
+        }
+        OnnxTask::BackgroundRemoval => {
+            run_background_removal(session, model_id, source_rgba, source_width, source_height)
+        }
+        OnnxTask::DepthEstimation => run_depth(session, source_rgba, source_width, source_height),
+        OnnxTask::Detection => run_detection(
+            session,
+            source_rgba,
+            source_width,
+            source_height,
+            target_size.max(1),
+            score_threshold,
+            iou_threshold,
+        ),
+        OnnxTask::Segmentation => run_segmentation(
+            session,
+            source_rgba,
+            source_width,
+            source_height,
+            target_size.max(1),
+        ),
+        OnnxTask::StyleTransfer | OnnxTask::Denoising | OnnxTask::Generic => {
+            run_generic(session, source_rgba, source_width, source_height)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn run_generic(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -80,7 +123,7 @@ fn run_generic(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_super_resolution(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     model_id: &str,
     rgba: &[u8],
     width: u32,
@@ -103,6 +146,13 @@ fn run_super_resolution(
         }
         let output = session.run_f32(y, vec![1, 1, INPUT as i64, INPUT as i64])?;
         let (model_width, model_height) = output_size(&output.shape, INPUT * 3, INPUT * 3);
+        let expected = (model_width * model_height) as usize;
+        if output.data.len() < expected {
+            return Err(
+                "super-resolution luminance tensor is smaller than its declared dimensions"
+                    .to_owned(),
+            );
+        }
         let mut model_rgba = vec![0; (model_width * model_height * 4) as usize];
         for output_y in 0..model_height {
             for output_x in 0..model_width {
@@ -110,7 +160,7 @@ fn run_super_resolution(
                 let source_x = (output_x * INPUT / model_width).min(INPUT - 1);
                 let source_y = (output_y * INPUT / model_height).min(INPUT - 1);
                 let chroma_index = (source_y * INPUT + source_x) as usize;
-                let luminance = output.data.get(output_index).copied().unwrap_or_default();
+                let luminance = output.data[output_index];
                 let blue_difference = cb[chroma_index] - 0.5;
                 let red_difference = cr[chroma_index] - 0.5;
                 model_rgba[output_index * 4] = to_byte(luminance + 1.402 * red_difference);
@@ -122,14 +172,16 @@ fn run_super_resolution(
         }
         let output_width = width.saturating_mul(3);
         let output_height = height.saturating_mul(3);
+        let rgba = resize_rgba(
+            &model_rgba,
+            model_width,
+            model_height,
+            output_width,
+            output_height,
+        )
+        .expect("generated model RGBA dimensions are valid");
         return Ok(NativeOnnxImageOutput {
-            rgba: resize_rgba(
-                &model_rgba,
-                model_width,
-                model_height,
-                output_width,
-                output_height,
-            )?,
+            rgba,
             width: output_width,
             height: output_height,
             data: None,
@@ -153,7 +205,7 @@ fn run_super_resolution(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_background_removal(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     model_id: &str,
     rgba: &[u8],
     width: u32,
@@ -161,17 +213,18 @@ fn run_background_removal(
 ) -> Result<NativeOnnxImageOutput, String> {
     let input_size = if model_id == "u2netp" { 320 } else { 512 };
     let resized = resize_rgba(rgba, width, height, input_size, input_size)?;
-    let tensor = rgba_to_chw(&resized, input_size, input_size)?;
+    let tensor =
+        rgba_to_chw(&resized, input_size, input_size).expect("resized RGBA dimensions are valid");
     let output = session.run_f32(tensor, vec![1, 3, input_size as i64, input_size as i64])?;
     let (mask_width, mask_height) = output_size(&output.shape, input_size, input_size);
-    let mask_rgba = apply_alpha_mask(
-        &resize_rgba(&resized, input_size, input_size, mask_width, mask_height)?,
-        &output.data,
-        mask_width,
-        mask_height,
-    )?;
+    let resized_mask_source =
+        resize_rgba(&resized, input_size, input_size, mask_width, mask_height)
+            .expect("validated RGBA can always be resized");
+    let mask_rgba = apply_alpha_mask(&resized_mask_source, &output.data, mask_width, mask_height)?;
+    let rgba = resize_rgba(&mask_rgba, mask_width, mask_height, width, height)
+        .expect("generated alpha mask dimensions are valid");
     Ok(NativeOnnxImageOutput {
-        rgba: resize_rgba(&mask_rgba, mask_width, mask_height, width, height)?,
+        rgba,
         width,
         height,
         data: None,
@@ -180,14 +233,15 @@ fn run_background_removal(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_depth(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     rgba: &[u8],
     width: u32,
     height: u32,
 ) -> Result<NativeOnnxImageOutput, String> {
     const INPUT: u32 = 256;
     let resized = resize_rgba(rgba, width, height, INPUT, INPUT)?;
-    let tensor = midas_preprocess(&resized, INPUT, INPUT)?;
+    let tensor =
+        midas_preprocess(&resized, INPUT, INPUT).expect("resized depth RGBA dimensions are valid");
     let output = session.run_f32(tensor, vec![1, 3, INPUT as i64, INPUT as i64])?;
     let (depth_width, depth_height) = output_size(&output.shape, INPUT, INPUT);
     let count = (depth_width * depth_height) as usize;
@@ -203,8 +257,10 @@ fn run_depth(
         let gray = to_byte((value - minimum) / range);
         depth_rgba[index * 4..index * 4 + 4].copy_from_slice(&[gray, gray, gray, 255]);
     }
+    let rgba = resize_rgba(&depth_rgba, depth_width, depth_height, width, height)
+        .expect("generated depth RGBA dimensions are valid");
     Ok(NativeOnnxImageOutput {
-        rgba: resize_rgba(&depth_rgba, depth_width, depth_height, width, height)?,
+        rgba,
         width,
         height,
         data: None,
@@ -214,7 +270,7 @@ fn run_depth(
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn run_detection(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -261,7 +317,7 @@ fn run_detection(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_segmentation(
-    session: &mut OnnxSession,
+    session: &mut impl TensorRunner,
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -407,3 +463,7 @@ fn to_byte(value: f32) -> u8 {
 fn blend(source: u8, overlay: u8) -> u8 {
     ((source as u16 + overlay as u16) / 2) as u8
 }
+
+#[cfg(test)]
+#[path = "pipeline_coverage_tests.rs"]
+mod coverage_tests;

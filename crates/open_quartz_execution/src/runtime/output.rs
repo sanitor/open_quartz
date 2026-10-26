@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use open_quartz_schema::{SdkError, SdkErrorCode};
 use open_quartz_schema::DataType;
+use open_quartz_schema::{SdkError, SdkErrorCode};
 
 use super::{
     DeliveryPolicy, FrameStamp, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
@@ -339,3 +339,7 @@ fn payload_matches(data_type: DataType, payload: &OutputPayload) -> bool {
         DataType::Auto => true,
     }
 }
+
+#[cfg(test)]
+#[path = "output_coverage_tests.rs"]
+mod coverage_tests;

@@ -58,3 +58,22 @@ impl fmt::Display for SdkError {
 }
 
 impl std::error::Error for SdkError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_errors_cover_builders_json_display_and_error_trait() {
+        let error = SdkError::new(SdkErrorCode::InvalidGraph, "invalid")
+            .for_node("node")
+            .with_details("details");
+        assert_eq!(error.to_string(), "invalid");
+        assert_eq!(
+            error.to_json(),
+            r#"{"code":"invalid-graph","message":"invalid","nodeId":"node","details":"details"}"#
+        );
+        let source: &dyn std::error::Error = &error;
+        assert!(source.source().is_none());
+    }
+}

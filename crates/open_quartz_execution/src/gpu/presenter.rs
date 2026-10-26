@@ -82,7 +82,7 @@ impl LatestFrameMailbox {
             .wait_timeout_while(state, timeout, |state| {
                 state.latest.is_none() && !state.closed
             })
-            .ok()?;
+            .expect("mailbox wait predicate cannot panic");
         let frame = state.latest.take()?;
         state.stats.consumed = state.stats.consumed.saturating_add(1);
         Some(frame)
@@ -257,3 +257,7 @@ impl<E: SharedTextureExporter> GpuPresenter for SharedTexturePresenter<E> {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+#[path = "presenter_coverage_tests.rs"]
+mod coverage_tests;

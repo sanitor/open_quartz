@@ -21,3 +21,7 @@ pub use presenter::{
 pub use preview::{GpuPreviewImage, GpuPreviewReader};
 pub use readback::{align_bytes_per_row, copy_padded_rgba};
 pub use target::{RenderTarget, TextureFormat};
+
+#[cfg(test)]
+#[path = "gpu_coverage_tests.rs"]
+mod coverage_tests;

@@ -1,0 +1,28 @@
+[package]
+name = "open_quartz_slint"
+version = "0.20.0"
+rust-version = "1.92"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Native Slint application shell for OpenQuartz"
+
+[workspace]
+
+[dependencies]
+open_quartz_sdk = { path = "../../crates/open_quartz_sdk" }
+open_quartz_native_host = { path = "../../crates/open_quartz_native_host" }
+pollster = "0.4"
+serde_json = "1.0"
+slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+# Slint owns the manually supplied wgpu queue in a thread-local context. wgpu-core's
+# debug-only recursive-lock tracer is another TLS value and can be destroyed first on
+# macOS, causing Queue::drop to abort during normal process shutdown. Production builds
+# never enable that tracer; disable it only for wgpu-core in local dev builds as well.
+[profile.dev.package.wgpu-core]
+debug-assertions = false

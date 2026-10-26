@@ -1,0 +1,58 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export component TopBar inherits Rectangle {
+    in property <string> project-name;
+    in property <string> runtime-status;
+    in property <bool> busy;
+    in-out property <string> project-path;
+    callback open-requested(string);
+    callback save-requested(string);
+
+    background: Theme.panel;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: root.project-name;
+                color: Theme.foreground;
+                font-size: 20px;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: "Phase 2 · Read-only";
+                color: Theme.accent;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.project-path;
+                placeholder-text: "Project JSON path (used for both Open and Save)";
+                enabled: !root.busy;
+                horizontal-stretch: 1;
+                accepted => { root.open-requested(root.project-path); }
+            }
+            Button {
+                text: "Open";
+                enabled: !root.busy;
+                clicked => { root.open-requested(root.project-path); }
+            }
+            Button {
+                text: "Save";
+                enabled: !root.busy;
+                clicked => { root.save-requested(root.project-path); }
+            }
+        }
+        Text {
+            text: root.runtime-status;
+            color: Theme.secondary;
+            wrap: word-wrap;
+        }
+    }
+}

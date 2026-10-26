@@ -62,3 +62,29 @@ impl PortKey {
         &self.port_id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_identifier_supports_owned_borrowed_display_and_port_keys() {
+        macro_rules! check {
+            ($kind:ident, $value:literal) => {{
+                let id = $kind::new($value);
+                assert_eq!(id.as_str(), $value);
+                assert_eq!(id.as_ref(), $value);
+                assert_eq!(id.to_string(), $value);
+                assert_eq!(id.clone().into_string(), $value);
+            }};
+        }
+        check!(ProjectId, "project");
+        check!(NodeId, "node");
+        check!(PortId, "port");
+        check!(ResourceId, "resource");
+        check!(SubscriptionId, "subscription");
+        let key = PortKey::new(NodeId::new("node"), PortId::new("port"));
+        assert_eq!(key.node_id().as_str(), "node");
+        assert_eq!(key.port_id().as_str(), "port");
+    }
+}

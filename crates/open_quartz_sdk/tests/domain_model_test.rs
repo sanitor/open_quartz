@@ -92,7 +92,7 @@ fn typed_ids_round_trip_as_stable_string_values() {
 fn graph_edit_commits_valid_nodes_and_connection_atomically() {
     let mut graph = Graph::default();
     let change = graph
-        .edit(|edit| {
+        .edit(&mut |edit| {
             edit.add_node(node(
                 "source",
                 vec![],
@@ -119,7 +119,7 @@ fn graph_edit_commits_valid_nodes_and_connection_atomically() {
 #[test]
 fn graph_edit_rolls_back_every_change_when_operation_fails() {
     let mut graph = Graph::default();
-    let result = graph.edit(|edit| {
+    let result = graph.edit(&mut |edit| {
         edit.add_node(node(
             "source",
             vec![],
@@ -154,7 +154,7 @@ fn graph_edit_rejects_type_mismatch_without_partial_edge() {
         edges: Vec::<Edge>::new(),
     };
 
-    let result = graph.edit(|edit| {
+    let result = graph.edit(&mut |edit| {
         edit.connect(
             PortKey::new(NodeId::new("source"), PortId::new("out")),
             PortKey::new(NodeId::new("target"), PortId::new("in")),

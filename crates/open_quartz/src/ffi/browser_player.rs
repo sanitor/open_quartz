@@ -9,8 +9,8 @@ use open_quartz_execution::runtime::{
     AsyncCompletionEnvelope, ContentStamp, DataPathMode, FrameStamp, OutputKey, OutputPayload,
     OutputState, OutputSubscription, RuntimeCapabilities, RuntimeFrameInput,
 };
-use open_quartz_schema::Graph;
 use open_quartz_execution::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
+use open_quartz_schema::Graph;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

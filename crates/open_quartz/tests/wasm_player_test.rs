@@ -17,8 +17,8 @@ fn public_player_behavior_is_target_neutral() {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_contract {
-    use open_quartz::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
     use open_quartz::ffi::BrowserPlayerBinding;
+    use open_quartz::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
     use serde_json::json;
     use wasm_bindgen_test::*;
 

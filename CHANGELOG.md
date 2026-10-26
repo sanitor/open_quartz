@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+### Features
+
+- **Slint Phase 2 shell** — extract the framework-neutral `open_quartz_native_host` from the Tauri runtime and add an independent Slint 1.18.1 application shell with SDK-owned project I/O, read-only graph projection, and shared wgpu 30 renderer texture import. Tauri remains the fallback application; node editing and mobile delivery are not migrated yet.
+
 ### Tests
 
-- **Rust SDK 100% coverage gate** — move Project/Graph/node factory/Player/resource/output behavior tests into the owning `open_quartz_sdk` crate, add exhaustive private invariant and error-path contracts, and fail CI unless production `sdk.rs` remains at 100% line, function, and region coverage. The current gate passes with 1,508 regions, 1,064 functions, and 1,057 lines covered at 100%.
-- **Layered test ownership** — keep facade/WASM/TypeScript/Java suites focused on transport, marshalling, framework projection, and platform integration instead of duplicating Rust SDK business behavior.
+- **macOS Slint validation** — verify the Phase 2 shell on Apple Silicon/Metal with a shared wgpu device/queue, live renderer texture import, SDK save/open and error paths, empty-graph startup, and clean native-window shutdown; add a macOS CI compile gate.
+
+- **Complete Rust SDK 100% coverage gate** — enforce 100% production line, function, and region coverage independently for `open_quartz_schema`, `open_quartz_execution`, `open_quartz_host_api`, `open_quartz_sdk`, the `open_quartz` native/WASM facade, and `open_quartz_bindings`; coverage tests now exercise graph transactions, GPU resource/readback failures, native video lifecycle and FFmpeg failures, ONNX preprocessing/inference/postprocessing, host intents, FFI marshalling, and JNI handle lifetimes.
+- **Cross-platform SDK matrix** — run the Rust coverage gate on Linux, macOS, and Windows, include Windows DXGI/D3D12 tests in the owning execution crate, run WASM browser contracts separately with headless WebGPU configuration, and compile-check Windows, Linux, WASM, and JNI targets.
 
 ## [0.20.0b] -- 2026-08-19
 

@@ -1,11 +1,11 @@
 use crate::engine::{ExecutionCommand, ExecutionPlan, GpuFacade};
-use open_quartz_schema::SdkError;
 use crate::event::{EngineEvent, EngineState};
 use crate::runtime::{
     AsyncCompletionEnvelope, ClockState, HostBackend, OutputDeliveryBatch, OutputState,
     OutputSubscription, ResourceDescriptor, Runtime, RuntimeCapabilities, RuntimeFrameInput,
 };
 use open_quartz_schema::Graph;
+use open_quartz_schema::SdkError;
 
 /// Advanced host-integration driver behind the public [`crate::Player`] facade.
 ///
@@ -148,3 +148,7 @@ impl PlayerHost {
         self.runtime.dispose()
     }
 }
+
+#[cfg(test)]
+#[path = "host_coverage_tests.rs"]
+mod coverage_tests;

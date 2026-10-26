@@ -26,9 +26,11 @@ pub fn topological_sort(nodes: &[GraphNode], edges: &[GraphEdge]) -> Vec<String>
         let Some(targets) = adjacency.get_mut(edge.source.as_str()) else {
             continue;
         };
-        targets.push(edge.target.as_str());
-        if let Some(degree) = indegree.get_mut(edge.target.as_str()) {
-            *degree += 1;
+        if indegree.contains_key(edge.target.as_str()) {
+            targets.push(edge.target.as_str());
+            *indegree
+                .get_mut(edge.target.as_str())
+                .expect("target existence checked above") += 1;
         }
     }
 
@@ -43,9 +45,9 @@ pub fn topological_sort(nodes: &[GraphNode], edges: &[GraphEdge]) -> Vec<String>
     while let Some(source) = queue.pop_front() {
         order.push(source.to_owned());
         for target in adjacency.get(source).into_iter().flatten() {
-            let Some(degree) = indegree.get_mut(target) else {
-                continue;
-            };
+            let degree = indegree
+                .get_mut(target)
+                .expect("adjacency only contains known targets");
             *degree -= 1;
             if *degree == 0 {
                 queue.push_back(target);

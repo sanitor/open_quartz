@@ -110,9 +110,27 @@ pub fn catalog_snapshot() -> CatalogSnapshot {
 
 pub fn math_categories() -> Vec<MathCategory> {
     [
-        ("Arithmetic", &["add", "subtract", "multiply", "divide", "negate", "modulo"][..]),
-        ("Range", &["min", "max", "clamp", "saturate", "step", "smoothstep", "abs", "sign"][..]),
-        ("Trigonometry", &["sin", "cos", "tan", "asin", "acos", "atan"][..]),
+        (
+            "Arithmetic",
+            &["add", "subtract", "multiply", "divide", "negate", "modulo"][..],
+        ),
+        (
+            "Range",
+            &[
+                "min",
+                "max",
+                "clamp",
+                "saturate",
+                "step",
+                "smoothstep",
+                "abs",
+                "sign",
+            ][..],
+        ),
+        (
+            "Trigonometry",
+            &["sin", "cos", "tan", "asin", "acos", "atan"][..],
+        ),
         ("Exponential", &["pow", "sqrt", "exp", "log"][..]),
         ("Interpolation", &["mix"][..]),
         ("Rounding", &["floor", "ceil", "round", "fract"][..]),
@@ -138,7 +156,13 @@ pub fn math_ops() -> Vec<MathDescriptor> {
         ("clamp", "Clamp", "Range", 3, "min(max(a, b), c)"),
         ("saturate", "Saturate", "Range", 1, "clamp(a, 0, 1)"),
         ("step", "Step", "Range", 2, "b >= a ? 1 : 0"),
-        ("smoothstep", "Smoothstep", "Range", 3, "t*t*(3-2*t), t=clamp((c-a)/(b-a),0,1)"),
+        (
+            "smoothstep",
+            "Smoothstep",
+            "Range",
+            3,
+            "t*t*(3-2*t), t=clamp((c-a)/(b-a),0,1)",
+        ),
         ("abs", "Abs", "Range", 1, "abs(a)"),
         ("sign", "Sign", "Range", 1, "a == 0 ? a : sign(a)"),
         ("sin", "Sin", "Trigonometry", 1, "sin(a)"),
@@ -154,17 +178,25 @@ pub fn math_ops() -> Vec<MathDescriptor> {
         ("mix", "Mix", "Interpolation", 3, "a * (1 - c) + b * c"),
         ("floor", "Floor", "Rounding", 1, "floor(a)"),
         ("ceil", "Ceil", "Rounding", 1, "ceil(a)"),
-        ("round", "Round", "Rounding", 1, "a.fract() == -0.5 ? ceil(a) : floor(a + 0.5)"),
+        (
+            "round",
+            "Round",
+            "Rounding",
+            1,
+            "a.fract() == -0.5 ? ceil(a) : floor(a + 0.5)",
+        ),
         ("fract", "Fract", "Rounding", 1, "a - floor(a)"),
     ]
     .into_iter()
-    .map(|(id, label, category, input_count, formula)| MathDescriptor {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        category: category.to_owned(),
-        input_count,
-        formula: formula.to_owned(),
-    })
+    .map(
+        |(id, label, category, input_count, formula)| MathDescriptor {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            category: category.to_owned(),
+            input_count,
+            formula: formula.to_owned(),
+        },
+    )
     .collect()
 }
 
@@ -318,50 +350,264 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
 
 pub fn shader_groups() -> Vec<ShaderGroupDescriptor> {
     vec![
-        shader_group("FILTER", &[
-            ("Resample", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Sobel Edge Detection", &[("inputImage", DataType::Sampler2d), ("intensity", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Gaussian Blur 3x3", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Box Blur", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Sharpen", &[("inputImage", DataType::Sampler2d), ("strength", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Emboss", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Pixelate", &[("inputImage", DataType::Sampler2d), ("blockSize", DataType::Vec2)], &[("fragColor", DataType::Vec4)]),
-        ]),
-        shader_group("COLOR", &[
-            ("Invert", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Grayscale", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Brightness/Contrast", &[("inputImage", DataType::Sampler2d), ("brightness", DataType::Float), ("contrast", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Hue Rotate", &[("inputImage", DataType::Sampler2d), ("angle", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Threshold", &[("inputImage", DataType::Sampler2d), ("threshold", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Sepia", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Field Color Map", &[("inputImage", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-        ]),
-        shader_group("GENERATOR", &[
-            ("Solid Color", &[("color", DataType::Vec4)], &[("fragColor", DataType::Vec4)]),
-            ("Gradient", &[("colorA", DataType::Vec4), ("colorB", DataType::Vec4)], &[("fragColor", DataType::Vec4)]),
-            ("Checkerboard", &[("gridSize", DataType::Vec2), ("color1", DataType::Vec4), ("color2", DataType::Vec4)], &[("fragColor", DataType::Vec4)]),
-            ("Noise", &[("scale", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Circle", &[("circle", DataType::Vec4)], &[("fragColor", DataType::Vec4)]),
-        ]),
-        shader_group("BLEND", &[
-            ("Add", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Multiply", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Screen", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Overlay", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Difference", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Exclusion", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-            ("Soft Light", &[("inputA", DataType::Sampler2d), ("inputB", DataType::Sampler2d)], &[("fragColor", DataType::Vec4)]),
-        ]),
-        shader_group("DISTORTION", &[
-            ("Twirl", &[("inputImage", DataType::Sampler2d), ("radius", DataType::Float), ("angle", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Ripple", &[("inputImage", DataType::Sampler2d), ("frequency", DataType::Float), ("amplitude", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Displacement", &[("displaceMap", DataType::Sampler2d), ("inputImage", DataType::Sampler2d), ("strength", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Barrel", &[("inputImage", DataType::Sampler2d), ("k1", DataType::Float), ("k2", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-            ("Pinch", &[("inputImage", DataType::Sampler2d), ("radius", DataType::Float), ("strength", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-        ]),
-        shader_group("FEEDBACK", &[
-            ("Gray-Scott Reaction-Diffusion", &[("dA", DataType::Float), ("dB", DataType::Float), ("feedRate", DataType::Float), ("killRate", DataType::Float), ("timestep", DataType::Float)], &[("fragColor", DataType::Vec4)]),
-        ]),
+        shader_group(
+            "FILTER",
+            &[
+                (
+                    "Resample",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Sobel Edge Detection",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("intensity", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Gaussian Blur 3x3",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Box Blur",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Sharpen",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("strength", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Emboss",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Pixelate",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("blockSize", DataType::Vec2),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+            ],
+        ),
+        shader_group(
+            "COLOR",
+            &[
+                (
+                    "Invert",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Grayscale",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Brightness/Contrast",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("brightness", DataType::Float),
+                        ("contrast", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Hue Rotate",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("angle", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Threshold",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("threshold", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Sepia",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Field Color Map",
+                    &[("inputImage", DataType::Sampler2d)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+            ],
+        ),
+        shader_group(
+            "GENERATOR",
+            &[
+                (
+                    "Solid Color",
+                    &[("color", DataType::Vec4)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Gradient",
+                    &[("colorA", DataType::Vec4), ("colorB", DataType::Vec4)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Checkerboard",
+                    &[
+                        ("gridSize", DataType::Vec2),
+                        ("color1", DataType::Vec4),
+                        ("color2", DataType::Vec4),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Noise",
+                    &[("scale", DataType::Float)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Circle",
+                    &[("circle", DataType::Vec4)],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+            ],
+        ),
+        shader_group(
+            "BLEND",
+            &[
+                (
+                    "Add",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Multiply",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Screen",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Overlay",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Difference",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Exclusion",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Soft Light",
+                    &[
+                        ("inputA", DataType::Sampler2d),
+                        ("inputB", DataType::Sampler2d),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+            ],
+        ),
+        shader_group(
+            "DISTORTION",
+            &[
+                (
+                    "Twirl",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("radius", DataType::Float),
+                        ("angle", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Ripple",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("frequency", DataType::Float),
+                        ("amplitude", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Displacement",
+                    &[
+                        ("displaceMap", DataType::Sampler2d),
+                        ("inputImage", DataType::Sampler2d),
+                        ("strength", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Barrel",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("k1", DataType::Float),
+                        ("k2", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+                (
+                    "Pinch",
+                    &[
+                        ("inputImage", DataType::Sampler2d),
+                        ("radius", DataType::Float),
+                        ("strength", DataType::Float),
+                    ],
+                    &[("fragColor", DataType::Vec4)],
+                ),
+            ],
+        ),
+        shader_group(
+            "FEEDBACK",
+            &[(
+                "Gray-Scott Reaction-Diffusion",
+                &[
+                    ("dA", DataType::Float),
+                    ("dB", DataType::Float),
+                    ("feedRate", DataType::Float),
+                    ("killRate", DataType::Float),
+                    ("timestep", DataType::Float),
+                ],
+                &[("fragColor", DataType::Vec4)],
+            )],
+        ),
     ]
 }
 
@@ -459,4 +705,12 @@ fn shader_ports(ports: &[(&str, DataType)]) -> Vec<ShaderPortDescriptor> {
             data_type: *data_type,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    #[test]
+    fn unknown_math_operation_is_zero() {
+        assert_eq!(super::evaluate_math("unknown", &[]), 0.0);
+    }
 }

@@ -6,8 +6,8 @@ use open_quartz_schema::DataType;
 
 use super::{
     apply_alpha_mask, detect_postprocess, letterbox_preprocess, midas_preprocess,
-    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, OnnxTask, SegmentationResult,
-    CITYSCAPES_CLASSES, COCO_CLASSES,
+    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, OnnxTask, CITYSCAPES_CLASSES,
+    COCO_CLASSES,
 };
 
 const INITIAL_TILE: u32 = 64;
@@ -212,7 +212,11 @@ pub fn plan_browser_onnx_task(
             }
         }
         OnnxModelFamily::GenericRgb | OnnxModelFamily::GenericYcbcr => {
-            let channels = if family == OnnxModelFamily::GenericYcbcr { 1 } else { 3 };
+            let channels = if family == OnnxModelFamily::GenericYcbcr {
+                1
+            } else {
+                3
+            };
             let fixed_size = fixed_square(&request.input_shape);
             let scale = model_scale(&request.input_shape, &request.output_shape).max(1);
             tiled_execution(
@@ -269,8 +273,18 @@ pub fn plan_browser_onnx_task(
         target_size,
         thresholds,
         class_labels: match family {
-            OnnxModelFamily::Detection => Some(COCO_CLASSES.iter().map(|label| (*label).to_owned()).collect()),
-            OnnxModelFamily::Segmentation => Some(CITYSCAPES_CLASSES.iter().map(|label| (*label).to_owned()).collect()),
+            OnnxModelFamily::Detection => Some(
+                COCO_CLASSES
+                    .iter()
+                    .map(|label| (*label).to_owned())
+                    .collect(),
+            ),
+            OnnxModelFamily::Segmentation => Some(
+                CITYSCAPES_CLASSES
+                    .iter()
+                    .map(|label| (*label).to_owned())
+                    .collect(),
+            ),
             _ => None,
         },
         execution,
@@ -407,16 +421,19 @@ fn decode_single(
     raw: &[f32],
     request: &BrowserOnnxOutputRequest,
 ) -> Result<BrowserOnnxDecodedOutput, String> {
-    let scale = request_scale(&request.plan)?;
-    let pad_x = request_pad_x(&request.plan)?;
-    let pad_y = request_pad_y(&request.plan)?;
+    let scale = request_scale(&request.plan);
+    let pad_x = request_pad_x(&request.plan);
+    let pad_y = request_pad_y(&request.plan);
     match request.plan.family {
         OnnxModelFamily::Detection => {
             let thresholds = request
                 .plan
                 .thresholds
                 .clone()
-                .unwrap_or(ThresholdDescriptor { score: 0.25, iou: 0.45 });
+                .unwrap_or(ThresholdDescriptor {
+                    score: 0.25,
+                    iou: 0.45,
+                });
             let detections = detect_postprocess(
                 raw,
                 request.plan.source_width,
@@ -435,7 +452,7 @@ fn decode_single(
                 dst_y: None,
                 data: Some(
                     serde_json::to_value(detections)
-                        .map_err(|error| format!("Cannot serialize detections: {error}"))?,
+                        .expect("detection output is always serializable"),
                 ),
             })
         }
@@ -475,23 +492,23 @@ fn decode_single(
     }
 }
 
-fn request_scale(plan: &BrowserOnnxTaskPlan) -> Result<f32, String> {
+fn request_scale(plan: &BrowserOnnxTaskPlan) -> f32 {
     let target = plan.target_size.unwrap_or(640) as f32;
-    Ok((target / plan.source_width as f32).min(target / plan.source_height as f32))
+    (target / plan.source_width as f32).min(target / plan.source_height as f32)
 }
 
-fn request_pad_x(plan: &BrowserOnnxTaskPlan) -> Result<f32, String> {
+fn request_pad_x(plan: &BrowserOnnxTaskPlan) -> f32 {
     let target = plan.target_size.unwrap_or(640);
-    let scale = request_scale(plan)?;
+    let scale = request_scale(plan);
     let resized_width = (plan.source_width as f32 * scale).round() as u32;
-    Ok((target - resized_width) as f32 / 2.0)
+    (target - resized_width) as f32 / 2.0
 }
 
-fn request_pad_y(plan: &BrowserOnnxTaskPlan) -> Result<f32, String> {
+fn request_pad_y(plan: &BrowserOnnxTaskPlan) -> f32 {
     let target = plan.target_size.unwrap_or(640);
-    let scale = request_scale(plan)?;
+    let scale = request_scale(plan);
     let resized_height = (plan.source_height as f32 * scale).round() as u32;
-    Ok((target - resized_height) as f32 / 2.0)
+    (target - resized_height) as f32 / 2.0
 }
 
 fn encode_tile(
@@ -502,10 +519,21 @@ fn encode_tile(
     validate_rgba(rgba, plan.source_width, plan.source_height)?;
     let tensor = match plan.family {
         OnnxModelFamily::SuperResolutionYcbcr | OnnxModelFamily::GenericYcbcr => {
-            encode_ycbcr_tile(rgba, plan.source_width, tile)?
+            encode_ycbcr_tile(rgba, plan.source_width, tile)
         }
-        OnnxModelFamily::DepthEstimation => encode_depth_tile(rgba, plan.source_width, tile)?,
-        _ => encode_rgb_tile(rgba, plan.source_width, tile, tile.input.shape[2], tile.input.shape[3])?,
+        OnnxModelFamily::DepthEstimation => {
+            match encode_depth_tile(rgba, plan.source_width, tile) {
+                Ok(tensor) => tensor,
+                Err(error) => return Err(error),
+            }
+        }
+        _ => encode_rgb_tile(
+            rgba,
+            plan.source_width,
+            tile,
+            tile.input.shape[2],
+            tile.input.shape[3],
+        ),
     };
     Ok(BrowserOnnxTensor {
         tensor,
@@ -525,9 +553,7 @@ fn decode_tile(
     validate_rgba(source_rgba, plan.source_width, plan.source_height)?;
     let (scale, model_width, model_height) = match &plan.execution {
         OnnxExecutionPlan::Tiled {
-            scale,
-            fixed_size,
-            ..
+            scale, fixed_size, ..
         } => {
             let model_width = fixed_size.unwrap_or(tile.patch_width);
             let model_height = fixed_size.unwrap_or(tile.patch_height);
@@ -536,9 +562,15 @@ fn decode_tile(
         _ => return Err("decode_tile requires a tiled plan".to_owned()),
     };
     let rgba = match plan.family {
-        OnnxModelFamily::SuperResolutionYcbcr | OnnxModelFamily::GenericYcbcr => {
-            decode_ycbcr_tile(source_rgba, raw, plan.source_width, plan.source_height, tile, scale, model_width)?
-        }
+        OnnxModelFamily::SuperResolutionYcbcr | OnnxModelFamily::GenericYcbcr => decode_ycbcr_tile(
+            source_rgba,
+            raw,
+            plan.source_width,
+            plan.source_height,
+            tile,
+            scale,
+            model_width,
+        )?,
         OnnxModelFamily::BackgroundRemoval => {
             decode_alpha_tile(source_rgba, raw, plan.source_width, tile, model_width)?
         }
@@ -630,7 +662,7 @@ fn encode_rgb_tile(
     tile: &TileDescriptor,
     model_height: usize,
     model_width: usize,
-) -> Result<Vec<f32>, String> {
+) -> Vec<f32> {
     let pixels = model_width * model_height;
     let mut tensor = vec![0.0; pixels * 3];
     for row in 0..tile.patch_height as usize {
@@ -645,14 +677,10 @@ fn encode_rgb_tile(
             tensor[pixels * 2 + destination] = rgba[source + 2] as f32 / 255.0;
         }
     }
-    Ok(tensor)
+    tensor
 }
 
-fn encode_ycbcr_tile(
-    rgba: &[u8],
-    source_width: u32,
-    tile: &TileDescriptor,
-) -> Result<Vec<f32>, String> {
+fn encode_ycbcr_tile(rgba: &[u8], source_width: u32, tile: &TileDescriptor) -> Vec<f32> {
     let model_width = tile.input.shape[3];
     let model_height = tile.input.shape[2];
     let mut tensor = vec![0.0; model_width * model_height];
@@ -668,7 +696,7 @@ fn encode_ycbcr_tile(
             tensor[row * model_width + col] = 0.299 * red + 0.587 * green + 0.114 * blue;
         }
     }
-    Ok(tensor)
+    tensor
 }
 
 fn encode_depth_tile(
@@ -676,8 +704,12 @@ fn encode_depth_tile(
     source_width: u32,
     tile: &TileDescriptor,
 ) -> Result<Vec<f32>, String> {
-    let patch = extract_patch_rgba(rgba, source_width, tile)?;
-    midas_preprocess(&patch, tile.input.shape[3] as u32, tile.input.shape[2] as u32)
+    let patch = extract_patch_rgba(rgba, source_width, tile);
+    midas_preprocess(
+        &patch,
+        tile.input.shape[3] as u32,
+        tile.input.shape[2] as u32,
+    )
 }
 
 fn decode_rgb_tile(
@@ -718,9 +750,9 @@ fn decode_ycbcr_tile(
     let mut output = vec![0; (crop_width * crop_height * 4) as usize];
     for row in 0..crop_height {
         for col in 0..crop_width {
-            let source_index =
-                ((tile.pad_top * scale + row) * out_patch_width + tile.pad_left * scale + col)
-                    as usize;
+            let source_index = ((tile.pad_top * scale + row) * out_patch_width
+                + tile.pad_left * scale
+                + col) as usize;
             let orig_x = (tile.tile_x + col / scale).min(source_width - 1);
             let orig_y = (tile.tile_y + row / scale).min(source_height - 1);
             let chroma = (orig_y * source_width + orig_x) as usize * 4;
@@ -747,7 +779,7 @@ fn decode_alpha_tile(
     tile: &TileDescriptor,
     model_width: u32,
 ) -> Result<Vec<u8>, String> {
-    let patch = extract_patch_rgba(source_rgba, source_width, tile)?;
+    let patch = extract_patch_rgba(source_rgba, source_width, tile);
     let masked = apply_alpha_mask(&patch, raw, model_width, tile.input.shape[2] as u32)?;
     crop_rgba(
         &masked,
@@ -792,23 +824,18 @@ fn decode_depth_tile(
     Ok(output)
 }
 
-fn extract_patch_rgba(
-    rgba: &[u8],
-    source_width: u32,
-    tile: &TileDescriptor,
-) -> Result<Vec<u8>, String> {
+fn extract_patch_rgba(rgba: &[u8], source_width: u32, tile: &TileDescriptor) -> Vec<u8> {
     let model_width = tile.input.shape[3] as u32;
     let model_height = tile.input.shape[2] as u32;
     let mut patch = vec![0; (model_width * model_height * 4) as usize];
     for row in 0..tile.patch_height {
         for col in 0..tile.patch_width {
-            let source =
-                ((tile.patch_y + row) * source_width + tile.patch_x + col) as usize * 4;
+            let source = ((tile.patch_y + row) * source_width + tile.patch_x + col) as usize * 4;
             let destination = (row * model_width + col) as usize * 4;
             patch[destination..destination + 4].copy_from_slice(&rgba[source..source + 4]);
         }
     }
-    Ok(patch)
+    patch
 }
 
 fn crop_rgba(
@@ -886,5 +913,6 @@ fn float_to_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-#[allow(dead_code)]
-fn _assert_segmentation_result_is_serializable(_: &SegmentationResult) {}
+#[cfg(test)]
+#[path = "task_coverage_tests.rs"]
+mod coverage_tests;

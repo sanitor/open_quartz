@@ -1,5 +1,5 @@
-use open_quartz::{Environment, OpenQuartz, PlayerState};
 use open_quartz::ffi::OpenQuartzBinding;
+use open_quartz::{Environment, OpenQuartz, PlayerState};
 use serde_json::Value;
 
 #[test]
@@ -61,7 +61,9 @@ fn project_graph_rollback_restores_previous_snapshot_and_advances_revision() {
     let mut project = sdk.create_project("Rollback");
     let original = project.graph_snapshot();
 
-    project.replace_graph(open_quartz::Graph::default(), 0).unwrap();
+    project
+        .replace_graph(open_quartz::Graph::default(), 0)
+        .unwrap();
     project.rollback_graph(1).unwrap();
 
     assert_eq!(project.graph_snapshot(), original);
@@ -82,8 +84,7 @@ fn binding_graph_and_player_contract_round_trips_errors_and_dispose() {
         1
     );
     let stale: Value =
-        serde_json::from_str(&graph.replace(r#"{"nodes":[],"edges":[]}"#, 0).unwrap_err())
-            .unwrap();
+        serde_json::from_str(&graph.replace(r#"{"nodes":[],"edges":[]}"#, 0).unwrap_err()).unwrap();
     assert_eq!(stale["code"], "stale-revision");
 
     assert_eq!(

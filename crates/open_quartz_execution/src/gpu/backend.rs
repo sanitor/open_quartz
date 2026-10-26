@@ -25,6 +25,8 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 }
 "#;
 
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 #[cfg(windows)]
 use std::sync::OnceLock;
@@ -48,6 +50,8 @@ pub struct GpuBackend {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub(crate) readback_ring: Arc<ReadbackStagingRing>,
+    #[cfg(test)]
+    pub(crate) readback_fault: AtomicU8,
     #[cfg(windows)]
     pub(crate) p010_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
 }
@@ -58,6 +62,8 @@ impl GpuBackend {
             device: Arc::new(device),
             queue: Arc::new(queue),
             readback_ring: Arc::new(ReadbackStagingRing::new()),
+            #[cfg(test)]
+            readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             p010_converter: Arc::new(OnceLock::new()),
         }
@@ -68,6 +74,8 @@ impl GpuBackend {
             device,
             queue,
             readback_ring: Arc::new(ReadbackStagingRing::new()),
+            #[cfg(test)]
+            readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             p010_converter: Arc::new(OnceLock::new()),
         }

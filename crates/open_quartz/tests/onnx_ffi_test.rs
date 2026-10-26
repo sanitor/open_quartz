@@ -57,7 +57,8 @@ fn native_session_runs_identity_model() {
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", runtime);
     let mut session =
-        open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!("data/identity.onnx")).unwrap();
+        open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!("data/identity.onnx"))
+            .unwrap();
     assert_eq!(session.info().input_names, ["input"]);
     assert_eq!(session.info().output_names, ["output"]);
     let output = session.run_f32(vec![42.0], vec![1]).unwrap();
@@ -71,9 +72,10 @@ fn native_image_task_roundtrips_texture_pixels() {
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", runtime);
-    let mut session =
-        open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!("data/image_identity.onnx"))
-            .unwrap();
+    let mut session = open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!(
+        "data/image_identity.onnx"
+    ))
+    .unwrap();
     let rgba = vec![
         255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
     ];

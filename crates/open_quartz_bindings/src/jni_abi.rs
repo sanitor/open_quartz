@@ -138,3 +138,7 @@ pub extern "C" fn open_quartz_jni_release_player(player: u64) -> bool {
         .expect("JNI handle table poisoned")
         .release_player(player)
 }
+
+#[cfg(test)]
+#[path = "jni_abi_coverage_tests.rs"]
+mod tests;

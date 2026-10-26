@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::Serialize;
 
 use crate::graph::{topological_sort, GraphEdge, GraphNode};
-use open_quartz_schema::{DataType, Edge, InputMode, NodeType, ProjectNode};
 use crate::wgsl::{
     compile_shader, validate_shader, CompilePort, CompileRequest, CompiledShader,
     WgslCompilationError,
 };
+use open_quartz_schema::{DataType, Edge, InputMode, NodeType, ProjectNode};
 
 const BUILTIN_UNIFORMS: &[&str] = &[
     "iTime",
@@ -83,9 +83,9 @@ pub fn build_execution_plan_with_options(
     let mut node_plans = Vec::new();
 
     for node_id in &sorted_ids {
-        let Some(node) = node_map.get(node_id.as_str()) else {
-            continue;
-        };
+        let node = node_map
+            .get(node_id.as_str())
+            .expect("topological sort only returns input node IDs");
         let upstream = upstream_for(node, edges);
         let connected = upstream.keys().collect::<HashSet<_>>();
         let builtin_ports = node
@@ -260,3 +260,7 @@ fn data_type_name(data_type: DataType) -> &'static str {
         DataType::Auto => "auto",
     }
 }
+
+#[cfg(test)]
+#[path = "plan_coverage_tests.rs"]
+mod coverage_tests;

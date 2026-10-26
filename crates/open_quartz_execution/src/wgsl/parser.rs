@@ -145,11 +145,10 @@ fn type_inner_to_data_type(inner: &TypeInner) -> DataType {
 
 fn fallback_extract(code: &str, descriptions: &HashMap<String, String>, result: &mut ParsedShader) {
     let clean = strip_comments(code);
-    let mut seen = result
-        .inputs
-        .iter()
-        .map(|port| port.label.clone())
-        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    for input in &result.inputs {
+        seen.insert(input.label.clone());
+    }
 
     let binding_re = Regex::new(
         r"@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var(?:<\w+>)?\s+(\w+)\s*:\s*([\w<>]+)",
@@ -283,9 +282,7 @@ fn extract_comments(code: &str) -> (Option<String>, HashMap<String, String>) {
             continue;
         }
         if let Some(comment) = trimmed.strip_prefix("//") {
-            if description_lines.is_empty() || !description_lines.is_empty() {
-                description_lines.push(comment.trim().to_owned());
-            }
+            description_lines.push(comment.trim().to_owned());
         } else {
             break;
         }
@@ -403,3 +400,7 @@ fn keyword_names() -> HashSet<&'static str> {
     .into_iter()
     .collect()
 }
+
+#[cfg(test)]
+#[path = "parser_coverage_tests.rs"]
+mod coverage_tests;

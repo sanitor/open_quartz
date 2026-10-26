@@ -58,7 +58,7 @@ impl JniHandleTable {
         let player = sdk
             .player(project_value.graph())
             .build()
-            .map_err(|error| error.to_json())?;
+            .expect("stored Project graph should build a Player");
         let handle = self.allocate();
         self.players.insert(handle, player);
         Ok(handle)
@@ -97,26 +97,5 @@ pub fn new_handle_table() -> SharedJniHandleTable {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aggregate_handles_are_released_and_stale_handles_rejected() {
-        let mut table = JniHandleTable::default();
-        let client = table.create_client();
-        let project = table.create_project(client, "JNI").unwrap();
-        let player = table.create_player(project).unwrap();
-        assert!(table
-            .with_player(player, |player| player
-                .play()
-                .map_err(|error| error.to_json()))
-            .is_ok());
-        assert!(table.release_player(player));
-        assert!(table
-            .with_player(player, |player| player
-                .stop()
-                .map_err(|error| error.to_json()))
-            .is_err());
-        assert!(table.release_client(client));
-    }
-}
+#[path = "jni_coverage_tests.rs"]
+mod tests;

@@ -100,7 +100,9 @@ fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback(
         }
     }));
     assert_eq!(first["intents"][0]["type"], "attach-video");
-    assert!(first["graph"]["nodes"][0]["data"].get("videoFilePath").is_none());
+    assert!(first["graph"]["nodes"][0]["data"]
+        .get("videoFilePath")
+        .is_none());
     assert!(first["graph"]["nodes"][0]["data"].get("videoUrl").is_none());
 
     let same = plan(json!({
@@ -152,7 +154,12 @@ fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback(
         }
     }));
     assert_eq!(
-        replace["intents"].as_array().unwrap().iter().map(|intent| intent["type"].as_str().unwrap()).collect::<Vec<_>>(),
+        replace["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|intent| intent["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
         vec!["detach-video", "attach-video"]
     );
 }
@@ -185,7 +192,12 @@ fn native_detaches_stale_video_before_uploading_replacement_image() {
         }
     }));
     assert_eq!(
-        result["intents"].as_array().unwrap().iter().map(|intent| intent["type"].as_str().unwrap()).collect::<Vec<_>>(),
+        result["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|intent| intent["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
         vec!["detach-video", "upload-image"]
     );
 }
@@ -236,5 +248,8 @@ fn native_onnx_unloads_stale_model_when_removed() {
         },
         "graph": { "nodes": [], "edges": [] }
     }));
-    assert_eq!(result["intents"], json!([{ "type": "unload-onnx", "nodeId": "onnx" }]));
+    assert_eq!(
+        result["intents"],
+        json!([{ "type": "unload-onnx", "nodeId": "onnx" }])
+    );
 }

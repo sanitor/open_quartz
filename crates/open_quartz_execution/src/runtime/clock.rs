@@ -114,3 +114,16 @@ impl CompositionClock {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_pause_while_stopped_and_resume_while_running() {
+        let mut clock = CompositionClock::new(0);
+        assert!(clock.pause(0).is_err());
+        clock.start(0);
+        assert!(clock.resume(1).is_err());
+    }
+}

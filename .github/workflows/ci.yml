@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Test & Coverage
+    name: Frontend Test & Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -48,8 +48,6 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
-      - name: Enforce 100% Rust SDK coverage
-        run: npm run test:sdk-coverage
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push'
@@ -57,3 +55,72 @@ jobs:
         with:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  rust-sdk-coverage:
+    name: Rust SDK Coverage (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install Linux GPU runtime
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libvulkan1 mesa-vulkan-drivers
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare native FFmpeg runtime
+        run: npm run copy:ffmpeg
+
+      - name: Enforce 100% Rust SDK coverage
+        run: npm run test:sdk-coverage
+
+  rust-sdk-wasm:
+    name: Rust SDK WASM Browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: Run browser SDK tests
+        run: npm run test:sdk-wasm
+
+  slint-app:
+    name: Slint application shell (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Slint application
+        run: cargo check --manifest-path apps/open_quartz_slint/Cargo.toml

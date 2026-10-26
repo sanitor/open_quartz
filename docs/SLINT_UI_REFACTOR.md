@@ -1,10 +1,10 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：方案草案，尚未实施
+> 状态：Phase 2 已在 macOS 完成验收；NativeHost 与独立 Slint 应用壳已落地，尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
-> 关系：本文是独立的 Slint 迁移方案，不替代 [`DESIGN.md`](./DESIGN.md)。当前生产架构、所有权和性能状态仍以 `DESIGN.md` 为准；只有本方案进入实施并验证后，才把结果回写到 `DESIGN.md`。
+> 关系：本文是独立的 Slint 迁移方案，不替代 [`DESIGN.md`](./DESIGN.md)。当前生产架构、所有权和性能状态仍以 `DESIGN.md` 为准；本次 Phase 2 实现保留 Tauri 发布路径，待跨平台验证和发布门槛完成后再回写 `DESIGN.md`。
 >
 > 结论：Slint 是当前同时覆盖 Windows/macOS/Linux/Android/iOS 的可行 Rust UI 候选，但不能直接全量重写。先验证“渲染器与 Slint 共享 wgpu device，并把输出纹理直接导入 Slint”这一条；验证通过后，再按阶段迁移节点图、Inspector、WGSL 编辑器和移动端。
 
@@ -708,10 +708,15 @@ Spike 范围：
 
 ### 8.4 Phase 2：Host 抽取与应用壳
 
-- 抽出 `open_quartz_native_host`；Tauri 改为调用它。
-- 新 app 只做空壳 + TopBar + 空白 GraphView + 项目打开/保存。
-- 先不做节点编辑，只读显示 graph。
-- 验证启动、关闭、项目 I/O、错误路径。
+- **已实现**：新增 `crates/open_quartz_native_host`，Tauri 的 `NativePlayerHost` 已抽为无框架依赖的 `NativeHost`；Tauri 保留 IPC、事件、worker 和 WebView2 presentation 适配。
+- **已实现**：新增 `apps/open_quartz_slint` 独立 workspace，使用 Slint 1.18.1 + wgpu 30；应用壳包含 TopBar、显式路径项目打开/保存、只读 graph projection 和 renderer output 区域。
+- **已实现**：Slint render bridge 创建共享 wgpu `Device/Queue`，同一组句柄交给 `NativeHost::from_shared_wgpu` 和 Slint `WGPUConfiguration::Manual`；输出通过 `slint::Image::try_from` 导入，不走 readback/base64。
+- **已实现**：项目文件由 `open_quartz_sdk::OpenQuartz` 在 worker 线程解析/校验，保存使用 `Project::to_file()`；无效输入保留当前项目并显示错误。
+- **限制**：Phase 2 仍是只读 graph；节点编辑、Inspector、资源绑定、原生文件选择器和移动端适配不在范围内。Linux/Android/iOS 验证按当前计划后置。
+- **macOS 验收**：Apple M4 Pro / Metal 上 `cargo check`、`cargo build` 和 Slint app 单测通过；默认 640×360 graph 通过共享 `Device/Queue` 和 `Image::try_from` 正确显示，窗口从 1180×760 缩放到 900×650 后输出保持正确。已实际验证 SDK Save/Open、缺失文件错误保持当前项目、空 graph 启动和原生窗口干净关闭。
+- **回归验收**：`cargo test --workspace` 276 tests / 45 suites 通过；`cargo test -p open_quartz_native_host --all-features --offline`、`cargo check -p app --lib` 通过。CI 以 `macos-latest` 编译 Slint app。
+- **已知工具链问题**：wgpu-core 30 的 debug-only lock tracer 与 Slint thread-local backend 在 macOS 存在 TLS 析构顺序冲突；仅对 Slint app 的 dev profile 关闭 `wgpu-core` debug assertions，release 原本不启用该 tracer，OpenQuartz/Slint/app assertions 不受影响。
+- **下一步**：进入 Phase 3 的空间化只读 GraphView、100 节点性能基线和选择/拖动原型；Linux 与移动端证据后补。
 
 ### 8.5 Phase 3：节点图
 
@@ -999,8 +1004,9 @@ Rust:
 | Slint 编辑器能力 | 已核对 |
 | Slint Web 纹理限制 | 已核对 |
 | Windows DX12 共享纹理导入 | **已验证**：`spikes/slint-render-spike` |
-| 其余平台共享纹理 | **未验证**，Phase 1 必测 |
-| iOS 外部纹理导入 | **未验证**，Phase 1 必测 |
+| macOS Metal 共享纹理导入 | **已验证**：Apple M4 Pro；真实 `NativeHost` graph、Slint `Image::try_from`、640×360 输出、项目 I/O、空 graph、关闭路径均通过 |
+| Linux/Android 共享纹理 | **未验证**，按当前计划后置 |
+| iOS 外部纹理导入 | **运行时未验证**；`open_quartz_native_host` 已选择 Metal，`aarch64-apple-ios` compile check 通过，Phase 6 前仍须真机验证纹理导入 |
 | 节点图 100/300 节点性能 | **未验证**，Phase 3 原型 |
 | 移动端文件/相机/生命周期 | **未验证**，Phase 6 |
 

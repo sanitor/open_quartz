@@ -4,9 +4,9 @@ use open_quartz_schema::{InputMode, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
 #[cfg(windows)]
 use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -225,7 +225,11 @@ fn parse_mode(args: Vec<String>) -> ScreenSaverLaunchMode {
         {
             return ScreenSaverLaunchMode::Preview(parent);
         }
-        if argument == "/c" || argument == "-c" || argument.starts_with("/c:") || argument.starts_with("-c:") {
+        if argument == "/c"
+            || argument == "-c"
+            || argument.starts_with("/c:")
+            || argument.starts_with("-c:")
+        {
             return ScreenSaverLaunchMode::Configure;
         }
         if argument == "/s" || argument == "-s" {
@@ -287,10 +291,8 @@ fn read_settings(root: &Path) -> Result<HashMap<String, String>, String> {
 
 #[cfg(windows)]
 fn export_windows(app: &AppHandle, request: ScreenSaverExportRequest) -> Result<(), String> {
-    let (graph, project_json) = collect_export_project(
-        &request.project_json,
-        &request.renderer_node_id,
-    )?;
+    let (graph, project_json) =
+        collect_export_project(&request.project_json, &request.renderer_node_id)?;
     validate_shader_sources(&graph)?;
     let output = PathBuf::from(&request.output_path);
     if output
@@ -333,7 +335,10 @@ fn parse_export_graph(project_json: &str) -> Result<Graph, String> {
         .map_err(|error| format!("Invalid screen saver graph: {error}"))
 }
 
-fn collect_export_project(project_json: &str, renderer_node_id: &str) -> Result<(Graph, String), String> {
+fn collect_export_project(
+    project_json: &str,
+    renderer_node_id: &str,
+) -> Result<(Graph, String), String> {
     let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
     let normalized = sdk
         .screen_saver_export_project_json(project_json, renderer_node_id)

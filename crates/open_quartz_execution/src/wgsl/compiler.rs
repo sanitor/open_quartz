@@ -329,3 +329,7 @@ fn compact_diagnostic(message: &str) -> String {
         format!("{shortened}…")
     }
 }
+
+#[cfg(test)]
+#[path = "compiler_coverage_tests.rs"]
+mod coverage_tests;

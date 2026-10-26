@@ -32,7 +32,10 @@ async fn output() -> open_quartz_execution::gpu::GpuOutputHandle {
     }
 }
 
-fn frame(output: &open_quartz_execution::gpu::GpuOutputHandle, number: u64) -> GpuPresentationFrame {
+fn frame(
+    output: &open_quartz_execution::gpu::GpuOutputHandle,
+    number: u64,
+) -> GpuPresentationFrame {
     GpuPresentationFrame {
         node_id: "renderer".to_owned(),
         frame: number,

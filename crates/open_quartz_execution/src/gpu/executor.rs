@@ -3,8 +3,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::engine::{ExecutionCommand, ExecutionPlan, FrameResult, NodeExecutionPlan};
-use open_quartz_schema::{SdkError, SdkErrorCode};
 use crate::wgsl::compiler::BindingDescriptor;
+use open_quartz_schema::{SdkError, SdkErrorCode};
 
 use super::{GpuBackend, RenderTarget, TextureFormat, TextureHandle};
 
@@ -130,9 +130,10 @@ impl GpuExecutor {
                     .create_texture(width, height, TextureFormat::Rgba8Unorm),
             );
         }
-        let texture = self.textures.get(node_id).ok_or_else(|| {
-            GpuExecutionError::for_node(node_id, "image texture allocation failed")
-        })?;
+        let texture = self
+            .textures
+            .get(node_id)
+            .expect("texture was inserted above");
         self.backend
             .upload_rgba(texture, rgba)
             .map_err(|message| GpuExecutionError::for_node(node_id, message))
@@ -252,10 +253,22 @@ impl GpuExecutor {
         let output = self.output_texture(node_id).ok_or_else(|| {
             GpuExecutionError::for_node(node_id, "output has no native GPU texture")
         })?;
-        self.backend
-            .read_texture_rgba(output.texture, output.width, output.height)
-            .await
-            .map_err(|message| GpuExecutionError::for_node(node_id, message))
+        Self::map_readback_result(
+            node_id,
+            self.backend
+                .read_texture_rgba(output.texture, output.width, output.height)
+                .await,
+        )
+    }
+
+    fn map_readback_result(
+        node_id: &str,
+        result: Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, GpuExecutionError> {
+        match result {
+            Ok(rgba) => Ok(rgba),
+            Err(message) => Err(GpuExecutionError::for_node(node_id, message)),
+        }
     }
 
     /// Synchronize pipelines and targets with a new plan while preserving
@@ -756,7 +769,7 @@ fn uniform_size(wgsl_type: &str) -> u64 {
 fn pack_uniform(wgsl_type: &str, values: &[f32]) -> Vec<u8> {
     let size = uniform_size(wgsl_type) as usize;
     let mut bytes = vec![0; size];
-    let integer = wgsl_type.ends_with('i');
+    let integer = wgsl_type == "i32" || wgsl_type.ends_with('i');
     let unsigned = wgsl_type.ends_with('u') || wgsl_type == "u32";
     if wgsl_type == "mat3x3f" {
         for column in 0..3 {
@@ -780,3 +793,7 @@ fn pack_uniform(wgsl_type: &str, values: &[f32]) -> Vec<u8> {
     }
     bytes
 }
+
+#[cfg(test)]
+#[path = "executor_coverage_tests.rs"]
+mod coverage_tests;

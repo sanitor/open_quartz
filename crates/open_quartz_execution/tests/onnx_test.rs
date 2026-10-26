@@ -5,7 +5,9 @@ use open_quartz_execution::onnx::{
     BrowserOnnxTaskPlanRequest, BrowserOnnxTensorRequest, Detection, OnnxExecutionPlan,
     OnnxModelFamily, OnnxTask, CITYSCAPES_PALETTE, COCO_CLASSES,
 };
-use open_quartz_execution::onnx::{build_browser_onnx_completion, decode_browser_onnx_output, encode_browser_onnx_input};
+use open_quartz_execution::onnx::{
+    build_browser_onnx_completion, decode_browser_onnx_output, encode_browser_onnx_input,
+};
 use serde_json::json;
 
 #[test]
@@ -80,13 +82,37 @@ fn segmentation_decodes_resizes_and_colorizes() {
 #[test]
 fn browser_task_plan_freezes_model_family_dispatch_and_defaults() {
     let cases = [
-        ("super-resolution-3x", OnnxTask::SuperResolution, OnnxModelFamily::SuperResolutionYcbcr),
-        ("realesrgan-x4", OnnxTask::SuperResolution, OnnxModelFamily::SuperResolutionRgb),
-        ("u2netp", OnnxTask::BackgroundRemoval, OnnxModelFamily::BackgroundRemoval),
-        ("modnet", OnnxTask::BackgroundRemoval, OnnxModelFamily::BackgroundRemoval),
-        ("midas-small", OnnxTask::DepthEstimation, OnnxModelFamily::DepthEstimation),
+        (
+            "super-resolution-3x",
+            OnnxTask::SuperResolution,
+            OnnxModelFamily::SuperResolutionYcbcr,
+        ),
+        (
+            "realesrgan-x4",
+            OnnxTask::SuperResolution,
+            OnnxModelFamily::SuperResolutionRgb,
+        ),
+        (
+            "u2netp",
+            OnnxTask::BackgroundRemoval,
+            OnnxModelFamily::BackgroundRemoval,
+        ),
+        (
+            "modnet",
+            OnnxTask::BackgroundRemoval,
+            OnnxModelFamily::BackgroundRemoval,
+        ),
+        (
+            "midas-small",
+            OnnxTask::DepthEstimation,
+            OnnxModelFamily::DepthEstimation,
+        ),
         ("yolov8n", OnnxTask::Detection, OnnxModelFamily::Detection),
-        ("yolo26n-sem", OnnxTask::Segmentation, OnnxModelFamily::Segmentation),
+        (
+            "yolo26n-sem",
+            OnnxTask::Segmentation,
+            OnnxModelFamily::Segmentation,
+        ),
     ];
     for (model_id, task, family) in cases {
         let plan = plan_browser_onnx_task(BrowserOnnxTaskPlanRequest {
@@ -140,7 +166,13 @@ fn browser_task_plan_freezes_tile_tensor_descriptors() {
     })
     .unwrap();
     match fixed.execution {
-        OnnxExecutionPlan::Tiled { scale, fixed_size, tile_size, tiles, .. } => {
+        OnnxExecutionPlan::Tiled {
+            scale,
+            fixed_size,
+            tile_size,
+            tiles,
+            ..
+        } => {
             assert_eq!(scale, 3);
             assert_eq!(fixed_size, Some(224));
             assert_eq!(tile_size, 208);
@@ -162,7 +194,13 @@ fn browser_task_plan_freezes_tile_tensor_descriptors() {
     })
     .unwrap();
     match generic.execution {
-        OnnxExecutionPlan::Tiled { scale, channels, fixed_size, tiles, .. } => {
+        OnnxExecutionPlan::Tiled {
+            scale,
+            channels,
+            fixed_size,
+            tiles,
+            ..
+        } => {
             assert_eq!((scale, channels, fixed_size), (1, 3, None));
             assert_eq!(tiles.len(), 4);
             assert_eq!(tiles[0].input.shape, [1, 3, 16, 16]);
@@ -208,7 +246,10 @@ fn browser_rust_preprocess_and_postprocess_tile_boundaries() {
         },
     )
     .unwrap();
-    assert_eq!((decoded.width, decoded.height, decoded.dst_x, decoded.dst_y), (8, 4, Some(0), Some(0)));
+    assert_eq!(
+        (decoded.width, decoded.height, decoded.dst_x, decoded.dst_y),
+        (8, 4, Some(0), Some(0))
+    );
     assert_eq!(decoded.rgba.unwrap()[0..4], [255, 255, 255, 255]);
 }
 
@@ -299,8 +340,14 @@ fn browser_completion_helper_preserves_launch_stamp_and_payload_policy() {
     assert_eq!(completion.graph_revision, 7);
     assert_eq!(completion.input_stamp.timeline_ns, 123);
     assert_eq!(completion.content_stamp.timeline_ns, 123);
-    assert!(matches!(completion.outputs[0].1, open_quartz_execution::runtime::OutputPayload::Resource { handle: 3 }));
-    assert!(matches!(completion.outputs[1].1, open_quartz_execution::runtime::OutputPayload::Json(_)));
+    assert!(matches!(
+        completion.outputs[0].1,
+        open_quartz_execution::runtime::OutputPayload::Resource { handle: 3 }
+    ));
+    assert!(matches!(
+        completion.outputs[1].1,
+        open_quartz_execution::runtime::OutputPayload::Json(_)
+    ));
 }
 
 #[test]

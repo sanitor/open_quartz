@@ -163,7 +163,10 @@ fn shader_catalog_freezes_template_groups_and_port_contracts() {
             .iter()
             .map(|port| (port.label.as_str(), port.data_type))
             .collect::<Vec<_>>(),
-        vec![("inputImage", DataType::Sampler2d), ("intensity", DataType::Float)]
+        vec![
+            ("inputImage", DataType::Sampler2d),
+            ("intensity", DataType::Float)
+        ]
     );
     assert_eq!(sobel.outputs[0].data_type, DataType::Vec4);
 

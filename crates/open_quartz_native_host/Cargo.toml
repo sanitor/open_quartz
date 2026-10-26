@@ -1,0 +1,20 @@
+[package]
+name = "open_quartz_native_host"
+version = "0.20.0"
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+description = "Framework-neutral native GPU host for OpenQuartz"
+
+[features]
+default = []
+native-video-d3d12 = ["open_quartz_execution/native-video-d3d12"]
+
+[dependencies]
+open_quartz_execution = { path = "../open_quartz_execution" }
+open_quartz_schema = { path = "../open_quartz_schema" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+pollster = "0.4"
+wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }

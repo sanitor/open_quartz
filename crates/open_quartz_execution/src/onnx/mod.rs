@@ -14,6 +14,8 @@ pub use preprocess::{
     apply_alpha_mask, letterbox_preprocess, midas_preprocess, rgb_output_to_rgba, rgba_to_chw,
     LetterboxTensor,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use session::TensorRunner;
 pub use session::{
     NativeOnnxCapabilities, NativeOnnxOptions, NativeOnnxProvider, OnnxSessionInfo, TensorOutput,
 };

@@ -99,3 +99,7 @@ impl<D: NativeVideoDecoder, I: ExternalVideoFrameImporter> NativeVideoGpuSource<
         self.decoder.seek(timestamp_ns)
     }
 }
+
+#[cfg(test)]
+#[path = "media_coverage_tests.rs"]
+mod coverage_tests;

@@ -139,7 +139,7 @@ impl GpuPreviewReader {
         let target = self
             .target
             .as_ref()
-            .ok_or_else(|| "GPU preview target allocation failed".to_owned())?;
+            .expect("preview target was allocated above");
         let bind_group = self
             .backend
             .device
@@ -206,7 +206,7 @@ impl GpuPreviewReader {
         let target = self
             .target
             .as_ref()
-            .ok_or_else(|| "GPU preview target allocation failed".to_owned())?;
+            .expect("scale always allocates a preview target");
         let readback_started = Instant::now();
         let rgba = self.backend.read_target_rgba(target).await?;
         let readback = readback_started.elapsed();

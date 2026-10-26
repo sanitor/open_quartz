@@ -8,8 +8,8 @@ use wasm_bindgen::prelude::*;
 use crate::engine::{ExecutionCommand, ExecutionEngine, ExecutionPlan, FrameInputs};
 use open_quartz_schema::{Edge, Graph, ProjectNode};
 
-use open_quartz_schema::{SdkError, SdkErrorCode};
 use crate::event::{EngineEvent, EngineState};
+use open_quartz_schema::{SdkError, SdkErrorCode};
 
 pub const SDK_API_VERSION: u32 = 2;
 
@@ -303,6 +303,10 @@ impl Engine {
         engine_state_name(self.state).to_owned()
     }
 
+    pub(crate) fn state_value(&self) -> EngineState {
+        self.state
+    }
+
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = drainEvents))]
     pub fn drain_events_json(&mut self) -> String {
         let events = self.events.drain(..).collect::<Vec<_>>();
@@ -524,3 +528,7 @@ impl Default for Engine {
         Self::new()
     }
 }
+
+#[cfg(test)]
+#[path = "state_coverage_tests.rs"]
+mod coverage_tests;

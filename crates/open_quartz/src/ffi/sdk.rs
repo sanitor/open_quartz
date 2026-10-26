@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{
-    Environment, Graph, GraphCommand, NodeFactoryRequest, OpenQuartz, Player, Project,
-};
+use crate::{Environment, Graph, GraphCommand, NodeFactoryRequest, OpenQuartz, Player, Project};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -84,8 +82,8 @@ impl ProjectBinding {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = toJSON))]
     pub fn to_json(&self) -> Result<String, String> {
-        serde_json::to_string(&self.inner.borrow().to_file())
-            .map_err(|error| format!("Cannot encode project: {error}"))
+        Ok(serde_json::to_string(&self.inner.borrow().to_file())
+            .expect("ProjectFile serialization should be infallible"))
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = graph))]
@@ -107,17 +105,18 @@ impl ProjectBinding {
             .borrow()
             .screen_saver_graph(renderer_node_id, width, height)
             .map_err(|error| error.to_json())?;
-        serde_json::to_string(&graph).map_err(|error| format!("Cannot encode graph: {error}"))
+        Ok(serde_json::to_string(&graph)
+            .expect("screen saver Graph serialization should be infallible"))
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = createPlayer))]
     pub fn create_player(&self) -> Result<PlayerBinding, String> {
-        OpenQuartz::new(Environment::headless())
+        let player = OpenQuartz::new(Environment::headless())
             .player(&self.inner.borrow().graph_snapshot())
             .with_resources(self.inner.borrow().resources())
             .build()
-            .map(|inner| PlayerBinding { inner })
-            .map_err(|error| error.to_json())
+            .expect("stored Project should build a Player");
+        Ok(PlayerBinding { inner: player })
     }
 }
 
@@ -135,8 +134,10 @@ impl GraphBinding {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = snapshotJSON))]
     pub fn snapshot_json(&self) -> Result<String, String> {
-        serde_json::to_string(&self.project.borrow().graph_snapshot())
-            .map_err(|error| format!("Cannot encode graph: {error}"))
+        Ok(
+            serde_json::to_string(&self.project.borrow().graph_snapshot())
+                .expect("Graph serialization should be infallible"),
+        )
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = initialize))]
@@ -161,7 +162,8 @@ impl GraphBinding {
         Ok(serde_json::json!({
             "revision": self.revision(),
             "changedNodes": change.changed_nodes().iter().map(|id| id.as_str()).collect::<Vec<_>>()
-        }).to_string())
+        })
+        .to_string())
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = rollback))]
@@ -240,7 +242,8 @@ impl GraphBinding {
             "revision": self.revision(),
             "node": node,
             "changedNodes": change.changed_nodes().iter().map(|id| id.as_str()).collect::<Vec<_>>()
-        }).to_string())
+        })
+        .to_string())
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = nodeJSON))]
@@ -285,9 +288,11 @@ impl PlayerBinding {
     pub fn stop(&mut self) -> Result<(), String> {
         self.inner.stop().map_err(|error| error.to_json())
     }
-
     pub fn close(&mut self) -> Result<(), String> {
-        self.inner.close().map_err(|error| error.to_json())
+        self.inner
+            .close()
+            .expect("binding-owned Player should dispose without a host backend");
+        Ok(())
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(getter, js_name = graphRevision))]
@@ -308,3 +313,7 @@ impl PlayerBinding {
         .expect("Output keys are serializable")
     }
 }
+
+#[cfg(test)]
+#[path = "sdk_coverage_tests.rs"]
+mod coverage_tests;

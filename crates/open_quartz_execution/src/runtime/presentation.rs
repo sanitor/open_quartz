@@ -134,3 +134,7 @@ fn validate_subscription(subscription: &PresentationSubscription) -> Result<(), 
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "presentation_coverage_tests.rs"]
+mod coverage_tests;

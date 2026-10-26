@@ -38,6 +38,7 @@ impl open_quartz_execution::runtime::HostBackend for RecordingBackend {
 }
 use open_quartz_execution::host::PlayerHost;
 
+use open_quartz_execution::event::EngineState;
 use open_quartz_execution::runtime::{
     public_surface_manifest, AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy,
     FrameStamp, HostBackend, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
@@ -45,7 +46,6 @@ use open_quartz_execution::runtime::{
     PresentationSet, ResourceDescriptor, RuntimeCapabilities, RuntimeFrameInput, Viewport,
 };
 use open_quartz_schema::Graph;
-use open_quartz_execution::event::EngineState;
 use serde_json::json;
 
 fn stamp(frame: u64) -> FrameStamp {

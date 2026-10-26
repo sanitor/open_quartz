@@ -12,6 +12,18 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(all(windows, feature = "native-video-d3d12"))]
 use crate::gpu::D3d12VideoFrame;
+#[cfg(test)]
+thread_local! {
+    static FORCE_FFMPEG_ERROR: Cell<bool> = const { Cell::new(false) };
+}
+
+fn resolve_ffmpeg() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if FORCE_FFMPEG_ERROR.with(Cell::get) {
+        return Err("Injected FFmpeg resolution failure".to_owned());
+    }
+    find_ffmpeg()
+}
 
 pub enum NativeVideoFrame<'a> {
     Rgba(&'a [u8]),
@@ -91,7 +103,21 @@ impl NativeVideoSource {
         if config.kind == NativeVideoSourceKind::File && !Path::new(&config.source).is_file() {
             return Err(format!("Video file does not exist: {}", config.source));
         }
-        let ffmpeg = find_ffmpeg()?;
+        let ffmpeg = resolve_ffmpeg()?;
+        #[cfg(test)]
+        let info = if config.source == "__fail_reader_spawn__" {
+            NativeVideoInfo {
+                width: 1,
+                height: 1,
+                fps: 30.0,
+                decoder: "test".to_owned(),
+                d3d12_eligible: false,
+                d3d12_detach_required: false,
+            }
+        } else {
+            probe_video(&ffmpeg, &config)?
+        };
+        #[cfg(not(test))]
         let info = probe_video(&ffmpeg, &config)?;
         let mut source = Self {
             ffmpeg,
@@ -122,12 +148,16 @@ impl NativeVideoSource {
 
     pub fn upload_latest(
         &mut self,
-        mut upload: impl FnMut(NativeVideoFrame<'_>, u32, u32) -> Result<(), String>,
+        upload: &mut dyn for<'frame> FnMut(
+            NativeVideoFrame<'frame>,
+            u32,
+            u32,
+        ) -> Result<(), String>,
     ) -> Result<bool, String> {
-        let mut slot = self
-            .slot
-            .lock()
-            .map_err(|_| "Native video frame lock is poisoned".to_owned())?;
+        let slot = match self.slot.lock() {
+            Ok(slot) => slot,
+            Err(_) => return Err("Native video frame lock is poisoned".to_owned()),
+        };
         if slot.generation == 0 || slot.generation == self.uploaded_generation {
             return Ok(false);
         }
@@ -173,10 +203,10 @@ impl NativeVideoSource {
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
-        if !self.alive.load(Ordering::Acquire) {
-            self.start_decoder()?;
+        if self.alive.load(Ordering::Acquire) {
+            return Ok(());
         }
-        Ok(())
+        self.start_decoder()
     }
 
     fn start_decoder(&mut self) -> Result<(), String> {
@@ -208,45 +238,45 @@ impl NativeVideoSource {
         let mut child = command
             .spawn()
             .map_err(|error| format!("Cannot start FFmpeg video decoder: {error}"))?;
-        let mut stdout = child
+        let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "FFmpeg decoder did not expose stdout".to_owned())?;
+            .expect("piped FFmpeg stdout is always available");
         let slot = self.slot.clone();
         let alive = self.alive.clone();
         let decoded_frames = self.decoded_frames.clone();
         let frame_size = self.info.width as usize * self.info.height as usize * 4;
         let frame_interval =
             Duration::from_secs_f64(1.0 / (self.info.fps * self.config.playback_rate));
-        let reader = std::thread::Builder::new()
-            .name("open-quartz-video-decoder".to_owned())
-            .spawn(move || {
-                let mut frame = vec![0; frame_size];
-                while alive.load(Ordering::Acquire) {
-                    let started = Instant::now();
-                    if stdout.read_exact(&mut frame).is_err() {
-                        break;
-                    }
-                    if let Ok(mut current) = slot.lock() {
-                        std::mem::swap(&mut current.rgba, &mut frame);
-                        #[cfg(all(windows, feature = "native-video-d3d12"))]
-                        {
-                            current.d3d12 = None;
-                        }
-                        frame.resize(frame_size, 0);
-                        current.generation = current.generation.saturating_add(1);
-                    } else {
-                        break;
-                    }
-                    decoded_frames.fetch_add(1, Ordering::AcqRel);
-                    let elapsed = started.elapsed();
-                    if elapsed < frame_interval {
-                        std::thread::sleep(frame_interval - elapsed);
-                    }
-                }
-                alive.store(false, Ordering::Release);
+        let reader_builder =
+            std::thread::Builder::new().name("open-quartz-video-decoder".to_owned());
+        #[cfg(test)]
+        let reader_result = if self.config.source == "__fail_reader_spawn__" {
+            Err(std::io::Error::other("injected video reader spawn failure"))
+        } else {
+            reader_builder.spawn(move || {
+                read_rgba_frames(
+                    stdout,
+                    slot,
+                    alive,
+                    decoded_frames,
+                    frame_size,
+                    frame_interval,
+                )
             })
-            .map_err(|error| format!("Cannot start video frame reader: {error}"))?;
+        };
+        #[cfg(not(test))]
+        let reader_result = reader_builder.spawn(move || {
+            read_rgba_frames(
+                stdout,
+                slot,
+                alive,
+                decoded_frames,
+                frame_size,
+                frame_interval,
+            )
+        });
+        let reader = reader_result.map_err(reader_spawn_error)?;
         self.child = Some(child);
         self.reader = Some(reader);
         Ok(())
@@ -312,6 +342,44 @@ impl NativeVideoSource {
                 self.decoded_frames.swap(0, Ordering::AcqRel) as f64 / self.info.fps;
         }
     }
+}
+
+fn reader_spawn_error(error: std::io::Error) -> String {
+    format!("Cannot start video frame reader: {error}")
+}
+
+fn read_rgba_frames(
+    mut stdout: std::process::ChildStdout,
+    slot: Arc<Mutex<FrameSlot>>,
+    alive: Arc<AtomicBool>,
+    decoded_frames: Arc<AtomicU64>,
+    frame_size: usize,
+    frame_interval: Duration,
+) {
+    let mut frame = vec![0; frame_size];
+    while alive.load(Ordering::Acquire) {
+        let started = Instant::now();
+        if stdout.read_exact(&mut frame).is_err() {
+            break;
+        }
+        let Ok(mut current) = slot.lock() else {
+            break;
+        };
+        std::mem::swap(&mut current.rgba, &mut frame);
+        #[cfg(all(windows, feature = "native-video-d3d12"))]
+        {
+            current.d3d12 = None;
+        }
+        frame.resize(frame_size, 0);
+        current.generation = current.generation.saturating_add(1);
+        drop(current);
+        decoded_frames.fetch_add(1, Ordering::AcqRel);
+        let elapsed = started.elapsed();
+        if elapsed < frame_interval {
+            std::thread::sleep(frame_interval - elapsed);
+        }
+    }
+    alive.store(false, Ordering::Release);
 }
 
 impl Drop for NativeVideoSource {
@@ -549,11 +617,7 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
     if let Some(configured) = std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH") {
         candidates.push(PathBuf::from(configured));
     }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(directory) = executable.parent() {
-            candidates.push(directory.join("runtime").join(ffmpeg_binary_name()));
-        }
-    }
+    add_executable_candidate(&mut candidates, std::env::current_exe().ok());
     candidates.push(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("runtime")
@@ -562,6 +626,20 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
     candidates.push(installer_binary_path());
     candidates.push(PathBuf::from(ffmpeg_binary_name()));
 
+    select_ffmpeg(&candidates)
+}
+
+fn add_executable_candidate(candidates: &mut Vec<PathBuf>, executable: Option<PathBuf>) {
+    let Some(executable) = executable else {
+        return;
+    };
+    let directory = executable
+        .parent()
+        .expect("current executable always has a parent directory");
+    candidates.push(directory.join("runtime").join(ffmpeg_binary_name()));
+}
+
+fn select_ffmpeg(candidates: &[PathBuf]) -> Result<PathBuf, String> {
     for candidate in candidates {
         let mut command = Command::new(&candidate);
         command
@@ -570,7 +648,7 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
             .stderr(Stdio::null());
         hide_console_window(&mut command);
         if command.status().is_ok_and(|status| status.success()) {
-            return Ok(candidate);
+            return Ok(candidate.clone());
         }
     }
     Err(
@@ -583,7 +661,11 @@ pub fn read_video_thumbnail(path: &str) -> Result<Vec<u8>, String> {
     if !Path::new(path).is_file() {
         return Err(format!("Video file does not exist: {path}"));
     }
-    let ffmpeg = find_ffmpeg()?;
+    let ffmpeg = resolve_ffmpeg()?;
+    read_video_thumbnail_with(&ffmpeg, path)
+}
+
+fn read_video_thumbnail_with(ffmpeg: &Path, path: &str) -> Result<Vec<u8>, String> {
     let mut command = Command::new(ffmpeg);
     command.args([
         "-hide_banner",
@@ -646,10 +728,10 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .ok_or_else(|| format!("Cannot determine video dimensions from: {video_line}"))?;
     let width = size[1]
         .parse::<u32>()
-        .map_err(|error| format!("Invalid video width: {error}"))?;
+        .expect("video dimension regex only captures u32 digits");
     let height = size[2]
         .parse::<u32>()
-        .map_err(|error| format!("Invalid video height: {error}"))?;
+        .expect("video dimension regex only captures u32 digits");
     let fps = Regex::new(r"([0-9]+(?:\.[0-9]+)?)\s+fps")
         .expect("valid video fps regex")
         .captures(video_line)
@@ -686,22 +768,34 @@ pub fn list_video_devices() -> Result<Vec<NativeVideoDevice>, String> {
     }
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let ffmpeg = find_ffmpeg()?;
-        let mut command = Command::new(ffmpeg);
-        command.args(["-hide_banner", "-list_devices", "true"]);
-        #[cfg(target_os = "windows")]
-        command.args(["-f", "dshow", "-i", "dummy"]);
-        #[cfg(target_os = "macos")]
-        command.args(["-f", "avfoundation", "-i", ""]);
-        command.stdout(Stdio::null()).stderr(Stdio::piped());
-        hide_console_window(&mut command);
-        let output = command
-            .output()
-            .map_err(|error| format!("Cannot enumerate native video devices: {error}"))?;
-        Ok(parse_video_devices(&String::from_utf8_lossy(
-            &output.stderr,
-        )))
+        let ffmpeg = resolve_ffmpeg()?;
+        list_video_devices_with(&ffmpeg)
     }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Err(format!(
+            "Native video device enumeration is not implemented on {}",
+            std::env::consts::OS
+        ))
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn list_video_devices_with(ffmpeg: &Path) -> Result<Vec<NativeVideoDevice>, String> {
+    let mut command = Command::new(ffmpeg);
+    command.args(["-hide_banner", "-list_devices", "true"]);
+    #[cfg(target_os = "windows")]
+    command.args(["-f", "dshow", "-i", "dummy"]);
+    #[cfg(target_os = "macos")]
+    command.args(["-f", "avfoundation", "-i", ""]);
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    hide_console_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("Cannot enumerate native video devices: {error}"))?;
+    Ok(parse_video_devices(&String::from_utf8_lossy(
+        &output.stderr,
+    )))
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -754,20 +848,20 @@ fn append_input_args(command: &mut Command, config: &NativeVideoConfig, position
 }
 
 fn installer_binary_path() -> PathBuf {
-    let platform = if cfg!(target_os = "windows") {
-        "win32"
-    } else if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        "linux"
-    };
-    let architecture = if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "ia32"
-    };
+    #[cfg(target_os = "windows")]
+    let platform = "win32";
+    #[cfg(target_os = "macos")]
+    let platform = "darwin";
+    #[cfg(target_os = "linux")]
+    let platform = "linux";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let platform = std::env::consts::OS;
+    #[cfg(target_arch = "x86_64")]
+    let architecture = "x64";
+    #[cfg(target_arch = "aarch64")]
+    let architecture = "arm64";
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let architecture = "ia32";
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../node_modules/@ffmpeg-installer")
         .join(format!("{platform}-{architecture}"))
@@ -775,189 +869,23 @@ fn installer_binary_path() -> PathBuf {
 }
 
 fn ffmpeg_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")]
+    {
         "ffmpeg.exe"
-    } else {
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         "ffmpeg"
     }
 }
 
-fn hide_console_window(command: &mut Command) {
+fn hide_console_window(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
+        _command.creation_flags(0x0800_0000);
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::{
-        d3d12_decode_policy, find_ffmpeg, frame_pacing_delay, read_video_thumbnail,
-        validate_monotonic_pts, NativeVideoConfig, NativeVideoFrame, NativeVideoSource,
-        NativeVideoSourceKind,
-    };
-    use std::cell::Cell;
-    use std::process::Command;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn rejects_regressing_decoder_timestamps_without_advancing_the_clock() {
-        let last_pts = Cell::new(None);
-        assert!(validate_monotonic_pts(&last_pts, Some(10)).is_ok());
-        assert!(validate_monotonic_pts(&last_pts, Some(10)).is_ok());
-        assert!(validate_monotonic_pts(&last_pts, Some(11)).is_ok());
-        assert!(validate_monotonic_pts(&last_pts, Some(9)).is_err());
-        assert_eq!(last_pts.get(), Some(11));
-    }
-
-    #[test]
-    fn d3d12_pacing_counts_decode_time_and_skips_sleep_when_late() {
-        let frame_interval = Duration::from_millis(33);
-        let started_at = Instant::now();
-        let mut next_frame_at = started_at;
-
-        assert_eq!(
-            frame_pacing_delay(
-                &mut next_frame_at,
-                started_at + Duration::from_millis(8),
-                frame_interval,
-            ),
-            Duration::from_millis(25),
-        );
-        assert_eq!(
-            frame_pacing_delay(
-                &mut next_frame_at,
-                started_at + Duration::from_millis(44),
-                frame_interval,
-            ),
-            Duration::from_millis(22),
-        );
-        assert_eq!(
-            frame_pacing_delay(
-                &mut next_frame_at,
-                started_at + Duration::from_millis(100),
-                frame_interval,
-            ),
-            Duration::ZERO,
-        );
-        assert_eq!(next_frame_at, started_at + Duration::from_millis(100));
-    }
-
-    #[test]
-    fn keeps_h264_detached_but_hevc_on_direct_d3d12_import() {
-        assert_eq!(
-            d3d12_decode_policy("Video: h264 (High), yuv420p, 1920x1080"),
-            (true, true),
-        );
-        assert_eq!(
-            d3d12_decode_policy("Video: hevc (Main 10), yuv420p10le, 7680x3840"),
-            (true, false),
-        );
-        assert_eq!(
-            d3d12_decode_policy("Video: vp9, yuv420p, 1920x1080"),
-            (false, false),
-        );
-    }
-
-    #[test]
-    fn decodes_file_frames_without_webview_pixel_ipc() {
-        let ffmpeg = find_ffmpeg().unwrap();
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("open-quartz-video-{suffix}.mp4"));
-        let status = Command::new(&ffmpeg)
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=red:s=16x16:r=10",
-                "-t",
-                "0.4",
-                "-pix_fmt",
-                "yuv420p",
-                "-y",
-            ])
-            .arg(&path)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let thumbnail = read_video_thumbnail(&path.to_string_lossy()).unwrap();
-        assert_eq!(thumbnail.get(..2), Some([0xff, 0xd8].as_slice()));
-        assert_eq!(
-            thumbnail.get(thumbnail.len().saturating_sub(2)..),
-            Some([0xff, 0xd9].as_slice()),
-        );
-
-        let mut source = NativeVideoSource::open(NativeVideoConfig {
-            kind: NativeVideoSourceKind::File,
-            source: path.to_string_lossy().into_owned(),
-            looping: true,
-            playback_rate: 1.0,
-        })
-        .unwrap();
-        assert_eq!((source.info().width, source.info().height), (16, 16));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut frames = 0;
-        let mut first_pixel = None;
-        while std::time::Instant::now() < deadline && frames < 2 {
-            source
-                .upload_latest(|frame, width, height| {
-                    let NativeVideoFrame::Rgba(rgba) = frame else {
-                        panic!("8-bit test video must use CPU RGBA fallback");
-                    };
-                    assert_eq!(rgba.len(), width as usize * height as usize * 4);
-                    assert_eq!((width, height), (16, 16));
-                    if frames == 0 {
-                        first_pixel = Some(rgba[..4].to_vec());
-                    }
-                    frames += 1;
-                    Ok(())
-                })
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(frames >= 2, "decoder must produce multiple complete frames");
-        let metrics = source.metrics();
-        assert!(metrics.decoded_frames >= metrics.uploaded_frames);
-        assert!(metrics.cpu_copy_bytes >= metrics.uploaded_frames * 16 * 16 * 4);
-        let pixel = first_pixel.expect("decoder must produce a frame");
-        assert!(pixel[0] > 240 && pixel[1] < 16 && pixel[2] < 16 && pixel[3] == 255);
-        source.pause();
-        assert!(source.child.is_none());
-        let uploaded_before_resume = source.metrics().uploaded_frames;
-        source.resume().unwrap();
-        let resume_deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < resume_deadline
-            && source.metrics().uploaded_frames == uploaded_before_resume
-        {
-            source.upload_latest(|_, _, _| Ok(())).unwrap();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(source.metrics().uploaded_frames > uploaded_before_resume);
-        drop(source);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn parses_directshow_video_devices_without_audio_or_aliases() {
-        let devices = super::parse_video_devices(
-            r#"[dshow @ 0001] "Integrated Camera" (video)
-[dshow @ 0001]   Alternative name "@device_pnp_camera"
-[dshow @ 0001] "Microphone Array" (audio)"#,
-        );
-        assert_eq!(
-            devices,
-            vec![super::NativeVideoDevice {
-                id: "Integrated Camera".to_owned(),
-                label: "Integrated Camera".to_owned(),
-            }]
-        );
-    }
-}
+#[path = "native_video_coverage_tests.rs"]
+mod coverage_tests;

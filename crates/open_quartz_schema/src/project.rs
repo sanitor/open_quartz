@@ -47,12 +47,26 @@ pub struct Graph {
 /// other UI toolkit) is responsible for projecting its own change objects into
 /// these commands; the graph owns validation and mutation semantics.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GraphCommand {
-    AddNode { node: ProjectNode },
-    UpdateNode { node: ProjectNode },
-    UpdateNodeData { node_id: NodeId, data: NodeData },
-    UpdateShaderCode { node_id: NodeId, shader_code: String },
+    AddNode {
+        node: ProjectNode,
+    },
+    UpdateNode {
+        node: ProjectNode,
+    },
+    UpdateNodeData {
+        node_id: NodeId,
+        data: NodeData,
+    },
+    UpdateShaderCode {
+        node_id: NodeId,
+        shader_code: String,
+    },
     UpdateInputType {
         node_id: NodeId,
         data_type: DataType,
@@ -63,15 +77,29 @@ pub enum GraphCommand {
         inputs: Vec<super::Port>,
         outputs: Vec<super::Port>,
     },
-    SetNodePosition { node_id: NodeId, position: Position },
-    RemoveNode { node_id: NodeId },
-    Connect { source: PortKey, target: PortKey },
-    Disconnect { edge_id: String },
+    SetNodePosition {
+        node_id: NodeId,
+        position: Position,
+    },
+    RemoveNode {
+        node_id: NodeId,
+    },
+    Connect {
+        source: PortKey,
+        target: PortKey,
+    },
+    Disconnect {
+        edge_id: String,
+    },
 }
 
 /// Inputs to the Rust-owned executable node factory.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum NodeFactoryRequest {
     Shader {
         #[serde(default)]
@@ -225,11 +253,10 @@ impl Graph {
                 .for_node(edge.target.clone()));
             }
             if has_path(&self.edges, &edge.target, &edge.source) {
-                return Err(SdkError::new(
-                    SdkErrorCode::InvalidGraph,
-                    "Graph contains a cycle",
-                )
-                .for_node(edge.target.clone()));
+                return Err(
+                    SdkError::new(SdkErrorCode::InvalidGraph, "Graph contains a cycle")
+                        .for_node(edge.target.clone()),
+                );
             }
         }
         Ok(())
@@ -270,7 +297,7 @@ impl Graph {
 
     pub fn edit(
         &mut self,
-        operation: impl FnOnce(&mut GraphEdit<'_>) -> Result<(), SdkError>,
+        operation: &mut dyn FnMut(&mut GraphEdit<'_>) -> Result<(), SdkError>,
     ) -> Result<GraphChange, SdkError> {
         let mut draft = self.clone();
         let mut changed_nodes = BTreeSet::new();
@@ -290,47 +317,66 @@ impl Graph {
 
     /// Apply one typed graph command atomically.
     pub fn apply_command(&mut self, command: GraphCommand) -> Result<GraphChange, SdkError> {
-        self.edit(|edit| match command {
-            GraphCommand::AddNode { node } => edit.add_node(node),
-            GraphCommand::UpdateNode { node } => {
-                let node_id = NodeId::new(node.id.clone());
-                edit.update_node(node_id, |current| {
-                    *current = node;
-                    Ok(())
-                })
-            }
-            GraphCommand::UpdateNodeData { node_id, data } => {
-                edit.update_node(node_id, |node| {
-                    node.data = data;
-                    Ok(())
-                })
-            }
-            GraphCommand::UpdateShaderCode { .. } => Err(SdkError::new(
-                SdkErrorCode::InvalidState,
-                "Shader code updates must be applied through the project aggregate",
-            )),
-            GraphCommand::UpdateInputType { .. } => Err(SdkError::new(
-                SdkErrorCode::InvalidState,
-                "Input type updates must be applied through the project aggregate",
-            )),
-            GraphCommand::UpdateNodePorts {
-                node_id,
-                inputs,
-                outputs,
-            } => edit.update_node(node_id, |node| {
-                node.data.inputs = inputs;
-                node.data.outputs = outputs;
-                Ok(())
-            }),
-            GraphCommand::SetNodePosition { node_id, position } => {
-                edit.update_node(node_id, |node| {
-                    node.position = position;
-                    Ok(())
-                })
-            }
-            GraphCommand::RemoveNode { node_id } => edit.remove_node(&node_id).map(|_| ()),
-            GraphCommand::Connect { source, target } => edit.connect(source, target),
-            GraphCommand::Disconnect { edge_id } => edit.disconnect(&edge_id).map(|_| ()),
+        let mut draft = self.clone();
+        let mut changed_nodes = BTreeSet::new();
+        {
+            let mut edit = GraphEdit {
+                graph: &mut draft,
+                changed_nodes: &mut changed_nodes,
+            };
+            match command {
+                GraphCommand::AddNode { node } => edit.add_node(node),
+                GraphCommand::UpdateNode { node } => {
+                    let node_id = NodeId::new(node.id.clone());
+                    let mut node = Some(node);
+                    edit.update_node(node_id, &mut |current| {
+                        *current = node.take().expect("update operation runs once");
+                        Ok(())
+                    })
+                }
+                GraphCommand::UpdateNodeData { node_id, data } => {
+                    let mut data = Some(data);
+                    edit.update_node(node_id, &mut |node| {
+                        node.data = data.take().expect("update operation runs once");
+                        Ok(())
+                    })
+                }
+                GraphCommand::UpdateNodePorts {
+                    node_id,
+                    inputs,
+                    outputs,
+                } => {
+                    let mut ports = Some((inputs, outputs));
+                    edit.update_node(node_id, &mut |node| {
+                        let (inputs, outputs) = ports.take().expect("update operation runs once");
+                        node.data.inputs = inputs;
+                        node.data.outputs = outputs;
+                        Ok(())
+                    })
+                }
+                GraphCommand::SetNodePosition { node_id, position } => {
+                    edit.update_node(node_id, &mut |node| {
+                        node.position = position;
+                        Ok(())
+                    })
+                }
+                GraphCommand::UpdateShaderCode { .. } | GraphCommand::UpdateInputType { .. } => {
+                    Err(SdkError::new(
+                        SdkErrorCode::InvalidState,
+                        "Command must be handled by the SDK aggregate",
+                    ))
+                }
+                GraphCommand::RemoveNode { node_id } => edit.remove_node(&node_id).map(|_| ()),
+                GraphCommand::Connect { source, target } => {
+                    edit.connect(source, target).map(|_| ())
+                }
+                GraphCommand::Disconnect { edge_id } => edit.disconnect(&edge_id).map(|_| ()),
+            }?;
+        }
+        draft.validate()?;
+        *self = draft;
+        Ok(GraphChange {
+            changed_nodes: changed_nodes.into_iter().map(NodeId::new).collect(),
         })
     }
 }
@@ -383,20 +429,26 @@ impl GraphEdit<'_> {
     pub fn update_node(
         &mut self,
         node_id: NodeId,
-        operation: impl FnOnce(&mut ProjectNode) -> Result<(), SdkError>,
+        operation: &mut dyn FnMut(&mut ProjectNode) -> Result<(), SdkError>,
     ) -> Result<(), SdkError> {
-        let node = self
-            .graph
+        let node = Self::find_node_mut(self.graph, &node_id)?;
+        operation(node)?;
+        self.changed_nodes.insert(node_id.into_string());
+        Ok(())
+    }
+
+    fn find_node_mut<'a>(
+        graph: &'a mut Graph,
+        node_id: &NodeId,
+    ) -> Result<&'a mut ProjectNode, SdkError> {
+        graph
             .nodes
             .iter_mut()
             .find(|node| node.id == node_id.as_str())
             .ok_or_else(|| {
                 SdkError::new(SdkErrorCode::UnknownNode, "Graph node does not exist")
                     .for_node(node_id.as_str())
-            })?;
-        operation(node)?;
-        self.changed_nodes.insert(node_id.into_string());
-        Ok(())
+            })
     }
 
     pub fn remove_node(&mut self, node_id: &NodeId) -> Result<ProjectNode, SdkError> {
@@ -536,7 +588,11 @@ fn compatible_types(source: DataType, target: DataType, source_node_type: NodeTy
         return true;
     }
     if source == DataType::Auto || target == DataType::Auto {
-        let other = if source == DataType::Auto { target } else { source };
+        let other = if source == DataType::Auto {
+            target
+        } else {
+            source
+        };
         return !matches!(
             other,
             DataType::Sampler2d
@@ -585,3 +641,7 @@ pub struct ProjectFile {
     pub updated_at: String,
     pub graph: Graph,
 }
+
+#[cfg(test)]
+#[path = "project_coverage_tests.rs"]
+mod coverage_tests;

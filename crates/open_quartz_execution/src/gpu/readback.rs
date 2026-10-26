@@ -8,6 +8,10 @@ pub fn align_bytes_per_row(bytes_per_row: u32) -> u32 {
 }
 
 const READBACK_RING_SIZE: usize = 3;
+const FAULT_MAP: u8 = 1;
+const FAULT_POLL: u8 = 2;
+const FAULT_CALLBACK_DROP: u8 = 3;
+const FAULT_COPY: u8 = 4;
 
 struct ReadbackSlot {
     buffer: wgpu::Buffer,
@@ -43,7 +47,11 @@ impl ReadbackStagingRing {
         }
     }
 
-    fn acquire(&self, device: &wgpu::Device, size: u64) -> Result<(usize, wgpu::Buffer), String> {
+    pub(crate) fn acquire(
+        &self,
+        device: &wgpu::Device,
+        size: u64,
+    ) -> Result<(usize, wgpu::Buffer), String> {
         let mut state = self
             .state
             .lock()
@@ -78,7 +86,7 @@ impl ReadbackStagingRing {
         Ok((index, buffer))
     }
 
-    fn release(&self, index: usize) {
+    pub(crate) fn release(&self, index: usize) {
         if let Ok(mut state) = self.state.lock() {
             if let Some(slot) = state.slots.get_mut(index) {
                 slot.busy = false;
@@ -175,15 +183,32 @@ impl GpuBackend {
 
         let slice = readback.slice(..buffer_size);
         let (sender, receiver) = futures_channel::oneshot::channel();
+        #[cfg(test)]
+        let fault = self
+            .readback_fault
+            .load(std::sync::atomic::Ordering::Acquire);
+        #[cfg(not(test))]
+        let fault = 0;
         slice.map_async(wgpu::MapMode::Read, move |result| {
+            if fault == FAULT_CALLBACK_DROP {
+                return;
+            }
+            let result = if fault == FAULT_MAP {
+                Err(wgpu::BufferAsyncError)
+            } else {
+                result
+            };
             let _ = sender.send(result.map_err(|error| error.to_string()));
         });
-        self.device
-            .poll(wgpu::PollType::Wait {
+        let poll_result = if fault == FAULT_POLL {
+            Err(wgpu::PollError::Timeout)
+        } else {
+            self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
             })
-            .map_err(|error| format!("GPU poll failed: {error:?}"))?;
+        };
+        poll_result.map_err(|error| format!("GPU poll failed: {error:?}"))?;
         receiver
             .await
             .map_err(|error| format!("GPU readback callback dropped: {error}"))??;
@@ -191,7 +216,12 @@ impl GpuBackend {
         let mapped = slice
             .get_mapped_range()
             .map_err(|error| format!("Cannot access mapped readback buffer: {error}"))?;
-        let rgba = copy_padded_rgba(&mapped, width, height, bytes_per_row)?;
+        let copy_stride = if fault == FAULT_COPY {
+            0
+        } else {
+            bytes_per_row
+        };
+        let rgba = copy_padded_rgba(&mapped, width, height, copy_stride)?;
         drop(mapped);
         readback.unmap();
         Ok(rgba)
@@ -201,3 +231,7 @@ impl GpuBackend {
 pub fn shared_backend(device: wgpu::Device, queue: wgpu::Queue) -> Arc<GpuBackend> {
     Arc::new(GpuBackend::from_device(device, queue))
 }
+
+#[cfg(test)]
+#[path = "readback_coverage_tests.rs"]
+mod coverage_tests;
