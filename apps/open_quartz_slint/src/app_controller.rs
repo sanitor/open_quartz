@@ -7,8 +7,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use open_quartz_sdk::{
-    Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey, Position,
-    Project, SdkError,
+    Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz, PortId, PortKey,
+    Position, Project, SdkError,
 };
 use slint::ComponentHandle;
 
@@ -18,11 +18,60 @@ use crate::render_bridge::RenderBridge;
 use crate::services::file_service;
 use crate::AppWindow;
 
+#[derive(Clone, Debug)]
+struct InspectorDraft {
+    node_id: String,
+    label: String,
+    shader_code: String,
+    auto_size: bool,
+    output_width: i32,
+    output_height: i32,
+    validation_message: String,
+}
+
+impl InspectorDraft {
+    fn from_node(node: &open_quartz_sdk::ProjectNode) -> Self {
+        Self {
+            node_id: node.id.clone(),
+            label: node.data.label.clone(),
+            shader_code: node.data.shader_code.clone(),
+            auto_size: node.data.auto_size != Some(false),
+            output_width: node.data.width.unwrap_or(512).clamp(1, 8192) as i32,
+            output_height: node.data.height.unwrap_or(512).clamp(1, 8192) as i32,
+            validation_message: node
+                .data
+                .extra
+                .get("parseError")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InspectorChange {
+    Label,
+    Shader,
+    OutputSize,
+}
+
+impl InspectorChange {
+    fn status(self) -> &'static str {
+        match self {
+            Self::Label => "Node name applied through the SDK.",
+            Self::Shader => "Shader source applied through the SDK.",
+            Self::OutputSize => "Output size applied through the SDK.",
+        }
+    }
+}
+
 pub struct AppController {
     window: slint::Weak<AppWindow>,
     project: Arc<Project>,
     renderer: Option<RenderBridge>,
     selected_node_ids: BTreeSet<String>,
+    inspector_draft: Option<InspectorDraft>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
@@ -50,6 +99,7 @@ struct PendingConnection {
 enum EditKind {
     Layout,
     Topology,
+    Content,
 }
 
 impl AppController {
@@ -73,6 +123,7 @@ impl AppController {
             project: Arc::new(project),
             renderer,
             selected_node_ids: BTreeSet::new(),
+            inspector_draft: None,
             clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
@@ -103,6 +154,79 @@ impl AppController {
                 controller
                     .borrow_mut()
                     .save_path(PathBuf::from(path.as_str()));
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_label_draft_changed(move |text| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.busy {
+                    if let Some(draft) = controller.inspector_draft.as_mut() {
+                        draft.label = text.to_string();
+                    }
+                    controller.publish_inspector_dirty();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_shader_draft_changed(move |text| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.busy {
+                    if let Some(draft) = controller.inspector_draft.as_mut() {
+                        draft.shader_code = text.to_string();
+                    }
+                    controller.publish_inspector_dirty();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_output_size_draft_changed(move |width, height, auto_size| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.busy {
+                    if let Some(draft) = controller.inspector_draft.as_mut() {
+                        draft.output_width = width;
+                        draft.output_height = height;
+                        draft.auto_size = auto_size;
+                    }
+                    controller.publish_inspector_dirty();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_apply_label(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .apply_inspector(InspectorChange::Label);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_apply_shader(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .apply_inspector(InspectorChange::Shader);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_apply_output_size(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .apply_inspector(InspectorChange::OutputSize);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_discard_drafts(move || {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.busy {
+                    controller.inspector_draft = None;
+                    controller.publish_inspector();
+                    controller.set_edit_status("Inspector drafts discarded; project unchanged.");
+                }
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -283,15 +407,12 @@ impl AppController {
         window.set_graph_origin_x(projection.origin_x);
         window.set_graph_origin_y(projection.origin_y);
         self.publish_edit_state();
+        self.publish_inspector();
         Some(stats)
     }
 
     fn select_node(&mut self, node_id: &str, additive: bool) {
-        if self.busy {
-            if let Some(window) = self.window.upgrade() {
-                window
-                    .set_io_status("Cannot select a node while project I/O is in progress.".into());
-            }
+        if self.edits_blocked() {
             return;
         }
         if self
@@ -315,13 +436,7 @@ impl AppController {
     }
 
     fn move_node(&mut self, node_id: &str, x: f64, y: f64) {
-        if self.busy {
-            if let Some(window) = self.window.upgrade() {
-                window.set_io_status(
-                    "Cannot move a node while project I/O is in progress; project was not changed."
-                        .into(),
-                );
-            }
+        if self.edits_blocked() {
             return;
         }
         let result = commit_node_position(Arc::make_mut(&mut self.project), node_id, x, y);
@@ -365,8 +480,185 @@ impl AppController {
             self.set_edit_status(
                 "Cannot edit while project I/O is in progress; project unchanged.",
             );
+            return true;
         }
-        self.busy
+        if self.inspector_is_dirty() {
+            self.set_edit_status(
+                "Apply or discard inspector drafts before changing the graph or project.",
+            );
+            return true;
+        }
+        false
+    }
+
+    fn inspector_dirty_fields(&self) -> (bool, bool, bool) {
+        let Some(draft) = &self.inspector_draft else {
+            return (false, false, false);
+        };
+        let Some(node) = self
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.id == draft.node_id)
+        else {
+            return (false, false, false);
+        };
+        let output_dirty = matches!(node.node_type, NodeType::Shader | NodeType::Constant)
+            && (draft.auto_size != (node.data.auto_size != Some(false))
+                || (!draft.auto_size
+                    && (draft.output_width as u32 != node.data.width.unwrap_or(512)
+                        || draft.output_height as u32 != node.data.height.unwrap_or(512))));
+        (
+            draft.label != node.data.label,
+            node.node_type == NodeType::Shader && draft.shader_code != node.data.shader_code,
+            output_dirty,
+        )
+    }
+
+    fn inspector_is_dirty(&self) -> bool {
+        let (label, shader, output) = self.inspector_dirty_fields();
+        label || shader || output
+    }
+
+    fn publish_inspector_dirty(&self) {
+        if let Some(window) = self.window.upgrade() {
+            let (label, shader, output) = self.inspector_dirty_fields();
+            window.set_inspector_label_dirty(label);
+            window.set_inspector_shader_dirty(shader);
+            window.set_inspector_output_size_dirty(output);
+            window.set_inspector_dirty(label || shader || output);
+        }
+    }
+
+    fn publish_inspector(&mut self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let node = if self.selected_node_ids.len() == 1 {
+            self.project
+                .graph()
+                .nodes()
+                .iter()
+                .find(|node| self.selected_node_ids.contains(&node.id))
+        } else {
+            None
+        };
+        let Some(node) = node else {
+            self.inspector_draft = None;
+            window.set_inspector_node_id("".into());
+            window.set_inspector_selection_message(
+                if self.selected_node_ids.is_empty() {
+                    "Select a node to inspect its properties."
+                } else {
+                    "Select one node to edit its properties."
+                }
+                .into(),
+            );
+            self.publish_inspector_dirty();
+            return;
+        };
+        if self
+            .inspector_draft
+            .as_ref()
+            .map(|draft| draft.node_id.as_str())
+            != Some(node.id.as_str())
+        {
+            self.inspector_draft = Some(InspectorDraft::from_node(node));
+        }
+        let draft = self
+            .inspector_draft
+            .as_ref()
+            .expect("selected node has a draft");
+        window.set_inspector_node_id(node.id.as_str().into());
+        window.set_inspector_node_type(format!("{:?}", node.node_type).into());
+        window.set_inspector_is_shader(node.node_type == NodeType::Shader);
+        window.set_inspector_supports_output_size(matches!(
+            node.node_type,
+            NodeType::Shader | NodeType::Constant
+        ));
+        window.set_inspector_node_label(draft.label.as_str().into());
+        window.set_inspector_shader_code(draft.shader_code.as_str().into());
+        window.set_inspector_auto_size(draft.auto_size);
+        window.set_inspector_output_width(draft.output_width);
+        window.set_inspector_output_height(draft.output_height);
+        window.set_inspector_validation_message(draft.validation_message.as_str().into());
+        window.set_inspector_ports(slint::ModelRc::new(slint::VecModel::from(
+            node.data
+                .inputs
+                .iter()
+                .map(|port| (port, false))
+                .chain(node.data.outputs.iter().map(|port| (port, true)))
+                .map(|(port, output)| crate::InspectorPort {
+                    label: port.label.as_str().into(),
+                    data_type: format!("{:?}", port.data_type).into(),
+                    output,
+                })
+                .collect::<Vec<_>>(),
+        )));
+        self.publish_inspector_dirty();
+    }
+
+    fn apply_inspector(&mut self, change: InspectorChange) {
+        if self.busy {
+            return;
+        }
+        let Some(draft) = &self.inspector_draft else {
+            return;
+        };
+        let node_id = draft.node_id.clone();
+        match commit_inspector(Arc::make_mut(&mut self.project), draft, change) {
+            Ok(changed) => {
+                let node = self
+                    .project
+                    .graph()
+                    .nodes()
+                    .iter()
+                    .find(|node| node.id == node_id)
+                    .expect("committed inspector node exists");
+                let fresh = InspectorDraft::from_node(node);
+                let draft = self
+                    .inspector_draft
+                    .as_mut()
+                    .expect("committed draft exists");
+                match change {
+                    InspectorChange::Label => draft.label = fresh.label,
+                    InspectorChange::Shader => {
+                        draft.shader_code = fresh.shader_code;
+                        draft.validation_message = fresh.validation_message;
+                    }
+                    InspectorChange::OutputSize => {
+                        draft.auto_size = fresh.auto_size;
+                        draft.output_width = fresh.output_width;
+                        draft.output_height = fresh.output_height;
+                    }
+                }
+                if changed {
+                    self.undo_edits
+                        .push(if matches!(change, InspectorChange::Label) {
+                            EditKind::Layout
+                        } else {
+                            EditKind::Content
+                        });
+                    self.redo_edits.clear();
+                    if matches!(change, InspectorChange::Label) {
+                        self.publish_graph_projection();
+                    } else {
+                        self.pending_connection = None;
+                        self.publish_project();
+                    }
+                } else {
+                    self.publish_inspector();
+                }
+                self.set_edit_status(change.status());
+            }
+            Err(error) => {
+                self.set_edit_status(&format!(
+                    "Cannot apply inspector edit; project unchanged, draft retained: {}",
+                    error.to_json()
+                ));
+            }
+        }
     }
 
     fn set_edit_status(&self, status: &str) {
@@ -570,11 +862,12 @@ impl AppController {
                 }
                 self.selected_edge_id = None;
                 self.pending_connection = None;
+                self.inspector_draft = None;
                 match kind {
                     EditKind::Layout => {
                         self.publish_graph_projection();
                     }
-                    EditKind::Topology => self.publish_project(),
+                    EditKind::Topology | EditKind::Content => self.publish_project(),
                 }
                 self.set_edit_status(if redo {
                     "Graph edit redone."
@@ -638,7 +931,7 @@ impl AppController {
     }
 
     fn request_file(&mut self, path: PathBuf, save: bool) {
-        if self.busy {
+        if self.edits_blocked() {
             return;
         }
         let Some(window) = self.window.upgrade() else {
@@ -681,6 +974,7 @@ impl AppController {
                 FileResult::Opened { path, project } => {
                     self.project = Arc::new(project);
                     self.selected_node_ids.clear();
+                    self.inspector_draft = None;
                     self.graph_stress_count = None;
                     self.selected_edge_id = None;
                     self.pending_connection = None;
@@ -729,6 +1023,87 @@ impl AppController {
             }
         }
     }
+}
+
+fn commit_inspector(
+    project: &mut Project,
+    draft: &InspectorDraft,
+    change: InspectorChange,
+) -> Result<bool, SdkError> {
+    let node = project
+        .graph()
+        .nodes()
+        .iter()
+        .find(|node| node.id == draft.node_id)
+        .ok_or_else(|| {
+            SdkError::new(
+                open_quartz_sdk::SdkErrorCode::UnknownNode,
+                "Inspector node no longer exists",
+            )
+        })?;
+    let command = match change {
+        InspectorChange::Label => {
+            if node.data.label == draft.label {
+                return Ok(false);
+            }
+            let mut data = node.data.clone();
+            data.label = draft.label.clone();
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(&node.id),
+                data,
+            }
+        }
+        InspectorChange::Shader => {
+            if node.node_type != NodeType::Shader {
+                return Err(SdkError::new(
+                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    "Only Shader nodes have editable WGSL source",
+                ));
+            }
+            if node.data.shader_code == draft.shader_code {
+                return Ok(false);
+            }
+            GraphCommand::UpdateShaderCode {
+                node_id: NodeId::new(&node.id),
+                shader_code: draft.shader_code.clone(),
+            }
+        }
+        InspectorChange::OutputSize => {
+            if !matches!(node.node_type, NodeType::Shader | NodeType::Constant) {
+                return Err(SdkError::new(
+                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    "This node has no output size",
+                ));
+            }
+            if !draft.auto_size
+                && (!(1..=8192).contains(&draft.output_width)
+                    || !(1..=8192).contains(&draft.output_height))
+            {
+                return Err(SdkError::new(
+                    open_quartz_sdk::SdkErrorCode::InvalidGraph,
+                    "Output dimensions must be between 1 and 8192",
+                ));
+            }
+            let same = draft.auto_size == (node.data.auto_size != Some(false))
+                && (draft.auto_size
+                    || (draft.output_width as u32 == node.data.width.unwrap_or(512)
+                        && draft.output_height as u32 == node.data.height.unwrap_or(512)));
+            if same {
+                return Ok(false);
+            }
+            let mut data = node.data.clone();
+            data.auto_size = Some(draft.auto_size);
+            data.width = (!draft.auto_size).then_some(draft.output_width as u32);
+            data.height = (!draft.auto_size).then_some(draft.output_height as u32);
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(&node.id),
+                data,
+            }
+        }
+    };
+    project
+        .apply_graph_command(command, project.graph_revision())
+        .map(|_| true)
 }
 
 fn commit_node_position(
@@ -991,9 +1366,123 @@ mod tests {
     use slint::Model;
 
     use super::{
-        commit_connection, commit_node_position, graph_stress_project, sample_project,
-        GraphViewModel,
+        commit_connection, commit_inspector, commit_node_position, graph_stress_project,
+        sample_project, GraphViewModel, InspectorChange, InspectorDraft,
     };
+
+    #[test]
+    fn inspector_fields_commit_independently_and_undo_as_single_edits() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sample_project(&sdk).unwrap();
+        let original = project.graph_snapshot();
+        let mut draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        let revision = project.graph_revision();
+        assert!(!commit_inspector(&mut project, &draft, InspectorChange::Label).unwrap());
+        assert_eq!(project.graph_revision(), revision);
+        draft.label = "Edited gradient".into();
+        draft.shader_code = draft.shader_code.replace("0.35", "0.75");
+        draft.output_width = 128;
+        draft.output_height = 64;
+        commit_inspector(&mut project, &draft, InspectorChange::Label).unwrap();
+        assert_eq!(project.graph().nodes()[0].data.label, draft.label);
+        assert_eq!(
+            project.graph().nodes()[0].data.shader_code,
+            original.nodes()[0].data.shader_code
+        );
+        commit_inspector(&mut project, &draft, InspectorChange::OutputSize).unwrap();
+        assert_eq!(project.graph().nodes()[0].data.width, Some(128));
+        assert_eq!(project.graph().nodes()[0].data.height, Some(64));
+        commit_inspector(&mut project, &draft, InspectorChange::Shader).unwrap();
+        assert_eq!(project.graph().edges(), original.edges());
+        assert_eq!(
+            project.graph().nodes()[0].data.outputs,
+            original.nodes()[0].data.outputs
+        );
+        let reloaded = sdk
+            .open_project_json(&serde_json::to_string(&project.to_file()).unwrap())
+            .unwrap();
+        assert_eq!(reloaded.graph(), project.graph());
+        project.rollback_graph(project.graph_revision()).unwrap();
+        assert_eq!(
+            project.graph().nodes()[0].data.shader_code,
+            original.nodes()[0].data.shader_code
+        );
+        assert_eq!(project.graph().nodes()[0].data.width, Some(128));
+        project.redo_graph(project.graph_revision()).unwrap();
+        assert_eq!(
+            project.graph().nodes()[0].data.shader_code,
+            draft.shader_code
+        );
+        draft.auto_size = true;
+        commit_inspector(&mut project, &draft, InspectorChange::OutputSize).unwrap();
+        assert_eq!(project.graph().nodes()[0].data.auto_size, Some(true));
+        assert_eq!(project.graph().nodes()[0].data.width, None);
+        assert_eq!(project.graph().nodes()[0].data.height, None);
+    }
+
+    #[test]
+    fn inspector_rejects_connected_port_removal_without_losing_draft_or_project() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sample_project(&sdk).unwrap();
+        let original = project.graph_snapshot();
+        let revision = project.graph_revision();
+        let mut draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        draft.shader_code = "not wgsl".into();
+        assert_eq!(
+            commit_inspector(&mut project, &draft, InspectorChange::Shader)
+                .unwrap_err()
+                .code,
+            SdkErrorCode::InvalidGraph
+        );
+        assert_eq!(project.graph(), &original);
+        assert_eq!(project.graph_revision(), revision);
+        draft.output_width = 0;
+        assert_eq!(
+            commit_inspector(&mut project, &draft, InspectorChange::OutputSize)
+                .unwrap_err()
+                .code,
+            SdkErrorCode::InvalidGraph
+        );
+        assert_eq!(project.graph(), &original);
+        assert_eq!(project.graph_revision(), revision);
+    }
+
+    #[test]
+    fn inspector_preserves_sdk_parse_error_until_source_is_repaired() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sample_project(&sdk).unwrap();
+        project
+            .apply_graph_command(
+                open_quartz_sdk::GraphCommand::Disconnect {
+                    edge_id: project.graph().edges()[0].id.clone(),
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let mut draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        let source = draft.shader_code.clone();
+        draft.shader_code = "not wgsl".into();
+        commit_inspector(&mut project, &draft, InspectorChange::Shader).unwrap();
+        assert_eq!(project.graph().nodes()[0].data.shader_code, "not wgsl");
+        assert!(project.graph().nodes()[0]
+            .data
+            .extra
+            .get("parseError")
+            .and_then(serde_json::Value::as_str)
+            .is_some());
+        let json = serde_json::to_string(&project.to_file()).unwrap();
+        let reloaded = sdk.open_project_json(&json).unwrap();
+        assert_eq!(
+            reloaded.graph().nodes()[0].data.extra,
+            project.graph().nodes()[0].data.extra
+        );
+        draft.shader_code = source;
+        commit_inspector(&mut project, &draft, InspectorChange::Shader).unwrap();
+        assert!(!project.graph().nodes()[0]
+            .data
+            .extra
+            .contains_key("parseError"));
+    }
 
     #[test]
     fn projected_edges_terminate_at_their_actual_ports() {

@@ -16,10 +16,13 @@
 
 - **Slint graph MiniMap** — overlay a bounded all-node overview with a live viewport rectangle; click or drag to center the scaled ScrollView while preserving graph focus and Project state across zoom, Fit View, negative coordinates, resize, and empty graphs.
 
+- **Slint Inspector and WGSL editing** — inspect a single node's identity and ports; edit names, Shader/Constant output sizes, and Shader WGSL through typed SDK commands. Independent Apply/Discard drafts guard graph/project actions, preserve failed edits, and integrate SDK history, Save/Open, parse-error display, and NativeHost refresh. Shader Apply remains reachable in narrow windows; Tauri is unchanged.
+
 ### Tests
 
 - **macOS Slint validation** — verify the Phase 2/3 shell in a release AppKit window on Apple Silicon/Metal with shared texture output, SDK file paths, spatial editing, subgraph Copy/Paste/Undo, zoom/Fit, 300-node Retina rendering, and VoiceOver actions for node headers, ports, edges, and MiniMap; add a macOS CI compile gate.
 - **Slint GPU graph baseline** — benchmark the real 1180×760 Slint tree offscreen through FemtoVG/wgpu 30 on Apple M4 Pro: release steady full-frame p95 is 2.523ms for 100 nodes/150 edges and 3.338ms for 300 nodes/450 edges. Native release AppKit runs stabilize at 60 FPS for both sizes (first intervals: 59 and 51 FPS respectively).
+- **Inspector validation** — add field-isolation/history/persistence and connected-port rejection regressions (32 Slint tests passing); exercise actual text/pointer UI paths offscreen at 1180×760 and 800×540, and verify controller-applied 96×48 NativeHost output plus red RGBA pixels on Apple M4 Pro/Metal. Phase 4 AppKit window acceptance remains pending because the macOS session was locked.
 
 - **Complete Rust SDK 100% coverage gate** — enforce 100% production line, function, and region coverage independently for `open_quartz_schema`, `open_quartz_execution`, `open_quartz_host_api`, `open_quartz_sdk`, the `open_quartz` native/WASM facade, and `open_quartz_bindings`; coverage tests now exercise graph transactions, GPU resource/readback failures, native video lifecycle and FFmpeg failures, ONNX preprocessing/inference/postprocessing, host intents, FFI marshalling, and JNI handle lifetimes.
 - **Cross-platform SDK matrix** — run the Rust coverage gate on Linux, macOS, and Windows, include Windows DXGI/D3D12 tests in the owning execution crate, run WASM browser contracts separately with headless WebGPU configuration, and compile-check Windows, Linux, WASM, and JNI targets.

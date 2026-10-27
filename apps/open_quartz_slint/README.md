@@ -1,8 +1,8 @@
 # OpenQuartz Slint application shell
 
-This is the Phase 3 native application shell. It is a standalone Rust workspace,
-with Slint and its build compiler pinned to **1.18.1**, using the femtovg wgpu
-renderer and wgpu 30 shared-device integration.
+This native application shell includes the first Phase 4 Inspector/editor slice.
+It is a standalone Rust workspace, with Slint and its build compiler pinned to
+**1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
 ## Run
 
@@ -32,7 +32,7 @@ representation and **overwrites an existing file at the entered path**. Parent
 directories must already exist. Relative paths are resolved against the process
 working directory. There is no native file dialog or automatic save.
 
-## Phase 3 boundary
+## Graph and application boundary
 
 - A real Slint window with project name, path entry, Open/Save, I/O and runtime
   status, a scrollable spatial graph, node selection and drag-to-move, typed ports,
@@ -106,14 +106,42 @@ working directory. There is no native file dialog or automatic save.
 - If GPU/host initialization fails, the shell attempts Slint's default UI backend
   and explicitly reports **Renderer not initialized**. It never synthesizes an
   output image. Host graph/render errors and texture import failures are displayed;
-  a render/import failure stops rendering until another open or topology edit.
+  a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-This phase does **not** include an Inspector, shader editing, media/resource loading,
-model controls, or mobile gesture adaptation. Projects requiring
+The shell does **not** yet include uniform/sampling/framebuffer/video forms,
+media/resource loading, model controls, or mobile gesture adaptation. Projects requiring
 external images, video, or inference resources may open and save, but those
 resources are not attached by this shell; resulting host failures are reported
 instead of replaced with sample output. Only host preview outputs supported by
 `NativeHost::preview_source` (currently RGBA8) can be imported.
+
+## Inspector and WGSL editing
+
+- Select exactly one node to inspect its ID, kind, name, and typed input/output
+  ports. Empty/multi-selection shows an explicit selection prompt.
+- Edit the name and use **Apply name**. Shader/Constant nodes also expose
+  **Auto size**, width and height (1–8192), and **Apply output size**. Auto size
+  delegates resolution to the engine; applying it clears explicit dimensions.
+- Shader nodes expose a plain, scrollable WGSL `TextEdit` and a fixed-bottom
+  **Apply shader** button. Built-in node implementations are not source-editable.
+  There is no syntax highlighting, inline GPU linter, or debounced auto-apply.
+- All fields are session-local drafts until their respective Apply action. Applying
+  one field group preserves drafts in other groups. Use **Discard inspector edits**
+  to restore all fields from the committed SDK node without creating a revision.
+- While drafts differ from the project, graph mutations/selection/history and
+  Open/Save are disabled and rejected by the controller. Apply or discard before
+  switching nodes/projects. Project I/O disables Inspector edits and Apply too.
+  Drafts are not saved automatically and are lost on application close.
+- Names and output sizes use SDK `UpdateNodeData` with the complete existing data;
+  WGSL uses SDK `UpdateShaderCode` and its port remapping. Failed connected-port
+  changes preserve the graph, revision, history, and draft. SDK syntax errors can
+  be committed when the graph remains valid; the stored `parseError` is shown in
+  the panel. Apply valid source to clear it. NativeHost/GPU errors are reported in
+  runtime status, not disguised as successful output.
+- Each changed Apply is one SDK history entry. No-op Apply creates no revision.
+  Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
+  source/output-size edits and their history refresh the NativeHost graph.
+  Committed fields and parse errors round-trip through SDK Save/Open.
 
 ## Validation scope
 
@@ -125,6 +153,27 @@ translation-invariant fit bounds including backwards Bezier connections. Clipboa
 coverage includes multi-selection, internal-only edges, custom port ID remapping,
 deep snapshot independence, repeated ID allocation, single-step history, persisted
 copies, and rejected pastes preserving destination, redo, and offset.
+
+The first Inspector/editor slice adds regressions for independent field commits,
+no-op revisions, port ID/edge preservation, single-edit history, output-size
+boundaries and Auto transitions, rejected connected-port changes, persisted parse
+errors, and repair. The permanent Slint suite has **32 passing tests**.
+
+A temporary software-rendered smoke exercised real name/source text inputs,
+Command/Ctrl+A isolation, pointer Apply, draft protection during selection/history/
+file actions, per-field Apply, Undo/Redo, multi-selection, asynchronous Save/Open,
+busy guards, and parse-error display/repair. Screenshots were inspected at
+1180×760 and 800×540; Apply shader stays reachable in the narrow window. Using
+the same controller actions with the real RenderBridge/NativeHost on Apple M4
+Pro/Metal produced 96×48 output after a size edit and RGBA `[255, 0, 0, 255]`
+after applying a red shader (one-pixel readback for this smoke only). Temporary
+smoke code was removed; production presentation still uses shared GPU textures.
+
+**Phase 4 native-window acceptance is pending:** the macOS session was locked
+(`CGSSessionScreenIsLocked = 1`), so the new AppKit surface could not be observed
+through accessibility/screenshots. The offscreen and headless Metal results do
+not substitute for that acceptance. The Phase 2/3 native results below predate
+this Inspector slice.
 
 An ephemeral software-rendered Slint smoke exercised actual pointer events for
 connection selection/deletion, port connection, reconnection, type rejection,

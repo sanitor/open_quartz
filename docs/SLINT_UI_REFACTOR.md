@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2 与 Phase 3 空间 GraphView 已完成 macOS 原生验收；端口编辑、历史、多选复制粘贴、zoom/Fit View、MiniMap、VoiceOver 动作和 100/300 节点原生 60 FPS gate 均通过，尚未切换默认入口
+> 状态：Phase 2/3 已完成 macOS 原生验收；Phase 4 首切片（Inspector、名称/输出尺寸、WGSL Apply）已实现并通过离屏交互与真实 Metal 像素验证，原生窗口验收因锁屏待完成；尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -738,11 +738,12 @@ Spike 范围：
 
 ### 8.6 Phase 4：Inspector 与编辑器
 
-- 先 Port/Sampling/Framebuffer/Video 等表单；
-- Shader 先用 `TextEdit`；
-- 预览先走 `Image`；
-- ONNX 面板先只读状态；
-- 编辑器体验评估后再决定是否自研。
+- **已实现首切片**：单节点 Inspector 显示 ID、类型和只读端口；名称编辑适用于所有节点，Shader/Constant 支持 Auto size、1–8192 输出尺寸；Shader 支持纯文本 WGSL 编辑及固定底部 Apply。名称/尺寸复用 SDK `UpdateNodeData`，源码走 `UpdateShaderCode`，不复制 parser/port 规则。
+- **草稿与错误语义**：各字段组独立 Apply，不覆盖其他组草稿；Discard 恢复提交值。草稿未提交时禁用并拒绝 graph 选择/编辑/历史及 Open/Save，I/O busy 禁用 Inspector。SDK 拒绝连线失效的端口变更时保留项目/revision/history/草稿；可提交的语法错误保留 `parseError` 并展示，源码修复后清除。GPU 编译错误仍由 NativeHost runtime status 显示。
+- **历史与渲染**：每次有变化的 Apply 仅一条 SDK history，no-op 不增加 revision；名称不重启 Renderer，源码/尺寸及其 Undo/Redo 更新 NativeHost。提交值与解析错误随 SDK Save/Open 往返，草稿不自动持久化。
+- **已验证**：Slint app 32 tests 通过；临时离屏真实控件 smoke 覆盖文本输入、Apply、选择/多选、草稿保护、Undo/Redo、busy guard、异步 Save/Open、解析错误/修复，检查 1180×760 和 800×540 截图。经同一控制器修改尺寸和源码后，Apple M4 Pro/Metal NativeHost 输出 96×48 共享纹理，单像素读回红色 RGBA `[255,0,0,255]`。临时 smoke 已移除，生产显示仍无 readback。
+- **原生窗口验收待完成**：系统会话 `CGSSessionScreenIsLocked = 1`，新 AppKit 窗口无法通过 AX/截图观测。需解锁后验收；离屏与 headless Metal 结果不作为 Phase 4 原生通过依据。
+- **后续 Phase 4 切片**：uniform/Port 编辑、Sampling/Framebuffer/Video 表单、只读 ONNX 状态及编辑器体验评估。当前不提供 CodeMirror 级高亮/行内 GPU 诊断，也未切换 Tauri 生产入口。
 
 ### 8.7 Phase 5：运行时功能补齐
 

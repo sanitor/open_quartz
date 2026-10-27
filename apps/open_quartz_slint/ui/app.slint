@@ -1,7 +1,9 @@
+import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
-export { GraphNode, GraphEdge, GraphPort }
+import { Inspector, InspectorPort } from "components/inspector.slint";
+export { GraphNode, GraphEdge, GraphPort, InspectorPort }
 
 export component AppWindow inherits Window {
     title: "OpenQuartz · Slint";
@@ -10,6 +12,7 @@ export component AppWindow inherits Window {
     min-width: 800px;
     min-height: 540px;
     background: Theme.background;
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     in property <string> project-name;
     in-out property <string> project-path;
@@ -23,6 +26,29 @@ export component AppWindow inherits Window {
     in property <float> graph-origin-x;
     in property <float> graph-origin-y;
     in property <bool> busy;
+    in property <string> inspector-node-id;
+    in property <string> inspector-node-type;
+    in property <string> inspector-selection-message;
+    in property <bool> inspector-is-shader;
+    in property <bool> inspector-supports-output-size;
+    in property <bool> inspector-label-dirty;
+    in property <bool> inspector-shader-dirty;
+    in property <bool> inspector-output-size-dirty;
+    in property <bool> inspector-dirty;
+    in property <string> inspector-validation-message;
+    in property <[InspectorPort]> inspector-ports;
+    in-out property <string> inspector-node-label;
+    in-out property <string> inspector-shader-code;
+    in-out property <bool> inspector-auto-size;
+    in-out property <int> inspector-output-width;
+    in-out property <int> inspector-output-height;
+    callback inspector-label-draft-changed(string);
+    callback inspector-shader-draft-changed(string);
+    callback inspector-output-size-draft-changed(int, int, bool);
+    callback inspector-apply-label();
+    callback inspector-apply-shader();
+    callback inspector-apply-output-size();
+    callback inspector-discard-drafts();
     in property <image> renderer-image;
     in property <bool> has-renderer-image;
     callback open-project(string);
@@ -58,7 +84,7 @@ export component AppWindow inherits Window {
             project-name: root.project-name;
             project-path <=> root.project-path;
             runtime-status: root.runtime-status;
-            busy: root.busy;
+            busy: root.busy || root.inspector-dirty;
             open-requested(path) => { root.open-project(path); }
             save-requested(path) => { root.save-project(path); }
         }
@@ -73,7 +99,7 @@ export component AppWindow inherits Window {
                 content-height: root.graph-content-height;
                 origin-x: root.graph-origin-x;
                 origin-y: root.graph-origin-y;
-                busy: root.busy;
+                busy: root.busy || root.inspector-dirty;
                 node-selected(node-id, additive) => { root.graph-node-selected(node-id, additive); }
                 node-moved(node-id, x, y) => { root.graph-node-moved(node-id, x, y); }
                 selected-edge-id: root.selected-edge-id;
@@ -98,33 +124,65 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }
-            Rectangle {
-                background: Theme.panel;
-                border-radius: 8px;
+            VerticalLayout {
+                spacing: 12px;
                 horizontal-stretch: 1;
-                vertical-stretch: 1;
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 10px;
-                    Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; }
-                    Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
-                    Rectangle {
-                        background: #080b11;
-                        horizontal-stretch: 1;
-                        vertical-stretch: 1;
-                        Image {
-                            width: parent.width;
-                            height: parent.height;
-                            source: root.renderer-image;
-                            image-fit: contain;
-                        }
-                        if !root.has-renderer-image: Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "No renderer image";
-                            color: Theme.secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                Inspector {
+                    node-id: root.inspector-node-id;
+                    node-type: root.inspector-node-type;
+                    selection-message: root.inspector-selection-message;
+                    project-busy: root.busy;
+                    is-shader: root.inspector-is-shader;
+                    supports-output-size: root.inspector-supports-output-size;
+                    label-dirty: root.inspector-label-dirty;
+                    shader-dirty: root.inspector-shader-dirty;
+                    output-size-dirty: root.inspector-output-size-dirty;
+                    inspector-dirty: root.inspector-dirty;
+                    validation-message: root.inspector-validation-message;
+                    ports: root.inspector-ports;
+                    node-label <=> root.inspector-node-label;
+                    shader-code <=> root.inspector-shader-code;
+                    auto-size <=> root.inspector-auto-size;
+                    output-width <=> root.inspector-output-width;
+                    output-height <=> root.inspector-output-height;
+                    label-draft-changed(text) => { root.inspector-label-draft-changed(text); }
+                    shader-draft-changed(text) => { root.inspector-shader-draft-changed(text); }
+                    output-size-draft-changed(width, height, auto) => { root.inspector-output-size-draft-changed(width, height, auto); }
+                    apply-label => { root.inspector-apply-label(); }
+                    apply-shader => { root.inspector-apply-shader(); }
+                    apply-output-size => { root.inspector-apply-output-size(); }
+                    discard-drafts => { root.inspector-discard-drafts(); }
+                    horizontal-stretch: 1;
+                    vertical-stretch: 3;
+                }
+                Rectangle {
+                    background: Theme.panel;
+                    border-radius: 8px;
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; }
+                        Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
+                        Rectangle {
+                            background: #080b11;
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: root.renderer-image;
+                                image-fit: contain;
+                            }
+                            if !root.has-renderer-image: Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "No renderer image";
+                                color: Theme.secondary;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }

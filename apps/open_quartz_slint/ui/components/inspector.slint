@@ -1,0 +1,158 @@
+import { Button, CheckBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct InspectorPort {
+    label: string,
+    data-type: string,
+    output: bool,
+}
+
+export component Inspector inherits Rectangle {
+    in property <string> node-id;
+    in property <string> node-type;
+    in property <string> selection-message;
+    in property <bool> project-busy;
+    in property <bool> is-shader;
+    in property <bool> supports-output-size;
+    in property <bool> label-dirty;
+    in property <bool> shader-dirty;
+    in property <bool> output-size-dirty;
+    in property <bool> inspector-dirty;
+    in property <string> validation-message;
+    in property <[InspectorPort]> ports;
+    in-out property <string> node-label;
+    in-out property <string> shader-code;
+    in-out property <bool> auto-size;
+    in-out property <int> output-width;
+    in-out property <int> output-height;
+    callback label-draft-changed(string);
+    callback shader-draft-changed(string);
+    callback output-size-draft-changed(int, int, bool);
+    callback apply-label();
+    callback apply-shader();
+    callback apply-output-size();
+    callback discard-drafts();
+
+    background: Theme.panel;
+    border-radius: 8px;
+    min-width: 220px;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text { text: "Inspector"; color: Theme.foreground; font-size: 17px; font-weight: 600; }
+        if root.inspector-dirty: VerticalLayout {
+            spacing: 4px;
+            Text { text: "Unapplied drafts · graph and file actions paused"; color: Theme.accent; wrap: word-wrap; font-size: 11px; }
+            Button {
+                text: "Discard inspector edits";
+                enabled: !root.project-busy;
+                clicked => { root.discard-drafts(); }
+            }
+        }
+        if root.node-id == "": Text {
+            text: root.selection-message;
+            color: Theme.secondary;
+            wrap: word-wrap;
+            vertical-stretch: 1;
+            vertical-alignment: center;
+        }
+        if root.node-id != "": ScrollView {
+            content-width: self.visible-width;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                alignment: start;
+                spacing: 10px;
+                Text { text: root.node-type + " · " + root.node-id; color: Theme.secondary; font-size: 11px; overflow: elide; }
+
+                Text { text: "Name"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                LineEdit {
+                    text <=> root.node-label;
+                    enabled: !root.project-busy;
+                    placeholder-text: "Node name";
+                    edited => { root.label-draft-changed(self.text); }
+                }
+                Button {
+                    text: "Apply name";
+                    enabled: root.label-dirty && !root.project-busy;
+                    clicked => { root.apply-label(); }
+                }
+
+                if root.supports-output-size: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Output"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    CheckBox {
+                        text: "Auto size";
+                        checked <=> root.auto-size;
+                        enabled: !root.project-busy;
+                        toggled => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Width"; color: Theme.secondary; vertical-alignment: center; }
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 8192;
+                            value <=> root.output-width;
+                            enabled: !root.project-busy && !root.auto-size;
+                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Height"; color: Theme.secondary; vertical-alignment: center; }
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 8192;
+                            value <=> root.output-height;
+                            enabled: !root.project-busy && !root.auto-size;
+                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                        }
+                    }
+                    Button {
+                        text: "Apply output size";
+                        enabled: root.output-size-dirty && !root.project-busy;
+                        clicked => { root.apply-output-size(); }
+                    }
+                }
+
+                if root.is-shader: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "WGSL source"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    TextEdit {
+                        text <=> root.shader-code;
+                        font-family: "Menlo";
+                        font-size: 12px;
+                        wrap: no-wrap;
+                        enabled: !root.project-busy;
+                        min-height: 180px;
+                        vertical-stretch: 1;
+                        edited => { root.shader-draft-changed(self.text); }
+                    }
+                    if root.validation-message != "": Text {
+                        text: "Shader parse error: " + root.validation-message;
+                        color: #ff9b8f;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.ports.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Ports"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    for port in root.ports: Text {
+                        text: (port.output ? "OUT  " : "IN   ") + port.label + "  ·  " + port.data-type;
+                        color: Theme.secondary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+
+            }
+        }
+        if root.node-id != "" && root.is-shader: Button {
+            text: "Apply shader";
+            enabled: root.shader-dirty && !root.project-busy;
+            clicked => { root.apply-shader(); }
+        }
+    }
+}
