@@ -11,8 +11,6 @@ const NODE_HEIGHT: f32 = 92.0;
 const PORT_TOP: f32 = 72.0;
 const PORT_SPACING: f32 = 24.0;
 const CONTENT_PADDING: f32 = 24.0;
-const MIN_CONTENT_WIDTH: f32 = 640.0;
-const MIN_CONTENT_HEIGHT: f32 = 480.0;
 
 pub struct GraphViewModel {
     pub nodes: ModelRc<GraphNode>,
@@ -37,25 +35,32 @@ impl GraphViewModel {
             .enumerate()
             .map(|(index, node)| (node.id.as_str(), index))
             .collect::<HashMap<_, _>>();
-        let (min_x, min_y, max_x, max_y) = graph.nodes().iter().fold(
-            (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32),
-            |(min_x, min_y, max_x, max_y), node| {
+        // Tight graph-space bounds keep Fit View independent of the world's origin.
+        let bounds = graph
+            .nodes()
+            .iter()
+            .map(|node| {
                 let x = node.position.x as f32;
                 let y = node.position.y as f32;
                 let height = node_height(node.data.inputs.len().max(node.data.outputs.len()));
-                (
-                    min_x.min(x),
-                    min_y.min(y),
-                    max_x.max(x),
-                    max_y.max(y + height),
-                )
-            },
-        );
+                (x, y, x + NODE_WIDTH, y + height)
+            })
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+        let (mut min_x, min_y, mut max_x, max_y) = bounds.unwrap_or((0.0, 0.0, 0.0, 0.0));
+        // Include the Bezier control hull, including backwards-running connections.
+        for edge in graph.edges() {
+            if let (Some(&source), Some(&target)) = (
+                node_indices.get(edge.source.as_str()),
+                node_indices.get(edge.target.as_str()),
+            ) {
+                min_x = min_x.min(graph.nodes()[target].position.x as f32 - 48.0);
+                max_x = max_x.max(graph.nodes()[source].position.x as f32 + NODE_WIDTH + 48.0);
+            }
+        }
         let origin_x = CONTENT_PADDING - min_x;
         let origin_y = CONTENT_PADDING - min_y;
-        let content_width =
-            (max_x + origin_x + NODE_WIDTH + CONTENT_PADDING).max(MIN_CONTENT_WIDTH);
-        let content_height = (max_y + origin_y + CONTENT_PADDING).max(MIN_CONTENT_HEIGHT);
+        let content_width = max_x - min_x + CONTENT_PADDING * 2.0;
+        let content_height = max_y - min_y + CONTENT_PADDING * 2.0;
         let nodes = graph
             .nodes()
             .iter()
@@ -153,5 +158,77 @@ fn project_port(port: &Port, index: usize, output: bool) -> GraphPort {
         label: format!("{} · {:?}", port.label, port.data_type).into(),
         y: port_y(index),
         output,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_quartz_sdk::{
+        Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey,
+        Position,
+    };
+    use slint::Model;
+
+    #[test]
+    fn fit_bounds_ignore_world_origin_and_include_backwards_bezier_hull() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sdk.create_project("Backwards connection");
+        let mut nodes = Vec::new();
+        for x in [400.0, 0.0] {
+            let (node, _) = project
+                .create_graph_node(
+                    NodeFactoryRequest::Math {
+                        position: Some(Position { x, y: 0.0 }),
+                        op: "add".into(),
+                    },
+                    project.graph_revision(),
+                )
+                .unwrap();
+            nodes.push(node);
+        }
+        project
+            .apply_graph_command(
+                GraphCommand::Connect {
+                    source: PortKey::new(
+                        NodeId::new(&nodes[0].id),
+                        PortId::new(&nodes[0].data.outputs[0].id),
+                    ),
+                    target: PortKey::new(
+                        NodeId::new(&nodes[1].id),
+                        PortId::new(&nodes[1].data.inputs[1].id),
+                    ),
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let original = project.graph_snapshot();
+        let baseline = GraphViewModel::from_project(&project, None);
+        for (dx, dy) in [(12000.0, 8000.0), (-12000.0, -8000.0)] {
+            let mut graph = original.clone();
+            for node in &mut graph.nodes {
+                node.position.x += dx;
+                node.position.y += dy;
+            }
+            project
+                .replace_graph(graph, project.graph_revision())
+                .unwrap();
+            let projection = GraphViewModel::from_project(&project, None);
+            assert_eq!(projection.content_width, baseline.content_width);
+            assert_eq!(projection.content_height, baseline.content_height);
+            for index in 0..projection.nodes.row_count() {
+                let node = projection.nodes.row_data(index).unwrap();
+                let before = baseline.nodes.row_data(index).unwrap();
+                assert_eq!(node.x + projection.origin_x, before.x + baseline.origin_x);
+                assert_eq!(node.y + projection.origin_y, before.y + baseline.origin_y);
+                assert!(node.y + projection.origin_y + node.height < projection.content_height);
+            }
+            let edge = projection.edges.row_data(0).unwrap();
+            assert!(edge.target_x - 48.0 + projection.origin_x >= CONTENT_PADDING);
+            assert!(
+                edge.source_x + 48.0 + projection.origin_x
+                    <= projection.content_width - CONTENT_PADDING
+            );
+        }
     }
 }

@@ -36,7 +36,7 @@ working directory. There is no native file dialog or automatic save.
 
 - A real Slint window with project name, path entry, Open/Save, I/O and runtime
   status, a scrollable spatial graph, node selection and drag-to-move, typed ports,
-  editable connection paths, Undo/Redo, and renderer output.
+  editable connection paths, Undo/Redo, zoom/Fit View, and renderer output.
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
   computes padded scroll content bounds. Its origin offset keeps loaded nodes with
   negative coordinates reachable while preserving graph-space edge coordinates.
@@ -56,6 +56,19 @@ working directory. There is no native file dialog or automatic save.
   fixture construction is not exposed as user undo history. History is not saved.
   Topology edits and their undo/redo refresh NativeHost; layout-only history does
   not restart rendering.
+- **− / +** change zoom by a factor of 1.25, with a manual range of **1%–200%**.
+  **100%** resets scale while preserving the viewport center where bounds allow.
+  Scrollbars/trackpad scrolling navigate the scaled canvas. **Fit View** centers
+  the entire graph (including backwards Bezier control bounds) without enlarging
+  past 100%; while active it adapts to window and graph bounds changes. Manual zoom
+  exits Fit mode. Empty graphs disable Fit View. Opening a project resets to 100%
+  and clears scroll offsets. View state is session-local: it neither changes graph
+  revisions/history nor gets saved to the project.
+- Nodes, ports, edge markers and drag previews use the same scale. Drag deltas are
+  converted back to graph coordinates; the 3px threshold remains in screen pixels.
+  Below 25%, labels are omitted for an overview; geometry and hit areas still scale.
+  Geometry is scaled explicitly rather than relying on backend transforms, keeping
+  the software fallback and femtovg-wgpu hit testing consistent.
 - `AppController` owns the SDK `Project` and updates Slint properties/models.
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
@@ -73,8 +86,8 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open or topology edit.
 
-This phase does **not** include an Inspector, shader editing, copy/paste, graph zoom
-or fit-view controls, media/resource loading, or model controls. Projects requiring
+This phase does **not** include an Inspector, shader editing, copy/paste, MiniMap,
+media/resource loading, or model controls. Projects requiring
 external images, video, or inference resources may open and save, but those
 resources are not attached by this shell; resulting host failures are reported
 instead of replaced with sample output. Only host preview outputs supported by
@@ -85,7 +98,8 @@ instead of replaced with sample output. Only host preview outputs supported by
 The crate contains unit coverage for multi-port edge endpoints, spatial bounds,
 persisted node movement, no-op revisions, atomic occupied-input replacement and
 reconnection, failed type/cycle edits preserving graph/history, deterministic stress
-fixtures, CLI option combinations, dash-prefixed paths, and the 300-node cap.
+fixtures, CLI option combinations, dash-prefixed paths, the 300-node cap, and tight
+translation-invariant fit bounds including backwards Bezier connections.
 
 An ephemeral software-rendered Slint smoke exercised actual pointer events for
 connection selection/deletion, port connection, reconnection, type rejection,
@@ -95,6 +109,14 @@ Apple M4 Pro/Metal smoke observed a disconnected Renderer report its missing inp
 clear its image, and resume 640×360 GPU texture output after reconnect and redo.
 The current macOS session exposed no native accessibility window, so these software
 screenshots do not replace native-window acceptance or establish a 60 FPS result.
+
+A separate viewport pointer smoke verified 80%/125% drag conversion, the screen-pixel
+selection threshold, scaled port/edge hit testing, graph Undo, center preservation
+after scrolling at 200% then zooming to 160%, and unchanged project data during
+view-only operations. Screenshots covered manual 1%/200%, a translated 300-node graph
+in Fit View at 1180×760 and 800×540, resize adaptation, empty graphs, and asynchronous
+Open resetting Fit mode to 100%. The first and last stress nodes remained selectable
+in the fitted overview. The temporary smoke code was removed after verification.
 
 In debug builds, the package disables debug assertions only for `wgpu-core`. Slint keeps
 the manually supplied queue in its thread-local context, while wgpu-core's debug-only

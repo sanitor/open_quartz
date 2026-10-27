@@ -601,6 +601,7 @@ impl AppController {
                         format!("Opened {} through the Rust SDK.", path.display()).into(),
                     );
                     self.publish_project();
+                    window.invoke_reset_graph_view();
                 }
                 FileResult::Saved(path) => {
                     window.set_project_path(path.to_string_lossy().as_ref().into());

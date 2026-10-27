@@ -10,6 +10,8 @@
 
 - **Slint connection editing** — project actual typed ports and per-port edge endpoints; add click-to-connect, occupied-input replacement, atomic endpoint reconnection, edge selection/deletion, Cancel, and SDK-backed Undo/Redo. Failed type/cycle edits preserve graph and history, topology changes refresh NativeHost, and layout-only undo leaves rendering running.
 
+- **Slint graph viewport** — add center-anchored 1%–200% manual zoom, 100% reset and resize-aware Fit View over tight graph/Bezier bounds. Scale ports, edge markers and screen-to-world drag conversion consistently, hide labels in low-zoom overviews, and reset session-local view state when opening a project without recording graph edits.
+
 ### Tests
 
 - **macOS Slint validation** — verify the Phase 2 shell on Apple Silicon/Metal with a shared wgpu device/queue, live renderer texture import, SDK save/open and error paths, empty-graph startup, and clean native-window shutdown; add a macOS CI compile gate.

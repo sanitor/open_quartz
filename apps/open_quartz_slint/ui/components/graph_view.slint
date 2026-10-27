@@ -59,6 +59,35 @@ export component GraphView inherits Rectangle {
     private property <length> drag-offset-x: 0px;
     private property <length> drag-offset-y: 0px;
 
+    private property <float> manual-zoom: 1;
+    private property <bool> fitting: false;
+    private property <float> zoom: root.fitting && root.nodes.length > 0
+        ? min(1, max(0.000001, (scroll.visible-width / 1px - 16) / root.content-width), max(0.000001, (scroll.visible-height / 1px - 16) / root.content-height))
+        : root.manual-zoom;
+    private property <length> canvas-offset-x: max(0px, (canvas.width - root.content-width * root.zoom * 1px) / 2);
+    private property <length> canvas-offset-y: max(0px, (canvas.height - root.content-height * root.zoom * 1px) / 2);
+    private property <float> grid-step: 64 * max(1, ceil(max(root.content-width, root.content-height) / 8192));
+    // Updating the readout after layout avoids a zoom -> text metrics -> viewport loop.
+    changed zoom => { zoom-readout.text = round(root.zoom * 100) + "%"; }
+
+    function set-zoom(value: float) {
+        if (root.drag-node-index >= 0) { return; }
+        // Preserve the graph point under the viewport center, clamping at its bounds.
+        let graph-x = (scroll.visible-width / 2 - scroll.content-x - root.canvas-offset-x) / root.zoom;
+        let graph-y = (scroll.visible-height / 2 - scroll.content-y - root.canvas-offset-y) / root.zoom;
+        root.manual-zoom = clamp(value, 0.01, 2);
+        root.fitting = false;
+        scroll.content-x = clamp(scroll.visible-width / 2 - graph-x * root.zoom - root.canvas-offset-x, min(0px, scroll.visible-width - scroll.content-width), 0px);
+        scroll.content-y = clamp(scroll.visible-height / 2 - graph-y * root.zoom - root.canvas-offset-y, min(0px, scroll.visible-height - scroll.content-height), 0px);
+    }
+
+    public function reset-view() {
+        root.fitting = false;
+        root.manual-zoom = 1;
+        scroll.content-x = 0px;
+        scroll.content-y = 0px;
+    }
+
     background: Theme.panel;
     border-radius: 8px;
 
@@ -80,6 +109,25 @@ export component GraphView inherits Rectangle {
             Button { text: "Delete edge"; enabled: !root.busy && root.selected-edge-id != ""; clicked => { root.delete-edge(); } }
             Button { text: "Cancel"; enabled: !root.busy && root.connection-active; clicked => { root.cancel-connection(); } }
         }
+        HorizontalLayout {
+            spacing: 4px;
+            Button { text: "−"; accessible-label: "Zoom out"; enabled: root.zoom > 0.01 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom / 1.25); } }
+            zoom-readout := Text {
+                min-width: 48px; max-width: 48px; preferred-width: 48px;
+                min-height: 28px; max-height: 28px; preferred-height: 28px;
+                text: "100%";
+                color: Theme.foreground;
+                vertical-alignment: center; horizontal-alignment: center;
+            }
+            Button { text: "+"; accessible-label: "Zoom in"; enabled: root.zoom < 2 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom * 1.25); } }
+            Button { text: "100%"; accessible-label: "Reset zoom to 100 percent"; enabled: root.drag-node-index < 0; clicked => { root.set-zoom(1); } }
+            Button {
+                text: "Fit View";
+                primary: root.fitting;
+                enabled: root.nodes.length > 0 && root.drag-node-index < 0;
+                clicked => { root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; }
+            }
+        }
         Text {
             text: root.connection-active ? "Choose an input to connect; choose an output to change source. Cancel keeps the graph unchanged." : "Output then input connects/replaces. Click a connected input or link marker to select an edge.";
             color: Theme.secondary;
@@ -87,29 +135,29 @@ export component GraphView inherits Rectangle {
             font-size: 11px;
         }
 
-        ScrollView {
-            content-width: root.content-width * 1px;
-            content-height: root.content-height * 1px;
+        scroll := ScrollView {
+            content-width: max(self.visible-width, root.content-width * root.zoom * 1px);
+            content-height: max(self.visible-height, root.content-height * root.zoom * 1px);
             horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
             vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
             mouse-drag-pan-enabled: false;
 
             canvas := Rectangle {
-                width: root.content-width * 1px;
-                height: root.content-height * 1px;
+                width: scroll.content-width;
+                height: scroll.content-height;
                 background: #121925;
                 border-color: Theme.border;
                 border-width: 1px;
                 border-radius: 6px;
 
-                for grid-column in 64: Rectangle {
-                    x: grid-column * 64px;
+                for grid-column in ceil(root.content-width / root.grid-step): Rectangle {
+                    x: root.canvas-offset-x + grid-column * root.grid-step * 1px * root.zoom;
                     width: 1px;
                     height: parent.height;
                     background: #1d2939;
                 }
-                for grid-row in 64: Rectangle {
-                    y: grid-row * 64px;
+                for grid-row in ceil(root.content-height / root.grid-step): Rectangle {
+                    y: root.canvas-offset-y + grid-row * root.grid-step * 1px * root.zoom;
                     width: parent.width;
                     height: 1px;
                     background: #1d2939;
@@ -120,39 +168,54 @@ export component GraphView inherits Rectangle {
                     height: canvas.height;
                     fit: preserve;
                     stroke: root.selected-edge-id == edge.edge-id ? Theme.accent : #56708f;
-                    stroke-width: 2px;
+                    stroke-width: max(0.5px, 2px * root.zoom);
                     MoveTo {
-                        x: edge.source-x + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
-                        y: edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
+                        x: (edge.source-x + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
+                        y: (edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
                     }
                     CubicTo {
-                        control-1-x: edge.source-x + 48 + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
-                        control-1-y: edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
-                        control-2-x: edge.target-x - 48 + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
-                        control-2-y: edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
-                        x: edge.target-x + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0);
-                        y: edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0);
+                        control-1-x: (edge.source-x + 48 + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
+                        control-1-y: (edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
+                        control-2-x: (edge.target-x - 48 + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
+                        control-2-y: (edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
+                        x: (edge.target-x + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
+                        y: (edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
                     }
                 }
 
-                for edge in root.edges: Button {
-                    x: (edge.source-x + edge.target-x) / 2 * 1px + root.origin-x * 1px
-                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-x / 2 : 0px) - 12px;
-                    y: (edge.source-y + edge.target-y) / 2 * 1px + root.origin-y * 1px
-                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-y / 2 : 0px) - 12px;
-                    width: 24px;
-                    height: 24px;
-                    text: root.selected-edge-id == edge.edge-id ? "●" : "○";
+                for edge in root.edges: TouchArea {
+                    x: root.canvas-offset-x + ((edge.source-x + edge.target-x) / 2 * 1px + root.origin-x * 1px
+                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-x / 2 : 0px) - 12px) * root.zoom;
+                    y: root.canvas-offset-y + ((edge.source-y + edge.target-y) / 2 * 1px + root.origin-y * 1px
+                        + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-y / 2 : 0px) - 12px) * root.zoom;
+                    width: 24px * root.zoom;
+                    height: 24px * root.zoom;
                     accessible-label: "Select connection " + edge.edge-id;
                     enabled: !root.busy;
                     clicked => { root.edge-selected(edge.edge-id); }
+                    Rectangle {
+                        width: parent.width; height: parent.height;
+                        background: #263f56;
+                        border-radius: 12px * root.zoom;
+                        border-width: 1px * root.zoom;
+                        border-color: root.selected-edge-id == edge.edge-id ? Theme.accent : Theme.border;
+                        if root.zoom >= 0.25: Text {
+                            width: parent.width; height: parent.height;
+                            text: root.selected-edge-id == edge.edge-id ? "●" : "○";
+                            color: Theme.foreground;
+                            font-size: 12px * root.zoom;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    accessible-role: button;
                 }
 
                 for node[index] in root.nodes: node-area := TouchArea {
-                    x: (node.x + root.origin-x) * 1px;
-                    y: (node.y + root.origin-y) * 1px;
-                    width: node.width * 1px;
-                    height: node.height * 1px;
+                    x: root.canvas-offset-x + (node.x + root.origin-x) * root.zoom * 1px;
+                    y: root.canvas-offset-y + (node.y + root.origin-y) * root.zoom * 1px;
+                    width: node.width * root.zoom * 1px;
+                    height: node.height * root.zoom * 1px;
                     enabled: !root.busy;
 
                     pointer-event(event) => {
@@ -171,8 +234,8 @@ export component GraphView inherits Rectangle {
                             root.drag-offset-y = 0px;
                         } else if (event.kind == PointerEventKind.up) {
                             if (root.drag-node-index == index
-                                    && (Math.abs(root.drag-offset-x) >= 3px
-                                        || Math.abs(root.drag-offset-y) >= 3px)) {
+                                    && (Math.abs(root.drag-offset-x) * root.zoom >= 3px
+                                        || Math.abs(root.drag-offset-y) * root.zoom >= 3px)) {
                                 root.node-moved(
                                     node.node-id,
                                     node.x + root.drag-offset-x / 1px,
@@ -189,56 +252,56 @@ export component GraphView inherits Rectangle {
 
                     moved => {
                         if (self.pressed && root.drag-node-index == index) {
-                            root.drag-offset-x = self.mouse-x - self.pressed-x;
-                            root.drag-offset-y = self.mouse-y - self.pressed-y;
+                            root.drag-offset-x = (self.mouse-x - self.pressed-x) / root.zoom;
+                            root.drag-offset-y = (self.mouse-y - self.pressed-y) / root.zoom;
                         }
                     }
 
                     Rectangle {
                         private property <bool> highlighted: root.drag-node-index >= 0 ? root.drag-node-index == index : node.selected;
-                        x: root.drag-node-index == index ? root.drag-offset-x : 0px;
-                        y: root.drag-node-index == index ? root.drag-offset-y : 0px;
+                        x: root.drag-node-index == index ? root.drag-offset-x * root.zoom : 0px;
+                        y: root.drag-node-index == index ? root.drag-offset-y * root.zoom : 0px;
                         width: parent.width;
                         height: parent.height;
                         background: self.highlighted ? #263f56 : Theme.card;
                         border-color: self.highlighted ? Theme.accent : Theme.border;
-                        border-width: self.highlighted ? 2px : 1px;
-                        border-radius: 7px;
+                        border-width: (self.highlighted ? 2px : 1px) * root.zoom;
+                        border-radius: 7px * root.zoom;
 
-                        Text {
-                            x: 10px; y: 8px; width: parent.width - 20px; height: 22px;
+                        if root.zoom >= 0.25: Text {
+                            x: 10px * root.zoom; y: 8px * root.zoom; width: parent.width - 20px * root.zoom; height: 22px * root.zoom;
                             text: node.label;
                             color: Theme.accent;
-                            font-size: 15px;
+                            font-size: 15px * root.zoom;
                             overflow: elide;
                         }
-                        Text {
-                            x: 10px; y: 32px; width: parent.width - 20px; height: 18px;
+                        if root.zoom >= 0.25: Text {
+                            x: 10px * root.zoom; y: 32px * root.zoom; width: parent.width - 20px * root.zoom; height: 18px * root.zoom;
                             text: node.kind;
                             color: Theme.secondary;
-                            font-size: 12px;
+                            font-size: 12px * root.zoom;
                             overflow: elide;
                         }
                         for port in node.ports: port-area := TouchArea {
                             x: port.output ? parent.width / 2 : 0px;
-                            y: port.y * 1px - 11px;
+                            y: (port.y * 1px - 11px) * root.zoom;
                             width: parent.width / 2;
-                            height: 22px;
+                            height: 22px * root.zoom;
                             enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
                             clicked => { root.port-selected(node.node-id, port.port-id, port.output); }
                             Rectangle {
-                                x: port.output ? parent.width - 5px : -5px;
-                                y: 6px; width: 10px; height: 10px;
-                                border-radius: 5px;
+                                x: port.output ? parent.width - 5px * root.zoom : -5px * root.zoom;
+                                y: 6px * root.zoom; width: 10px * root.zoom; height: 10px * root.zoom;
+                                border-radius: 5px * root.zoom;
                                 background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : #89a9ce;
                             }
-                            Text {
-                                x: 8px; width: parent.width - 16px; height: parent.height;
+                            if root.zoom >= 0.25: Text {
+                                x: 8px * root.zoom; width: parent.width - 16px * root.zoom; height: parent.height;
                                 text: port.label;
                                 color: port-area.has-hover ? Theme.accent : Theme.foreground;
-                                font-size: 10px;
+                                font-size: 10px * root.zoom;
                                 vertical-alignment: center;
                                 horizontal-alignment: port.output ? right : left;
                                 overflow: elide;

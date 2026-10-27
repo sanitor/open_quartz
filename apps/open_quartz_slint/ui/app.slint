@@ -42,6 +42,8 @@ export component AppWindow inherits Window {
     callback graph-cancel-connection();
     callback graph-undo();
     callback graph-redo();
+    callback reset-graph-view();
+    reset-graph-view => { graph-view.reset-view(); }
 
     VerticalLayout {
         padding: 16px;
@@ -57,7 +59,7 @@ export component AppWindow inherits Window {
         Text { text: root.io-status; color: Theme.foreground; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 12px;
-            GraphView {
+            graph-view := GraphView {
                 nodes: root.graph-nodes;
                 edges: root.graph-edges;
                 summary: root.graph-summary;
