@@ -263,6 +263,7 @@ export component GraphView inherits Rectangle {
                     accessible-label: "Select connection " + edge.edge-id;
                     enabled: !root.busy;
                     clicked => { graph-focus.focus(); root.edge-selected(edge.edge-id); }
+                    accessible-action-default => { self.clicked(); }
                     Rectangle {
                         width: parent.width; height: parent.height;
                         background: #263f56;
@@ -338,6 +339,14 @@ export component GraphView inherits Rectangle {
                         border-color: self.highlighted ? Theme.accent : Theme.border;
                         border-width: (self.highlighted ? 2px : 1px) * root.zoom;
                         border-radius: 7px * root.zoom;
+                        Rectangle {
+                            width: parent.width;
+                            height: min(parent.height, 58px * root.zoom);
+                            accessible-enabled: !root.busy;
+                            accessible-role: button;
+                            accessible-label: "Select node " + node.label;
+                            accessible-action-default => { root.node-selected(node.node-id, false); graph-focus.focus(); }
+                        }
 
                         if root.zoom >= 0.25: Text {
                             x: 10px * root.zoom; y: 8px * root.zoom; width: parent.width - 20px * root.zoom; height: 22px * root.zoom;
@@ -362,6 +371,7 @@ export component GraphView inherits Rectangle {
                             accessible-role: button;
                             accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
                             clicked => { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); }
+                            accessible-action-default => { self.clicked(); }
                             Rectangle {
                                 x: port.output ? parent.width - 5px * root.zoom : -5px * root.zoom;
                                 y: 6px * root.zoom; width: 10px * root.zoom; height: 10px * root.zoom;
@@ -428,13 +438,17 @@ export component GraphView inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 accessible-role: button;
-                accessible-label: "Graph minimap; click or drag to center the viewport";
                 enabled: root.drag-node-index < 0;
                 clicked => {
                     root.center-on-world(
                         clamp((self.mouse-x - root.minimap-content-offset-x) / 1px / root.minimap-scale, 0, root.content-width),
                         clamp((self.mouse-y - root.minimap-content-offset-y) / 1px / root.minimap-scale, 0, root.content-height),
                     );
+                }
+                // VoiceOver's default action has no pointer coordinate: move to full graph center.
+                accessible-label: "Graph minimap; activation centers the full graph; click or drag to navigate";
+                accessible-action-default => {
+                    root.center-on-world(root.content-width / 2, root.content-height / 2);
                 }
                 moved => {
                     if (self.pressed) {

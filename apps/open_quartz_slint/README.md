@@ -132,8 +132,6 @@ Cancel, Undo/Redo, busy guards, node dragging, and asynchronous Save/Open. Scree
 were inspected at 1180×760 and 800×540, plus a 300-node/450-edge canvas. A separate
 Apple M4 Pro/Metal smoke observed a disconnected Renderer report its missing input,
 clear its image, and resume 640×360 GPU texture output after reconnect and redo.
-The current macOS session exposed no native accessibility window, so these software
-screenshots do not replace native-window acceptance or establish a 60 FPS result.
 
 A separate viewport pointer smoke verified 80%/125% drag conversion, the screen-pixel
 selection threshold, scaled port/edge hit testing, graph Undo, center preservation
@@ -148,8 +146,7 @@ one-step Undo/Redo, repeat offsets, text-field shortcut isolation, busy guards,
 SDK Save/Open, and cross-project pasting. Screenshots were inspected at 1180×760
 and 800×540. A pasted shader/renderer pair in a fresh project produced a real
 640×360 Apple M4 Pro/Metal GPU texture through NativeHost using the remapped ports.
-Temporary smoke code was removed after verification; native-window limits above
-still apply.
+Temporary smoke code was removed after verification.
 
 A MiniMap pointer smoke over the deterministic 300-node/450-edge graph verified
 bottom-right and top-left navigation, continuous drag navigation, viewport updates
@@ -164,8 +161,26 @@ projected in 75µs, rendered at 2.326ms mean / 2.523ms p95 (429.9 FPS); 300 node
 edges projected in 271µs, rendered at 2.825ms mean / 3.338ms p95 (354.0 FPS). Debug
 was 20.574ms mean (48.6 FPS) and 28.127ms (35.6 FPS), illustrating optimization
 impact. Release clears the 60 FPS frame-time gate in this deterministic offscreen
-case, but it is not a native swapchain/event-loop measurement and does not establish
-interactive performance on other hardware/platforms. Temporary harnesses were removed.
+case. A separate native AppKit/FemtoVG-wgpu release run below verifies the swapchain/
+event-loop path on this Mac; results still do not establish other hardware/platforms.
+
+The final macOS Phase 3 candidate was packaged as an app bundle and observed through
+ScreenCaptureKit plus the native accessibility tree at Retina scale. The 1180×760
+release window exposed the graph controls, rendered the shared 640×360 Metal texture,
+selected/copied/pasted a 100-node subgraph (100→200 nodes), undid it in one step,
+and exercised zoom/Fit. In the executable sample graph, native accessibility actions
+selected nodes and edges, deleted the renderer edge (NativeHost stopped and cleared
+the image), restored it with Undo (texture output resumed), and activated output/input
+ports without creating a no-op revision. Node headers, ports, edges, and MiniMap now
+provide VoiceOver default actions without hiding nested port controls; busy state is
+also reflected in node accessibility.
+
+With `SLINT_DEBUG_PERFORMANCE=refresh_full_speed,console`, the native release window
+reached a steady **60 FPS** for both 100 nodes/150 edges and 300 nodes/450 edges on
+Apple M4 Pro. The first reported intervals were 59 FPS and 51 FPS respectively before
+stabilizing at 60, so the macOS native 60 FPS acceptance gate is considered passed.
+The 300-node Retina screenshot showed the complete Fit View at 10% with no renderer
+substitution. macOS Phase 3 is accepted; Linux validation is intentionally deferred.
 
 In debug builds, the package disables debug assertions only for `wgpu-core`. Slint keeps
 the manually supplied queue in its thread-local context, while wgpu-core's debug-only
