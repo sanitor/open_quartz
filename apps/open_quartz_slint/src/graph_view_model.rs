@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use open_quartz_sdk::{Port, Project};
@@ -26,7 +26,7 @@ pub struct GraphViewModel {
 }
 
 impl GraphViewModel {
-    pub fn from_project(project: &Project, selected_node_id: Option<&str>) -> Self {
+    pub fn from_project(project: &Project, selected_node_ids: &BTreeSet<String>) -> Self {
         let started = Instant::now();
         let graph = project.graph();
         let node_indices = graph
@@ -87,7 +87,7 @@ impl GraphViewModel {
                         )
                         .collect::<Vec<_>>(),
                 )),
-                selected: selected_node_id == Some(node.id.as_str()),
+                selected: selected_node_ids.contains(&node.id),
             })
             .collect::<Vec<_>>();
         let edges = graph
@@ -203,7 +203,7 @@ mod tests {
             )
             .unwrap();
         let original = project.graph_snapshot();
-        let baseline = GraphViewModel::from_project(&project, None);
+        let baseline = GraphViewModel::from_project(&project, &BTreeSet::new());
         for (dx, dy) in [(12000.0, 8000.0), (-12000.0, -8000.0)] {
             let mut graph = original.clone();
             for node in &mut graph.nodes {
@@ -213,7 +213,7 @@ mod tests {
             project
                 .replace_graph(graph, project.graph_revision())
                 .unwrap();
-            let projection = GraphViewModel::from_project(&project, None);
+            let projection = GraphViewModel::from_project(&project, &BTreeSet::new());
             assert_eq!(projection.content_width, baseline.content_width);
             assert_eq!(projection.content_height, baseline.content_height);
             for index in 0..projection.nodes.row_count() {

@@ -36,7 +36,7 @@ working directory. There is no native file dialog or automatic save.
 
 - A real Slint window with project name, path entry, Open/Save, I/O and runtime
   status, a scrollable spatial graph, node selection and drag-to-move, typed ports,
-  editable connection paths, Undo/Redo, zoom/Fit View, and renderer output.
+  editable connection paths, Undo/Redo, zoom/Fit View, graph Copy/Paste, and renderer output.
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
   computes padded scroll content bounds. Its origin offset keeps loaded nodes with
   negative coordinates reachable while preserving graph-space edge coordinates.
@@ -50,8 +50,8 @@ working directory. There is no native file dialog or automatic save.
   keeps the old edge until a valid input is chosen; choosing another output first
   also changes the source. **Cancel** never mutates the project. SDK type/cycle
   errors preserve the original graph and leave the pending source available.
-- **Undo/Redo** use SDK graph history for moves, connections, reconnections, and
-  deletions. An identical connection is a no-op. A successful new edit clears redo;
+- **Undo/Redo** use SDK graph history for moves, connections, reconnections,
+  deletions, and whole-subgraph pastes. An identical connection is a no-op. A successful new edit clears redo;
   a failed edit does not. Opening a project resets the edit session; generated
   fixture construction is not exposed as user undo history. History is not saved.
   Topology edits and their undo/redo refresh NativeHost; layout-only history does
@@ -69,6 +69,22 @@ working directory. There is no native file dialog or automatic save.
   Below 25%, labels are omitted for an overview; geometry and hit areas still scale.
   Geometry is scaled explicitly rather than relying on backend transforms, keeping
   the software fallback and femtovg-wgpu hit testing consistent.
+- Click a node header to select it; **Shift-click** toggles its selection.
+  **Select all** or **Command/Ctrl+A** selects all nodes while the graph has focus.
+  Dragging still moves only the dragged node and selects that node on release.
+- **Copy / Paste** and graph-focused **Command/Ctrl+C / V** use an owned Rust graph
+  clipboard, not the OS text clipboard. Copy captures node data and only connections
+  with both endpoints selected; boundary connections are not duplicated. Paste
+  remaps node/port IDs, preserves node data/labels and relative layout, selects the
+  pasted nodes, and commits the entire subgraph as one SDK revision/Undo entry.
+  Each successful paste adds another 40 graph units of offset from the snapshot;
+  copying again resets that offset. Failed pastes preserve project/history and
+  the next offset. Copy with no selection leaves the existing clipboard intact.
+- The graph clipboard survives project Open and source edits/removal until replaced
+  by another Copy or the app exits. Referenced external media/model resources are
+  not duplicated or attached by this shell. Text fields retain their normal text
+  clipboard shortcuts. Graph Copy/Paste/Select all are disabled during project I/O;
+  graph shortcuts do not run during a node drag.
 - `AppController` owns the SDK `Project` and updates Slint properties/models.
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
@@ -86,7 +102,7 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open or topology edit.
 
-This phase does **not** include an Inspector, shader editing, copy/paste, MiniMap,
+This phase does **not** include an Inspector, shader editing, MiniMap,
 media/resource loading, or model controls. Projects requiring
 external images, video, or inference resources may open and save, but those
 resources are not attached by this shell; resulting host failures are reported
@@ -99,7 +115,10 @@ The crate contains unit coverage for multi-port edge endpoints, spatial bounds,
 persisted node movement, no-op revisions, atomic occupied-input replacement and
 reconnection, failed type/cycle edits preserving graph/history, deterministic stress
 fixtures, CLI option combinations, dash-prefixed paths, the 300-node cap, and tight
-translation-invariant fit bounds including backwards Bezier connections.
+translation-invariant fit bounds including backwards Bezier connections. Clipboard
+coverage includes multi-selection, internal-only edges, custom port ID remapping,
+deep snapshot independence, repeated ID allocation, single-step history, persisted
+copies, and rejected pastes preserving destination, redo, and offset.
 
 An ephemeral software-rendered Slint smoke exercised actual pointer events for
 connection selection/deletion, port connection, reconnection, type rejection,
@@ -117,6 +136,14 @@ view-only operations. Screenshots covered manual 1%/200%, a translated 300-node 
 in Fit View at 1180×760 and 800×540, resize adaptation, empty graphs, and asynchronous
 Open resetting Fit mode to 100%. The first and last stress nodes remained selectable
 in the fitted overview. The temporary smoke code was removed after verification.
+
+A clipboard pointer/key smoke exercised Shift toggling, graph Select all/Copy/Paste,
+one-step Undo/Redo, repeat offsets, text-field shortcut isolation, busy guards,
+SDK Save/Open, and cross-project pasting. Screenshots were inspected at 1180×760
+and 800×540. A pasted shader/renderer pair in a fresh project produced a real
+640×360 Apple M4 Pro/Metal GPU texture through NativeHost using the remapped ports.
+Temporary smoke code was removed after verification; native-window limits above
+still apply.
 
 In debug builds, the package disables debug assertions only for `wgpu-core`. Slint keeps
 the manually supplied queue in its thread-local context, while wgpu-core's debug-only

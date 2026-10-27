@@ -1,4 +1,5 @@
 mod app_controller;
+mod graph_clipboard;
 mod graph_view_model;
 mod render_bridge;
 mod services {

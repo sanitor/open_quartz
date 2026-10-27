@@ -39,7 +39,7 @@ export component GraphView inherits Rectangle {
     in property <float> origin-x;
     in property <float> origin-y;
     in property <bool> busy;
-    callback node-selected(string);
+    callback node-selected(string, bool);
     callback node-moved(string, float, float);
     in property <string> selected-edge-id;
     in property <string> pending-node-id;
@@ -54,6 +54,12 @@ export component GraphView inherits Rectangle {
     callback cancel-connection();
     callback undo();
     callback redo();
+    in property <bool> can-copy;
+    in property <bool> can-paste;
+    in property <int> selection-count;
+    callback copy();
+    callback paste();
+    callback select-all();
 
     private property <int> drag-node-index: -1;
     private property <length> drag-offset-x: 0px;
@@ -91,6 +97,28 @@ export component GraphView inherits Rectangle {
     background: Theme.panel;
     border-radius: 8px;
 
+    forward-focus: graph-focus;
+    graph-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(event) => {
+            // Slint maps Command on macOS to `control`; text fields outside this scope keep their shortcuts.
+            if (event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift) {
+                if (event.text == "c" || event.text == "C") {
+                    if (!root.busy && root.drag-node-index < 0 && root.can-copy) { root.copy(); }
+                    return accept;
+                }
+                if (event.text == "v" || event.text == "V") {
+                    if (!root.busy && root.drag-node-index < 0 && root.can-paste) { root.paste(); }
+                    return accept;
+                }
+                if (event.text == "a" || event.text == "A") {
+                    if (!root.busy && root.drag-node-index < 0) { root.select-all(); }
+                    return accept;
+                }
+            }
+            reject
+        }
     VerticalLayout {
         padding: 12px;
         spacing: 10px;
@@ -128,6 +156,13 @@ export component GraphView inherits Rectangle {
                 clicked => { root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; }
             }
         }
+        HorizontalLayout {
+            spacing: 4px;
+            Button { text: "Select all"; enabled: !root.busy && root.nodes.length > 0; clicked => { root.select-all(); graph-focus.focus(); } }
+            Button { text: "Copy"; enabled: !root.busy && root.can-copy; clicked => { root.copy(); graph-focus.focus(); } }
+            Button { text: "Paste"; enabled: !root.busy && root.can-paste; clicked => { root.paste(); graph-focus.focus(); } }
+            Text { text: root.selection-count + " selected · Shift-click toggles"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+        }
         Text {
             text: root.connection-active ? "Choose an input to connect; choose an output to change source. Cancel keeps the graph unchanged." : "Output then input connects/replaces. Click a connected input or link marker to select an edge.";
             color: Theme.secondary;
@@ -150,6 +185,10 @@ export component GraphView inherits Rectangle {
                 border-width: 1px;
                 border-radius: 6px;
 
+                TouchArea {
+                    width: parent.width; height: parent.height;
+                    clicked => { graph-focus.focus(); }
+                }
                 for grid-column in ceil(root.content-width / root.grid-step): Rectangle {
                     x: root.canvas-offset-x + grid-column * root.grid-step * 1px * root.zoom;
                     width: 1px;
@@ -192,7 +231,7 @@ export component GraphView inherits Rectangle {
                     height: 24px * root.zoom;
                     accessible-label: "Select connection " + edge.edge-id;
                     enabled: !root.busy;
-                    clicked => { root.edge-selected(edge.edge-id); }
+                    clicked => { graph-focus.focus(); root.edge-selected(edge.edge-id); }
                     Rectangle {
                         width: parent.width; height: parent.height;
                         background: #263f56;
@@ -229,6 +268,7 @@ export component GraphView inherits Rectangle {
                             return;
                         }
                         if (event.kind == PointerEventKind.down) {
+                            graph-focus.focus();
                             root.drag-node-index = index;
                             root.drag-offset-x = 0px;
                             root.drag-offset-y = 0px;
@@ -242,7 +282,7 @@ export component GraphView inherits Rectangle {
                                     node.y + root.drag-offset-y / 1px,
                                 );
                             } else if (root.drag-node-index == index) {
-                                root.node-selected(node.node-id);
+                                root.node-selected(node.node-id, event.modifiers.shift);
                             }
                             root.drag-node-index = -1;
                             root.drag-offset-x = 0px;
@@ -290,7 +330,7 @@ export component GraphView inherits Rectangle {
                             enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
-                            clicked => { root.port-selected(node.node-id, port.port-id, port.output); }
+                            clicked => { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); }
                             Rectangle {
                                 x: port.output ? parent.width - 5px * root.zoom : -5px * root.zoom;
                                 y: 6px * root.zoom; width: 10px * root.zoom; height: 10px * root.zoom;
@@ -320,5 +360,6 @@ export component GraphView inherits Rectangle {
                 }
             }
         }
+    }
     }
 }

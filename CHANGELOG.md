@@ -12,6 +12,8 @@
 
 - **Slint graph viewport** — add center-anchored 1%–200% manual zoom, 100% reset and resize-aware Fit View over tight graph/Bezier bounds. Scale ports, edge markers and screen-to-world drag conversion consistently, hide labels in low-zoom overviews, and reset session-local view state when opening a project without recording graph edits.
 
+- **Slint graph clipboard** — add Shift multi-selection, Select all and graph-scoped Command/Ctrl+A/C/V. Copy owned node/internal-edge snapshots; paste with new node/port IDs and incremental offsets in one SDK revision/Undo entry, preserving node data and cross-project clipboard state while leaving text-field shortcuts untouched.
+
 ### Tests
 
 - **macOS Slint validation** — verify the Phase 2 shell on Apple Silicon/Metal with a shared wgpu device/queue, live renderer texture import, SDK save/open and error paths, empty-graph startup, and clean native-window shutdown; add a macOS CI compile gate.

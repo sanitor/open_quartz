@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
@@ -11,6 +12,7 @@ use open_quartz_sdk::{
 };
 use slint::ComponentHandle;
 
+use crate::graph_clipboard::GraphClipboard;
 use crate::graph_view_model::GraphViewModel;
 use crate::render_bridge::RenderBridge;
 use crate::services::file_service;
@@ -20,7 +22,8 @@ pub struct AppController {
     window: slint::Weak<AppWindow>,
     project: Arc<Project>,
     renderer: Option<RenderBridge>,
-    selected_node_id: Option<String>,
+    selected_node_ids: BTreeSet<String>,
+    clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
     pending_connection: Option<PendingConnection>,
@@ -69,7 +72,8 @@ impl AppController {
             window: window.as_weak(),
             project: Arc::new(project),
             renderer,
-            selected_node_id: None,
+            selected_node_ids: BTreeSet::new(),
+            clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
             pending_connection: None,
@@ -102,9 +106,11 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
-        window.on_graph_node_selected(move |node_id| {
+        window.on_graph_node_selected(move |node_id, additive| {
             if let Some(controller) = weak.upgrade() {
-                controller.borrow_mut().select_node(node_id.as_str());
+                controller
+                    .borrow_mut()
+                    .select_node(node_id.as_str(), additive);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -162,6 +168,35 @@ impl AppController {
         window.on_graph_redo(move || {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().restore_edit(true);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_copy(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().copy_selection();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_paste(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().paste_clipboard();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_select_all(move || {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if !controller.edits_blocked() {
+                    controller.selected_node_ids = controller
+                        .project
+                        .graph()
+                        .nodes()
+                        .iter()
+                        .map(|node| node.id.clone())
+                        .collect();
+                    controller.selected_edge_id = None;
+                    controller.publish_graph_projection();
+                }
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -233,8 +268,7 @@ impl AppController {
 
     fn publish_graph_projection(&mut self) -> Option<ProjectionStats> {
         let window = self.window.upgrade()?;
-        let projection =
-            GraphViewModel::from_project(&self.project, self.selected_node_id.as_deref());
+        let projection = GraphViewModel::from_project(&self.project, &self.selected_node_ids);
         let stats = ProjectionStats {
             node_count: projection.node_count,
             edge_count: projection.edge_count,
@@ -252,15 +286,12 @@ impl AppController {
         Some(stats)
     }
 
-    fn select_node(&mut self, node_id: &str) {
+    fn select_node(&mut self, node_id: &str, additive: bool) {
         if self.busy {
             if let Some(window) = self.window.upgrade() {
                 window
                     .set_io_status("Cannot select a node while project I/O is in progress.".into());
             }
-            return;
-        }
-        if self.selected_node_id.as_deref() == Some(node_id) {
             return;
         }
         if self
@@ -270,7 +301,14 @@ impl AppController {
             .iter()
             .any(|node| node.id == node_id)
         {
-            self.selected_node_id = Some(node_id.to_owned());
+            if additive {
+                if !self.selected_node_ids.remove(node_id) {
+                    self.selected_node_ids.insert(node_id.to_owned());
+                }
+            } else {
+                self.selected_node_ids.clear();
+                self.selected_node_ids.insert(node_id.to_owned());
+            }
             self.selected_edge_id = None;
             self.publish_graph_projection();
         }
@@ -292,7 +330,8 @@ impl AppController {
         };
         match result {
             Ok(changed) => {
-                self.selected_node_id = Some(node_id.to_owned());
+                self.selected_node_ids.clear();
+                self.selected_node_ids.insert(node_id.to_owned());
                 self.selected_edge_id = None;
                 if changed {
                     self.undo_edits.push(EditKind::Layout);
@@ -336,11 +375,21 @@ impl AppController {
         }
     }
 
-    fn publish_edit_state(&self) {
+    fn publish_edit_state(&mut self) {
+        self.selected_node_ids.retain(|id| {
+            self.project
+                .graph()
+                .nodes()
+                .iter()
+                .any(|node| &node.id == id)
+        });
         if let Some(window) = self.window.upgrade() {
             window
                 .set_selected_edge_id(self.selected_edge_id.as_deref().unwrap_or_default().into());
             window.set_connection_active(self.pending_connection.is_some());
+            window.set_can_copy(!self.selected_node_ids.is_empty());
+            window.set_can_paste(self.clipboard.is_some());
+            window.set_graph_selection_count(self.selected_node_ids.len() as i32);
             let source = self
                 .pending_connection
                 .as_ref()
@@ -432,7 +481,7 @@ impl AppController {
             .any(|edge| edge.id == edge_id)
         {
             self.selected_edge_id = Some(edge_id.to_owned());
-            self.selected_node_id = None;
+            self.selected_node_ids.clear();
             self.pending_connection = None;
             self.publish_graph_projection();
             self.set_edit_status("Connection selected. Reconnect changes its endpoints atomically; Delete edge removes it.");
@@ -539,6 +588,47 @@ impl AppController {
         }
     }
 
+    fn copy_selection(&mut self) {
+        if self.edits_blocked() {
+            return;
+        }
+        if let Some(clipboard) = GraphClipboard::capture(&self.project, &self.selected_node_ids) {
+            let count = clipboard.node_count();
+            self.clipboard = Some(clipboard);
+            self.publish_edit_state();
+            self.set_edit_status(&format!(
+                "Copied {count} nodes and their internal connections to the graph clipboard."
+            ));
+        } else {
+            self.set_edit_status("Select nodes to copy; the previous graph clipboard was kept.");
+        }
+    }
+
+    fn paste_clipboard(&mut self) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some(clipboard) = &mut self.clipboard else {
+            self.set_edit_status("The graph clipboard is empty. Select nodes and Copy first.");
+            return;
+        };
+        match clipboard.paste(Arc::make_mut(&mut self.project)) {
+            Ok(ids) => {
+                let count = ids.len();
+                self.selected_node_ids = ids;
+                self.selected_edge_id = None;
+                self.pending_connection = None;
+                self.finish_topology_edit(&format!(
+                    "Pasted {count} nodes as one graph edit. Undo removes the pasted subgraph."
+                ));
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot paste; project unchanged: {}",
+                error.to_json()
+            )),
+        }
+    }
+
     fn open_path(&mut self, path: PathBuf) {
         self.request_file(path, false);
     }
@@ -590,7 +680,7 @@ impl AppController {
             match result {
                 FileResult::Opened { path, project } => {
                     self.project = Arc::new(project);
-                    self.selected_node_id = None;
+                    self.selected_node_ids.clear();
                     self.graph_stress_count = None;
                     self.selected_edge_id = None;
                     self.pending_connection = None;
@@ -909,7 +999,7 @@ mod tests {
     fn projected_edges_terminate_at_their_actual_ports() {
         let sdk = OpenQuartz::new(Environment::headless());
         let project = graph_stress_project(&sdk, 3).unwrap();
-        let projection = GraphViewModel::from_project(&project, None);
+        let projection = GraphViewModel::from_project(&project, &Default::default());
         for (index, edge) in project.graph().edges().iter().enumerate() {
             let projected = projection.edges.row_data(index).unwrap();
             assert_eq!(projected.edge_id.as_str(), edge.id);
@@ -951,18 +1041,20 @@ mod tests {
     }
 
     #[test]
-    fn projection_represents_exactly_one_selected_node() {
+    fn projection_represents_selected_subgraph_without_selecting_other_nodes() {
         let sdk = OpenQuartz::new(Environment::headless());
-        let project = sample_project(&sdk).unwrap();
-        let selected_id = project.graph().nodes()[1].id.clone();
-        let projection = GraphViewModel::from_project(&project, Some(selected_id.as_str()));
-
+        let project = graph_stress_project(&sdk, 3).unwrap();
+        let ids = project.graph().nodes()[..2]
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        let projection = GraphViewModel::from_project(&project, &ids);
         let selected = (0..projection.nodes.row_count())
             .filter_map(|row| projection.nodes.row_data(row))
             .filter(|node| node.selected)
-            .collect::<Vec<_>>();
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].node_id.as_str(), selected_id.as_str());
+            .map(|node| node.node_id.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids, selected);
     }
 
     #[test]
@@ -1018,7 +1110,7 @@ mod tests {
         let node_id = project.graph().nodes()[0].id.clone();
         commit_node_position(&mut project, node_id.as_str(), -100.0, -50.0).unwrap();
 
-        let projection = GraphViewModel::from_project(&project, None);
+        let projection = GraphViewModel::from_project(&project, &Default::default());
         let node = projection
             .nodes
             .row_data(0)
@@ -1059,7 +1151,7 @@ mod tests {
         let reloaded = sdk.open_project_json(&serialized).unwrap();
         assert_eq!(reloaded.graph_snapshot(), first.graph_snapshot());
 
-        let projection = GraphViewModel::from_project(&first, None);
+        let projection = GraphViewModel::from_project(&first, &Default::default());
         eprintln!(
             "100-node graph projection took {} µs",
             projection.projection_duration.as_micros()

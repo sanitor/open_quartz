@@ -27,7 +27,7 @@ export component AppWindow inherits Window {
     in property <bool> has-renderer-image;
     callback open-project(string);
     callback save-project(string);
-    callback graph-node-selected(string);
+    callback graph-node-selected(string, bool);
     callback graph-node-moved(string, float, float);
     in property <string> selected-edge-id;
     in property <string> pending-node-id;
@@ -44,6 +44,12 @@ export component AppWindow inherits Window {
     callback graph-redo();
     callback reset-graph-view();
     reset-graph-view => { graph-view.reset-view(); }
+    in property <bool> can-copy;
+    in property <bool> can-paste;
+    in property <int> graph-selection-count;
+    callback graph-copy();
+    callback graph-paste();
+    callback graph-select-all();
 
     VerticalLayout {
         padding: 16px;
@@ -68,7 +74,7 @@ export component AppWindow inherits Window {
                 origin-x: root.graph-origin-x;
                 origin-y: root.graph-origin-y;
                 busy: root.busy;
-                node-selected(node-id) => { root.graph-node-selected(node-id); }
+                node-selected(node-id, additive) => { root.graph-node-selected(node-id, additive); }
                 node-moved(node-id, x, y) => { root.graph-node-moved(node-id, x, y); }
                 selected-edge-id: root.selected-edge-id;
                 pending-node-id: root.pending-node-id;
@@ -83,6 +89,12 @@ export component AppWindow inherits Window {
                 cancel-connection => { root.graph-cancel-connection(); }
                 undo => { root.graph-undo(); }
                 redo => { root.graph-redo(); }
+                can-copy: root.can-copy;
+                can-paste: root.can-paste;
+                selection-count: root.graph-selection-count;
+                copy => { root.graph-copy(); }
+                paste => { root.graph-paste(); }
+                select-all => { root.graph-select-all(); }
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }

@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView、端口连线编辑、撤销/重做和 zoom/Fit View 已实现，通过 Rust、Slint 软件指针 smoke 与 Metal 拓扑切换验证，尚未切换默认入口
+> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView、端口编辑、撤销/重做、zoom/Fit View 和多选复制粘贴已实现，通过 Rust、Slint 软件指针 smoke 与 Metal 渲染验证，尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -716,19 +716,21 @@ Spike 范围：
 - **macOS 验收**：Apple M4 Pro / Metal 上 `cargo check`、`cargo build` 和 Slint app 单测通过；默认 640×360 graph 通过共享 `Device/Queue` 和 `Image::try_from` 正确显示，窗口从 1180×760 缩放到 900×650 后输出保持正确。已实际验证 SDK Save/Open、缺失文件错误保持当前项目、空 graph 启动和原生窗口干净关闭。
 - **回归验收**：`cargo test --workspace` 276 tests / 45 suites 通过；`cargo test -p open_quartz_native_host --all-features --offline`、`cargo check -p app --lib` 通过。CI 以 `macos-latest` 编译 Slint app。
 - **已知工具链问题**：wgpu-core 30 的 debug-only lock tracer 与 Slint thread-local backend 在 macOS 存在 TLS 析构顺序冲突；仅对 Slint app 的 dev profile 关闭 `wgpu-core` debug assertions，release 原本不启用该 tracer，OpenQuartz/Slint/app assertions 不受影响。
-- **下一步**：继续 Phase 3 复制粘贴、MiniMap 及性能验收；Linux 与移动端证据后补。
+- **下一步**：继续 Phase 3 MiniMap 及性能验收；Linux 与移动端证据后补。
 
 ### 8.5 Phase 3：节点图
 
 - **已实现首切片**：Slint 空间画布按 Project 坐标放置节点，以 `Path` 绘制 Bezier 边；支持单选、拖动预览和滚动访问完整世界坐标。
 - **Rust-owned mutation**：拖动低于 3px 只选择；有效拖动在松手时只提交一次 `GraphCommand::SetNodePosition`，不重启 Renderer；同位置提交不会增加 revision。
 - **已实现第二切片**：按真实端口行投影节点高度与边端点；点击输出再点击输入建立/替换连接，点击已连接输入或边中点选中连线，提供删除、重连和取消。重连可更换源或目标，旧边直到 SDK 原子事务成功才被替换；类型不兼容、cycle 或不存在的端口不会丢失旧边。
-- **撤销/重做**：复用 SDK graph history；移动、连线、重连和删除均可恢复，新成功编辑清空 redo，失败/no-op 不清空；打开项目重置当前编辑历史，fixture 构造不作为用户操作撤销。拓扑历史更新 NativeHost，纯布局历史不重启 Renderer。
+- **撤销/重做**：复用 SDK graph history；移动、连线、重连、删除和整组粘贴均可恢复，新成功编辑清空 redo，失败/no-op 不清空；打开项目重置当前编辑历史，fixture 构造不作为用户操作撤销。拓扑历史更新 NativeHost，纯布局历史不重启 Renderer。
 - **持久化与错误路径**：坐标和连接通过 SDK `Project::to_file()` 保存并可重载；项目 I/O 期间禁用并拒绝选择、拖动、连线与历史操作，避免旧 project 或旧 save snapshot 覆盖编辑。
 - **已实现第三切片**：−/+ 按 1.25 倍缩放，手动范围 1%–200%，100% 重置保持视口中心（受边界约束）；Fit View 按紧致 graph bounds 和反向 Bezier 控制点范围居中适配，激活后随窗口/graph bounds 变化重算，空图禁用。视口不写 Project、不增加 revision、不进入 history；打开项目重置缩放和滚动。节点/端口/边/拖动共用比例，拖动换算回世界坐标且 3px 阈值保持屏幕单位；低于 25% 隐藏标签，仅显示概览几何。
+- **已实现第四切片**：Shift-click 多选切换、Select all 和图区域 Command/Ctrl+A/C/V；Rust-owned graph clipboard 快照选中节点及内部边，粘贴重映射节点/端口 ID、保留节点数据及相对布局，每次成功整体偏移再增 40 世界单位，整组作为一次 SDK revision/history。失败保留项目/redo/偏移；Copy 空选择不覆盖旧剪贴板。剪贴板跨项目 Open 保留，不占用系统文本剪贴板、不复制外部资源；路径框文本快捷键不被截获，I/O busy 拒绝操作。拖动仍仅移动当前节点，并在松手时选中该节点，不提供组拖动。
 - **性能基线**：`--graph-stress` 默认生成确定性的 100 节点/150 边有效 graph，上限 300；Apple M4 Pro debug test 中 Rust projection 为 294µs。当前数字不包含 Slint layout/rasterization，不宣称达到 60 FPS gate。
 - **验收**：Slint app 26 tests 通过，覆盖真实多端口端点、负坐标边界、平移不变及反向 Bezier fit bounds、位置/连线持久化、no-op revision、重连与占用输入替换的单步历史、类型/cycle 错误原子性及原有 stress/CLI 边界。临时 Slint 软件指针 smoke 通过选择/连线/历史/I/O 和缩放交互验证；80%/125% 下拖动换算、3px 屏幕阈值、缩放后端口命中、200% 滚动后缩至 160% 的中心锚点保持均通过，1%/200%、300 节点负坐标平移图在 1180×760 和 800×540 的 Fit View、自适应 resize、空图及 Open 后重置均有截图，Fit 下首尾节点可选择。此前 Apple M4 Pro/Metal smoke 确认断连错误清图，重连和 redo 后恢复 640×360 GPU 纹理。当前 macOS 会话未暴露原生可访问窗口，上述软件截图不计作原生窗口验收或 60 FPS 证据。
-- **待实现**：复制粘贴、MiniMap、100/300 节点原生 Slint 帧率测量和移动端手势。
+- **第四切片验收**：Slint app 29 tests 通过，增加剪贴板快照隔离、任意端口 ID 重映射、仅内部边、重复粘贴 ID/偏移、整组撤销重做与持久化、失败保留目标/redo/偏移。临时真实 Slint 指针/键盘 smoke 通过 Shift 切换、多选/复制/粘贴、单步 Undo/Redo、文本框快捷键隔离、busy guard、SDK Save/Open 和跨项目粘贴；已检查 1180×760、800×540 截图。将 shader/renderer 子图复制到空项目后，真实 NativeHost 在 Apple M4 Pro/Metal 上输出 640×360 GPU 纹理，确认重映射后的端口仍可执行。
+- **待实现**：MiniMap、100/300 节点原生 Slint 帧率测量和移动端手势。
 - 移动端手势在桌面稳定后补。
 
 ### 8.6 Phase 4：Inspector 与编辑器
