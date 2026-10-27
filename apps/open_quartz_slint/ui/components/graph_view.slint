@@ -73,6 +73,31 @@ export component GraphView inherits Rectangle {
     private property <length> canvas-offset-x: max(0px, (canvas.width - root.content-width * root.zoom * 1px) / 2);
     private property <length> canvas-offset-y: max(0px, (canvas.height - root.content-height * root.zoom * 1px) / 2);
     private property <float> grid-step: 64 * max(1, ceil(max(root.content-width, root.content-height) / 8192));
+    private property <length> minimap-width: min(176px, max(120px, scroll.visible-width * 0.3));
+    private property <length> minimap-height: min(120px, max(84px, scroll.visible-height * 0.28));
+    private property <length> minimap-padding: 7px;
+    private property <float> minimap-scale: min(
+        (root.minimap-width / 1px - 2 * root.minimap-padding / 1px) / max(1, root.content-width),
+        (root.minimap-height / 1px - 2 * root.minimap-padding / 1px) / max(1, root.content-height),
+    );
+    private property <length> minimap-content-offset-x: root.minimap-padding + max(0px, (root.minimap-width - 2 * root.minimap-padding - root.content-width * root.minimap-scale * 1px) / 2);
+    private property <length> minimap-content-offset-y: root.minimap-padding + max(0px, (root.minimap-height - 2 * root.minimap-padding - root.content-height * root.minimap-scale * 1px) / 2);
+    private property <float> visible-world-left: clamp((-scroll.content-x - root.canvas-offset-x) / 1px / root.zoom, 0, root.content-width);
+    private property <float> visible-world-top: clamp((-scroll.content-y - root.canvas-offset-y) / 1px / root.zoom, 0, root.content-height);
+    private property <float> visible-world-right: clamp((-scroll.content-x + scroll.visible-width - root.canvas-offset-x) / 1px / root.zoom, 0, root.content-width);
+    private property <float> visible-world-bottom: clamp((-scroll.content-y + scroll.visible-height - root.canvas-offset-y) / 1px / root.zoom, 0, root.content-height);
+    private property <bool> minimap-needed: root.nodes.length > 0 && (
+        root.visible-world-left > 0.001 || root.visible-world-top > 0.001
+        || root.visible-world-right < root.content-width - 0.001
+        || root.visible-world-bottom < root.content-height - 0.001
+    );
+
+    function center-on-world(world-x: float, world-y: float) {
+        if (root.drag-node-index >= 0 || root.nodes.length == 0) { return; }
+        scroll.content-x = clamp(scroll.visible-width / 2 - root.canvas-offset-x - world-x * root.zoom * 1px, min(0px, scroll.visible-width - scroll.content-width), 0px);
+        scroll.content-y = clamp(scroll.visible-height / 2 - root.canvas-offset-y - world-y * root.zoom * 1px, min(0px, scroll.visible-height - scroll.content-height), 0px);
+        graph-focus.focus();
+    }
     // Updating the readout after layout avoids a zoom -> text metrics -> viewport loop.
     changed zoom => { zoom-readout.text = round(root.zoom * 100) + "%"; }
 
@@ -170,7 +195,13 @@ export component GraphView inherits Rectangle {
             font-size: 11px;
         }
 
+        viewport := Rectangle {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            clip: true;
         scroll := ScrollView {
+            width: parent.width;
+            height: parent.height;
             content-width: max(self.visible-width, root.content-width * root.zoom * 1px);
             content-height: max(self.visible-height, root.content-height * root.zoom * 1px);
             horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
@@ -359,6 +390,62 @@ export component GraphView inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
+        }
+
+        minimap := Rectangle {
+            x: parent.width - self.width - 20px;
+            y: parent.height - self.height - 20px;
+            width: root.minimap-width;
+            height: root.minimap-height;
+            visible: root.minimap-needed;
+            background: #0c121cdd;
+            border-color: Theme.accent;
+            border-width: 1px;
+            border-radius: 6px;
+            clip: true;
+
+            for node in root.nodes: Rectangle {
+                x: root.minimap-content-offset-x + (node.x + root.origin-x) * root.minimap-scale * 1px;
+                y: root.minimap-content-offset-y + (node.y + root.origin-y) * root.minimap-scale * 1px;
+                width: max(2px, node.width * root.minimap-scale * 1px);
+                height: max(2px, node.height * root.minimap-scale * 1px);
+                background: node.selected ? Theme.accent : #58728f;
+                border-radius: 1px;
+            }
+
+            Rectangle {
+                x: root.minimap-content-offset-x + root.visible-world-left * root.minimap-scale * 1px;
+                y: root.minimap-content-offset-y + root.visible-world-top * root.minimap-scale * 1px;
+                width: max(2px, (root.visible-world-right - root.visible-world-left) * root.minimap-scale * 1px);
+                height: max(2px, (root.visible-world-bottom - root.visible-world-top) * root.minimap-scale * 1px);
+                background: #80c7ff18;
+                border-color: Theme.accent;
+                border-width: 1px;
+                border-radius: 2px;
+            }
+
+            navigate := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                accessible-role: button;
+                accessible-label: "Graph minimap; click or drag to center the viewport";
+                enabled: root.drag-node-index < 0;
+                clicked => {
+                    root.center-on-world(
+                        clamp((self.mouse-x - root.minimap-content-offset-x) / 1px / root.minimap-scale, 0, root.content-width),
+                        clamp((self.mouse-y - root.minimap-content-offset-y) / 1px / root.minimap-scale, 0, root.content-height),
+                    );
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.center-on-world(
+                            clamp((self.mouse-x - root.minimap-content-offset-x) / 1px / root.minimap-scale, 0, root.content-width),
+                            clamp((self.mouse-y - root.minimap-content-offset-y) / 1px / root.minimap-scale, 0, root.content-height),
+                        );
+                    }
+                }
+            }
+        }
         }
     }
     }

@@ -14,9 +14,12 @@
 
 - **Slint graph clipboard** — add Shift multi-selection, Select all and graph-scoped Command/Ctrl+A/C/V. Copy owned node/internal-edge snapshots; paste with new node/port IDs and incremental offsets in one SDK revision/Undo entry, preserving node data and cross-project clipboard state while leaving text-field shortcuts untouched.
 
+- **Slint graph MiniMap** — overlay a bounded all-node overview with a live viewport rectangle; click or drag to center the scaled ScrollView while preserving graph focus and Project state across zoom, Fit View, negative coordinates, resize, and empty graphs.
+
 ### Tests
 
 - **macOS Slint validation** — verify the Phase 2 shell on Apple Silicon/Metal with a shared wgpu device/queue, live renderer texture import, SDK save/open and error paths, empty-graph startup, and clean native-window shutdown; add a macOS CI compile gate.
+- **Slint GPU graph baseline** — benchmark the real 1180×760 Slint tree offscreen through FemtoVG/wgpu 30 on Apple M4 Pro: release steady full-frame p95 is 2.523ms for 100 nodes/150 edges and 3.338ms for 300 nodes/450 edges. Native swapchain/event-loop performance remains a separate acceptance item.
 
 - **Complete Rust SDK 100% coverage gate** — enforce 100% production line, function, and region coverage independently for `open_quartz_schema`, `open_quartz_execution`, `open_quartz_host_api`, `open_quartz_sdk`, the `open_quartz` native/WASM facade, and `open_quartz_bindings`; coverage tests now exercise graph transactions, GPU resource/readback failures, native video lifecycle and FFmpeg failures, ONNX preprocessing/inference/postprocessing, host intents, FFI marshalling, and JNI handle lifetimes.
 - **Cross-platform SDK matrix** — run the Rust coverage gate on Linux, macOS, and Windows, include Windows DXGI/D3D12 tests in the owning execution crate, run WASM browser contracts separately with headless WebGPU configuration, and compile-check Windows, Linux, WASM, and JNI targets.

@@ -36,7 +36,7 @@ working directory. There is no native file dialog or automatic save.
 
 - A real Slint window with project name, path entry, Open/Save, I/O and runtime
   status, a scrollable spatial graph, node selection and drag-to-move, typed ports,
-  editable connection paths, Undo/Redo, zoom/Fit View, graph Copy/Paste, and renderer output.
+  editable connection paths, Undo/Redo, zoom/Fit View, MiniMap, graph Copy/Paste, and renderer output.
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
   computes padded scroll content bounds. Its origin offset keeps loaded nodes with
   negative coordinates reachable while preserving graph-space edge coordinates.
@@ -69,6 +69,12 @@ working directory. There is no native file dialog or automatic save.
   Below 25%, labels are omitted for an overview; geometry and hit areas still scale.
   Geometry is scaled explicitly rather than relying on backend transforms, keeping
   the software fallback and femtovg-wgpu hit testing consistent.
+- The bottom-right **MiniMap** projects every node over the same padded world bounds
+  as the canvas. Its highlighted rectangle follows scroll, zoom, Fit View and window
+  resizing. Click or drag in the MiniMap to center the main viewport; navigation
+  clamps at graph edges, restores graph keyboard focus, and never changes Project
+  data/history. The MiniMap hides for empty graphs or whenever the complete graph is
+  already visible (including Fit View), and leaves room for scrollbars.
 - Click a node header to select it; **Shift-click** toggles its selection.
   **Select all** or **Command/Ctrl+A** selects all nodes while the graph has focus.
   Dragging still moves only the dragged node and selects that node on release.
@@ -102,8 +108,8 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open or topology edit.
 
-This phase does **not** include an Inspector, shader editing, MiniMap,
-media/resource loading, or model controls. Projects requiring
+This phase does **not** include an Inspector, shader editing, media/resource loading,
+model controls, or mobile gesture adaptation. Projects requiring
 external images, video, or inference resources may open and save, but those
 resources are not attached by this shell; resulting host failures are reported
 instead of replaced with sample output. Only host preview outputs supported by
@@ -144,6 +150,22 @@ and 800×540. A pasted shader/renderer pair in a fresh project produced a real
 640×360 Apple M4 Pro/Metal GPU texture through NativeHost using the remapped ports.
 Temporary smoke code was removed after verification; native-window limits above
 still apply.
+
+A MiniMap pointer smoke over the deterministic 300-node/450-edge graph verified
+bottom-right and top-left navigation, continuous drag navigation, viewport updates
+across manual zoom and Fit View, negative-coordinate translation, 1180×760 and
+800×540 resize, empty-graph hiding, keyboard focus restoration, and Project/revision
+invariance. The first and last nodes remained selectable after navigation.
+
+An ephemeral offscreen benchmark rendered the actual Slint tree through the same
+FemtoVG/wgpu 30 backend into a 1180×760 Metal texture, with 30 synchronized steady
+full frames per graph after one warm-up. On Apple M4 Pro release: 100 nodes/150 edges
+projected in 75µs, rendered at 2.326ms mean / 2.523ms p95 (429.9 FPS); 300 nodes/450
+edges projected in 271µs, rendered at 2.825ms mean / 3.338ms p95 (354.0 FPS). Debug
+was 20.574ms mean (48.6 FPS) and 28.127ms (35.6 FPS), illustrating optimization
+impact. Release clears the 60 FPS frame-time gate in this deterministic offscreen
+case, but it is not a native swapchain/event-loop measurement and does not establish
+interactive performance on other hardware/platforms. Temporary harnesses were removed.
 
 In debug builds, the package disables debug assertions only for `wgpu-core`. Slint keeps
 the manually supplied queue in its thread-local context, while wgpu-core's debug-only

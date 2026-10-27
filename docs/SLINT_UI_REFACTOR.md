@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView、端口编辑、撤销/重做、zoom/Fit View 和多选复制粘贴已实现，通过 Rust、Slint 软件指针 smoke 与 Metal 渲染验证，尚未切换默认入口
+> 状态：Phase 2 已在 macOS 完成验收；Phase 3 空间 GraphView 的端口编辑、历史、多选复制粘贴、zoom/Fit View、MiniMap 与 Apple M4 Pro 离屏 GPU 基线已完成，尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -716,7 +716,7 @@ Spike 范围：
 - **macOS 验收**：Apple M4 Pro / Metal 上 `cargo check`、`cargo build` 和 Slint app 单测通过；默认 640×360 graph 通过共享 `Device/Queue` 和 `Image::try_from` 正确显示，窗口从 1180×760 缩放到 900×650 后输出保持正确。已实际验证 SDK Save/Open、缺失文件错误保持当前项目、空 graph 启动和原生窗口干净关闭。
 - **回归验收**：`cargo test --workspace` 276 tests / 45 suites 通过；`cargo test -p open_quartz_native_host --all-features --offline`、`cargo check -p app --lib` 通过。CI 以 `macos-latest` 编译 Slint app。
 - **已知工具链问题**：wgpu-core 30 的 debug-only lock tracer 与 Slint thread-local backend 在 macOS 存在 TLS 析构顺序冲突；仅对 Slint app 的 dev profile 关闭 `wgpu-core` debug assertions，release 原本不启用该 tracer，OpenQuartz/Slint/app assertions 不受影响。
-- **下一步**：继续 Phase 3 MiniMap 及性能验收；Linux 与移动端证据后补。
+- **下一步**：Phase 3 桌面功能切片已齐，补原生窗口交互性能和 Linux 证据后进入 Phase 4 Inspector/编辑器；移动端手势后补。
 
 ### 8.5 Phase 3：节点图
 
@@ -727,11 +727,13 @@ Spike 范围：
 - **持久化与错误路径**：坐标和连接通过 SDK `Project::to_file()` 保存并可重载；项目 I/O 期间禁用并拒绝选择、拖动、连线与历史操作，避免旧 project 或旧 save snapshot 覆盖编辑。
 - **已实现第三切片**：−/+ 按 1.25 倍缩放，手动范围 1%–200%，100% 重置保持视口中心（受边界约束）；Fit View 按紧致 graph bounds 和反向 Bezier 控制点范围居中适配，激活后随窗口/graph bounds 变化重算，空图禁用。视口不写 Project、不增加 revision、不进入 history；打开项目重置缩放和滚动。节点/端口/边/拖动共用比例，拖动换算回世界坐标且 3px 阈值保持屏幕单位；低于 25% 隐藏标签，仅显示概览几何。
 - **已实现第四切片**：Shift-click 多选切换、Select all 和图区域 Command/Ctrl+A/C/V；Rust-owned graph clipboard 快照选中节点及内部边，粘贴重映射节点/端口 ID、保留节点数据及相对布局，每次成功整体偏移再增 40 世界单位，整组作为一次 SDK revision/history。失败保留项目/redo/偏移；Copy 空选择不覆盖旧剪贴板。剪贴板跨项目 Open 保留，不占用系统文本剪贴板、不复制外部资源；路径框文本快捷键不被截获，I/O busy 拒绝操作。拖动仍仅移动当前节点，并在松手时选中该节点，不提供组拖动。
-- **性能基线**：`--graph-stress` 默认生成确定性的 100 节点/150 边有效 graph，上限 300；Apple M4 Pro debug test 中 Rust projection 为 294µs。当前数字不包含 Slint layout/rasterization，不宣称达到 60 FPS gate。
+- **已实现第五切片**：右下 MiniMap 按同一 padded world bounds 显示全部节点和当前可见世界框，随 scroll/zoom/Fit/窗口 resize 更新；点击或拖动可居中主视口并按边界 clamp、恢复 graph keyboard focus。空图或完整 graph 已可见（含 Fit View）时隐藏，位置避开滚动条；操作不写 Project、不进 history。
+- **性能基线**：确定性的 100 节点/150 边和 300 节点/450 边 graph。Apple M4 Pro 上，临时离屏 harness 将真实 Slint tree 通过与应用相同的 FemtoVG/wgpu 30 后端渲染到 1180×760 Metal texture，每组预热 1 帧后同步测 30 个 full frames。release：100 节点 projection 75µs，frame mean 2.326ms / p95 2.523ms（429.9 FPS）；300 节点 projection 271µs，mean 2.825ms / p95 3.338ms（354.0 FPS）。debug 分别 mean 20.574ms（48.6 FPS）和 28.127ms（35.6 FPS）。release 在该确定性离屏场景通过 60 FPS frame-time gate，但不是原生 swapchain/event-loop 测量，不外推其他硬件/平台。
 - **验收**：Slint app 26 tests 通过，覆盖真实多端口端点、负坐标边界、平移不变及反向 Bezier fit bounds、位置/连线持久化、no-op revision、重连与占用输入替换的单步历史、类型/cycle 错误原子性及原有 stress/CLI 边界。临时 Slint 软件指针 smoke 通过选择/连线/历史/I/O 和缩放交互验证；80%/125% 下拖动换算、3px 屏幕阈值、缩放后端口命中、200% 滚动后缩至 160% 的中心锚点保持均通过，1%/200%、300 节点负坐标平移图在 1180×760 和 800×540 的 Fit View、自适应 resize、空图及 Open 后重置均有截图，Fit 下首尾节点可选择。此前 Apple M4 Pro/Metal smoke 确认断连错误清图，重连和 redo 后恢复 640×360 GPU 纹理。当前 macOS 会话未暴露原生可访问窗口，上述软件截图不计作原生窗口验收或 60 FPS 证据。
 - **第四切片验收**：Slint app 29 tests 通过，增加剪贴板快照隔离、任意端口 ID 重映射、仅内部边、重复粘贴 ID/偏移、整组撤销重做与持久化、失败保留目标/redo/偏移。临时真实 Slint 指针/键盘 smoke 通过 Shift 切换、多选/复制/粘贴、单步 Undo/Redo、文本框快捷键隔离、busy guard、SDK Save/Open 和跨项目粘贴；已检查 1180×760、800×540 截图。将 shader/renderer 子图复制到空项目后，真实 NativeHost 在 Apple M4 Pro/Metal 上输出 640×360 GPU 纹理，确认重映射后的端口仍可执行。
-- **待实现**：MiniMap、100/300 节点原生 Slint 帧率测量和移动端手势。
-- 移动端手势在桌面稳定后补。
+- **第五切片验收**：临时 Slint 软件指针 smoke 在 300 节点图验证 MiniMap 首尾区域点击/拖动定位、zoom/Fit 视口框、整体负坐标平移、1180×760/800×540 resize、空图/完整可见时隐藏、再次放大后出现、graph focus 与 Project/revision 不变；导航后首尾节点均可选择。所有临时 smoke/perf harness 已移除。
+- **待验证**：macOS 原生窗口可见交互/帧率、Linux/移动端运行时与移动端手势。
+- 移动端手势在桌面原生窗口稳定后补。
 
 ### 8.6 Phase 4：Inspector 与编辑器
 
@@ -1014,7 +1016,7 @@ Rust:
 | macOS Metal 共享纹理导入 | **已验证**：Apple M4 Pro；真实 `NativeHost` graph、Slint `Image::try_from`、640×360 输出、项目 I/O、空 graph、关闭路径均通过 |
 | Linux/Android 共享纹理 | **未验证**，按当前计划后置 |
 | iOS 外部纹理导入 | **运行时未验证**；`open_quartz_native_host` 已选择 Metal，`aarch64-apple-ios` compile check 通过，Phase 6 前仍须真机验证纹理导入 |
-| 节点图 100/300 节点性能 | **初始基线**：100 节点/150 边 Rust projection 294µs（Apple M4 Pro debug）；已检查 300 节点/450 边软件渲染截图，原生 layout/rasterization 与 60 FPS gate 尚未验收 |
+| 节点图 100/300 节点性能 | **Apple M4 Pro 离屏 FemtoVG/wgpu 30 release 已通过 60 FPS frame-time gate**：1180×760，100 节点 mean 2.326ms / p95 2.523ms；300 节点 mean 2.825ms / p95 3.338ms。debug 为 20.574/28.127ms mean。原生 swapchain/event-loop 仍未验收 |
 | 移动端文件/相机/生命周期 | **未验证**，Phase 6 |
 
 ---
