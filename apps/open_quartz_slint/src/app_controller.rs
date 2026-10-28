@@ -108,6 +108,8 @@ pub struct AppController {
     inspector_draft: Option<InspectorDraft>,
     inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
     inspector_forms: Rc<slint::VecModel<crate::InspectorFormGroup>>,
+    graph_nodes: Rc<slint::VecModel<crate::GraphNode>>,
+    graph_edges: Rc<slint::VecModel<crate::GraphEdge>>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
@@ -165,6 +167,8 @@ impl AppController {
                 Vec::<crate::InspectorUniform>::new(),
             )),
             inspector_forms: Rc::new(slint::VecModel::default()),
+            graph_nodes: Rc::new(slint::VecModel::default()),
+            graph_edges: Rc::new(slint::VecModel::default()),
             clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
@@ -180,6 +184,12 @@ impl AppController {
         ));
         window.set_inspector_forms(slint::ModelRc::from(
             controller.borrow().inspector_forms.clone(),
+        ));
+        window.set_graph_nodes(slint::ModelRc::from(
+            controller.borrow().graph_nodes.clone(),
+        ));
+        window.set_graph_edges(slint::ModelRc::from(
+            controller.borrow().graph_edges.clone(),
         ));
         window.set_runtime_status(runtime_status.into());
         window.set_io_status(
@@ -496,8 +506,16 @@ impl AppController {
             duration_micros: projection.projection_duration.as_micros(),
         };
         window.set_project_name(self.project.name().into());
-        window.set_graph_nodes(projection.nodes);
-        window.set_graph_edges(projection.edges);
+        self.graph_nodes.set_vec(
+            (0..projection.nodes.row_count())
+                .filter_map(|index| projection.nodes.row_data(index))
+                .collect::<Vec<crate::GraphNode>>(),
+        );
+        self.graph_edges.set_vec(
+            (0..projection.edges.row_count())
+                .filter_map(|index| projection.edges.row_data(index))
+                .collect::<Vec<crate::GraphEdge>>(),
+        );
         window.set_graph_summary(projection.summary.into());
         window.set_graph_content_width(projection.content_width);
         window.set_graph_content_height(projection.content_height);
@@ -646,6 +664,7 @@ impl AppController {
         };
         let Some(node) = node else {
             self.inspector_draft = None;
+            window.set_inspector_has_selection(false);
             window.set_inspector_node_id("".into());
             window.set_inspector_onnx_config(slint::ModelRc::default());
             window.set_inspector_onnx_saved(slint::ModelRc::default());
@@ -677,6 +696,7 @@ impl AppController {
             .inspector_draft
             .as_ref()
             .expect("selected node has a draft");
+        window.set_inspector_has_selection(true);
         window.set_inspector_node_id(node.id.as_str().into());
         window.set_inspector_node_type(format!("{:?}", node.node_type).into());
         window.set_inspector_is_shader(node.node_type == NodeType::Shader);
@@ -2204,6 +2224,8 @@ mod tests {
                 crate::InspectorUniform,
             >::new())),
             inspector_forms: std::rc::Rc::new(slint::VecModel::default()),
+            graph_nodes: std::rc::Rc::new(slint::VecModel::default()),
+            graph_edges: std::rc::Rc::new(slint::VecModel::default()),
             clipboard: None,
             graph_stress_count: None,
             selected_edge_id: None,

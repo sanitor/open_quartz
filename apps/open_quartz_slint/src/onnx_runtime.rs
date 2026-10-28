@@ -59,6 +59,14 @@ pub enum ModelMessage {
     },
 }
 
+impl ModelMessage {
+    pub fn node_id(&self) -> &str {
+        match self {
+            Self::Progress { node_id, .. } | Self::Ready { node_id, .. } => node_id,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct OnnxRuntime {
     specs: BTreeMap<String, ModelSpec>,

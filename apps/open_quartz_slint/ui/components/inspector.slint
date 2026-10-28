@@ -42,6 +42,7 @@ export struct InspectorOnnxRow {
 
 export component Inspector inherits Rectangle {
     in property <string> node-id;
+    in property <bool> has-selection;
     in property <string> node-type;
     in property <string> selection-message;
     in property <bool> project-busy;
@@ -101,14 +102,14 @@ export component Inspector inherits Rectangle {
                 clicked => { root.discard-drafts(); }
             }
         }
-        if root.node-id == "": Text {
+        if !root.has-selection: Text {
             text: root.selection-message;
             color: Theme.secondary;
             wrap: word-wrap;
             vertical-stretch: 1;
             vertical-alignment: center;
         }
-        if root.node-id != "": ScrollView {
+        if root.has-selection: ScrollView {
             content-width: self.visible-width;
             horizontal-scrollbar-policy: always-off;
             VerticalLayout {

@@ -309,6 +309,7 @@ fn render_worker(
                 publish_onnx(&updates, generation, &onnx);
             }
             Some(Command::Model(message)) => {
+                let node_id = message.node_id().to_owned();
                 if onnx.receive(message, &mut host) {
                     let result = if running { Ok(()) } else { host.resume() };
                     match result {
@@ -327,6 +328,10 @@ fn render_worker(
                             onnx.render_failed(&error);
                             publish_status(&updates, generation, error, true);
                         }
+                    }
+                } else if let Some(state) = onnx.states.get(&node_id) {
+                    if !state.loading && !state.attached {
+                        publish_status(&updates, generation, state.status.clone(), true);
                     }
                 }
                 publish_onnx(&updates, generation, &onnx);

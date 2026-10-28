@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Slint ONNX state projection** — keep graph model identities stable across SDK project replacement and publish terminal load failures and unloads to both the inspector and Renderer status. Late model completions remain ticket-scoped and cannot attach to a replaced or cancelled node.
+
+### Tests
+
+- **Slint ONNX acceptance** — 52 Slint tests pass; release build succeeds. Native AppKit/Metal acceptance covers a real local `image_identity.onnx` session with `2×2` CPU output and shared texture preview, saved-project separation, custom catalog cancellation through a blocked FIFO read, late-completion invalidation, unload cleanup, SDK Open/Save, and the 800×540 narrow-window layout.
+
 ### Features
 
 - **Slint Phase 2 shell** — extract the framework-neutral `open_quartz_native_host` from the Tauri runtime and add an independent Slint 1.18.1 application shell with SDK-owned project I/O, graph projection, and shared wgpu 30 renderer texture import. Tauri remains the fallback application; the full editor and mobile delivery are not migrated yet.

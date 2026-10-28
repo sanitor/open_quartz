@@ -103,3 +103,20 @@ fn live_structured_results_are_accepted_only_for_an_attached_session() {
         "Runtime stopped: inference failed"
     );
 }
+
+#[test]
+fn model_messages_expose_their_node_identity() {
+    let progress = ModelMessage::Progress {
+        node_id: "progress".into(),
+        ticket: 1,
+        received: 2,
+        total: 3,
+    };
+    let ready = ModelMessage::Ready {
+        node_id: "ready".into(),
+        ticket: 2,
+        result: Err("failed".into()),
+    };
+    assert_eq!(progress.node_id(), "progress");
+    assert_eq!(ready.node_id(), "ready");
+}

@@ -27,6 +27,7 @@ export component AppWindow inherits Window {
     in property <float> graph-origin-y;
     in property <bool> busy;
     in property <string> inspector-node-id;
+    in property <bool> inspector-has-selection;
     in property <string> inspector-node-type;
     in property <string> inspector-selection-message;
     in property <bool> inspector-is-shader;
@@ -147,6 +148,7 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 Inspector {
                     node-id: root.inspector-node-id;
+                    has-selection: root.inspector-has-selection;
                     node-type: root.inspector-node-type;
                     selection-message: root.inspector-selection-message;
                     project-busy: root.busy;
