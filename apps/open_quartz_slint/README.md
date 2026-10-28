@@ -169,11 +169,21 @@ Pro/Metal produced 96×48 output after a size edit and RGBA `[255, 0, 0, 255]`
 after applying a red shader (one-pixel readback for this smoke only). Temporary
 smoke code was removed; production presentation still uses shared GPU textures.
 
-**Phase 4 native-window acceptance is pending:** the macOS session was locked
-(`CGSSessionScreenIsLocked = 1`), so the new AppKit surface could not be observed
-through accessibility/screenshots. The offscreen and headless Metal results do
-not substitute for that acceptance. The Phase 2/3 native results below predate
-this Inspector slice.
+Native AppKit validation after unlocking exercised accessibility selection, name
+Apply, WGSL Apply, source Undo/Redo, rejected connected-port removal with the draft
+retained, Discard, width stepping to 641×360, and SDK Save/Open. The saved JSON
+preserved the name, red source, dimensions, port IDs, and connection. Screenshots
+showed real red shared-texture output. This run also fixed renderer image preferred
+height starving the Inspector: both panels now use explicit preferred heights,
+with a 120px renderer minimum, so imported textures do not determine their split.
+
+Full native acceptance remains pending for pointer/keyboard editing and scrolling
+at 800×540. The automation provider rejected coordinate clicks as unfocused even
+while AppKit reported the app frontmost with a focused AX window; scroll/drag had
+no observable effect. Permissions were granted and the session was unlocked.
+AX source editing was exercised in an expanded window, not by claiming that the
+offscreen editor was reachable in the narrow window. The Phase 2/3 results below
+predate this Inspector slice.
 
 An ephemeral software-rendered Slint smoke exercised actual pointer events for
 connection selection/deletion, port connection, reconnection, type rejection,

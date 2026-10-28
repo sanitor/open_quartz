@@ -153,12 +153,15 @@ export component AppWindow inherits Window {
                     apply-output-size => { root.inspector-apply-output-size(); }
                     discard-drafts => { root.inspector-discard-drafts(); }
                     horizontal-stretch: 1;
+                    preferred-height: 0px;
                     vertical-stretch: 3;
                 }
                 Rectangle {
                     background: Theme.panel;
                     border-radius: 8px;
                     horizontal-stretch: 1;
+                    min-height: 120px;
+                    preferred-height: 0px;
                     vertical-stretch: 1;
                     VerticalLayout {
                         padding: 12px;
