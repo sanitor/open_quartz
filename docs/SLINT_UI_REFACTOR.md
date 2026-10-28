@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3 及 Phase 4 首切片（Inspector、名称/输出尺寸、WGSL Apply）已完成 macOS 原生验收；离屏交互、Metal 像素、原生 AX/指针/键盘、800×540 滚动可达性均已验证；尚未切换默认入口
+> 状态：Phase 2/3、Phase 4 Inspector/WGSL 首切片及 Shader numeric uniform 切片已通过 macOS 原生验收；Slint 41 tests、workspace 276 tests/45 suites 和 release build 通过；尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -740,11 +740,14 @@ Spike 范围：
 
 - **已实现首切片**：单节点 Inspector 显示 ID、类型和只读端口；名称编辑适用于所有节点，Shader/Constant 支持 Auto size、1–8192 输出尺寸；Shader 支持纯文本 WGSL 编辑及固定底部 Apply。名称/尺寸复用 SDK `UpdateNodeData`，源码走 `UpdateShaderCode`，不复制 parser/port 规则。
 - **草稿与错误语义**：各字段组独立 Apply，不覆盖其他组草稿；Discard 恢复提交值。草稿未提交时禁用并拒绝 graph 选择/编辑/历史及 Open/Save，I/O busy 禁用 Inspector。SDK 拒绝连线失效的端口变更时保留项目/revision/history/草稿；可提交的语法错误保留 `parseError` 并展示，源码修复后清除。GPU 编译错误仍由 NativeHost runtime status 显示。
-- **历史与渲染**：每次有变化的 Apply 仅一条 SDK history，no-op 不增加 revision；名称不重启 Renderer，源码/尺寸及其 Undo/Redo 更新 NativeHost。提交值与解析错误随 SDK Save/Open 往返，草稿不自动持久化。
+- **Shader numeric uniform 切片**：仅 Shader 节点按当前输入端口生成 Float/Int/Uint/Bool、Vec2–4/Ivec2–4/Uvec2–4、Mat2–4 行；Sampler/Auto/Bvec/JSON/资源类型不生成 uniform 行。连接输入只读且不参与 dirty、validation 阻塞或 mutation。每行有独立 value/valid/error，回调使用稳定名称；VecModel 保留句柄并按行更新，不重建其他草稿组。向量/矩阵逗号分隔且严格检查分量数，矩阵使用 WGSL column-major；Bool 接受 true/false/1/0，提交后规范化；整数限 i32/u32，浮点必须有限且在 f32 范围内。无效编辑保留为草稿并保护 graph/file 操作；未编辑的旧无效值仅展示错误，不因选择节点就 dirty-lock。
+- **SDK 与历史语义**：uniform Apply 克隆完整 `NodeData`，仅修改当前未连接支持端口的已变更 `uniforms` 项并通过 SDK `UpdateNodeData` 提交；缺失值显示零/false，返回零 no-op，不补写其他缺失零；stale key、端口、extra 和其他节点数据保留。一次有效 Apply 对应一条 Content history 并走 `publish_project` 刷新 NativeHost，no-op 不增加 revision；源码 Apply 后刷新端口 schema，保留名称/类型匹配的 uniform 草稿，移除 obsolete 行并补新行。
+- **历史与渲染**：每次有变化的 Apply 仅一条 SDK history，no-op 不增加 revision；名称不重启 Renderer，源码/uniform/尺寸及其 Undo/Redo 更新 NativeHost。提交值与解析错误随 SDK Save/Open 往返，草稿不自动持久化。
 - **已验证**：Slint app 32 tests 通过；临时离屏真实控件 smoke 覆盖文本输入、Apply、选择/多选、草稿保护、Undo/Redo、busy guard、异步 Save/Open、解析错误/修复，检查 1180×760 和 800×540 截图。经同一控制器修改尺寸和源码后，Apple M4 Pro/Metal NativeHost 输出 96×48 共享纹理，单像素读回红色 RGBA `[255,0,0,255]`。临时 smoke 已移除，生产显示仍无 readback。
 - **原生窗口通过**：以 AppKit/AX 实测名称 Apply、WGSL Apply、源码 Undo/Redo、连接端口移除拒绝并保留草稿、Discard、宽度步进至 641×360、SDK Save/Open；JSON 保留名称/源码/尺寸/端口 ID/连线，截图显示真实红色共享纹理。修复输出图片 preferred height 挤压 Inspector：两面板显式分配 preferred height，Renderer 最小高度 120px。
 - **窄窗口与真实输入通过**：800×540 客户区（含 AppKit 标题栏为 800×572）内，用 macOS HID 指针选择 Shader/Renderer、聚焦文本、点击 Apply/Discard，滚轮双向滚动至 WGSL。Command+A 与键盘输入替换名称草稿及源码，不触发 graph 全选；指针 Apply 蓝色源码后，641×360 真实 Metal 输出由红变蓝，独立名称草稿仍保护 graph/file 操作。Discard 名称草稿后切换节点返回，已提交蓝色源码保留。截图确认源码可见、固定底部 Apply 及蓝色输出。此前工具焦点阻塞通过直接 HID 与正确滚动坐标绕过，未向生产代码加入输入绕过逻辑；本首切片原生验收完成。
-- **后续 Phase 4 切片**：uniform/Port 编辑、Sampling/Framebuffer/Video 表单、只读 ONNX 状态及编辑器体验评估。当前不提供 CodeMirror 级高亮/行内 GPU 诊断，也未切换 Tauri 生产入口。
+- **uniform 验收通过**：Slint 41 tests、workspace 276 tests/45 suites 及 release build 通过；回归覆盖支持类型/范围/分量数、缺失零 no-op、连接排除、独立草稿、schema refresh、完整数据/stale key 保留、单步历史、持久化及旧无效值。Apple M4 Pro/Metal 原生 1180×760 和 800×540 客户区验证 NaN 行错误/操作保护、连接参数只读、gain/tint Apply 使 96×48 真实输出由红变蓝、一次 Undo 回红及 Redo 回蓝；fixture 同时执行 Mat2。窄窗口 HID 滚动到字段及 Apply，键盘连续输入 0.7→0.75 保持焦点/光标，指针提交成功。SDK Save/Open 保留 gain=0.75、蓝色 tint、矩阵/整数/连接参数及两条连线；生产显示未加入 readback。
+- **后续 Phase 4 切片**：Sampling/Framebuffer/Video 表单、只读 ONNX 状态及编辑器体验评估。当前不提供 CodeMirror 级高亮/行内 GPU 诊断，也未切换 Tauri 生产入口。
 
 ### 8.7 Phase 5：运行时功能补齐
 

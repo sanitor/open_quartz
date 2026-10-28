@@ -108,7 +108,7 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The shell does **not** yet include uniform/sampling/framebuffer/video forms,
+The shell does **not** yet include sampling/framebuffer/video forms,
 media/resource loading, model controls, or mobile gesture adaptation. Projects requiring
 external images, video, or inference resources may open and save, but those
 resources are not attached by this shell; resulting host failures are reported
@@ -117,30 +117,44 @@ instead of replaced with sample output. Only host preview outputs supported by
 
 ## Inspector and WGSL editing
 
-- Select exactly one node to inspect its ID, kind, name, and typed input/output
-  ports. Empty/multi-selection shows an explicit selection prompt.
+- Select exactly one node to inspect its ID, kind, and typed input/output ports.
+  Empty/multi-selection shows an explicit selection prompt. Shader nodes expose
+  uniform rows for Float/Int/Uint/Bool, Vec2–4/Ivec2–4/Uvec2–4, and Mat2–4 inputs.
+  Connected rows are read-only because their upstream value wins. Samplers, Auto,
+  boolean vectors, and other resource/object types are not uniform rows; the Ports
+  list still shows them. Constant and other node forms are unchanged.
 - Edit the name and use **Apply name**. Shader/Constant nodes also expose
   **Auto size**, width and height (1–8192), and **Apply output size**. Auto size
   delegates resolution to the engine; applying it clears explicit dimensions.
 - Shader nodes expose a plain, scrollable WGSL `TextEdit` and a fixed-bottom
   **Apply shader** button. Built-in node implementations are not source-editable.
   There is no syntax highlighting, inline GPU linter, or debounced auto-apply.
-- All fields are session-local drafts until their respective Apply action. Applying
-  one field group preserves drafts in other groups. Use **Discard inspector edits**
+- All fields are session-local drafts until their respective Apply action. Name,
+  uniform/Port values, output size, and WGSL source are independent groups, so
+  applying one preserves drafts in every other group. Use **Discard inspector edits**
   to restore all fields from the committed SDK node without creating a revision.
 - While drafts differ from the project, graph mutations/selection/history and
   Open/Save are disabled and rejected by the controller. Apply or discard before
   switching nodes/projects. Project I/O disables Inspector edits and Apply too.
   Drafts are not saved automatically and are lost on application close.
-- Names and output sizes use SDK `UpdateNodeData` with the complete existing data;
-  WGSL uses SDK `UpdateShaderCode` and its port remapping. Failed connected-port
-  changes preserve the graph, revision, history, and draft. SDK syntax errors can
-  be committed when the graph remains valid; the stored `parseError` is shown in
-  the panel. Apply valid source to clear it. NativeHost/GPU errors are reported in
-  runtime status, not disguised as successful output.
+- Names, uniform/Port values, and output sizes use SDK `UpdateNodeData` with the
+  complete existing data; WGSL uses SDK `UpdateShaderCode` and its port remapping.
+  Uniform values require the exact scalar/vector/matrix component count and valid
+  finite/ranged literals. Vector values are comma-separated; matrix values use WGSL
+  column-major order. Invalid drafts remain local and disable Apply without changing
+  the project or other drafts. Bool accepts `true`, `false`, `1`, or `0` and displays
+  canonical `true`/`false` after Apply. Integers must fit i32/u32; floats must be finite
+  f32-range values. Missing values display zero/false without writing defaults;
+  returning a missing value to zero is a no-op, and applying another row does not
+  seed unrelated zeros. Untouched invalid legacy values show validation without
+  dirty-locking the graph. Failed connected-port source changes preserve the graph,
+  revision, history, and draft. SDK syntax errors can be committed when the graph
+  remains valid; the stored `parseError` is shown in the panel. Apply valid source to
+  clear it. NativeHost/GPU errors are reported in runtime status, not disguised as
+  successful output.
 - Each changed Apply is one SDK history entry. No-op Apply creates no revision.
   Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
-  source/output-size edits and their history refresh the NativeHost graph.
+  source/uniform/output-size edits and their history refresh the NativeHost graph.
   Committed fields and parse errors round-trip through SDK Save/Open.
 
 ## Validation scope
@@ -154,10 +168,25 @@ coverage includes multi-selection, internal-only edges, custom port ID remapping
 deep snapshot independence, repeated ID allocation, single-step history, persisted
 copies, and rejected pastes preserving destination, redo, and offset.
 
-The first Inspector/editor slice adds regressions for independent field commits,
-no-op revisions, port ID/edge preservation, single-edit history, output-size
-boundaries and Auto transitions, rejected connected-port changes, persisted parse
-errors, and repair. The permanent Slint suite has **32 passing tests**.
+The Inspector/editor suite adds regressions for independent field commits, no-op
+revisions, port ID/edge preservation, single-edit history, output-size boundaries
+and Auto transitions, rejected connected-port changes, persisted parse errors and
+repair, plus typed uniform scalar/vector/matrix parsing, bounds/exact arity, connected
+exclusion, invalid-draft atomicity, schema refresh, missing-zero no-ops, complete-node-data
+preservation, independent drafts, single Content history, and SDK persistence.
+All **41 Slint tests** and **276 workspace tests / 45 suites** pass; the release
+build succeeds.
+
+The uniform slice was also exercised in the release AppKit window on Apple M4
+Pro/Metal at 1180×760 and an 800×540 client area. Invalid `NaN` showed a per-row
+error and guarded file/graph actions; connected `wired` stayed disabled with an
+upstream-precedence explanation. Applying scalar `gain` and vector `tint` changed
+real 96×48 output from red to blue; one Undo restored red and Redo restored blue.
+The fixture also executed a Mat2 uniform. In the narrow window, HID scrolling
+reached the fields and Apply; keyboard replacement and consecutive `0.7` then `5`
+inputs produced `0.75` without losing focus/caret, and a pointer Apply succeeded.
+SDK Save/Open retained `gain = 0.75`, blue `tint`, untouched matrix/integer/connected
+values, and both connections. No readback was added to production presentation.
 
 A temporary software-rendered smoke exercised real name/source text inputs,
 Command/Ctrl+A isolation, pointer Apply, draft protection during selection/history/

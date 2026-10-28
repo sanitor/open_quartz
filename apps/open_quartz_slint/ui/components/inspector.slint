@@ -7,6 +7,15 @@ export struct InspectorPort {
     output: bool,
 }
 
+export struct InspectorUniform {
+    name: string,
+    data-type: string,
+    value: string,
+    connected: bool,
+    valid: bool,
+    error: string,
+}
+
 export component Inspector inherits Rectangle {
     in property <string> node-id;
     in property <string> node-type;
@@ -17,9 +26,12 @@ export component Inspector inherits Rectangle {
     in property <bool> label-dirty;
     in property <bool> shader-dirty;
     in property <bool> output-size-dirty;
+    in property <bool> uniform-dirty;
     in property <bool> inspector-dirty;
     in property <string> validation-message;
+    in property <bool> uniforms-valid: true;
     in property <[InspectorPort]> ports;
+    in property <[InspectorUniform]> uniforms;
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in-out property <bool> auto-size;
@@ -28,9 +40,11 @@ export component Inspector inherits Rectangle {
     callback label-draft-changed(string);
     callback shader-draft-changed(string);
     callback output-size-draft-changed(int, int, bool);
+    callback uniform-draft-changed(string, string);
     callback apply-label();
     callback apply-shader();
     callback apply-output-size();
+    callback apply-uniforms();
     callback discard-drafts();
 
     background: Theme.panel;
@@ -133,6 +147,32 @@ export component Inspector inherits Rectangle {
                         text: "Shader parse error: " + root.validation-message;
                         color: #ff9b8f;
                         wrap: word-wrap;
+                    }
+                }
+
+                if root.is-shader && root.uniforms.length > 0: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Uniforms"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text { text: "Vectors: comma-separated. Matrices: column-major."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    for uniform in root.uniforms: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: uniform.name + " · " + uniform.data-type; color: Theme.secondary; wrap: word-wrap; }
+                        LineEdit {
+                            text: uniform.value;
+                            enabled: !uniform.connected && !root.project-busy;
+                            edited => { root.uniform-draft-changed(uniform.name, self.text); }
+                        }
+                        if uniform.connected: Text { text: "Connected · upstream value wins"; color: Theme.accent; wrap: word-wrap; }
+                        if !uniform.connected && !uniform.valid: Text {
+                            text: uniform.error;
+                            color: #ff9b8f;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Button {
+                        text: "Apply uniforms";
+                        enabled: root.uniform-dirty && root.uniforms-valid && !root.project-busy;
+                        clicked => { root.apply-uniforms(); }
                     }
                 }
 

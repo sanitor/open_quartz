@@ -7,16 +7,24 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use open_quartz_sdk::{
-    Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz, PortId, PortKey,
-    Position, Project, SdkError,
+    DataType, Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz, PortId,
+    PortKey, Position, Project, SdkError,
 };
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 
 use crate::graph_clipboard::GraphClipboard;
 use crate::graph_view_model::GraphViewModel;
 use crate::render_bridge::RenderBridge;
 use crate::services::file_service;
 use crate::AppWindow;
+
+#[derive(Clone, Debug)]
+struct UniformDraft {
+    name: String,
+    data_type: DataType,
+    literal: String,
+    baseline_literal: String,
+}
 
 #[derive(Clone, Debug)]
 struct InspectorDraft {
@@ -27,6 +35,7 @@ struct InspectorDraft {
     output_width: i32,
     output_height: i32,
     validation_message: String,
+    uniforms: Vec<UniformDraft>,
 }
 
 impl InspectorDraft {
@@ -45,7 +54,22 @@ impl InspectorDraft {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            uniforms: uniform_drafts(node),
         }
+    }
+
+    fn refresh_uniforms(&mut self, node: &open_quartz_sdk::ProjectNode, retain_drafts: bool) {
+        let mut uniforms = uniform_drafts(node);
+        if retain_drafts {
+            for uniform in &mut uniforms {
+                if let Some(previous) = self.uniforms.iter().find(|previous| {
+                    previous.name == uniform.name && previous.data_type == uniform.data_type
+                }) {
+                    uniform.literal.clone_from(&previous.literal);
+                }
+            }
+        }
+        self.uniforms = uniforms;
     }
 }
 
@@ -54,6 +78,7 @@ enum InspectorChange {
     Label,
     Shader,
     OutputSize,
+    Uniforms,
 }
 
 impl InspectorChange {
@@ -62,6 +87,7 @@ impl InspectorChange {
             Self::Label => "Node name applied through the SDK.",
             Self::Shader => "Shader source applied through the SDK.",
             Self::OutputSize => "Output size applied through the SDK.",
+            Self::Uniforms => "Uniform values applied through the SDK.",
         }
     }
 }
@@ -72,6 +98,7 @@ pub struct AppController {
     renderer: Option<RenderBridge>,
     selected_node_ids: BTreeSet<String>,
     inspector_draft: Option<InspectorDraft>,
+    inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
@@ -124,6 +151,9 @@ impl AppController {
             renderer,
             selected_node_ids: BTreeSet::new(),
             inspector_draft: None,
+            inspector_uniforms: Rc::new(slint::VecModel::from(
+                Vec::<crate::InspectorUniform>::new(),
+            )),
             clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
@@ -134,6 +164,9 @@ impl AppController {
             busy: false,
             timer: slint::Timer::default(),
         }));
+        window.set_inspector_uniforms(slint::ModelRc::from(
+            controller.borrow().inspector_uniforms.clone(),
+        ));
         window.set_runtime_status(runtime_status.into());
         window.set_io_status(
             "Enter an explicit project path to Open or Save. Save overwrites that path.".into(),
@@ -192,6 +225,22 @@ impl AppController {
                     }
                     controller.publish_inspector_dirty();
                 }
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_uniform_draft_changed(move |name, literal| {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .change_uniform_draft(name.as_str(), literal.as_str());
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_apply_uniforms(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .apply_inspector(InspectorChange::Uniforms);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -491,9 +540,9 @@ impl AppController {
         false
     }
 
-    fn inspector_dirty_fields(&self) -> (bool, bool, bool) {
+    fn inspector_dirty_fields(&self) -> (bool, bool, bool, bool) {
         let Some(draft) = &self.inspector_draft else {
-            return (false, false, false);
+            return (false, false, false, false);
         };
         let Some(node) = self
             .project
@@ -502,32 +551,35 @@ impl AppController {
             .iter()
             .find(|node| node.id == draft.node_id)
         else {
-            return (false, false, false);
+            return (false, false, false, false);
         };
         let output_dirty = matches!(node.node_type, NodeType::Shader | NodeType::Constant)
             && (draft.auto_size != (node.data.auto_size != Some(false))
                 || (!draft.auto_size
                     && (draft.output_width as u32 != node.data.width.unwrap_or(512)
                         || draft.output_height as u32 != node.data.height.unwrap_or(512))));
+        let uniform_dirty = uniform_drafts_dirty(&self.project, node, draft);
         (
             draft.label != node.data.label,
             node.node_type == NodeType::Shader && draft.shader_code != node.data.shader_code,
             output_dirty,
+            uniform_dirty,
         )
     }
 
     fn inspector_is_dirty(&self) -> bool {
-        let (label, shader, output) = self.inspector_dirty_fields();
-        label || shader || output
+        let (label, shader, output, uniform) = self.inspector_dirty_fields();
+        label || shader || output || uniform
     }
 
     fn publish_inspector_dirty(&self) {
         if let Some(window) = self.window.upgrade() {
-            let (label, shader, output) = self.inspector_dirty_fields();
+            let (label, shader, output, uniform) = self.inspector_dirty_fields();
             window.set_inspector_label_dirty(label);
             window.set_inspector_shader_dirty(shader);
             window.set_inspector_output_size_dirty(output);
-            window.set_inspector_dirty(label || shader || output);
+            window.set_inspector_uniform_dirty(uniform);
+            window.set_inspector_dirty(label || shader || output || uniform);
         }
     }
 
@@ -555,6 +607,7 @@ impl AppController {
                 }
                 .into(),
             );
+            self.publish_uniforms();
             self.publish_inspector_dirty();
             return;
         };
@@ -596,7 +649,71 @@ impl AppController {
                 })
                 .collect::<Vec<_>>(),
         )));
+        self.publish_uniforms();
         self.publish_inspector_dirty();
+    }
+
+    fn change_uniform_draft(&mut self, name: &str, literal: &str) {
+        if self.busy {
+            return;
+        }
+        let Some(draft) = self.inspector_draft.as_mut() else {
+            return;
+        };
+        let Some(node) = self
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.id == draft.node_id)
+        else {
+            return;
+        };
+        if node.node_type != NodeType::Shader {
+            return;
+        }
+        let Some(port) = node.data.inputs.iter().find(|port| port.label == name) else {
+            return;
+        };
+        if uniform_connected(&self.project, node, port) {
+            return;
+        }
+        if let Some(uniform) = draft
+            .uniforms
+            .iter_mut()
+            .find(|uniform| uniform.name == name && uniform.data_type == port.data_type)
+        {
+            uniform.literal = literal.to_owned();
+        }
+        self.publish_uniforms();
+        self.publish_inspector_dirty();
+    }
+
+    fn publish_uniforms(&self) {
+        let rows = self
+            .inspector_draft
+            .as_ref()
+            .map(|draft| uniform_rows(&self.project, draft))
+            .unwrap_or_default();
+        let valid = rows.iter().all(|row| row.connected || row.valid);
+        let same_schema = self.inspector_uniforms.row_count() == rows.len()
+            && rows.iter().enumerate().all(|(index, row)| {
+                self.inspector_uniforms
+                    .row_data(index)
+                    .is_some_and(|old| old.name == row.name && old.data_type == row.data_type)
+            });
+        if same_schema {
+            for (index, row) in rows.into_iter().enumerate() {
+                if self.inspector_uniforms.row_data(index).as_ref() != Some(&row) {
+                    self.inspector_uniforms.set_row_data(index, row);
+                }
+            }
+        } else {
+            self.inspector_uniforms.set_vec(rows);
+        }
+        if let Some(window) = self.window.upgrade() {
+            window.set_inspector_uniforms_valid(valid);
+        }
     }
 
     fn apply_inspector(&mut self, change: InspectorChange) {
@@ -626,12 +743,14 @@ impl AppController {
                     InspectorChange::Shader => {
                         draft.shader_code = fresh.shader_code;
                         draft.validation_message = fresh.validation_message;
+                        draft.refresh_uniforms(node, true);
                     }
                     InspectorChange::OutputSize => {
                         draft.auto_size = fresh.auto_size;
                         draft.output_width = fresh.output_width;
                         draft.output_height = fresh.output_height;
                     }
+                    InspectorChange::Uniforms => draft.refresh_uniforms(node, false),
                 }
                 if changed {
                     self.undo_edits
@@ -1100,10 +1219,243 @@ fn commit_inspector(
                 data,
             }
         }
+        InspectorChange::Uniforms => {
+            if node.node_type != NodeType::Shader {
+                return Err(SdkError::new(
+                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    "Only Shader nodes have editable uniforms",
+                ));
+            }
+            let mut data = node.data.clone();
+            let mut changed = false;
+            for port in node.data.inputs.iter().filter(|port| {
+                uniform_shape(port.data_type).is_some() && !uniform_connected(project, node, port)
+            }) {
+                let Some(uniform) = draft.uniforms.iter().find(|uniform| {
+                    uniform.name == port.label && uniform.data_type == port.data_type
+                }) else {
+                    continue;
+                };
+                let value =
+                    parse_uniform_literal(port.data_type, &uniform.literal).map_err(|message| {
+                        SdkError::new(
+                            open_quartz_sdk::SdkErrorCode::InvalidGraph,
+                            format!("{}: {message}", port.label),
+                        )
+                    })?;
+                if value != effective_uniform_value(node, port) {
+                    data.uniforms.insert(port.label.clone(), value);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return Ok(false);
+            }
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(&node.id),
+                data,
+            }
+        }
     };
     project
         .apply_graph_command(command, project.graph_revision())
         .map(|_| true)
+}
+
+fn uniform_shape(data_type: DataType) -> Option<usize> {
+    Some(match data_type {
+        DataType::Float | DataType::Int | DataType::Uint | DataType::Bool => 1,
+        DataType::Vec2 | DataType::Ivec2 | DataType::Uvec2 => 2,
+        DataType::Vec3 | DataType::Ivec3 | DataType::Uvec3 => 3,
+        DataType::Vec4 | DataType::Ivec4 | DataType::Uvec4 | DataType::Mat2 => 4,
+        DataType::Mat3 => 9,
+        DataType::Mat4 => 16,
+        _ => return None,
+    })
+}
+
+fn default_uniform_value(data_type: DataType) -> serde_json::Value {
+    let zero = match data_type {
+        DataType::Bool => serde_json::Value::Bool(false),
+        DataType::Int | DataType::Ivec2 | DataType::Ivec3 | DataType::Ivec4 => {
+            serde_json::json!(0_i32)
+        }
+        DataType::Uint | DataType::Uvec2 | DataType::Uvec3 | DataType::Uvec4 => {
+            serde_json::json!(0_u32)
+        }
+        _ => serde_json::json!(0.0),
+    };
+    match uniform_shape(data_type) {
+        Some(arity) if arity > 1 => serde_json::Value::Array(vec![zero; arity]),
+        _ => zero,
+    }
+}
+
+fn format_uniform_literal(value: &serde_json::Value) -> String {
+    fn scalar(value: &serde_json::Value) -> String {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string())
+    }
+    match value.as_array() {
+        Some(values) => values.iter().map(scalar).collect::<Vec<_>>().join(", "),
+        None => scalar(value),
+    }
+}
+
+fn uniform_drafts(node: &open_quartz_sdk::ProjectNode) -> Vec<UniformDraft> {
+    if node.node_type != NodeType::Shader {
+        return Vec::new();
+    }
+    node.data
+        .inputs
+        .iter()
+        .filter(|port| uniform_shape(port.data_type).is_some())
+        .map(|port| {
+            let literal = format_uniform_literal(&effective_uniform_value(node, port));
+            UniformDraft {
+                name: port.label.clone(),
+                data_type: port.data_type,
+                baseline_literal: literal.clone(),
+                literal,
+            }
+        })
+        .collect()
+}
+
+fn effective_uniform_value(
+    node: &open_quartz_sdk::ProjectNode,
+    port: &open_quartz_sdk::Port,
+) -> serde_json::Value {
+    let value = node
+        .data
+        .uniforms
+        .get(&port.label)
+        .cloned()
+        .unwrap_or_else(|| default_uniform_value(port.data_type));
+    parse_uniform_literal(port.data_type, &format_uniform_literal(&value)).unwrap_or(value)
+}
+
+fn uniform_connected(
+    project: &Project,
+    node: &open_quartz_sdk::ProjectNode,
+    port: &open_quartz_sdk::Port,
+) -> bool {
+    project
+        .graph()
+        .edges()
+        .iter()
+        .any(|edge| edge.target == node.id && edge.target_handle == port.id)
+}
+
+fn uniform_drafts_dirty(
+    project: &Project,
+    node: &open_quartz_sdk::ProjectNode,
+    draft: &InspectorDraft,
+) -> bool {
+    node.node_type == NodeType::Shader
+        && node.data.inputs.iter().any(|port| {
+            uniform_shape(port.data_type).is_some()
+                && !uniform_connected(project, node, port)
+                && draft
+                    .uniforms
+                    .iter()
+                    .find(|uniform| {
+                        uniform.name == port.label && uniform.data_type == port.data_type
+                    })
+                    .is_some_and(|uniform| {
+                        uniform.literal != uniform.baseline_literal
+                            && parse_uniform_literal(port.data_type, &uniform.literal)
+                                .as_ref()
+                                .ok()
+                                != Some(&effective_uniform_value(node, port))
+                    })
+        })
+}
+
+fn uniform_rows(project: &Project, draft: &InspectorDraft) -> Vec<crate::InspectorUniform> {
+    let Some(node) = project
+        .graph()
+        .nodes()
+        .iter()
+        .find(|node| node.id == draft.node_id && node.node_type == NodeType::Shader)
+    else {
+        return Vec::new();
+    };
+    node.data
+        .inputs
+        .iter()
+        .filter(|port| uniform_shape(port.data_type).is_some())
+        .map(|port| {
+            let literal = draft
+                .uniforms
+                .iter()
+                .find(|uniform| uniform.name == port.label && uniform.data_type == port.data_type)
+                .map(|uniform| uniform.literal.clone())
+                .unwrap_or_else(|| format_uniform_literal(&effective_uniform_value(node, port)));
+            let connected = uniform_connected(project, node, port);
+            let error = if connected {
+                String::new()
+            } else {
+                parse_uniform_literal(port.data_type, &literal)
+                    .err()
+                    .unwrap_or_default()
+            };
+            crate::InspectorUniform {
+                name: port.label.as_str().into(),
+                data_type: format!("{:?}", port.data_type).into(),
+                value: literal.into(),
+                connected,
+                valid: error.is_empty(),
+                error: error.into(),
+            }
+        })
+        .collect()
+}
+
+fn parse_uniform_literal(data_type: DataType, literal: &str) -> Result<serde_json::Value, String> {
+    let arity = uniform_shape(data_type).ok_or_else(|| "Unsupported uniform type".to_owned())?;
+    let parts = literal.split(',').map(str::trim).collect::<Vec<_>>();
+    if parts.len() != arity {
+        return Err(format!(
+            "Expected {arity} component(s), got {}",
+            parts.len()
+        ));
+    }
+    let values = parts
+        .into_iter()
+        .map(|part| match data_type {
+            DataType::Bool => match part {
+                "true" | "1" => Ok(serde_json::Value::Bool(true)),
+                "false" | "0" => Ok(serde_json::Value::Bool(false)),
+                _ => Err("Expected true, false, 1, or 0".to_owned()),
+            },
+            DataType::Int | DataType::Ivec2 | DataType::Ivec3 | DataType::Ivec4 => part
+                .parse::<i32>()
+                .map(|value| serde_json::json!(value))
+                .map_err(|_| "Expected a signed 32-bit integer".to_owned()),
+            DataType::Uint | DataType::Uvec2 | DataType::Uvec3 | DataType::Uvec4 => {
+                if part.starts_with('-') {
+                    return Err("Expected an unsigned 32-bit integer".to_owned());
+                }
+                part.parse::<u32>()
+                    .map(|value| serde_json::json!(value))
+                    .map_err(|_| "Expected an unsigned 32-bit integer".to_owned())
+            }
+            _ => part
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite() && (*value as f32).is_finite())
+                .map(|value| serde_json::json!(value))
+                .ok_or_else(|| "Expected a finite 32-bit float".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if arity == 1 {
+        Ok(values.into_iter().next().expect("scalar has one component"))
+    } else {
+        Ok(serde_json::Value::Array(values))
+    }
 }
 
 fn commit_node_position(
@@ -1360,8 +1712,8 @@ impl Drop for ProjectIo {
 #[cfg(test)]
 mod tests {
     use open_quartz_sdk::{
-        Environment, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey, Position,
-        SdkErrorCode,
+        DataType, Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz,
+        Port, PortDirection, PortId, PortKey, Position, Project, SdkErrorCode,
     };
     use slint::Model;
 
@@ -1369,6 +1721,537 @@ mod tests {
         commit_connection, commit_inspector, commit_node_position, graph_stress_project,
         sample_project, GraphViewModel, InspectorChange, InspectorDraft,
     };
+
+    #[test]
+    fn uniform_draft_survives_label_and_output_apply_then_undo_redo() {
+        let project = uniform_project(&[("gain", DataType::Float)]);
+        let mut controller = controller_for_uniforms(project);
+        controller.change_uniform_draft("gain", "2.5");
+        {
+            let draft = controller.inspector_draft.as_mut().unwrap();
+            draft.label = "Committed name".into();
+            draft.output_width = 128;
+            draft.output_height = 64;
+        }
+        controller.apply_inspector(InspectorChange::Label);
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().uniforms[0].literal,
+            "2.5"
+        );
+        controller.apply_inspector(InspectorChange::OutputSize);
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().uniforms[0].literal,
+            "2.5"
+        );
+        assert!(!controller.project.graph().nodes()[0]
+            .data
+            .uniforms
+            .contains_key("gain"));
+        let before = controller.project.graph_snapshot();
+        controller.apply_inspector(InspectorChange::Uniforms);
+        let after = controller.project.graph_snapshot();
+        assert_eq!(after.nodes[0].data.label, "Committed name");
+        assert_eq!(after.nodes[0].data.width, Some(128));
+        assert_eq!(after.nodes[0].data.height, Some(64));
+        assert!(!controller.inspector_is_dirty());
+        controller.restore_edit(false);
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert_eq!(controller.redo_edits.len(), 1);
+        assert!(matches!(controller.redo_edits[0], super::EditKind::Content));
+        controller.inspector_draft = Some(InspectorDraft::from_node(
+            &controller.project.graph().nodes()[0],
+        ));
+        let revision = controller.project.graph_revision();
+        controller.apply_inspector(InspectorChange::Uniforms);
+        assert_eq!(controller.project.graph_revision(), revision);
+        assert_eq!(controller.redo_edits.len(), 1);
+        controller.restore_edit(true);
+        assert_eq!(controller.project.graph_snapshot(), after);
+    }
+
+    fn uniform_project(types: &[(&str, DataType)]) -> Project {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sdk.create_project("Uniforms");
+        let (node, _) = project
+            .create_graph_node(
+                NodeFactoryRequest::Shader {
+                    position: None,
+                    code: "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }".into(),
+                    label: "Uniforms".into(),
+                    template_name: None,
+                    shader_template_id: None,
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let mut data = node.data.clone();
+        data.inputs = types
+            .iter()
+            .map(|(name, data_type)| Port {
+                id: format!("{}_{}", node.id, name),
+                label: (*name).into(),
+                data_type: *data_type,
+                direction: PortDirection::Input,
+                default_value: None,
+                description: None,
+            })
+            .collect();
+        data.width = Some(96);
+        data.height = Some(48);
+        data.auto_size = Some(false);
+        data.extra
+            .insert("retained".into(), serde_json::json!({"nested": [1, 2]}));
+        data.uniforms
+            .insert("stale_key".into(), serde_json::json!([7, 8]));
+        project
+            .apply_graph_command(
+                GraphCommand::UpdateNodeData {
+                    node_id: NodeId::new(&node.id),
+                    data,
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        project
+    }
+
+    fn set_uniform(draft: &mut InspectorDraft, name: &str, literal: &str) {
+        draft
+            .uniforms
+            .iter_mut()
+            .find(|uniform| uniform.name == name)
+            .unwrap()
+            .literal = literal.into();
+    }
+
+    fn controller_for_uniforms(project: Project) -> super::AppController {
+        let node_id = project.graph().nodes()[0].id.clone();
+        let draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        super::AppController {
+            window: slint::Weak::default(),
+            project: std::sync::Arc::new(project),
+            renderer: None,
+            selected_node_ids: [node_id].into_iter().collect(),
+            inspector_draft: Some(draft),
+            inspector_uniforms: std::rc::Rc::new(slint::VecModel::from(Vec::<
+                crate::InspectorUniform,
+            >::new())),
+            clipboard: None,
+            graph_stress_count: None,
+            selected_edge_id: None,
+            pending_connection: None,
+            undo_edits: Vec::new(),
+            redo_edits: Vec::new(),
+            files: super::ProjectIo::new().unwrap(),
+            busy: false,
+            timer: slint::Timer::default(),
+        }
+    }
+
+    #[test]
+    fn uniform_parser_covers_supported_families_bounds_and_column_major_order() {
+        use serde_json::json;
+        for (data_type, literal, expected) in [
+            (DataType::Float, " -1.25e2 ", json!(-125.0)),
+            (DataType::Int, "-2147483648", json!(i32::MIN)),
+            (DataType::Int, "2147483647", json!(i32::MAX)),
+            (DataType::Uint, "4294967295", json!(u32::MAX)),
+            (DataType::Bool, "1", json!(true)),
+            (DataType::Bool, "0", json!(false)),
+            (DataType::Bool, "true", json!(true)),
+            (DataType::Bool, "false", json!(false)),
+            (DataType::Vec2, "1, 2", json!([1.0, 2.0])),
+            (DataType::Vec3, "1,2,3", json!([1.0, 2.0, 3.0])),
+            (DataType::Vec4, "1,2,3,4", json!([1.0, 2.0, 3.0, 4.0])),
+            (DataType::Ivec2, "-1,2", json!([-1, 2])),
+            (DataType::Ivec3, "-1,2,3", json!([-1, 2, 3])),
+            (DataType::Ivec4, "-1,2,3,4", json!([-1, 2, 3, 4])),
+            (DataType::Uvec2, "0,2", json!([0, 2])),
+            (DataType::Uvec3, "0,2,3", json!([0, 2, 3])),
+            (DataType::Uvec4, "0,2,3,4", json!([0, 2, 3, 4])),
+            (DataType::Mat2, "1,2,3,4", json!([1.0, 2.0, 3.0, 4.0])),
+            (
+                DataType::Mat3,
+                "1,2,3,4,5,6,7,8,9",
+                json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            ),
+            (
+                DataType::Mat4,
+                "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+                json!([
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0
+                ]),
+            ),
+        ] {
+            assert_eq!(
+                super::parse_uniform_literal(data_type, literal).unwrap(),
+                expected,
+                "{data_type:?}: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn uniform_parser_rejects_invalid_tokens_ranges_and_exact_arity() {
+        for (data_type, literal) in [
+            (DataType::Float, "NaN"),
+            (DataType::Float, "inf"),
+            (DataType::Float, "-inf"),
+            (DataType::Float, "1e400"),
+            (DataType::Float, "1e39"),
+            (DataType::Float, ""),
+            (DataType::Float, "1 2"),
+            (DataType::Float, "1,"),
+            (DataType::Int, "2147483648"),
+            (DataType::Int, "-2147483649"),
+            (DataType::Int, "1.5"),
+            (DataType::Int, "1.0"),
+            (DataType::Uint, "-1"),
+            (DataType::Uint, "-0"),
+            (DataType::Uint, "4294967296"),
+            (DataType::Uint, "0.5"),
+            (DataType::Bool, "yes"),
+            (DataType::Bool, "2"),
+            (DataType::Bool, "TRUE"),
+            (DataType::Vec2, "1"),
+            (DataType::Vec2, "1,,2"),
+            (DataType::Vec2, "1,2,"),
+            (DataType::Vec2, "1,NaN"),
+            (DataType::Vec3, "1,2"),
+            (DataType::Vec4, "1,2,3,4,5"),
+            (DataType::Mat2, "1,2"),
+            (DataType::Mat3, "1,2,3"),
+            (DataType::Mat4, "1,2,3,4"),
+            (DataType::Ivec2, "1,2147483648"),
+            (DataType::Ivec3, "1,2,1.5"),
+            (DataType::Ivec4, "1,2,3,-2147483649"),
+            (DataType::Uvec2, "1,-1"),
+            (DataType::Uvec3, "1,2,4294967296"),
+            (DataType::Uvec4, "1,2,3,0.5"),
+        ] {
+            assert!(
+                super::parse_uniform_literal(data_type, literal).is_err(),
+                "{data_type:?}: {literal}"
+            );
+        }
+        for data_type in [
+            DataType::Auto,
+            DataType::Bvec2,
+            DataType::Bvec3,
+            DataType::Bvec4,
+            DataType::Sampler2d,
+            DataType::SamplerCube,
+            DataType::Roi,
+            DataType::Mesh,
+            DataType::Json,
+        ] {
+            assert!(super::parse_uniform_literal(data_type, "0").is_err());
+        }
+    }
+
+    #[test]
+    fn uniform_missing_defaults_ignore_port_defaults_and_do_not_seed_zeros() {
+        let mut project = uniform_project(&[
+            ("gain", DataType::Float),
+            ("offset", DataType::Vec2),
+            ("enabled", DataType::Bool),
+            ("matrix", DataType::Mat2),
+        ]);
+        let node = project.graph().nodes()[0].clone();
+        let mut data = node.data.clone();
+        data.inputs[0].default_value = Some(serde_json::json!(9.0));
+        project
+            .apply_graph_command(
+                GraphCommand::UpdateNodeData {
+                    node_id: NodeId::new(&node.id),
+                    data,
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let before = project.graph_snapshot();
+        let revision = project.graph_revision();
+        let mut draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        assert_eq!(
+            draft
+                .uniforms
+                .iter()
+                .map(|uniform| uniform.literal.as_str())
+                .collect::<Vec<_>>(),
+            ["0.0", "0.0, 0.0", "false", "0.0, 0.0, 0.0, 0.0"]
+        );
+        set_uniform(&mut draft, "gain", "5");
+        set_uniform(&mut draft, "gain", "0");
+        assert!(!super::uniform_drafts_dirty(
+            &project,
+            &project.graph().nodes()[0],
+            &draft
+        ));
+        assert!(!commit_inspector(&mut project, &draft, InspectorChange::Uniforms).unwrap());
+        assert_eq!(project.graph_revision(), revision);
+        assert_eq!(project.graph_snapshot(), before);
+        set_uniform(&mut draft, "gain", "2");
+        assert!(commit_inspector(&mut project, &draft, InspectorChange::Uniforms).unwrap());
+        let values = &project.graph().nodes()[0].data.uniforms;
+        assert_eq!(values.len(), 2);
+        assert_eq!(values["gain"], serde_json::json!(2.0));
+        assert!(!values.contains_key("offset"));
+        assert!(!values.contains_key("enabled"));
+        assert!(!values.contains_key("matrix"));
+    }
+
+    #[test]
+    fn uniform_apply_is_one_content_edit_preserving_other_drafts_history_and_persistence() {
+        let project = uniform_project(&[
+            ("gain", DataType::Float),
+            ("offset", DataType::Vec2),
+            ("enabled", DataType::Bool),
+        ]);
+        let before = project.graph_snapshot();
+        let revision = project.graph_revision();
+        let mut controller = controller_for_uniforms(project);
+        let draft = controller.inspector_draft.as_mut().unwrap();
+        draft.label = "unapplied name".into();
+        draft.shader_code = "unapplied source".into();
+        draft.output_width = 120;
+        set_uniform(draft, "gain", "0.5");
+        set_uniform(draft, "enabled", "1");
+        controller.apply_inspector(InspectorChange::Uniforms);
+        assert_eq!(controller.project.graph_revision(), revision + 1);
+        assert_eq!(controller.undo_edits.len(), 1);
+        assert!(matches!(controller.undo_edits[0], super::EditKind::Content));
+        let mut expected = before.clone();
+        expected.nodes[0]
+            .data
+            .uniforms
+            .insert("gain".into(), serde_json::json!(0.5));
+        expected.nodes[0]
+            .data
+            .uniforms
+            .insert("enabled".into(), serde_json::json!(true));
+        assert_eq!(controller.project.graph_snapshot(), expected);
+        let draft = controller.inspector_draft.as_ref().unwrap();
+        assert_eq!(draft.label, "unapplied name");
+        assert_eq!(draft.shader_code, "unapplied source");
+        assert_eq!(draft.output_width, 120);
+        assert_eq!(
+            draft
+                .uniforms
+                .iter()
+                .find(|uniform| uniform.name == "enabled")
+                .unwrap()
+                .literal,
+            "true"
+        );
+        assert_eq!(
+            controller.inspector_dirty_fields(),
+            (true, true, true, false)
+        );
+        controller.apply_inspector(InspectorChange::Uniforms);
+        assert_eq!(controller.project.graph_revision(), revision + 1);
+        assert_eq!(controller.undo_edits.len(), 1);
+        let sdk = OpenQuartz::new(Environment::headless());
+        let json = serde_json::to_string(&controller.project.to_file()).unwrap();
+        assert_eq!(
+            sdk.open_project_json(&json).unwrap().graph_snapshot(),
+            expected
+        );
+        let project = std::sync::Arc::make_mut(&mut controller.project);
+        project.rollback_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), before);
+        project.redo_graph(project.graph_revision()).unwrap();
+        assert_eq!(project.graph_snapshot(), expected);
+    }
+
+    #[test]
+    fn uniform_invalid_draft_preserves_project_and_other_drafts() {
+        let project = uniform_project(&[("gain", DataType::Float), ("offset", DataType::Vec2)]);
+        let before = project.graph_snapshot();
+        let revision = project.graph_revision();
+        let mut controller = controller_for_uniforms(project);
+        controller.publish_uniforms();
+        let model = controller.inspector_uniforms.clone();
+        {
+            let draft = controller.inspector_draft.as_mut().unwrap();
+            draft.label = "name draft".into();
+            draft.shader_code = "source draft".into();
+            draft.output_height = 32;
+        }
+        controller.change_uniform_draft("gain", "NaN");
+        assert!(!model.row_data(0).unwrap().valid);
+        assert!(!model.row_data(0).unwrap().error.is_empty());
+        assert!(model.row_data(1).unwrap().valid);
+        assert!(controller.edits_blocked());
+        controller.apply_inspector(InspectorChange::Uniforms);
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert_eq!(controller.project.graph_revision(), revision);
+        assert!(controller.undo_edits.is_empty());
+        let draft = controller.inspector_draft.as_ref().unwrap();
+        assert_eq!(draft.label, "name draft");
+        assert_eq!(draft.shader_code, "source draft");
+        assert_eq!(draft.output_height, 32);
+        assert_eq!(draft.uniforms[0].literal, "NaN");
+        controller.apply_inspector(InspectorChange::Label);
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().uniforms[0].literal,
+            "NaN"
+        );
+        controller.change_uniform_draft("gain", "2");
+        assert!(model.row_data(0).unwrap().valid);
+        controller.busy = true;
+        controller.change_uniform_draft("gain", "3");
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().uniforms[0].literal,
+            "2"
+        );
+    }
+
+    #[test]
+    fn uniform_connected_inputs_are_read_only_excluded_and_shader_only() {
+        let mut project = uniform_project(&[
+            ("gain", DataType::Float),
+            ("offset", DataType::Vec2),
+            ("texture", DataType::Sampler2d),
+            ("dynamic", DataType::Auto),
+            ("flags", DataType::Bvec2),
+            ("json", DataType::Json),
+        ]);
+        let (source, _) = project
+            .create_graph_node(
+                NodeFactoryRequest::Math {
+                    position: None,
+                    op: "add".into(),
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let target = &project.graph().nodes()[0];
+        let target_key = PortKey::new(
+            NodeId::new(&target.id),
+            PortId::new(&target.data.inputs[0].id),
+        );
+        project
+            .apply_graph_command(
+                GraphCommand::Connect {
+                    source: PortKey::new(
+                        NodeId::new(&source.id),
+                        PortId::new(&source.data.outputs[0].id),
+                    ),
+                    target: target_key,
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let mut controller = controller_for_uniforms(project);
+        set_uniform(controller.inspector_draft.as_mut().unwrap(), "gain", "NaN");
+        controller.publish_uniforms();
+        assert_eq!(controller.inspector_uniforms.row_count(), 2);
+        let row = controller.inspector_uniforms.row_data(0).unwrap();
+        assert!(row.connected && row.valid && row.error.is_empty());
+        assert!(!controller.inspector_is_dirty());
+        controller.change_uniform_draft("gain", "12");
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().uniforms[0].literal,
+            "NaN"
+        );
+        controller.change_uniform_draft("offset", "1,2");
+        controller.apply_inspector(InspectorChange::Uniforms);
+        assert!(!controller.project.graph().nodes()[0]
+            .data
+            .uniforms
+            .contains_key("gain"));
+        assert_eq!(
+            controller.project.graph().nodes()[0].data.uniforms["offset"],
+            serde_json::json!([1.0, 2.0])
+        );
+        let source = controller.project.graph().nodes()[1].clone();
+        assert!(InspectorDraft::from_node(&source).uniforms.is_empty());
+        let revision = controller.project.graph_revision();
+        let (constant, _) = std::sync::Arc::make_mut(&mut controller.project)
+            .create_graph_node(NodeFactoryRequest::Constant { position: None }, revision)
+            .unwrap();
+        let draft = InspectorDraft::from_node(&constant);
+        assert!(draft.uniforms.is_empty());
+        assert_eq!(
+            commit_inspector(
+                std::sync::Arc::make_mut(&mut controller.project),
+                &draft,
+                InspectorChange::Uniforms
+            )
+            .unwrap_err()
+            .code,
+            SdkErrorCode::InvalidState
+        );
+        assert_eq!(source.node_type, NodeType::Math);
+    }
+
+    #[test]
+    fn uniform_shader_schema_refresh_retains_matching_drafts_and_drops_obsolete_rows() {
+        let mut project = uniform_project(&[
+            ("gain", DataType::Float),
+            ("offset", DataType::Vec2),
+            ("removed", DataType::Float),
+        ]);
+        let mut draft = InspectorDraft::from_node(&project.graph().nodes()[0]);
+        set_uniform(&mut draft, "gain", "2.5");
+        set_uniform(&mut draft, "offset", "NaN,0");
+        set_uniform(&mut draft, "removed", "NaN");
+        draft.label = "keep label".into();
+        draft.output_width = 120;
+        draft.shader_code = "@group(0) @binding(0) var<uniform> gain: f32;
+@group(0) @binding(1) var<uniform> offset: vec3f;
+@group(0) @binding(2) var<uniform> added: i32;
+@fragment fn main() -> @location(0) vec4f { return vec4f(gain); }"
+            .into();
+        commit_inspector(&mut project, &draft, InspectorChange::Shader).unwrap();
+        draft.refresh_uniforms(&project.graph().nodes()[0], true);
+        assert_eq!(draft.uniforms.len(), 3);
+        assert_eq!(draft.uniforms[0].literal, "2.5");
+        assert_eq!(draft.uniforms[1].literal, "0.0, 0.0, 0.0");
+        assert_eq!(draft.uniforms[2].literal, "0");
+        assert_eq!(draft.label, "keep label");
+        assert_eq!(draft.output_width, 120);
+        assert_eq!(
+            project.graph().nodes()[0].data.uniforms["stale_key"],
+            serde_json::json!([7, 8])
+        );
+        assert!(!project.graph().nodes()[0]
+            .data
+            .uniforms
+            .contains_key("gain"));
+        commit_inspector(&mut project, &draft, InspectorChange::Uniforms).unwrap();
+        assert_eq!(
+            project.graph().nodes()[0].data.uniforms["gain"],
+            serde_json::json!(2.5)
+        );
+    }
+
+    #[test]
+    fn uniform_untouched_legacy_value_shows_error_without_dirty_lock() {
+        let mut project = uniform_project(&[("gain", DataType::Float)]);
+        let node = project.graph().nodes()[0].clone();
+        let mut data = node.data.clone();
+        data.uniforms
+            .insert("gain".into(), serde_json::json!("legacy invalid"));
+        project
+            .apply_graph_command(
+                GraphCommand::UpdateNodeData {
+                    node_id: NodeId::new(&node.id),
+                    data,
+                },
+                project.graph_revision(),
+            )
+            .unwrap();
+        let mut controller = controller_for_uniforms(project);
+        controller.publish_uniforms();
+        assert!(!controller.inspector_uniforms.row_data(0).unwrap().valid);
+        assert!(!controller.inspector_is_dirty());
+        controller.change_uniform_draft("gain", "still invalid");
+        assert!(controller.inspector_is_dirty());
+        controller.change_uniform_draft("gain", "legacy invalid");
+        assert!(!controller.inspector_is_dirty());
+    }
 
     #[test]
     fn inspector_fields_commit_independently_and_undo_as_single_edits() {
