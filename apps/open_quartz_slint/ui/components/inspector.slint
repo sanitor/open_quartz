@@ -35,6 +35,11 @@ export struct InspectorFormGroup {
     error: string,
 }
 
+export struct InspectorOnnxRow {
+    label: string,
+    value: string,
+}
+
 export component Inspector inherits Rectangle {
     in property <string> node-id;
     in property <string> node-type;
@@ -52,6 +57,8 @@ export component Inspector inherits Rectangle {
     in property <[InspectorPort]> ports;
     in property <[InspectorUniform]> uniforms;
     in property <[InspectorFormGroup]> forms;
+    in property <[InspectorOnnxRow]> onnx-config;
+    in property <[InspectorOnnxRow]> onnx-saved;
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in-out property <bool> auto-size;
@@ -228,6 +235,30 @@ export component Inspector inherits Rectangle {
                         text: "Apply " + group.key;
                         enabled: group.dirty && group.error == "" && !root.project-busy;
                         clicked => { root.apply-form(group.key); }
+                    }
+                }
+
+                if root.onnx-config.length > 0: VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "ONNX · Read-only"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text {
+                        text: "Session: not attached by Slint. Model loading, download and inference controls are not available in this shell.";
+                        color: Theme.accent;
+                        wrap: word-wrap;
+                    }
+                    for field in root.onnx-config: VerticalLayout {
+                        spacing: 2px;
+                        Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                        Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
+                    }
+                    if root.onnx-saved.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "Saved metadata · not live session state"; color: Theme.accent; wrap: word-wrap; }
+                        for field in root.onnx-saved: VerticalLayout {
+                            spacing: 2px;
+                            Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                            Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
+                        }
                     }
                 }
 

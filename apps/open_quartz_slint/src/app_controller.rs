@@ -629,6 +629,8 @@ impl AppController {
         let Some(node) = node else {
             self.inspector_draft = None;
             window.set_inspector_node_id("".into());
+            window.set_inspector_onnx_config(slint::ModelRc::default());
+            window.set_inspector_onnx_saved(slint::ModelRc::default());
             window.set_inspector_selection_message(
                 if self.selected_node_ids.is_empty() {
                     "Select a node to inspect its properties."
@@ -667,6 +669,9 @@ impl AppController {
         window.set_inspector_output_width(draft.output_width);
         window.set_inspector_output_height(draft.output_height);
         window.set_inspector_validation_message(draft.validation_message.as_str().into());
+        let (configuration, saved) = crate::inspector_onnx::inspect(node, self.project.graph());
+        window.set_inspector_onnx_config(slint::ModelRc::new(slint::VecModel::from(configuration)));
+        window.set_inspector_onnx_saved(slint::ModelRc::new(slint::VecModel::from(saved)));
         window.set_inspector_ports(slint::ModelRc::new(slint::VecModel::from(
             node.data
                 .inputs

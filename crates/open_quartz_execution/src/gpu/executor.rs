@@ -357,8 +357,13 @@ impl GpuExecutor {
             .collect::<HashSet<_>>();
         self.nodes
             .retain(|node_id, _| shader_ids.contains(node_id.as_str()));
-        self.renderer_sources
-            .retain(|node_id, _| plan.nodes.iter().any(|node| node.id == *node_id));
+        self.renderer_sources.retain(|node_id, source| {
+            plan.nodes.iter().any(|node| {
+                node.id == *node_id
+                    && node.node_type == open_quartz_schema::NodeType::Renderer
+                    && node.upstream.values().next() == Some(source)
+            })
+        });
 
         for node in plan.nodes.iter().filter(|node| node.shader.is_some()) {
             if !node.validation_errors.is_empty() {

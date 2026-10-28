@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3 及 Phase 4 Inspector/WGSL、Shader numeric uniform、Sampling/Framebuffer/Video 配置表单切片已完成 macOS 原生验收；Slint 47 tests、workspace 278 tests/45 suites、release build 和格式检查通过；尚未切换默认入口
+> 状态：Phase 2/3 及 Phase 4 Inspector/WGSL、Shader numeric uniform、Sampling/Framebuffer/Video 配置、只读 ONNX 元数据和编辑器体验评估已完成 macOS 原生验收；Slint 49 tests、workspace 280 tests/45 suites、release build 和格式检查通过；尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -587,15 +587,23 @@ Slint 现状：
 | C. 桌面 WebView + CodeMirror | 体验最好 | 五平台分叉、移动端很脏、违背目标 | 仅作应急 fallback |
 | D. 等 Slint 上游 | 无自研成本 | 时间不可控 | 跟踪 #2723 |
 
-**决策：v1 用 `TextEdit` + Rust/naga 诊断 + 错误列表/行标记；不把透明 `TextEdit` 叠 `StyledText` 当生产方案。** 如果 v1 体验不可接受，再启动自研编辑器，且必须先做独立原型和性能/IME 验收。
+**目标选型：`TextEdit` + Rust/naga 诊断 + 错误列表/行标记；不把透明 `TextEdit` 叠 `StyledText` 当生产方案。** 当前已实现纯文本编辑、SDK Apply 和已有错误展示，尚未实现防抖诊断或行标记。如果基础编辑体验不可接受，再启动自研编辑器，且必须先做独立原型和性能/IME 验收。
 
-诊断路径：
+后续诊断路径（尚未实现）：
 
 - 输入停止后 300–500ms 防抖；
 - Rust `naga` 解析；
 - 可选的 GPU 编译验证（复用现有 compiler）；
 - 错误通过 property/model 显示在编辑器下方或行标记；
 - 预置 shader 只读。
+
+#### 7.3.1 macOS 原生编辑体验评估
+
+- **实测**：Apple M4 Pro/Metal release AppKit 窗口载入含 300 行中英文长注释的 66,706-byte WGSL；编辑器独立滚动至第 300 行及 fragment 函数，外层 Inspector 和固定底部 Apply 保持可用。真实 HID 指针聚焦后，连续两次键盘输入得到 `// native caret αβ`，未丢失光标位置；草稿保护生效，Apply 后 SDK Save 保留全部原注释及新增文本，96×48 共享纹理继续显示绿色。
+- **窄窗口**：800×540 客户区仍能同时看到源码末尾、Unicode 光标、固定 Apply 和真实输出。长行保持 no-wrap，需要横向滚动；较短面板需外层滚动，不是完整代码工作区。
+- **决定**：本轮保留原生 `TextEdit` 和显式 Apply，不新增编辑器依赖、WebView、叠层高亮或第二套 WGSL parser。适用于当前手动修改/提交流程，不宣称与 CodeMirror 对等。
+- **缺口**：没有行号、语法高亮、补全、折叠、查找替换或行内诊断；现有 SDK `parseError` 和 NativeHost runtime error 不等于输入时 lint。若继续改善编辑器，优先经现有 Rust 编译能力提供结构化诊断，再独立评估高亮/行导航；不在本次体验评估中扩张 SDK API。
+- **验证边界**：本次没有编辑延迟基准、IME 组合输入或 Windows/Linux/移动端输入验收；Unicode 文本插入不代表 IME 已验证。
 
 ### 7.4 预览与输出
 
@@ -749,7 +757,9 @@ Spike 范围：
 - **uniform 验收通过**：Slint 41 tests、workspace 276 tests/45 suites 及 release build 通过；回归覆盖支持类型/范围/分量数、缺失零 no-op、连接排除、独立草稿、schema refresh、完整数据/stale key 保留、单步历史、持久化及旧无效值。Apple M4 Pro/Metal 原生 1180×760 和 800×540 客户区验证 NaN 行错误/操作保护、连接参数只读、gain/tint Apply 使 96×48 真实输出由红变蓝、一次 Undo 回红及 Redo 回蓝；fixture 同时执行 Mat2。窄窗口 HID 滚动到字段及 Apply，键盘连续输入 0.7→0.75 保持焦点/光标，指针提交成功。SDK Save/Open 保留 gain=0.75、蓝色 tint、矩阵/整数/连接参数及两条连线；生产显示未加入 readback。
 - **Sampling/Framebuffer/Video 表单**：Sampling 作为独立草稿组用于 Shader/Constant 和 sampler2D Input，支持 Linear/Nearest、Clamp/Repeat/Mirror；NativeHost/GPU executor 按源节点创建并应用 sampler，对生成及外部上传纹理均生效，默认值不补写。Framebuffer Input 提供 7 种 schema format、必填 1–8192 宽高、blank/0 auto 或正 u32 stride；Video Input 提供 File/Camera、自由 camera ID、Loop、0.1–4.0 有限 rate。Framebuffer/Video 明示仅保存配置，不加载 raw buffer、不枚举/打开文件或相机；source 切换不删除保留的 file path。三个组均克隆完整 NodeData、独立 Apply/Discard、每次有效提交一条 Content history、no-op 无 revision。
 - **节点表单验收通过**：Slint 47 tests、workspace 278 tests/45 suites、release build/格式检查通过；回归覆盖所有枚举、范围、u32 边界、invalid/busy 原子性、独立草稿、完整数据/资源字段、单步 Undo/Redo、Save/Open，并以真实 GPU 两像素采样验证 Nearest/Linear 与 Clamp/Repeat/Mirror。AppKit 1180×760 和 800×540 上，96×48 nearest/clamp 蓝色输出经 Repeat Apply 变红；Undo 恢复蓝色和 Clamp 控件，Redo 恢复红色/Repeat。Framebuffer width 0 被拒后提交 64×16/stride 256；Video rate 9 被拒后提交 Camera `camera-native-1`、Loop off、rate 2.5。窄窗口滚动、popup、checkbox、文本与 Apply 均实操；SDK Save/Open 保留三组设置、原 video file path 和两条 edge。未声称资源加载已实现。
-- **后续 Phase 4 切片**：只读 ONNX 状态及编辑器体验评估。当前不提供原生资源选择/加载、camera enumeration、CodeMirror 级高亮或行内 GPU 诊断，也未切换 Tauri 生产入口。
+- **只读 ONNX 面板**：显示记录的 source、model/catalog ID、自定义路径（未检查）、输入连接数、阈值、target size 和数值/布尔参数；缺失与零区分。保存的 file name/status/backend/native backend/error/progress 放入独立的 Saved metadata 区，明确不是当前会话状态；进度仅接受 0–1 数值，非法值直接说明，不当作实时下载。Slint 未绑定 ONNX session，不提供加载/下载/推理控件或虚构结果；单纯浏览不补默认值，不改变项目，空选/多选清除旧面板。
+- **ONNX 验收通过**：Slint 49 tests、workspace 280 tests/45 suites、release build/格式检查通过。AppKit 1180×760、800×540 检查 catalog/custom/空 ONNX、保存的 ready/error/backend、零阈值、参数、非法进度、长 Unicode 路径换行、连接数和选择清除；SDK Save/Open 对整个 fixture graph 无损。真实图切换发现并修复 GPU executor Renderer 源映射缓存：实际输入变化时失效，改接未绑定 ONNX 输出后报告缺失 native GPU texture 并清图，重开有效图恢复 96×48 Metal 输出；GPU 回归覆盖改接及断开。
+- **编辑器评估完成**：保留原生 TextEdit/显式 Apply；300 行长 Unicode 注释、连续键盘输入、SDK 保存和窄窗口已验证，选型与验证边界见 §7.3.1。当前不提供原生资源选择/加载、camera enumeration、CodeMirror 级高亮或输入时行内诊断，也未切换 Tauri 生产入口；运行时资源功能属于 Phase 5。
 
 ### 8.7 Phase 5：运行时功能补齐
 

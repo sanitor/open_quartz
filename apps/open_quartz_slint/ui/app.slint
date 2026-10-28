@@ -2,8 +2,8 @@ import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
-import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup } from "components/inspector.slint";
-export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup }
+import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow } from "components/inspector.slint";
+export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow }
 
 export component AppWindow inherits Window {
     title: "OpenQuartz · Slint";
@@ -41,6 +41,8 @@ export component AppWindow inherits Window {
     in property <bool> inspector-uniform-dirty;
     in property <bool> inspector-uniforms-valid: true;
     in property <[InspectorFormGroup]> inspector-forms;
+    in property <[InspectorOnnxRow]> inspector-onnx-config;
+    in property <[InspectorOnnxRow]> inspector-onnx-saved;
     in-out property <string> inspector-node-label;
     in-out property <string> inspector-shader-code;
     in-out property <bool> inspector-auto-size;
@@ -152,6 +154,8 @@ export component AppWindow inherits Window {
                     ports: root.inspector-ports;
                     uniforms: root.inspector-uniforms;
                     forms: root.inspector-forms;
+                    onnx-config: root.inspector-onnx-config;
+                    onnx-saved: root.inspector-onnx-saved;
                     node-label <=> root.inspector-node-label;
                     shader-code <=> root.inspector-shader-code;
                     auto-size <=> root.inspector-auto-size;

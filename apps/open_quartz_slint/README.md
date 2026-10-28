@@ -1,6 +1,6 @@
 # OpenQuartz Slint application shell
 
-This native application shell includes the first Phase 4 Inspector/editor slice.
+This native application shell includes Phase 4 Inspector/WGSL editing and read-only ONNX metadata.
 It is a standalone Rust workspace, with Slint and its build compiler pinned to
 **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
@@ -108,11 +108,12 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The shell includes Sampling, Framebuffer, and Video configuration forms, but it
-does **not** yet load media/resources, enumerate cameras, expose model controls,
-or adapt gestures for mobile. Sampling is executable: NativeHost applies each
-source node's Linear/Nearest filter and Clamp/Repeat/Mirror wrap to generated or
-externally uploaded textures. Framebuffer and Video forms persist configuration
+The shell includes Sampling, Framebuffer, and Video configuration forms plus a
+read-only ONNX metadata panel, but it does **not** yet load media/resources,
+enumerate cameras, expose model controls, or adapt gestures for mobile. Sampling
+is executable: NativeHost applies each source node's Linear/Nearest filter and
+Clamp/Repeat/Mirror wrap to generated or externally uploaded textures. Framebuffer
+and Video forms persist configuration
 only; external raw buffers, files, cameras, and inference resources are not attached
 by this shell, and resulting host failures are reported instead of replaced with
 sample output. Only host preview outputs supported by `NativeHost::preview_source`
@@ -170,6 +171,28 @@ sample output. Only host preview outputs supported by `NativeHost::preview_sourc
   raw buffers or open video/camera resources. Changing source does not erase a
   preserved file path; all groups clone complete SDK `NodeData`.
 
+### Read-only ONNX metadata
+
+- Select one ONNX node to inspect its recorded source, model/catalog IDs, custom
+  path, input connection count, thresholds, target size, and numeric/bool parameters.
+  Missing values say **Not recorded**; a recorded zero remains zero. A custom path
+  is explicitly **not checked**. The generic Ports section lists its typed ports.
+- A separate **Saved metadata · not live session state** section shows any saved
+  file name, status, backend/native backend, error, and download progress. Progress
+  accepts only numbers in 0–1; invalid saved values are identified, not clamped or
+  treated as a current download. Saved `ready` never means Slint has loaded a model.
+- The shell explicitly reports that no ONNX session is attached and offers no
+  load/download/inference controls or fabricated results. Host errors remain in
+  runtime status, separate from saved metadata. Inspecting the panel does not
+  seed defaults or mutate the project; empty/multi-selection clears the old panel.
+- Renderer source mappings are invalidated when the plan changes their actual
+  input. Reconnecting to an unbound ONNX output reports a missing native texture
+  and clears the image instead of continuing to display the previous source.
+
+The WGSL editor remains native `TextEdit` with explicit Apply. The macOS large-text
+assessment and decision, including diagnostic/IME/platform limits, are recorded in
+[`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
+
 ## Validation scope
 
 The crate contains unit coverage for multi-port edge endpoints, spatial bounds,
@@ -187,7 +210,7 @@ and Auto transitions, rejected connected-port changes, persisted parse errors an
 repair, plus typed uniform scalar/vector/matrix parsing, bounds/exact arity, connected
 exclusion, invalid-draft atomicity, schema refresh, missing-zero no-ops, complete-node-data
 preservation, independent drafts, single Content history, and SDK persistence.
-All **47 Slint tests** and **278 workspace tests / 45 suites** pass; the release
+All **49 Slint tests** and **280 workspace tests / 45 suites** pass; the release
 build and formatting checks succeed.
 
 The uniform slice was also exercised in the release AppKit window on Apple M4
@@ -209,6 +232,20 @@ stride 256. Video rejected rate 9, then committed Camera `camera-native-1`, Loop
 and rate 2.5. Narrow-window scrolling, popups, checkbox, text fields and Apply were
 all operated. SDK Save/Open retained sampling, framebuffer, video, original video
 file path, and both graph edges. Resource loading was not claimed or synthesized.
+
+The ONNX slice was exercised in the release AppKit window at 1180×760 and an
+800×540 client area with catalog, custom, and empty ONNX nodes. Saved `ready`,
+backend, thresholds (including zero), parameters, saved errors, invalid progress,
+Unicode/long paths, connection counts, and selection clearing were checked. SDK
+Save/Open preserved the entire fixture graph without defaults or live-state writes.
+After switching Renderer to an unbound ONNX output, the real Host reported a missing
+texture and cleared the image; reopening the valid graph restored 96×48 shared
+Metal output. The GPU regression covers reconnection and subsequent disconnection.
+
+WGSL assessment used 300 long Unicode comment lines (66,706-byte source), native
+scrolling and consecutive keyboard input ending in `αβ`, Apply, and SDK Save.
+Screenshots confirmed the source, fixed Apply, and actual green output at both
+window sizes. This is not a latency benchmark or IME-composition validation.
 
 A temporary software-rendered smoke exercised real name/source text inputs,
 Command/Ctrl+A isolation, pointer Apply, draft protection during selection/history/

@@ -2,6 +2,7 @@ mod app_controller;
 mod graph_clipboard;
 mod graph_view_model;
 mod inspector_forms;
+mod inspector_onnx;
 mod render_bridge;
 mod services {
     pub mod file_service;

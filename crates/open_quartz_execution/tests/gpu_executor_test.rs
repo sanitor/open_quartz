@@ -91,6 +91,60 @@ fn executes_shader_cascade_and_exposes_renderer_output() {
 }
 
 #[test]
+fn renderer_reconnection_cannot_reuse_previous_source_texture() {
+    pollster::block_on(async {
+        let mut graph: open_quartz_schema::Graph = serde_json::from_value(json!({
+            "nodes": [
+                {"id":"color","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Color","shaderCode":"@fragment fn main() -> @location(0) vec4f { return vec4f(0.0,1.0,0.0,1.0); }","inputs":[],"outputs":[{"id":"out","label":"output","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":1,"height":1}},
+                {"id":"inference","type":"onnx","position":{"x":1,"y":0},"data":{"type":"onnx","label":"Unloaded model","shaderCode":"","inputs":[],"outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],"uniforms":{}}},
+                {"id":"renderer","type":"renderer","position":{"x":2,"y":0},"data":{"type":"renderer","label":"Renderer","shaderCode":"","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[],"uniforms":{}}}
+            ],
+            "edges": [{"id":"e","source":"color","sourceHandle":"out","target":"renderer","targetHandle":"in"}]
+        })).unwrap();
+        let backend = request_backend().await;
+        let mut executor = GpuExecutor::new(backend);
+        let mut engine = ExecutionEngine::prepare(
+            graph.nodes[..1]
+                .iter()
+                .chain(graph.nodes[2..].iter())
+                .cloned()
+                .collect(),
+            graph.edges.clone(),
+        );
+        let result = engine.run_frame(&frame());
+        executor.execute(engine.plan(), &result).unwrap();
+        assert_eq!(
+            executor.read_output_rgba("renderer").await.unwrap(),
+            [0, 255, 0, 255]
+        );
+
+        graph.edges[0].source = "inference".into();
+        let plan = open_quartz_execution::engine::build_execution_plan(&graph.nodes, &graph.edges);
+        executor.sync_plan(&plan).unwrap();
+        assert!(executor.read_output_rgba("renderer").await.is_err());
+
+        graph.edges[0].source = "color".into();
+        let mut engine = ExecutionEngine::prepare(
+            graph.nodes[..1]
+                .iter()
+                .chain(graph.nodes[2..].iter())
+                .cloned()
+                .collect(),
+            graph.edges.clone(),
+        );
+        let result = engine.run_frame(&frame());
+        executor.execute(engine.plan(), &result).unwrap();
+        assert_eq!(
+            executor.read_output_rgba("renderer").await.unwrap(),
+            [0, 255, 0, 255]
+        );
+        let plan = open_quartz_execution::engine::build_execution_plan(&graph.nodes, &[]);
+        executor.sync_plan(&plan).unwrap();
+        assert!(executor.read_output_rgba("renderer").await.is_err());
+    });
+}
+
+#[test]
 fn source_sampling_controls_filter_wrap_and_reset_for_uploaded_textures() {
     pollster::block_on(async {
         let mut graph: open_quartz_schema::Graph = serde_json::from_value(json!({
