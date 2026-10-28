@@ -1,7 +1,7 @@
 use open_quartz_sdk::{Graph, NodeType, OnnxSource, ProjectNode};
 use serde_json::Value;
 
-/// Project metadata only. The Slint shell does not attach ONNX sessions or resources.
+/// Recorded project metadata only; live ONNX sessions are projected separately.
 pub(crate) fn inspect(
     node: &ProjectNode,
     graph: &Graph,

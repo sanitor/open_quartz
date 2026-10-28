@@ -26,7 +26,6 @@ fn options_capabilities_sessions_and_tensor_errors_are_observable() {
     }
 }
 
-#[cfg(coverage)]
 #[test]
 fn native_session_loads_and_runs_identity_model() {
     const CHILD: &str = "OPEN_QUARTZ_ONNX_COVERAGE_CHILD";
@@ -61,7 +60,6 @@ fn native_session_loads_and_runs_identity_model() {
         .join("../../node_modules/onnxruntime-node/bin/napi-v3")
         .join(platform)
         .join(library);
-    assert!(OnnxSession::from_memory(b"__builder_error__").is_err());
     std::env::set_var("ORT_DYLIB_PATH", runtime);
     assert!(OnnxSession::from_memory(b"invalid").is_err());
     let mut session = OnnxSession::from_memory(include_bytes!(
@@ -80,11 +78,6 @@ fn native_session_loads_and_runs_identity_model() {
     session.info.input_names.clear();
     assert!(session.run_f32(vec![1.0], vec![1]).is_err());
     session.info.input_names = input_names;
-    session.fault = 1;
-    assert!(session.run_f32(vec![1.0], vec![1]).is_err());
-    session.fault = 2;
-    assert!(session.run_f32(vec![1.0], vec![1]).is_err());
-    session.fault = 0;
     let rgba = [255, 0, 0, 255];
     for task in [
         open_quartz_schema::OnnxTask::SuperResolution,
@@ -110,30 +103,4 @@ fn native_session_loads_and_runs_identity_model() {
         .is_err());
     }
     assert!(session.run_f32(vec![], vec![2]).is_err());
-    std::mem::forget(session);
-    write_profile_and_exit();
-}
-
-#[cfg(all(coverage, unix))]
-fn write_profile_and_exit() -> ! {
-    unsafe extern "C" {
-        fn __llvm_profile_write_file() -> i32;
-        fn _exit(status: i32) -> !;
-    }
-    unsafe {
-        assert_eq!(__llvm_profile_write_file(), 0);
-        _exit(0)
-    }
-}
-
-#[cfg(all(coverage, windows))]
-fn write_profile_and_exit() -> ! {
-    unsafe extern "C" {
-        fn __llvm_profile_write_file() -> i32;
-        fn ExitProcess(exit_code: u32) -> !;
-    }
-    unsafe {
-        assert_eq!(__llvm_profile_write_file(), 0);
-        ExitProcess(0)
-    }
 }

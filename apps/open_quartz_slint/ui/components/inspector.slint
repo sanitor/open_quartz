@@ -59,6 +59,14 @@ export component Inspector inherits Rectangle {
     in property <[InspectorFormGroup]> forms;
     in property <[InspectorOnnxRow]> onnx-config;
     in property <[InspectorOnnxRow]> onnx-saved;
+    in property <string> onnx-status;
+    in property <[InspectorOnnxRow]> onnx-live;
+    in property <bool> onnx-available;
+    in property <bool> onnx-loading;
+    in property <bool> onnx-attached;
+    in-out property <string> onnx-path;
+    callback load-onnx(string);
+    callback unload-onnx();
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in-out property <bool> auto-size;
@@ -240,9 +248,32 @@ export component Inspector inherits Rectangle {
 
                 if root.onnx-config.length > 0: VerticalLayout {
                     spacing: 8px;
-                    Text { text: "ONNX · Read-only"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text { text: "ONNX · Live session"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text { text: root.onnx-status; color: Theme.accent; wrap: word-wrap; }
+                    Text { text: "Optional local model path · session only"; color: Theme.secondary; wrap: word-wrap; }
+                    LineEdit { text <=> root.onnx-path; enabled: !root.project-busy && !root.onnx-loading; }
+                    Text { text: "Blank uses the saved custom path or catalog cache/download. Loading is explicit; session state and this path are not saved."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: "Load model";
+                            enabled: root.onnx-available && !root.project-busy && !root.inspector-dirty && !root.onnx-loading;
+                            clicked => { root.load-onnx(root.onnx-path); }
+                        }
+                        Button {
+                            text: root.onnx-loading ? "Cancel load" : "Unload model";
+                            enabled: root.onnx-available && !root.project-busy && !root.inspector-dirty && (root.onnx-loading || root.onnx-attached);
+                            clicked => { root.unload-onnx(); }
+                        }
+                    }
+                    for field in root.onnx-live: VerticalLayout {
+                        spacing: 2px;
+                        Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                        Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
+                    }
+                    Text { text: "ONNX configuration · Read-only"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
                     Text {
-                        text: "Session: not attached by Slint. Model loading, download and inference controls are not available in this shell.";
+                        text: "Recorded project configuration below is separate from this application's live session.";
                         color: Theme.accent;
                         wrap: word-wrap;
                     }

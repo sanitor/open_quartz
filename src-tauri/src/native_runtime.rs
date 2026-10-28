@@ -538,25 +538,8 @@ pub async fn native_onnx_load_model(
     options: NativeOnnxLoadOptions,
     state: State<'_, NativeRuntimeState>,
 ) -> Result<open_quartz_execution::onnx::OnnxSessionInfo, String> {
-    let model_path = options
-        .model_path
-        .map(std::path::PathBuf::from)
-        .unwrap_or(crate::models_dir(&app)?.join(format!("{model_id}.onnx")));
-    let model = tokio::fs::read(&model_path)
-        .await
-        .map_err(|error| format!("Cannot read ONNX model {}: {error}", model_path.display()))?;
-    let provider = if options.prefer_direct_ml && cfg!(target_os = "windows") {
-        open_quartz_execution::onnx::NativeOnnxProvider::DirectMl
-    } else {
-        open_quartz_execution::onnx::NativeOnnxProvider::Cpu
-    };
-    let session = open_quartz_execution::onnx::OnnxSession::from_memory_with_options(
-        &model,
-        open_quartz_execution::onnx::NativeOnnxOptions {
-            provider,
-            allow_cpu_fallback: true,
-        },
-    )?;
+    let cache_directory = crate::models_dir(&app)?;
+    let model_id_for_cache = model_id.clone();
     let config = NativeOnnxConfig {
         model_id,
         task: options.task,
@@ -564,9 +547,25 @@ pub async fn native_onnx_load_model(
         score_threshold: options.score_threshold,
         iou_threshold: options.iou_threshold,
     };
-    with_runtime(&state, move |runtime| {
-        runtime.load_onnx(node_id, session, config)
+    let prefer_direct_ml = options.prefer_direct_ml;
+    let prepared = tokio::task::spawn_blocking(move || {
+        if let Some(model_path) = options.model_path {
+            open_quartz_native_host::models::PreparedOnnxModel::open(
+                &std::path::PathBuf::from(model_path),
+                config,
+                prefer_direct_ml,
+            )
+        } else {
+            open_quartz_native_host::models::ModelStore::new(cache_directory).open_cached(
+                &model_id_for_cache,
+                config,
+                prefer_direct_ml,
+            )
+        }
     })
+    .await
+    .map_err(|error| format!("Model loading worker failed: {error}"))??;
+    with_runtime(&state, move |runtime| prepared.attach(runtime, node_id))
 }
 
 #[tauri::command]

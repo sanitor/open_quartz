@@ -2,7 +2,6 @@ mod native_runtime;
 mod screen_saver;
 mod webview_texture_stream;
 
-use futures::StreamExt;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -36,77 +35,43 @@ async fn download_model(
     url: String,
     expected_size: u64,
 ) -> Result<String, String> {
-    let dir = models_dir(&app)?;
-    let file_path = dir.join(format!("{model_id}.onnx"));
-
-    // Already downloaded?
-    if file_path.exists() {
-        let meta = std::fs::metadata(&file_path).map_err(|e| format!("Cannot stat file: {e}"))?;
-        if meta.len() > 0 {
-            return Ok(file_path.to_string_lossy().into_owned());
-        }
-    }
-
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("Download failed: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}: {}", response.status(), url));
-    }
-
-    let total = response.content_length().unwrap_or(expected_size);
-    let mut stream = response.bytes_stream();
-    let mut received: u64 = 0;
-    let mut data = Vec::with_capacity(total as usize);
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
-        received += chunk.len() as u64;
-        data.extend_from_slice(&chunk);
-
-        // Emit progress every ~100KB to avoid flooding
-        if received % 102_400 < chunk.len() as u64 || received == total {
-            let _ = app.emit(
-                "model-download-progress",
-                DownloadProgress {
-                    model_id: model_id.clone(),
-                    received,
-                    total,
-                },
-            );
-        }
-    }
-
-    tokio::fs::write(&file_path, &data)
-        .await
-        .map_err(|e| format!("Cannot write model file: {e}"))?;
-
-    Ok(file_path.to_string_lossy().into_owned())
+    let store = open_quartz_native_host::models::ModelStore::new(models_dir(&app)?);
+    tokio::task::spawn_blocking(move || {
+        let mut last_progress = 0_u64;
+        store
+            .download(&model_id, &url, expected_size, "", |received, total| {
+                if received == 0
+                    || (total > 0 && received == total)
+                    || received.saturating_sub(last_progress) >= 102_400
+                {
+                    last_progress = received;
+                    let _ = app.emit(
+                        "model-download-progress",
+                        DownloadProgress {
+                            model_id: model_id.clone(),
+                            received,
+                            total,
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Model download worker failed: {error}"))?
 }
 
 /// Read a previously downloaded model into memory (returns bytes).
 #[tauri::command]
 async fn read_model(app: AppHandle, model_id: String) -> Result<Vec<u8>, String> {
-    let dir = models_dir(&app)?;
-    let file_path = dir.join(format!("{model_id}.onnx"));
-    if !file_path.exists() {
-        return Err(format!("Model not found: {}", file_path.display()));
-    }
-    tokio::fs::read(&file_path)
-        .await
-        .map_err(|e| format!("Cannot read model: {e}"))
+    open_quartz_native_host::models::ModelStore::new(models_dir(&app)?).read_model(&model_id)
 }
 
 /// Check if a model is already downloaded.
 #[tauri::command]
 async fn is_model_downloaded(app: AppHandle, model_id: String) -> Result<bool, String> {
-    let dir = models_dir(&app)?;
-    let file_path = dir.join(format!("{model_id}.onnx"));
-    Ok(file_path.exists()
-        && std::fs::metadata(&file_path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false))
+    open_quartz_native_host::models::ModelStore::new(models_dir(&app)?).is_downloaded(&model_id)
 }
 
 #[cfg(target_os = "windows")]

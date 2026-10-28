@@ -22,11 +22,16 @@
 
 - **Slint Sampling/Framebuffer/Video forms** — add independent SDK-backed configuration drafts. Sampling supports source-node Linear/Nearest and Clamp/Repeat/Mirror and is consumed by NativeHost for generated and uploaded textures. Framebuffer validates seven formats, 1–8192 dimensions, and optional u32 stride; Video validates File/Camera, camera ID, Loop, and 0.1–4.0 rate. Resource loading/camera enumeration remain explicitly out of scope; complete NodeData and existing resource paths are preserved.
 
-- **Slint read-only ONNX metadata** — inspect recorded model/source/path, connection counts, thresholds and parameters separately from saved status/backend/error/download metadata. Explicitly report that Slint has no attached ONNX session; preserve missing fields and zero values without loading resources, inventing results, or mutating the project.
+- **Slint ONNX metadata** — inspect recorded model/source/path, connection counts, thresholds and parameters separately from saved status/backend/error/download metadata. Preserve missing fields and zero values without treating saved `ready` as a loaded session or mutating the project.
+
+- **Slint native ONNX sessions** — explicitly load a saved/custom local model or catalog download through existing Rust resource-intent policy; show live progress, session backend/tensor names, real texture/structured results, errors, cancellation and unload. Keep resource state outside SDK history/project metadata and invalidate late work across unload, configuration changes and project replacement. Tauri and Slint share a streaming, atomic native model cache with optional digest checks and off-thread session construction.
 
 ### Fixes
 
 - **Renderer source invalidation** — discard cached Renderer mappings when their actual upstream changes or disconnects. Reconnecting to an unbound ONNX output now reports the missing GPU texture and clears the preview rather than displaying the previous source.
+- **ONNX completion lifetime** — identify each in-flight task independently of graph revision. Unload/reload and graph replacement discard old completions without restoring removed textures, publishing stale events, or clearing a replacement task's pending state; unloaded models no longer trigger unnecessary GPU readback.
+- **Native ORT shutdown** — upgrade the Rust ONNX binding to `2.0.0-rc.12` with API 20 compatibility so the global environment is released before native C++ destructors. Remove forced-exit/leaked-session coverage workarounds and exercise ordinary process exit after real inference.
+- **Native ONNX CPU integration smoke** — with the official ONNX Runtime 1.21.0 dylib, load `image_identity.onnx`, verify the actual 2×2 NativeHost→ONNX→Renderer RGBA and CPU output event, and exit normally; offline host/cache tests cover stale work, digest/partial download validation and invalid IDs. Workspace passes 286 tests/46 suites, Slint passes 51 tests, release build succeeds. Final macOS Slint session controls remain unverified because macOS reports the GUI session locked; keep this distinct from the completed headless inference smoke.
 
 ### Tests
 

@@ -19,8 +19,7 @@ futures-channel = "0.3"
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgpu", "gles", "vulkan", "dx12", "metal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray", "load-dynamic"] }
-ort-sys = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-20"] }
 log = "0.4"
 
 [target.'cfg(windows)'.dependencies]

@@ -43,6 +43,14 @@ export component AppWindow inherits Window {
     in property <[InspectorFormGroup]> inspector-forms;
     in property <[InspectorOnnxRow]> inspector-onnx-config;
     in property <[InspectorOnnxRow]> inspector-onnx-saved;
+    in property <string> inspector-onnx-status;
+    in property <[InspectorOnnxRow]> inspector-onnx-live;
+    in property <bool> inspector-onnx-available;
+    in property <bool> inspector-onnx-loading;
+    in property <bool> inspector-onnx-attached;
+    in-out property <string> inspector-onnx-path;
+    callback inspector-load-onnx(string);
+    callback inspector-unload-onnx();
     in-out property <string> inspector-node-label;
     in-out property <string> inspector-shader-code;
     in-out property <bool> inspector-auto-size;
@@ -156,6 +164,14 @@ export component AppWindow inherits Window {
                     forms: root.inspector-forms;
                     onnx-config: root.inspector-onnx-config;
                     onnx-saved: root.inspector-onnx-saved;
+                    onnx-status: root.inspector-onnx-status;
+                    onnx-live: root.inspector-onnx-live;
+                    onnx-available: root.inspector-onnx-available;
+                    onnx-loading: root.inspector-onnx-loading;
+                    onnx-attached: root.inspector-onnx-attached;
+                    onnx-path <=> root.inspector-onnx-path;
+                    load-onnx(path) => { root.inspector-load-onnx(path); }
+                    unload-onnx => { root.inspector-unload-onnx(); }
                     node-label <=> root.inspector-node-label;
                     shader-code <=> root.inspector-shader-code;
                     auto-size <=> root.inspector-auto-size;

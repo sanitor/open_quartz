@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3 及 Phase 4 Inspector/WGSL、Shader numeric uniform、Sampling/Framebuffer/Video 配置、只读 ONNX 元数据和编辑器体验评估已完成 macOS 原生验收；Slint 49 tests、workspace 280 tests/45 suites、release build 和格式检查通过；尚未切换默认入口
+> 状态：Phase 2/3 和 Phase 4 Inspector/WGSL、Shader uniform、Sampling/Framebuffer/Video 配置、只读 ONNX 及编辑器体验已完成 macOS 原生验收；Phase 5 已接通 ONNX 会话与 NativeHost。workspace 288 tests/46 suites、Slint 51 tests、release build 与格式检查通过；官方 ONNX Runtime 1.21.0/rc.12 NativeHost CPU identity 推理和清洁退出通过。macOS GUI 当前锁屏，Phase 5 AppKit Load/Cancel/Unload 与目录下载窗口验收待解锁；未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -758,18 +758,26 @@ Spike 范围：
 - **Sampling/Framebuffer/Video 表单**：Sampling 作为独立草稿组用于 Shader/Constant 和 sampler2D Input，支持 Linear/Nearest、Clamp/Repeat/Mirror；NativeHost/GPU executor 按源节点创建并应用 sampler，对生成及外部上传纹理均生效，默认值不补写。Framebuffer Input 提供 7 种 schema format、必填 1–8192 宽高、blank/0 auto 或正 u32 stride；Video Input 提供 File/Camera、自由 camera ID、Loop、0.1–4.0 有限 rate。Framebuffer/Video 明示仅保存配置，不加载 raw buffer、不枚举/打开文件或相机；source 切换不删除保留的 file path。三个组均克隆完整 NodeData、独立 Apply/Discard、每次有效提交一条 Content history、no-op 无 revision。
 - **节点表单验收通过**：Slint 47 tests、workspace 278 tests/45 suites、release build/格式检查通过；回归覆盖所有枚举、范围、u32 边界、invalid/busy 原子性、独立草稿、完整数据/资源字段、单步 Undo/Redo、Save/Open，并以真实 GPU 两像素采样验证 Nearest/Linear 与 Clamp/Repeat/Mirror。AppKit 1180×760 和 800×540 上，96×48 nearest/clamp 蓝色输出经 Repeat Apply 变红；Undo 恢复蓝色和 Clamp 控件，Redo 恢复红色/Repeat。Framebuffer width 0 被拒后提交 64×16/stride 256；Video rate 9 被拒后提交 Camera `camera-native-1`、Loop off、rate 2.5。窄窗口滚动、popup、checkbox、文本与 Apply 均实操；SDK Save/Open 保留三组设置、原 video file path 和两条 edge。未声称资源加载已实现。
 - **只读 ONNX 面板**：显示记录的 source、model/catalog ID、自定义路径（未检查）、输入连接数、阈值、target size 和数值/布尔参数；缺失与零区分。保存的 file name/status/backend/native backend/error/progress 放入独立的 Saved metadata 区，明确不是当前会话状态；进度仅接受 0–1 数值，非法值直接说明，不当作实时下载。Slint 未绑定 ONNX session，不提供加载/下载/推理控件或虚构结果；单纯浏览不补默认值，不改变项目，空选/多选清除旧面板。
-- **ONNX 验收通过**：Slint 49 tests、workspace 280 tests/45 suites、release build/格式检查通过。AppKit 1180×760、800×540 检查 catalog/custom/空 ONNX、保存的 ready/error/backend、零阈值、参数、非法进度、长 Unicode 路径换行、连接数和选择清除；SDK Save/Open 对整个 fixture graph 无损。真实图切换发现并修复 GPU executor Renderer 源映射缓存：实际输入变化时失效，改接未绑定 ONNX 输出后报告缺失 native GPU texture 并清图，重开有效图恢复 96×48 Metal 输出；GPU 回归覆盖改接及断开。
-- **编辑器评估完成**：保留原生 TextEdit/显式 Apply；300 行长 Unicode 注释、连续键盘输入、SDK 保存和窄窗口已验证，选型与验证边界见 §7.3.1。当前不提供原生资源选择/加载、camera enumeration、CodeMirror 级高亮或输入时行内诊断，也未切换 Tauri 生产入口；运行时资源功能属于 Phase 5。
+- **ONNX Phase 4 验收通过**：Slint 49 tests、workspace 280 tests/45 suites、release build/格式检查通过。AppKit 1180×760、800×540 检查 catalog/custom/空 ONNX、保存的 ready/error/backend、零阈值、参数、非法进度、长 Unicode 路径换行、连接数和选择清除；SDK Save/Open 对整个 fixture graph 无损。真实图切换发现并修复 GPU executor Renderer 源映射缓存：实际输入变化时失效，改接未绑定 ONNX 输出后报告缺失 native GPU texture 并清图，重开有效图恢复 96×48 Metal 输出；GPU 回归覆盖改接及断开。
+- **编辑器评估完成**：保留原生 TextEdit/显式 Apply；300 行长 Unicode 注释、连续键盘输入、SDK 保存和窄窗口已验证，选型与验证边界见 §7.3.1。没有 CodeMirror 级高亮、补全/行号、输入时行内诊断或 IME 组合验收；未切换 Tauri 生产入口。
 
-### 8.7 Phase 5：运行时功能补齐
+### 8.7 Phase 5：ONNX 原生运行时
 
-- ONNX 下载/推理/结果；
-- 视频/相机；
-- 截图；
-- Screen Saver 导出；
-- 错误/cadence/状态栏。
+- Slint 显式 **Load model / Cancel load / Unload model**；本地路径仅作用于当前会话，可覆盖保存的 custom path。Blank 使用原 custom path，或重用 host-intent 对 catalog 的模型 ID、下载、任务和有效参数规划；不会打开工程就隐式下载或加载。
+- NativeHost 与 Slint/Tauri 共用原生 `ModelStore`：校验模型 ID、流式 HTTP 下载至唯一临时文件、验证可用 SHA-256、完整响应后原子发布，失败/取消清理 partial。空 SHA 是未校验而不是命中校验。模型文件读取、session 创建在线程池/专用 worker，不阻塞 UI 或图像呈现。
+- 独立展示 session backend、输入/输出 tensor 名、实际已交付的输出尺寸及可用结构化结果；load/inference 错误可见。实时状态、临时 path 与资源生命周期不会写回 SDK `Project`、Undo 或保存元数据。macOS/Linux 使用 CPU，Windows 复用 DirectML 与 CPU fallback。推理数据仍经过 GPU readback → CPU ORT → GPU texture upload。
+- task ticket、graph revision、node generation 拦截取消、重新加载、改图或换工程后的 late completion，避免加载后旧任务复活纹理、清除新任务 pending 或发出过期事件；变化的推理 plan 清除旧图输出。
+- **自动化与真实 Host 验收通过**：`cargo test --workspace` 288 passed/46 suites，Slint app 51 passed，release build/格式检查成功；Host 使用官方 ONNX Runtime 1.21.0 CPU library 与 `image_identity.onnx` 真实执行 2×2 RGB identity、将 RGBA 上传 Renderer、发出 cpu output event，正常析构/退出。回归覆盖跨进程 cache lock、HTTP stream/hash/取消/partial、无效路径 ID、任务完成竞态、Slint late load/result state。macOS 当前报告 `CGSSessionScreenIsLocked=1`；Phase 5 AppKit Load/Cancel/Unload 面板与目录下载 UI 验收**尚未通过/待解锁**，不得把 headless Host 通过当成原生窗口验收。ONNX Runtime 未自动 bundle，启动需配置 `ORT_DYLIB_PATH`；使用文档见 app README。
+- Native ONNX 调整 Rust `ort` 至 `2.0.0-rc.12` + API 20，修复 process exit 时 global environment 晚于 ORT C++ static destructor 释放而锁失效/abort的问题。独立真实运行库测试确认 Host 正常退出，没有 `mem::forget`、`_exit` 或忽略状态码。
 
-### 8.8 Phase 6：移动端
+### 8.8 后续运行时功能
+
+- 视频/相机、截图、Screen Saver 导出；
+- ONNX catalog/native UI 的锁屏后 AppKit 窗口验收；
+- frame error/cadence/status。
+
+
+### 8.9 Phase 6：移动端
 
 - Android 工程、权限、生命周期；
 - iOS 工程、Metal/wgpu 验证；
@@ -777,14 +785,14 @@ Spike 范围：
 - 安全区/旋转/前后台；
 - 移动端最低功能集。
 
-### 8.9 Phase 7：切换
+### 8.10 Phase 7：切换
 
 - 新 app 达到发布门槛后，才切换默认入口。
 - 旧 Tauri 保留一个版本作为 fallback。
 - 更新 `DESIGN.md`、README、构建脚本和 CI。
 - 删除不再使用的 WebView/TextureStream 路径前，确认没有发布分支依赖。
 
-### 8.10 分支与回退
+### 8.11 分支与回退
 
 - 新 app 独立 crate/目录，主分支可同时构建。
 - 核心 crate 的改动保持 additive；不把 Slint 类型带进 core。

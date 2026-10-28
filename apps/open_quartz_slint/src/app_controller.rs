@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
@@ -103,6 +103,7 @@ pub struct AppController {
     window: slint::Weak<AppWindow>,
     project: Arc<Project>,
     renderer: Option<RenderBridge>,
+    onnx_states: BTreeMap<String, crate::onnx_runtime::LiveOnnxState>,
     selected_node_ids: BTreeSet<String>,
     inspector_draft: Option<InspectorDraft>,
     inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
@@ -157,6 +158,7 @@ impl AppController {
             window: window.as_weak(),
             project: Arc::new(project),
             renderer,
+            onnx_states: BTreeMap::new(),
             selected_node_ids: BTreeSet::new(),
             inspector_draft: None,
             inspector_uniforms: Rc::new(slint::VecModel::from(
@@ -403,6 +405,20 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
+        window.on_inspector_load_onnx(move |path| {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .change_onnx_session(Some(path.to_string()));
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_unload_onnx(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().change_onnx_session(None);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
         controller.borrow().timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(16),
@@ -467,6 +483,8 @@ impl AppController {
                 Err(error) => window.set_runtime_status(error.into()),
             }
         }
+        self.onnx_states.clear();
+        self.publish_onnx_runtime();
     }
 
     fn publish_graph_projection(&mut self) -> Option<ProjectionStats> {
@@ -631,6 +649,8 @@ impl AppController {
             window.set_inspector_node_id("".into());
             window.set_inspector_onnx_config(slint::ModelRc::default());
             window.set_inspector_onnx_saved(slint::ModelRc::default());
+            window.set_inspector_onnx_live(slint::ModelRc::default());
+            window.set_inspector_onnx_path("".into());
             window.set_inspector_selection_message(
                 if self.selected_node_ids.is_empty() {
                     "Select a node to inspect its properties."
@@ -651,6 +671,7 @@ impl AppController {
             != Some(node.id.as_str())
         {
             self.inspector_draft = Some(InspectorDraft::from_node(node));
+            window.set_inspector_onnx_path("".into());
         }
         let draft = self
             .inspector_draft
@@ -688,6 +709,70 @@ impl AppController {
         self.publish_uniforms();
         self.publish_forms();
         self.publish_inspector_dirty();
+        self.publish_onnx_runtime();
+    }
+
+    fn publish_onnx_runtime(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let id = window.get_inspector_node_id();
+        let state = self.onnx_states.get(id.as_str());
+        window.set_inspector_onnx_available(
+            self.renderer.is_some() && self.graph_stress_count.is_none(),
+        );
+        window.set_inspector_onnx_loading(state.is_some_and(|state| state.loading));
+        window.set_inspector_onnx_attached(state.is_some_and(|state| state.attached));
+        window.set_inspector_onnx_status(
+            state
+                .map(|state| state.status.as_str())
+                .unwrap_or(if self.renderer.is_some() {
+                    "Not loaded · no session attached"
+                } else {
+                    "Native renderer unavailable"
+                })
+                .into(),
+        );
+        let rows = state
+            .map(|state| {
+                [
+                    ("Live backend", &state.backend),
+                    ("Session inputs", &state.inputs),
+                    ("Session outputs", &state.outputs),
+                    ("Latest inference result", &state.result),
+                ]
+                .into_iter()
+                .filter(|(_, value)| !value.is_empty())
+                .map(|(label, value)| crate::InspectorOnnxRow {
+                    label: label.into(),
+                    value: value.as_str().into(),
+                })
+                .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        window.set_inspector_onnx_live(slint::ModelRc::new(slint::VecModel::from(rows)));
+    }
+
+    fn change_onnx_session(&mut self, path: Option<String>) {
+        if self.edits_blocked() || self.selected_node_ids.len() != 1 {
+            return;
+        }
+        let Some(node) = self.project.graph().nodes().iter().find(|node| {
+            node.node_type == NodeType::Onnx && self.selected_node_ids.contains(&node.id)
+        }) else {
+            return;
+        };
+        let id = node.id.clone();
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
+        let result = match path {
+            Some(path) => renderer.load_onnx(id, path),
+            None => renderer.unload_onnx(id),
+        };
+        if let Err(error) = result {
+            self.set_edit_status(&error);
+        }
     }
 
     fn forms_dirty(&self) -> bool {
@@ -1221,6 +1306,10 @@ impl AppController {
             match result {
                 FileResult::Opened { path, project } => {
                     self.project = Arc::new(project);
+                    self.onnx_states.clear();
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.begin_project();
+                    }
                     self.selected_node_ids.clear();
                     self.inspector_draft = None;
                     self.graph_stress_count = None;
@@ -1246,6 +1335,10 @@ impl AppController {
         }
         let update = self.renderer.as_ref().and_then(RenderBridge::take_update);
         if let Some(update) = update {
+            if let Some(states) = update.onnx {
+                self.onnx_states = states;
+                self.publish_onnx_runtime();
+            }
             if let Some(status) = update.status {
                 window.set_runtime_status(status.into());
             }
@@ -2104,6 +2197,7 @@ mod tests {
             window: slint::Weak::default(),
             project: std::sync::Arc::new(project),
             renderer: None,
+            onnx_states: std::collections::BTreeMap::new(),
             selected_node_ids: [node_id].into_iter().collect(),
             inspector_draft: Some(draft),
             inspector_uniforms: std::rc::Rc::new(slint::VecModel::from(Vec::<

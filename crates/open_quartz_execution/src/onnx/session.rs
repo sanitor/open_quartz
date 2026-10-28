@@ -1,5 +1,5 @@
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
-use ort::execution_providers::{DirectMLExecutionProvider, ExecutionProvider};
+use ort::ep::{DirectML, ExecutionProvider};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -58,14 +58,12 @@ pub(crate) trait TensorRunner {
 pub struct OnnxSession {
     session: ort::session::Session,
     info: OnnxSessionInfo,
-    #[cfg(test)]
-    fault: u8,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_onnx_capabilities() -> Result<NativeOnnxCapabilities, String> {
     #[cfg(target_os = "windows")]
-    let direct_ml = DirectMLExecutionProvider::default()
+    let direct_ml = DirectML::default()
         .is_available()
         .map_err(|error| format!("Cannot query DirectML availability: {error}"))?;
     #[cfg(not(target_os = "windows"))]
@@ -92,16 +90,7 @@ impl OnnxSession {
             return Err("DirectML is only available on Windows".to_owned());
         }
         #[allow(unused_mut)]
-        #[cfg(test)]
-        let builder_result = if model == b"__builder_error__" {
-            Err(ort::Error::new("injected builder error"))
-        } else {
-            ort::session::Session::builder()
-        };
-        #[cfg(not(test))]
-        let builder_result = ort::session::Session::builder();
-        #[allow(unused_mut)]
-        let mut builder = builder_result
+        let mut builder = ort::session::Session::builder()
             .map_err(|error| format!("Cannot create ONNX session builder: {error}"))?;
         #[cfg(not(target_os = "windows"))]
         let backend = "cpu";
@@ -110,7 +99,7 @@ impl OnnxSession {
             NativeOnnxProvider::Cpu => "cpu",
             #[cfg(target_os = "windows")]
             NativeOnnxProvider::DirectMl => {
-                let provider = DirectMLExecutionProvider::default().build();
+                let provider = DirectML::default().build();
                 builder = builder
                     .with_execution_providers([if options.allow_cpu_fallback {
                         provider.fail_silently()
@@ -137,23 +126,18 @@ impl OnnxSession {
             .map_err(|error| format!("Cannot load ONNX model: {error}"))?;
         let info = OnnxSessionInfo {
             input_names: session
-                .inputs
+                .inputs()
                 .iter()
-                .map(|input| input.name.clone())
+                .map(|input| input.name().to_owned())
                 .collect(),
             output_names: session
-                .outputs
+                .outputs()
                 .iter()
-                .map(|output| output.name.clone())
+                .map(|output| output.name().to_owned())
                 .collect(),
             backend: backend.to_owned(),
         };
-        Ok(Self {
-            session,
-            info,
-            #[cfg(test)]
-            fault: 0,
-        })
+        Ok(Self { session, info })
     }
 
     pub fn info(&self) -> &OnnxSessionInfo {
@@ -165,41 +149,20 @@ impl OnnxSession {
             .info
             .input_names
             .first()
-            .ok_or_else(|| "ONNX model has no inputs".to_owned())?
-            .clone();
-        let tensor = ort::value::Tensor::from_array((shape.clone(), input))
+            .ok_or_else(|| "ONNX model has no inputs".to_owned())?;
+        let tensor = ort::value::Tensor::from_array((shape, input))
             .map_err(|error| format!("Cannot create ONNX tensor: {error}"))?;
-        #[cfg(test)]
-        let inputs_result = if self.fault == 1 {
-            Err(ort::Error::new("injected input error"))
-        } else {
-            ort::inputs![input_name.as_str() => tensor]
-        };
-        #[cfg(not(test))]
-        let inputs_result = ort::inputs![input_name.as_str() => tensor];
-        let inputs =
-            inputs_result.map_err(|error| format!("Cannot prepare ONNX inputs: {error}"))?;
+        let inputs = ort::inputs![input_name.as_str() => tensor];
         let outputs = self
             .session
             .run(inputs)
             .map_err(|error| format!("ONNX inference failed: {error}"))?;
-        #[cfg(test)]
-        let output_result = if self.fault == 2 {
-            Err(ort::Error::new("injected output type error"))
-        } else {
-            outputs[0].try_extract_tensor::<f32>()
-        };
-        #[cfg(not(test))]
         let output_result = outputs[0].try_extract_tensor::<f32>();
         let output =
             output_result.map_err(|error| format!("ONNX output is not float32: {error}"))?;
         Ok(TensorOutput {
-            data: output.iter().copied().collect(),
-            shape: output
-                .shape()
-                .iter()
-                .map(|&dimension| dimension as i64)
-                .collect(),
+            data: output.1.to_vec(),
+            shape: output.0.to_vec(),
         })
     }
 }

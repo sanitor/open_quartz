@@ -1,4 +1,10 @@
-use std::collections::{HashMap, HashSet};
+pub mod models;
+
+#[cfg(test)]
+mod models_tests;
+#[cfg(test)]
+mod onnx_lifecycle_tests;
+use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,6 +59,7 @@ struct NativeOnnxResource {
 
 struct NativeOnnxCompletion {
     node_id: String,
+    task_id: u64,
     revision: u32,
     generation: u32,
     input_stamp: FrameStamp,
@@ -173,7 +180,8 @@ pub struct NativeHost {
     mouse: [f32; 4],
     videos: HashMap<String, NativeVideoSource>,
     onnx_resources: HashMap<String, NativeOnnxResource>,
-    onnx_pending: HashSet<String>,
+    onnx_pending: HashMap<String, u64>,
+    next_onnx_task: u64,
     onnx_outputs: HashMap<String, Vec<(OutputKey, DataType)>>,
     onnx_event_subscriptions: HashMap<String, String>,
     onnx_sender: mpsc::Sender<NativeOnnxCompletion>,
@@ -287,7 +295,8 @@ impl NativeHost {
                 mouse: [0.0; 4],
                 videos: HashMap::new(),
                 onnx_resources: HashMap::new(),
-                onnx_pending: HashSet::new(),
+                onnx_pending: HashMap::new(),
+                next_onnx_task: 0,
                 onnx_outputs: HashMap::new(),
                 onnx_event_subscriptions: HashMap::new(),
                 onnx_sender,
@@ -383,11 +392,9 @@ impl NativeHost {
         self.output_node_id = output_node_id;
         self.videos.retain(|node_id, _| node_ids.contains(node_id));
         self.onnx_resources
-            .retain(|node_id, _| node_ids.contains(node_id));
-        self.onnx_pending
-            .retain(|node_id| node_ids.contains(node_id));
-        self.output_events
-            .retain(|event| node_ids.contains(&event.node_id));
+            .retain(|node_id, _| self.onnx_outputs.contains_key(node_id));
+        self.onnx_pending.clear();
+        self.output_events.clear();
         self.sync_video_nodes()?;
         self.clock_origin = Instant::now();
         Ok(revision)
@@ -555,6 +562,9 @@ impl NativeHost {
                 backend: info.backend.clone(),
             },
         );
+        self.onnx_pending.remove(&node_id);
+        self.executor.remove_texture(&node_id);
+        self.output_events.retain(|event| event.node_id != node_id);
         self.runtime.mark_dirty(&node_id).map_err(runtime_error)?;
         Ok(info)
     }
@@ -563,6 +573,7 @@ impl NativeHost {
         self.onnx_resources.remove(node_id);
         self.onnx_pending.remove(node_id);
         self.executor.remove_texture(node_id);
+        self.output_events.retain(|event| event.node_id != node_id);
     }
 
     fn drain_onnx_completions(&mut self) -> Result<(), String> {
@@ -576,6 +587,9 @@ impl NativeHost {
         }
         self.onnx_workers = running;
         while let Ok(completion) = self.onnx_receiver.try_recv() {
+            if self.onnx_pending.get(&completion.node_id) != Some(&completion.task_id) {
+                continue;
+            }
             self.onnx_pending.remove(&completion.node_id);
             let current_generation = self.runtime.node_generation(&completion.node_id).ok();
             if completion.revision != self.runtime.revision()
@@ -583,7 +597,9 @@ impl NativeHost {
             {
                 continue;
             }
-            let output = completion.result?;
+            let output = completion.result.map_err(|error| {
+                format!("ONNX {} inference failed: {error}", completion.node_id)
+            })?;
             self.executor
                 .upload_rgba(
                     &completion.node_id,
@@ -656,9 +672,14 @@ impl NativeHost {
         command: &ExecutionCommand,
         input_stamp: &FrameStamp,
     ) -> Result<(), String> {
-        if self.onnx_pending.contains(&command.node_id) {
+        if self.onnx_pending.contains_key(&command.node_id) {
             return Ok(());
         }
+        let Some(resource) = self.onnx_resources.get(&command.node_id) else {
+            return Ok(());
+        };
+        let session = resource.session.clone();
+        let config = resource.config.clone();
         let Some(source_id) = command.texture_inputs.values().next() else {
             return Ok(());
         };
@@ -669,11 +690,6 @@ impl NativeHost {
         let source_height = source.height;
         let source_rgba = pollster::block_on(self.executor.read_output_rgba(source_id))
             .map_err(|error| error.to_string())?;
-        let Some(resource) = self.onnx_resources.get(&command.node_id) else {
-            return Ok(());
-        };
-        let session = resource.session.clone();
-        let config = resource.config.clone();
         let sender = self.onnx_sender.clone();
         let node_id = command.node_id.clone();
         let revision = self.runtime.revision();
@@ -682,7 +698,9 @@ impl NativeHost {
             .node_generation(&node_id)
             .map_err(runtime_error)?;
         let input_stamp = input_stamp.clone();
-        self.onnx_pending.insert(node_id.clone());
+        self.next_onnx_task += 1;
+        let task_id = self.next_onnx_task;
+        self.onnx_pending.insert(node_id.clone(), task_id);
         let worker = std::thread::Builder::new()
             .name(format!("open-quartz-onnx-{node_id}"))
             .spawn(move || {
@@ -704,13 +722,17 @@ impl NativeHost {
                     });
                 let _ = sender.send(NativeOnnxCompletion {
                     node_id,
+                    task_id,
                     revision,
                     generation,
                     input_stamp,
                     result,
                 });
             })
-            .map_err(|error| format!("Cannot start native ONNX task: {error}"))?;
+            .map_err(|error| {
+                self.onnx_pending.remove(&command.node_id);
+                format!("Cannot start native ONNX task: {error}")
+            })?;
         self.onnx_workers.push(worker);
         Ok(())
     }

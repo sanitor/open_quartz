@@ -1,6 +1,6 @@
 # OpenQuartz Slint application shell
 
-This native application shell includes Phase 4 Inspector/WGSL editing and read-only ONNX metadata.
+This native application shell includes Phase 4 Inspector/WGSL editing and Phase 5 ONNX sessions.
 It is a standalone Rust workspace, with Slint and its build compiler pinned to
 **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
@@ -108,16 +108,13 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The shell includes Sampling, Framebuffer, and Video configuration forms plus a
-read-only ONNX metadata panel, but it does **not** yet load media/resources,
-enumerate cameras, expose model controls, or adapt gestures for mobile. Sampling
-is executable: NativeHost applies each source node's Linear/Nearest filter and
-Clamp/Repeat/Mirror wrap to generated or externally uploaded textures. Framebuffer
-and Video forms persist configuration
-only; external raw buffers, files, cameras, and inference resources are not attached
-by this shell, and resulting host failures are reported instead of replaced with
-sample output. Only host preview outputs supported by `NativeHost::preview_source`
-(currently RGBA8) can be imported.
+The shell includes Sampling, Framebuffer, and Video configuration forms plus ONNX
+model loading and inference. It does **not** yet load image/raw/video inputs,
+enumerate cameras, or adapt gestures for mobile. Sampling is executable: NativeHost
+applies each source node's Linear/Nearest filter and Clamp/Repeat/Mirror wrap to
+generated or externally uploaded textures. Framebuffer and Video persist configuration
+only; absent resources and host failures are reported instead of replaced with
+sample output. Only RGBA8 host preview outputs can be imported.
 
 ## Inspector and WGSL editing
 
@@ -181,13 +178,58 @@ sample output. Only host preview outputs supported by `NativeHost::preview_sourc
   file name, status, backend/native backend, error, and download progress. Progress
   accepts only numbers in 0–1; invalid saved values are identified, not clamped or
   treated as a current download. Saved `ready` never means Slint has loaded a model.
-- The shell explicitly reports that no ONNX session is attached and offers no
-  load/download/inference controls or fabricated results. Host errors remain in
-  runtime status, separate from saved metadata. Inspecting the panel does not
-  seed defaults or mutate the project; empty/multi-selection clears the old panel.
-- Renderer source mappings are invalidated when the plan changes their actual
-  input. Reconnecting to an unbound ONNX output reports a missing native texture
-  and clears the image instead of continuing to display the previous source.
+- Until explicitly loaded, the live section reports no attached session. Session
+  and saved project metadata are separate. Inspection does not seed defaults or
+  mutate the graph; empty/multi-selection clears the old panel.
+- Renderer source mappings are invalidated when their actual upstream changes. A
+  unbound ONNX output reports the missing native texture and clears the stale image.
+
+### Native ONNX sessions
+
+Set a compatible ONNX Runtime library **before launching** the shell:
+
+```sh
+ORT_DYLIB_PATH=/absolute/path/libonnxruntime.1.21.0.dylib \
+  cargo run --release --manifest-path apps/open_quartz_slint/Cargo.toml -- --project project.json
+```
+
+Use the platform CPU library (`onnxruntime.dll`, `.dylib`, or `.so`) from an
+[official native ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0).
+Missing configuration and invalid paths are reported in the live model status;
+the shader shell and project I/O work without an attached session. Runtime bundling
+is not automatic in this app.
+
+- Select one ONNX node and explicitly **Load model**. A temporary local path
+  overrides the saved custom path only for the current session. Without an
+  override, the shell uses the custom path or the catalog download/cache planned by
+  the existing Rust host-intent API; task and effective parameters use that same
+  plan instead of duplicating the Web catalog/threshold logic.
+- Catalog downloads stream into a unique temporary file under the shared Tauri/
+  Slint `com.openquartz.app/models` cache and become visible only after completion.
+  A persistent per-model advisory lock coordinates reads/downloads across processes;
+  the OS releases a lock when the process exits, so a stale lock file is harmless.
+  Optional catalog SHA-256 is verified, including cache hits; an empty catalog
+  digest means **unverified**, not validated. Failures/cancellation remove partial
+  files. Model IDs are validated before any cache or lock path is constructed.
+- File reads and ORT session construction run off the UI/render threads. The live
+  section reports byte progress, load errors, session backend, tensor names, and
+  delivered inference output. Tasks with structured data display that real JSON;
+  image-only tasks report texture output. The application never synthesizes
+  detection results, claims inference GPU support, or persists a temporary path.
+- **Cancel load / Unload model** invalidates the load ticket and clears the native
+  output. Download cancellation is cooperative; an active ORT session constructor
+  cannot be interrupted, but its late completion cannot attach after cancellation.
+  Opening a project tears down its resource sessions even if a node keeps its ID.
+  Edits retain a session only while the shared model/resource plan is unchanged;
+  an updated task/model/path requires an explicit reload. Superseded native
+  inference completions cannot publish textures/events or clear a newer task.
+- Loads, progress, backend and inference results are session state, not SDK history
+  or saved node data. Open never loads/downloads models implicitly. Resource
+  operations are guarded by unapplied inspector drafts.
+- Native inference performs GPU readback → CPU ONNX tensor execution → GPU texture
+  upload. Slint presentation imports the shared GPU texture; inference itself is not
+  zero-copy. Windows requests DirectML with the existing CPU fallback; macOS/Linux
+  use the existing CPU execution provider.
 
 The WGSL editor remains native `TextEdit` with explicit Apply. The macOS large-text
 assessment and decision, including diagnostic/IME/platform limits, are recorded in
@@ -232,6 +274,16 @@ stride 256. Video rejected rate 9, then committed Camera `camera-native-1`, Loop
 and rate 2.5. Narrow-window scrolling, popups, checkbox, text fields and Apply were
 all operated. SDK Save/Open retained sampling, framebuffer, video, original video
 file path, and both graph edges. Resource loading was not claimed or synthesized.
+
+Headless verification: `cargo test --workspace` passed **288 tests across 46 suites**;
+the Slint suite passed **51 tests** and the release build succeeded. An integration
+test loaded the `image_identity.onnx` fixture in NativeHost with the official ONNX
+Runtime 1.21.0 CPU dylib, passed its expected 2×2 RGBA through the downstream
+Renderer, emitted the CPU output event, and exited normally. Native model cache
+tests cover streamed publication, digest validation, cancellation, and invalid IDs.
+The target macOS session later became screen-locked before the final Slint AppKit
+window acceptance. **Load/cancel/unload and live panel behavior still need native
+window verification after the workstation session is unlocked.**
 
 The ONNX slice was exercised in the release AppKit window at 1180×760 and an
 800×540 client area with catalog, custom, and empty ONNX nodes. Saved `ready`,
