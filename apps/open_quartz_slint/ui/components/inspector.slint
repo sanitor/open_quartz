@@ -1,4 +1,4 @@
-import { Button, CheckBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct InspectorPort {
@@ -13,6 +13,25 @@ export struct InspectorUniform {
     value: string,
     connected: bool,
     valid: bool,
+    error: string,
+}
+
+export struct InspectorFormField {
+    key: string,
+    label: string,
+    value: string,
+    kind: string,
+    options: [string],
+    choice: int,
+    checked: bool,
+}
+
+export struct InspectorFormGroup {
+    key: string,
+    title: string,
+    hint: string,
+    fields: [InspectorFormField],
+    dirty: bool,
     error: string,
 }
 
@@ -32,6 +51,7 @@ export component Inspector inherits Rectangle {
     in property <bool> uniforms-valid: true;
     in property <[InspectorPort]> ports;
     in property <[InspectorUniform]> uniforms;
+    in property <[InspectorFormGroup]> forms;
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in-out property <bool> auto-size;
@@ -46,6 +66,8 @@ export component Inspector inherits Rectangle {
     callback apply-output-size();
     callback apply-uniforms();
     callback discard-drafts();
+    callback form-draft-changed(string, string);
+    callback apply-form(string);
 
     background: Theme.panel;
     border-radius: 8px;
@@ -173,6 +195,39 @@ export component Inspector inherits Rectangle {
                         text: "Apply uniforms";
                         enabled: root.uniform-dirty && root.uniforms-valid && !root.project-busy;
                         clicked => { root.apply-uniforms(); }
+                    }
+                }
+
+                for group in root.forms: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: group.title; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text { text: group.hint; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    for field in group.fields: VerticalLayout {
+                        spacing: 4px;
+                        if field.kind != "toggle": Text { text: field.label; color: Theme.secondary; wrap: word-wrap; }
+                        if field.kind == "choice": ComboBox {
+                            model: field.options;
+                            current-index <=> field.choice;
+                            enabled: !root.project-busy;
+                            selected => { root.form-draft-changed(field.key, "" + self.current-index); }
+                        }
+                        if field.kind == "text": LineEdit {
+                            text <=> field.value;
+                            enabled: !root.project-busy;
+                            edited => { root.form-draft-changed(field.key, self.text); }
+                        }
+                        if field.kind == "toggle": CheckBox {
+                            text: field.label;
+                            checked <=> field.checked;
+                            enabled: !root.project-busy;
+                            toggled => { root.form-draft-changed(field.key, self.checked ? "true" : "false"); }
+                        }
+                    }
+                    if group.error != "": Text { text: group.error; color: #ff9b8f; wrap: word-wrap; }
+                    Button {
+                        text: "Apply " + group.key;
+                        enabled: group.dirty && group.error == "" && !root.project-busy;
+                        clicked => { root.apply-form(group.key); }
                     }
                 }
 

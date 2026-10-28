@@ -91,6 +91,45 @@ fn executes_shader_cascade_and_exposes_renderer_output() {
 }
 
 #[test]
+fn source_sampling_controls_filter_wrap_and_reset_for_uploaded_textures() {
+    pollster::block_on(async {
+        let mut graph: open_quartz_schema::Graph = serde_json::from_value(json!({
+            "nodes": [
+                {"id":"image", "type":"input", "position":{"x":0,"y":0}, "data":{"type":"input","label":"Image","shaderCode":"","inputDataType":"sampler2D","inputMode":"image","inputs":[],"outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],"uniforms":{}}},
+                {"id":"sample", "type":"shader", "position":{"x":1,"y":0}, "data":{"type":"shader","label":"Sample","shaderCode":"@group(0) @binding(0) var image: texture_2d<f32>; @group(0) @binding(1) var imageSampler: sampler; @group(0) @binding(2) var<uniform> at: vec2f; @fragment fn main() -> @location(0) vec4f { return textureSample(image, imageSampler, at); }","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"},{"id":"at","label":"at","dataType":"vec2","direction":"input"}],"outputs":[{"id":"out","label":"output","dataType":"vec4","direction":"output"}],"uniforms":{"at":[0.5,0.5]},"autoSize":false,"width":1,"height":1}}
+            ], "edges":[{"id":"edge","source":"image","sourceHandle":"out","target":"sample","targetHandle":"in"}]
+        })).unwrap();
+        let backend = request_backend().await;
+        let mut executor = GpuExecutor::new(backend);
+        executor
+            .upload_rgba("image", &[255, 0, 0, 255, 0, 0, 255, 255], 2, 1)
+            .unwrap();
+        use open_quartz_schema::{TextureFilter::*, TextureWrap::*};
+        for (filter, wrap, x, expected) in [
+            (Some(Nearest), Some(Clamp), 1.25, [0, 0, 255, 255]),
+            (Some(Nearest), Some(Repeat), 1.25, [255, 0, 0, 255]),
+            (Some(Nearest), Some(Mirror), 1.25, [0, 0, 255, 255]),
+            (Some(Linear), Some(Clamp), 0.5, [128, 0, 128, 255]),
+            (Some(Nearest), Some(Clamp), 0.5, [0, 0, 255, 255]),
+            (None, None, 0.5, [128, 0, 128, 255]),
+        ] {
+            graph.nodes[0].data.tex_filter = filter;
+            graph.nodes[0].data.tex_wrap = wrap;
+            graph.nodes[1]
+                .data
+                .uniforms
+                .insert("at".into(), json!([x, 0.5]));
+            executor.sync_sampling(&graph);
+            let mut engine = ExecutionEngine::prepare(graph.nodes.clone(), graph.edges.clone());
+            let result = engine.run_frame(&frame());
+            executor.execute(engine.plan(), &result).unwrap();
+            let rgba = executor.read_output_rgba("sample").await.unwrap();
+            assert_eq!(rgba, expected, "{filter:?} {wrap:?} at {x}");
+        }
+    });
+}
+
+#[test]
 fn connected_system_time_updates_hue_uniform_on_native_gpu() {
     pollster::block_on(async {
         let nodes: Vec<ProjectNode> = serde_json::from_value(json!([

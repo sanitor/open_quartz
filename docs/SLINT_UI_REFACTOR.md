@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3、Phase 4 Inspector/WGSL 首切片及 Shader numeric uniform 切片已通过 macOS 原生验收；Slint 41 tests、workspace 276 tests/45 suites 和 release build 通过；尚未切换默认入口
+> 状态：Phase 2/3 及 Phase 4 Inspector/WGSL、Shader numeric uniform、Sampling/Framebuffer/Video 配置表单切片已完成 macOS 原生验收；Slint 47 tests、workspace 278 tests/45 suites、release build 和格式检查通过；尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -747,7 +747,9 @@ Spike 范围：
 - **原生窗口通过**：以 AppKit/AX 实测名称 Apply、WGSL Apply、源码 Undo/Redo、连接端口移除拒绝并保留草稿、Discard、宽度步进至 641×360、SDK Save/Open；JSON 保留名称/源码/尺寸/端口 ID/连线，截图显示真实红色共享纹理。修复输出图片 preferred height 挤压 Inspector：两面板显式分配 preferred height，Renderer 最小高度 120px。
 - **窄窗口与真实输入通过**：800×540 客户区（含 AppKit 标题栏为 800×572）内，用 macOS HID 指针选择 Shader/Renderer、聚焦文本、点击 Apply/Discard，滚轮双向滚动至 WGSL。Command+A 与键盘输入替换名称草稿及源码，不触发 graph 全选；指针 Apply 蓝色源码后，641×360 真实 Metal 输出由红变蓝，独立名称草稿仍保护 graph/file 操作。Discard 名称草稿后切换节点返回，已提交蓝色源码保留。截图确认源码可见、固定底部 Apply 及蓝色输出。此前工具焦点阻塞通过直接 HID 与正确滚动坐标绕过，未向生产代码加入输入绕过逻辑；本首切片原生验收完成。
 - **uniform 验收通过**：Slint 41 tests、workspace 276 tests/45 suites 及 release build 通过；回归覆盖支持类型/范围/分量数、缺失零 no-op、连接排除、独立草稿、schema refresh、完整数据/stale key 保留、单步历史、持久化及旧无效值。Apple M4 Pro/Metal 原生 1180×760 和 800×540 客户区验证 NaN 行错误/操作保护、连接参数只读、gain/tint Apply 使 96×48 真实输出由红变蓝、一次 Undo 回红及 Redo 回蓝；fixture 同时执行 Mat2。窄窗口 HID 滚动到字段及 Apply，键盘连续输入 0.7→0.75 保持焦点/光标，指针提交成功。SDK Save/Open 保留 gain=0.75、蓝色 tint、矩阵/整数/连接参数及两条连线；生产显示未加入 readback。
-- **后续 Phase 4 切片**：Sampling/Framebuffer/Video 表单、只读 ONNX 状态及编辑器体验评估。当前不提供 CodeMirror 级高亮/行内 GPU 诊断，也未切换 Tauri 生产入口。
+- **Sampling/Framebuffer/Video 表单**：Sampling 作为独立草稿组用于 Shader/Constant 和 sampler2D Input，支持 Linear/Nearest、Clamp/Repeat/Mirror；NativeHost/GPU executor 按源节点创建并应用 sampler，对生成及外部上传纹理均生效，默认值不补写。Framebuffer Input 提供 7 种 schema format、必填 1–8192 宽高、blank/0 auto 或正 u32 stride；Video Input 提供 File/Camera、自由 camera ID、Loop、0.1–4.0 有限 rate。Framebuffer/Video 明示仅保存配置，不加载 raw buffer、不枚举/打开文件或相机；source 切换不删除保留的 file path。三个组均克隆完整 NodeData、独立 Apply/Discard、每次有效提交一条 Content history、no-op 无 revision。
+- **节点表单验收通过**：Slint 47 tests、workspace 278 tests/45 suites、release build/格式检查通过；回归覆盖所有枚举、范围、u32 边界、invalid/busy 原子性、独立草稿、完整数据/资源字段、单步 Undo/Redo、Save/Open，并以真实 GPU 两像素采样验证 Nearest/Linear 与 Clamp/Repeat/Mirror。AppKit 1180×760 和 800×540 上，96×48 nearest/clamp 蓝色输出经 Repeat Apply 变红；Undo 恢复蓝色和 Clamp 控件，Redo 恢复红色/Repeat。Framebuffer width 0 被拒后提交 64×16/stride 256；Video rate 9 被拒后提交 Camera `camera-native-1`、Loop off、rate 2.5。窄窗口滚动、popup、checkbox、文本与 Apply 均实操；SDK Save/Open 保留三组设置、原 video file path 和两条 edge。未声称资源加载已实现。
+- **后续 Phase 4 切片**：只读 ONNX 状态及编辑器体验评估。当前不提供原生资源选择/加载、camera enumeration、CodeMirror 级高亮或行内 GPU 诊断，也未切换 Tauri 生产入口。
 
 ### 8.7 Phase 5：运行时功能补齐
 

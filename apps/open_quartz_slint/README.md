@@ -108,12 +108,15 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The shell does **not** yet include sampling/framebuffer/video forms,
-media/resource loading, model controls, or mobile gesture adaptation. Projects requiring
-external images, video, or inference resources may open and save, but those
-resources are not attached by this shell; resulting host failures are reported
-instead of replaced with sample output. Only host preview outputs supported by
-`NativeHost::preview_source` (currently RGBA8) can be imported.
+The shell includes Sampling, Framebuffer, and Video configuration forms, but it
+does **not** yet load media/resources, enumerate cameras, expose model controls,
+or adapt gestures for mobile. Sampling is executable: NativeHost applies each
+source node's Linear/Nearest filter and Clamp/Repeat/Mirror wrap to generated or
+externally uploaded textures. Framebuffer and Video forms persist configuration
+only; external raw buffers, files, cameras, and inference resources are not attached
+by this shell, and resulting host failures are reported instead of replaced with
+sample output. Only host preview outputs supported by `NativeHost::preview_source`
+(currently RGBA8) can be imported.
 
 ## Inspector and WGSL editing
 
@@ -122,7 +125,7 @@ instead of replaced with sample output. Only host preview outputs supported by
   uniform rows for Float/Int/Uint/Bool, Vec2–4/Ivec2–4/Uvec2–4, and Mat2–4 inputs.
   Connected rows are read-only because their upstream value wins. Samplers, Auto,
   boolean vectors, and other resource/object types are not uniform rows; the Ports
-  list still shows them. Constant and other node forms are unchanged.
+  list still shows them. Sampling and Input configuration forms are described below.
 - Edit the name and use **Apply name**. Shader/Constant nodes also expose
   **Auto size**, width and height (1–8192), and **Apply output size**. Auto size
   delegates resolution to the engine; applying it clears explicit dimensions.
@@ -130,15 +133,15 @@ instead of replaced with sample output. Only host preview outputs supported by
   **Apply shader** button. Built-in node implementations are not source-editable.
   There is no syntax highlighting, inline GPU linter, or debounced auto-apply.
 - All fields are session-local drafts until their respective Apply action. Name,
-  uniform/Port values, output size, and WGSL source are independent groups, so
-  applying one preserves drafts in every other group. Use **Discard inspector edits**
-  to restore all fields from the committed SDK node without creating a revision.
+  uniform values, Sampling, Framebuffer/Video configuration, output size, and WGSL
+  source are independent groups, so applying one preserves drafts in every other group.
+  Use **Discard inspector edits** to restore all fields without creating a revision.
 - While drafts differ from the project, graph mutations/selection/history and
   Open/Save are disabled and rejected by the controller. Apply or discard before
   switching nodes/projects. Project I/O disables Inspector edits and Apply too.
   Drafts are not saved automatically and are lost on application close.
-- Names, uniform/Port values, and output sizes use SDK `UpdateNodeData` with the
-  complete existing data; WGSL uses SDK `UpdateShaderCode` and its port remapping.
+- Names, uniform values, Sampling, Framebuffer/Video configuration, and output sizes
+  use SDK `UpdateNodeData` with complete existing data; WGSL uses SDK `UpdateShaderCode`.
   Uniform values require the exact scalar/vector/matrix component count and valid
   finite/ranged literals. Vector values are comma-separated; matrix values use WGSL
   column-major order. Invalid drafts remain local and disable Apply without changing
@@ -156,6 +159,16 @@ instead of replaced with sample output. Only host preview outputs supported by
   Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
   source/uniform/output-size edits and their history refresh the NativeHost graph.
   Committed fields and parse errors round-trip through SDK Save/Open.
+- Sampling is its own draft group on Shader/Constant and sampler2D Input nodes.
+  Filter supports Linear/Nearest; wrap supports Clamp/Repeat/Mirror. Apply rebuilds
+  the NativeHost graph and takes effect on the source sampler; Undo/Redo refreshes
+  both the form and output.
+- Framebuffer Inputs expose all schema formats, required 1–8192 width/height, and
+  optional positive-u32 stride (`blank` or `0` means auto). Video Inputs expose
+  File/Camera source, free-form camera ID, Loop, and finite 0.1–4.0 playback rate.
+  These forms explicitly say configuration-only because this shell does not load
+  raw buffers or open video/camera resources. Changing source does not erase a
+  preserved file path; all groups clone complete SDK `NodeData`.
 
 ## Validation scope
 
@@ -174,8 +187,8 @@ and Auto transitions, rejected connected-port changes, persisted parse errors an
 repair, plus typed uniform scalar/vector/matrix parsing, bounds/exact arity, connected
 exclusion, invalid-draft atomicity, schema refresh, missing-zero no-ops, complete-node-data
 preservation, independent drafts, single Content history, and SDK persistence.
-All **41 Slint tests** and **276 workspace tests / 45 suites** pass; the release
-build succeeds.
+All **47 Slint tests** and **278 workspace tests / 45 suites** pass; the release
+build and formatting checks succeed.
 
 The uniform slice was also exercised in the release AppKit window on Apple M4
 Pro/Metal at 1180×760 and an 800×540 client area. Invalid `NaN` showed a per-row
@@ -187,6 +200,15 @@ reached the fields and Apply; keyboard replacement and consecutive `0.7` then `5
 inputs produced `0.75` without losing focus/caret, and a pointer Apply succeeded.
 SDK Save/Open retained `gain = 0.75`, blue `tint`, untouched matrix/integer/connected
 values, and both connections. No readback was added to production presentation.
+
+Sampling/Framebuffer/Video forms were exercised in the release AppKit window at
+1180×760 and an 800×540 client area. NativeHost changed a 96×48 nearest/clamp sample
+from blue to red after Repeat Apply; Undo restored blue and the Clamp ComboBox,
+Redo restored red/Repeat. Framebuffer rejected width 0, then committed 64×16 with
+stride 256. Video rejected rate 9, then committed Camera `camera-native-1`, Loop off,
+and rate 2.5. Narrow-window scrolling, popups, checkbox, text fields and Apply were
+all operated. SDK Save/Open retained sampling, framebuffer, video, original video
+file path, and both graph edges. Resource loading was not claimed or synthesized.
 
 A temporary software-rendered smoke exercised real name/source text inputs,
 Command/Ctrl+A isolation, pointer Apply, draft protection during selection/history/

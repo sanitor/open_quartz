@@ -14,6 +14,7 @@ use slint::{ComponentHandle, Model};
 
 use crate::graph_clipboard::GraphClipboard;
 use crate::graph_view_model::GraphViewModel;
+use crate::inspector_forms::{FormKind, NodeFormsDraft};
 use crate::render_bridge::RenderBridge;
 use crate::services::file_service;
 use crate::AppWindow;
@@ -36,6 +37,7 @@ struct InspectorDraft {
     output_height: i32,
     validation_message: String,
     uniforms: Vec<UniformDraft>,
+    forms: NodeFormsDraft,
 }
 
 impl InspectorDraft {
@@ -55,6 +57,7 @@ impl InspectorDraft {
                 .unwrap_or_default()
                 .to_owned(),
             uniforms: uniform_drafts(node),
+            forms: NodeFormsDraft::from_data(&node.data),
         }
     }
 
@@ -79,6 +82,7 @@ enum InspectorChange {
     Shader,
     OutputSize,
     Uniforms,
+    Form(FormKind),
 }
 
 impl InspectorChange {
@@ -88,6 +92,9 @@ impl InspectorChange {
             Self::Shader => "Shader source applied through the SDK.",
             Self::OutputSize => "Output size applied through the SDK.",
             Self::Uniforms => "Uniform values applied through the SDK.",
+            Self::Form(FormKind::Sampling) => "Sampling applied through the SDK.",
+            Self::Form(FormKind::Framebuffer) => "Framebuffer configuration saved through the SDK; raw resource loading is not available.",
+            Self::Form(FormKind::Video) => "Video configuration saved through the SDK; video/camera opening is not available.",
         }
     }
 }
@@ -99,6 +106,7 @@ pub struct AppController {
     selected_node_ids: BTreeSet<String>,
     inspector_draft: Option<InspectorDraft>,
     inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
+    inspector_forms: Rc<slint::VecModel<crate::InspectorFormGroup>>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
@@ -154,6 +162,7 @@ impl AppController {
             inspector_uniforms: Rc::new(slint::VecModel::from(
                 Vec::<crate::InspectorUniform>::new(),
             )),
+            inspector_forms: Rc::new(slint::VecModel::default()),
             clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
@@ -166,6 +175,9 @@ impl AppController {
         }));
         window.set_inspector_uniforms(slint::ModelRc::from(
             controller.borrow().inspector_uniforms.clone(),
+        ));
+        window.set_inspector_forms(slint::ModelRc::from(
+            controller.borrow().inspector_forms.clone(),
         ));
         window.set_runtime_status(runtime_status.into());
         window.set_io_status(
@@ -241,6 +253,24 @@ impl AppController {
                 controller
                     .borrow_mut()
                     .apply_inspector(InspectorChange::Uniforms);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_form_draft_changed(move |key, value| {
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
+                    .change_form_draft(key.as_str(), value.as_str());
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_apply_form(move |key| {
+            if let (Some(controller), Some(kind)) =
+                (weak.upgrade(), FormKind::from_key(key.as_str()))
+            {
+                controller
+                    .borrow_mut()
+                    .apply_inspector(InspectorChange::Form(kind));
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -569,7 +599,7 @@ impl AppController {
 
     fn inspector_is_dirty(&self) -> bool {
         let (label, shader, output, uniform) = self.inspector_dirty_fields();
-        label || shader || output || uniform
+        label || shader || output || uniform || self.forms_dirty()
     }
 
     fn publish_inspector_dirty(&self) {
@@ -579,7 +609,7 @@ impl AppController {
             window.set_inspector_shader_dirty(shader);
             window.set_inspector_output_size_dirty(output);
             window.set_inspector_uniform_dirty(uniform);
-            window.set_inspector_dirty(label || shader || output || uniform);
+            window.set_inspector_dirty(label || shader || output || uniform || self.forms_dirty());
         }
     }
 
@@ -608,6 +638,7 @@ impl AppController {
                 .into(),
             );
             self.publish_uniforms();
+            self.publish_forms();
             self.publish_inspector_dirty();
             return;
         };
@@ -650,7 +681,99 @@ impl AppController {
                 .collect::<Vec<_>>(),
         )));
         self.publish_uniforms();
+        self.publish_forms();
         self.publish_inspector_dirty();
+    }
+
+    fn forms_dirty(&self) -> bool {
+        self.inspector_draft.as_ref().is_some_and(|draft| {
+            self.project
+                .graph()
+                .nodes()
+                .iter()
+                .find(|node| node.id == draft.node_id)
+                .is_some_and(|node| {
+                    [FormKind::Sampling, FormKind::Framebuffer, FormKind::Video]
+                        .into_iter()
+                        .any(|kind| draft.forms.dirty(&node.data, kind))
+                })
+        })
+    }
+
+    fn change_form_draft(&mut self, key: &str, value: &str) {
+        if self.busy {
+            return;
+        }
+        if let Some(draft) = self.inspector_draft.as_mut() {
+            if let Some(node) = self
+                .project
+                .graph()
+                .nodes()
+                .iter()
+                .find(|node| node.id == draft.node_id)
+            {
+                let mut next = draft.forms.clone();
+                if next
+                    .change(key, value)
+                    .is_some_and(|kind| kind.supports(&node.data))
+                {
+                    draft.forms = next;
+                }
+            }
+        }
+        self.publish_forms();
+        self.publish_inspector_dirty();
+    }
+
+    fn publish_forms(&self) {
+        let rows = self
+            .inspector_draft
+            .as_ref()
+            .and_then(|draft| {
+                self.project
+                    .graph()
+                    .nodes()
+                    .iter()
+                    .find(|node| node.id == draft.node_id)
+                    .map(|node| draft.forms.groups(&node.data))
+            })
+            .unwrap_or_default();
+        if rows.len() != self.inspector_forms.row_count()
+            || rows.iter().enumerate().any(|(i, row)| {
+                self.inspector_forms
+                    .row_data(i)
+                    .is_none_or(|old| old.key != row.key)
+            })
+        {
+            self.inspector_forms.set_vec(rows);
+            return;
+        }
+        for (index, mut row) in rows.into_iter().enumerate() {
+            let old = self.inspector_forms.row_data(index).expect("existing form");
+            if let Some(fields) = old
+                .fields
+                .as_any()
+                .downcast_ref::<slint::VecModel<crate::InspectorFormField>>()
+            {
+                let same_schema = fields.row_count() == row.fields.row_count()
+                    && (0..fields.row_count()).all(|i| {
+                        fields.row_data(i).map(|f| f.key) == row.fields.row_data(i).map(|f| f.key)
+                    });
+                if same_schema {
+                    for i in 0..fields.row_count() {
+                        let new = row.fields.row_data(i).expect("new field");
+                        let current = fields.row_data(i).expect("existing field");
+                        if new.value != current.value {
+                            fields.set_row_data(i, new);
+                        }
+                    }
+                    row.fields = old.fields.clone();
+                }
+            }
+            if row.fields != old.fields || row.dirty != old.dirty || row.error != old.error {
+                self.inspector_forms.set_row_data(index, row);
+            }
+        }
     }
 
     fn change_uniform_draft(&mut self, name: &str, literal: &str) {
@@ -751,6 +874,7 @@ impl AppController {
                         draft.output_height = fresh.output_height;
                     }
                     InspectorChange::Uniforms => draft.refresh_uniforms(node, false),
+                    InspectorChange::Form(kind) => draft.forms.restore_group(&node.data, kind),
                 }
                 if changed {
                     self.undo_edits
@@ -1256,6 +1380,21 @@ fn commit_inspector(
                 data,
             }
         }
+        InspectorChange::Form(kind) => {
+            let data = draft
+                .forms
+                .updated_data(&node.data, kind)
+                .map_err(|message| {
+                    SdkError::new(open_quartz_sdk::SdkErrorCode::InvalidGraph, message)
+                })?;
+            if data == node.data {
+                return Ok(false);
+            }
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(&node.id),
+                data,
+            }
+        }
     };
     project
         .apply_graph_command(command, project.graph_revision())
@@ -1723,6 +1862,135 @@ mod tests {
     };
 
     #[test]
+    fn node_forms_commit_independently_with_single_history_and_save_reload() {
+        use crate::inspector_forms::FormKind;
+        use open_quartz_sdk::{InputMode, TextureFilter};
+        for (kind, changes) in [
+            (FormKind::Sampling, vec![("filter", "1"), ("wrap", "2")]),
+            (
+                FormKind::Framebuffer,
+                vec![
+                    ("fb-format", "3"),
+                    ("fb-width", "32"),
+                    ("fb-height", "16"),
+                    ("fb-stride", "256"),
+                ],
+            ),
+            (
+                FormKind::Video,
+                vec![
+                    ("video-source", "1"),
+                    ("video-device", "camera-1"),
+                    ("video-loop", "false"),
+                    ("video-rate", "2.5"),
+                ],
+            ),
+        ] {
+            let mut project = uniform_project(&[]);
+            if kind != FormKind::Sampling {
+                let mut graph = project.graph_snapshot();
+                let node = &mut graph.nodes[0];
+                node.node_type = NodeType::Input;
+                node.data.node_type = NodeType::Input;
+                node.data.input_data_type = Some(DataType::Sampler2d);
+                node.data.input_mode = Some(if kind == FormKind::Video {
+                    InputMode::Video
+                } else {
+                    InputMode::Framebuffer
+                });
+                node.data.video_file_path = Some("/retained.mp4".into());
+                node.data.raw_data_url = Some("retained-data".into());
+                project
+                    .replace_graph(graph, project.graph_revision())
+                    .unwrap();
+            }
+            let mut controller = controller_for_uniforms(project);
+            let before = controller.project.graph_snapshot();
+            let revision = controller.project.graph_revision();
+            controller.inspector_draft.as_mut().unwrap().label = "unapplied name".into();
+            for (key, value) in changes {
+                controller.change_form_draft(key, value);
+            }
+            assert!(controller.inspector_is_dirty());
+            controller.apply_inspector(InspectorChange::Form(kind));
+            let after = controller.project.graph_snapshot();
+            assert_eq!(controller.project.graph_revision(), revision + 1);
+            assert_eq!(controller.undo_edits.len(), 1);
+            assert!(matches!(controller.undo_edits[0], super::EditKind::Content));
+            assert_eq!(
+                controller.inspector_draft.as_ref().unwrap().label,
+                "unapplied name"
+            );
+            assert_eq!(after.nodes[0].data.label, before.nodes[0].data.label);
+            assert_eq!(after.nodes[0].data.extra, before.nodes[0].data.extra);
+            assert_eq!(
+                after.nodes[0].data.raw_data_url,
+                before.nodes[0].data.raw_data_url
+            );
+            assert_eq!(
+                after.nodes[0].data.video_file_path,
+                before.nodes[0].data.video_file_path
+            );
+            match kind {
+                FormKind::Sampling => {
+                    assert_eq!(after.nodes[0].data.tex_filter, Some(TextureFilter::Nearest))
+                }
+                FormKind::Framebuffer => assert_eq!(
+                    (
+                        after.nodes[0].data.fb_width,
+                        after.nodes[0].data.fb_height,
+                        after.nodes[0].data.fb_stride
+                    ),
+                    (Some(32), Some(16), Some(256))
+                ),
+                FormKind::Video => assert_eq!(after.nodes[0].data.video_playback_rate, Some(2.5)),
+            }
+            controller.apply_inspector(InspectorChange::Form(kind));
+            assert_eq!(controller.project.graph_revision(), revision + 1);
+            let sdk = OpenQuartz::new(Environment::headless());
+            assert_eq!(
+                sdk.open_project_json(
+                    &serde_json::to_string(&controller.project.to_file()).unwrap()
+                )
+                .unwrap()
+                .graph_snapshot(),
+                after
+            );
+            let project = std::sync::Arc::make_mut(&mut controller.project);
+            project.rollback_graph(project.graph_revision()).unwrap();
+            assert_eq!(project.graph_snapshot(), before);
+            project.redo_graph(project.graph_revision()).unwrap();
+            assert_eq!(project.graph_snapshot(), after);
+        }
+    }
+
+    #[test]
+    fn invalid_form_and_busy_edits_preserve_project_and_drafts() {
+        let mut controller = controller_for_uniforms(uniform_project(&[]));
+        let before = controller.project.graph_snapshot();
+        let revision = controller.project.graph_revision();
+        controller.change_form_draft("filter", "99");
+        assert!(controller.edits_blocked());
+        controller.apply_inspector(InspectorChange::Form(
+            crate::inspector_forms::FormKind::Sampling,
+        ));
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert_eq!(controller.project.graph_revision(), revision);
+        assert!(controller.undo_edits.is_empty());
+        controller.busy = true;
+        controller.change_form_draft("filter", "1");
+        assert_eq!(
+            controller.inspector_draft.as_ref().unwrap().forms.filter,
+            "99"
+        );
+        controller.busy = false;
+        controller.change_form_draft("filter", "0");
+        assert!(!controller.inspector_is_dirty());
+        controller.change_form_draft("video-rate", "2");
+        assert!(!controller.inspector_is_dirty());
+    }
+
+    #[test]
     fn uniform_draft_survives_label_and_output_apply_then_undo_redo() {
         let project = uniform_project(&[("gain", DataType::Float)]);
         let mut controller = controller_for_uniforms(project);
@@ -1836,6 +2104,7 @@ mod tests {
             inspector_uniforms: std::rc::Rc::new(slint::VecModel::from(Vec::<
                 crate::InspectorUniform,
             >::new())),
+            inspector_forms: std::rc::Rc::new(slint::VecModel::default()),
             clipboard: None,
             graph_stress_count: None,
             selected_edge_id: None,

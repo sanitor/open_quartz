@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::engine::{ExecutionCommand, ExecutionPlan, FrameResult, NodeExecutionPlan};
 use crate::wgsl::compiler::BindingDescriptor;
-use open_quartz_schema::{SdkError, SdkErrorCode};
+use open_quartz_schema::{Graph, SdkError, SdkErrorCode, TextureFilter, TextureWrap};
 
 use super::{GpuBackend, RenderTarget, TextureFormat, TextureHandle};
 
@@ -95,6 +95,7 @@ pub struct GpuExecutor {
     nodes: HashMap<String, NodeGpuResources>,
     renderer_sources: HashMap<String, String>,
     textures: HashMap<String, TextureHandle>,
+    sampling: HashMap<String, (TextureFilter, TextureWrap, Arc<wgpu::Sampler>)>,
 }
 
 impl GpuExecutor {
@@ -104,11 +105,67 @@ impl GpuExecutor {
             nodes: HashMap::new(),
             renderer_sources: HashMap::new(),
             textures: HashMap::new(),
+            sampling: HashMap::new(),
         }
     }
 
     pub fn backend(&self) -> &Arc<GpuBackend> {
         &self.backend
+    }
+
+    /// Apply output sampling policy from source nodes, including externally uploaded textures.
+    pub fn sync_sampling(&mut self, graph: &Graph) {
+        self.sampling.retain(|id, _| {
+            graph.nodes.iter().any(|node| {
+                node.id == *id && (node.data.tex_filter.is_some() || node.data.tex_wrap.is_some())
+            })
+        });
+        for node in &graph.nodes {
+            if node.data.tex_filter.is_none() && node.data.tex_wrap.is_none() {
+                continue;
+            }
+            let filter = node.data.tex_filter.unwrap_or(TextureFilter::Linear);
+            let wrap = node.data.tex_wrap.unwrap_or(TextureWrap::Clamp);
+            if self
+                .sampling
+                .get(&node.id)
+                .is_some_and(|(old_filter, old_wrap, _)| *old_filter == filter && *old_wrap == wrap)
+            {
+                continue;
+            }
+            let sampler = self
+                .sampling
+                .values()
+                .find(|(f, w, _)| *f == filter && *w == wrap)
+                .map(|(_, _, sampler)| sampler.clone())
+                .unwrap_or_else(|| {
+                    let address_mode = match wrap {
+                        TextureWrap::Clamp => wgpu::AddressMode::ClampToEdge,
+                        TextureWrap::Repeat => wgpu::AddressMode::Repeat,
+                        TextureWrap::Mirror => wgpu::AddressMode::MirrorRepeat,
+                    };
+                    let filter_mode = match filter {
+                        TextureFilter::Linear => wgpu::FilterMode::Linear,
+                        TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+                    };
+                    Arc::new(
+                        self.backend
+                            .device
+                            .create_sampler(&wgpu::SamplerDescriptor {
+                                label: Some("open-quartz-source-sampling"),
+                                address_mode_u: address_mode,
+                                address_mode_v: address_mode,
+                                address_mode_w: address_mode,
+                                mag_filter: filter_mode,
+                                min_filter: filter_mode,
+                                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                                ..Default::default()
+                            }),
+                    )
+                });
+            self.sampling
+                .insert(node.id.clone(), (filter, wrap, sampler));
+        }
     }
 
     pub fn upload_rgba(
@@ -206,7 +263,11 @@ impl GpuExecutor {
             return Some(GpuOutput {
                 texture: target.texture.as_ref(),
                 view: target.view.as_ref(),
-                sampler: resources.sampler.as_ref(),
+                sampler: self
+                    .sampling
+                    .get(resolved)
+                    .map(|(_, _, sampler)| sampler.as_ref())
+                    .unwrap_or(resources.sampler.as_ref()),
                 width: target.width,
                 height: target.height,
                 format: target.format,
@@ -215,7 +276,11 @@ impl GpuExecutor {
         self.textures.get(resolved).map(|texture| GpuOutput {
             texture: texture.texture.as_ref(),
             view: texture.view.as_ref(),
-            sampler: texture.sampler.as_ref(),
+            sampler: self
+                .sampling
+                .get(resolved)
+                .map(|(_, _, sampler)| sampler.as_ref())
+                .unwrap_or(texture.sampler.as_ref()),
             width: texture.width,
             height: texture.height,
             format: texture.format,
@@ -233,7 +298,12 @@ impl GpuExecutor {
             return Some(GpuOutputHandle {
                 texture: target.texture.clone(),
                 view: target.view.clone(),
-                sampler: resources.sampler.clone(),
+                sampler: self
+                    .sampling
+                    .get(resolved)
+                    .map(|(_, _, sampler)| sampler)
+                    .unwrap_or(&resources.sampler)
+                    .clone(),
                 width: target.width,
                 height: target.height,
                 format: target.format,
@@ -242,7 +312,12 @@ impl GpuExecutor {
         self.textures.get(resolved).map(|texture| GpuOutputHandle {
             texture: texture.texture.clone(),
             view: texture.view.clone(),
-            sampler: texture.sampler.clone(),
+            sampler: self
+                .sampling
+                .get(resolved)
+                .map(|(_, _, sampler)| sampler)
+                .unwrap_or(&texture.sampler)
+                .clone(),
             width: texture.width,
             height: texture.height,
             format: texture.format,
@@ -390,11 +465,25 @@ impl GpuExecutor {
             .map(String::as_str)
             .unwrap_or(node_id);
         if let Some(resources) = self.nodes.get(resolved) {
-            return Some((resources.output().view.clone(), resources.sampler.clone()));
+            return Some((
+                resources.output().view.clone(),
+                self.sampling
+                    .get(resolved)
+                    .map(|(_, _, sampler)| sampler)
+                    .unwrap_or(&resources.sampler)
+                    .clone(),
+            ));
         }
-        self.textures
-            .get(resolved)
-            .map(|texture| (texture.view.clone(), texture.sampler.clone()))
+        self.textures.get(resolved).map(|texture| {
+            (
+                texture.view.clone(),
+                self.sampling
+                    .get(resolved)
+                    .map(|(_, _, sampler)| sampler)
+                    .unwrap_or(&texture.sampler)
+                    .clone(),
+            )
+        })
     }
 
     fn create_node_resources(

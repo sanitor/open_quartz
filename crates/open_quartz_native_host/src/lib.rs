@@ -379,6 +379,7 @@ impl NativeHost {
                     .collect::<std::collections::HashSet<_>>(),
             )
         };
+        self.executor.sync_sampling(&graph);
         self.output_node_id = output_node_id;
         self.videos.retain(|node_id, _| node_ids.contains(node_id));
         self.onnx_resources
