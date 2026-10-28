@@ -177,13 +177,20 @@ showed real red shared-texture output. This run also fixed renderer image prefer
 height starving the Inspector: both panels now use explicit preferred heights,
 with a 120px renderer minimum, so imported textures do not determine their split.
 
-Full native acceptance remains pending for pointer/keyboard editing and scrolling
-at 800×540. The automation provider rejected coordinate clicks as unfocused even
-while AppKit reported the app frontmost with a focused AX window; scroll/drag had
-no observable effect. Permissions were granted and the session was unlocked.
-AX source editing was exercised in an expanded window, not by claiming that the
-offscreen editor was reachable in the narrow window. The Phase 2/3 results below
-predate this Inspector slice.
+The remaining native pointer/keyboard and narrow-window checks also passed at an
+800×540 client area (800×572 including the AppKit title bar). Direct macOS HID
+mouse events selected Shader/Renderer nodes, focused text controls, clicked Apply
+and Discard, and scrolled the Inspector both ways to reach the WGSL editor.
+Command+A and keyboard text input replaced the name draft and then the WGSL
+source without triggering graph Select all. Applying a blue shader with a real
+pointer click changed the shared Metal output from red to blue at 641×360, while
+the independent name draft continued to guard graph/file actions. Discard removed
+that name draft without reverting the committed blue source; switching away and
+back confirmed it. Screenshots confirmed the visible source and fixed-bottom
+Apply alongside the blue output. The earlier automation focus blocker was bypassed
+with direct HID events and correctly targeted scroll coordinates; no production
+input workaround was added. Native acceptance for this first Inspector/editor
+slice is complete. The Phase 2/3 results below predate this Inspector slice.
 
 An ephemeral software-rendered Slint smoke exercised actual pointer events for
 connection selection/deletion, port connection, reconnection, type rejection,

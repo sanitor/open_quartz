@@ -1,6 +1,6 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3 已完成 macOS 原生验收；Phase 4 首切片已通过离屏交互、Metal 像素及原生 AX 编辑/Apply/历史/持久化验证，原生指针/键盘与窄窗口滚动验收仍受自动化工具阻塞；尚未切换默认入口
+> 状态：Phase 2/3 及 Phase 4 首切片（Inspector、名称/输出尺寸、WGSL Apply）已完成 macOS 原生验收；离屏交互、Metal 像素、原生 AX/指针/键盘、800×540 滚动可达性均已验证；尚未切换默认入口
 >
 > 基线：v0.20.0b（2026-10-25）
 >
@@ -742,8 +742,8 @@ Spike 范围：
 - **草稿与错误语义**：各字段组独立 Apply，不覆盖其他组草稿；Discard 恢复提交值。草稿未提交时禁用并拒绝 graph 选择/编辑/历史及 Open/Save，I/O busy 禁用 Inspector。SDK 拒绝连线失效的端口变更时保留项目/revision/history/草稿；可提交的语法错误保留 `parseError` 并展示，源码修复后清除。GPU 编译错误仍由 NativeHost runtime status 显示。
 - **历史与渲染**：每次有变化的 Apply 仅一条 SDK history，no-op 不增加 revision；名称不重启 Renderer，源码/尺寸及其 Undo/Redo 更新 NativeHost。提交值与解析错误随 SDK Save/Open 往返，草稿不自动持久化。
 - **已验证**：Slint app 32 tests 通过；临时离屏真实控件 smoke 覆盖文本输入、Apply、选择/多选、草稿保护、Undo/Redo、busy guard、异步 Save/Open、解析错误/修复，检查 1180×760 和 800×540 截图。经同一控制器修改尺寸和源码后，Apple M4 Pro/Metal NativeHost 输出 96×48 共享纹理，单像素读回红色 RGBA `[255,0,0,255]`。临时 smoke 已移除，生产显示仍无 readback。
-- **原生窗口部分通过**：解锁后以 AppKit/AX 实测名称 Apply、WGSL Apply、源码 Undo/Redo、连接端口移除拒绝并保留草稿、Discard、宽度步进至 641×360、SDK Save/Open；JSON 保留名称/源码/尺寸/端口 ID/连线，截图显示真实红色共享纹理。修复输出图片 preferred height 挤压 Inspector：两面板显式分配 preferred height，Renderer 最小高度 120px。
-- **原生验收剩余限制**：800×540 下的指针/键盘编辑与滚动尚未通过。工具坐标点击报无焦点，但 AppKit/AX 报前台及 focused window；滚动/拖动无可观察效果，权限已授予且会话未锁。源码 AX 编辑在扩大窗口后完成，不以此替代窄窗口可达性验收。
+- **原生窗口通过**：以 AppKit/AX 实测名称 Apply、WGSL Apply、源码 Undo/Redo、连接端口移除拒绝并保留草稿、Discard、宽度步进至 641×360、SDK Save/Open；JSON 保留名称/源码/尺寸/端口 ID/连线，截图显示真实红色共享纹理。修复输出图片 preferred height 挤压 Inspector：两面板显式分配 preferred height，Renderer 最小高度 120px。
+- **窄窗口与真实输入通过**：800×540 客户区（含 AppKit 标题栏为 800×572）内，用 macOS HID 指针选择 Shader/Renderer、聚焦文本、点击 Apply/Discard，滚轮双向滚动至 WGSL。Command+A 与键盘输入替换名称草稿及源码，不触发 graph 全选；指针 Apply 蓝色源码后，641×360 真实 Metal 输出由红变蓝，独立名称草稿仍保护 graph/file 操作。Discard 名称草稿后切换节点返回，已提交蓝色源码保留。截图确认源码可见、固定底部 Apply 及蓝色输出。此前工具焦点阻塞通过直接 HID 与正确滚动坐标绕过，未向生产代码加入输入绕过逻辑；本首切片原生验收完成。
 - **后续 Phase 4 切片**：uniform/Port 编辑、Sampling/Framebuffer/Video 表单、只读 ONNX 状态及编辑器体验评估。当前不提供 CodeMirror 级高亮/行内 GPU 诊断，也未切换 Tauri 生产入口。
 
 ### 8.7 Phase 5：运行时功能补齐
