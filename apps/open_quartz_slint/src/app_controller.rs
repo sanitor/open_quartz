@@ -32,6 +32,7 @@ struct InspectorDraft {
     node_id: String,
     label: String,
     shader_code: String,
+    shader_find_query: String,
     auto_size: bool,
     output_width: i32,
     output_height: i32,
@@ -46,6 +47,7 @@ impl InspectorDraft {
             node_id: node.id.clone(),
             label: node.data.label.clone(),
             shader_code: node.data.shader_code.clone(),
+            shader_find_query: String::new(),
             auto_size: node.data.auto_size != Some(false),
             output_width: node.data.width.unwrap_or(512).clamp(1, 8192) as i32,
             output_height: node.data.height.unwrap_or(512).clamp(1, 8192) as i32,
@@ -144,26 +146,17 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
             onnx_params: None,
         });
     }
-    options.push(NodeFactoryOption {
-        label: "Shader · Brightness sample".into(),
+    options.extend(crate::shader_catalog::presets().iter().map(|preset| NodeFactoryOption {
+        label: format!("Shader · {}", preset.label),
         request: NodeFactoryRequest::Shader {
             position: None,
-            code: default_shader_code(),
-            label: "Custom Shader".into(),
-            template_name: None,
-            shader_template_id: None,
+            code: preset.code.to_owned(),
+            label: preset.label.to_owned(),
+            template_name: Some(preset.template_name.to_owned()),
+            shader_template_id: preset.shader_template_id.map(str::to_owned),
         },
         onnx_params: None,
-    });
-    options.push(NodeFactoryOption {
-        label: "Shader · Two-image blend sample".into(),
-        request: NodeFactoryRequest::Shader {
-            position: None,
-            code: "@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n@group(0) @binding(4) var<uniform> mixFactor: f32;\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n    return mix(textureSample(inputA, inputASampler, v_uv), textureSample(inputB, inputBSampler, v_uv), mixFactor);\n}".into(),
-            label: "Custom 2-in-1".into(), template_name: None, shader_template_id: None,
-        },
-        onnx_params: None,
-    });
+    }));
     for (label, input_mode) in [
         ("Image", open_quartz_sdk::InputMode::Image),
         ("Framebuffer", open_quartz_sdk::InputMode::Framebuffer),
@@ -249,20 +242,6 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
     options
 }
 
-fn default_shader_code() -> String {
-    [
-        "@group(0) @binding(0) var inputImage: texture_2d<f32>;",
-        "@group(0) @binding(1) var inputImageSampler: sampler;",
-        "@group(0) @binding(2) var<uniform> intensity: f32;",
-        "",
-        "@fragment",
-        "fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {",
-        "  let color = textureSample(inputImage, inputImageSampler, v_uv);",
-        "  return vec4f(color.rgb * intensity, color.a);",
-        "}",
-    ]
-    .join("\n")
-}
 
 pub struct AppController {
     window: slint::Weak<AppWindow>,
@@ -275,6 +254,8 @@ pub struct AppController {
     inspector_forms: Rc<slint::VecModel<crate::InspectorFormGroup>>,
     graph_nodes: Rc<slint::VecModel<crate::GraphNode>>,
     graph_edges: Rc<slint::VecModel<crate::GraphEdge>>,
+    node_previews: BTreeMap<String, slint::Image>,
+    node_errors: BTreeMap<String, String>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
     selected_edge_id: Option<String>,
@@ -324,6 +305,20 @@ enum EditKind {
     Content,
 }
 
+fn node_has_texture_preview(node: &open_quartz_sdk::ProjectNode) -> bool {
+    matches!(node.node_type, NodeType::Shader | NodeType::Renderer)
+        || (node.node_type == NodeType::Input
+            && matches!(
+                node.data.input_mode,
+                Some(InputMode::Image | InputMode::Video | InputMode::Framebuffer)
+            ))
+        || node
+            .data
+            .outputs
+            .iter()
+            .any(|port| port.data_type == DataType::Sampler2d)
+}
+
 impl AppController {
     pub fn new(
         window: &AppWindow,
@@ -353,6 +348,8 @@ impl AppController {
             inspector_forms: Rc::new(slint::VecModel::default()),
             graph_nodes: Rc::new(slint::VecModel::default()),
             graph_edges: Rc::new(slint::VecModel::default()),
+            node_previews: BTreeMap::new(),
+            node_errors: BTreeMap::new(),
             image_assets: BTreeMap::new(),
             framebuffer_assets: BTreeMap::new(),
             pending_resources: BTreeMap::new(),
@@ -386,32 +383,201 @@ impl AppController {
         window.set_inspector_image_input(false);
         window.set_inspector_framebuffer_input(false);
         window.set_runtime_status(runtime_status.into());
-        window.set_io_status(
-            "Enter an explicit project path to Open or Save. Save overwrites that path.".into(),
-        );
+        window.set_io_status("Ready".into());
         let node_factories = node_factory_options();
-        window.set_node_factory_options(slint::ModelRc::from(Rc::new(slint::VecModel::from(
-            node_factories
+        let math_catalog = open_quartz_execution::catalog::math_ops();
+        let onnx_catalog = open_quartz_execution::catalog::onnx_models();
+        let mut menu_groups = Vec::<crate::FactoryGroup>::new();
+        for (index, option) in node_factories.iter().enumerate() {
+            let (section, category, label) = match &option.request {
+                NodeFactoryRequest::Renderer { .. } => {
+                    window.set_renderer_factory_index(index as i32);
+                    continue;
+                }
+                NodeFactoryRequest::Constant { .. } => (
+                    "SOURCE",
+                    "CONSTANTS".to_owned(),
+                    "Vector / Color".to_owned(),
+                ),
+                NodeFactoryRequest::Input {
+                    input_mode: Some(_),
+                    ..
+                } => (
+                    "SOURCE",
+                    "EXTERNAL".to_owned(),
+                    option
+                        .label
+                        .split(" · ")
+                        .last()
+                        .unwrap_or(&option.label)
+                        .to_owned(),
+                ),
+                NodeFactoryRequest::Input { .. } => (
+                    "SOURCE",
+                    "CONSTANTS".to_owned(),
+                    option
+                        .label
+                        .split(" · ")
+                        .last()
+                        .unwrap_or(&option.label)
+                        .to_owned(),
+                ),
+                NodeFactoryRequest::System { .. } => (
+                    "SOURCE",
+                    "SYSTEM".to_owned(),
+                    option
+                        .label
+                        .split(" · ")
+                        .last()
+                        .unwrap_or(&option.label)
+                        .to_owned(),
+                ),
+                NodeFactoryRequest::Math { op, .. } => {
+                    let category = math_catalog
+                        .iter()
+                        .find(|item| item.id == *op)
+                        .map(|item| item.category.as_str())
+                        .unwrap_or_default();
+                    (
+                        "MATH",
+                        category.to_uppercase(),
+                        option
+                            .label
+                            .split(" · ")
+                            .last()
+                            .unwrap_or(&option.label)
+                            .to_owned(),
+                    )
+                }
+                NodeFactoryRequest::Shader { label, .. } => {
+                    ("SHADER", crate::shader_catalog::find(label).expect("shader factory preset").category.to_owned(), label.clone())
+                }
+                NodeFactoryRequest::Onnx { catalog_id, .. } => {
+                    let category = onnx_catalog
+                        .iter()
+                        .find(|model| Some(&model.id) == catalog_id.as_ref())
+                        .map(|model| model.category.as_str())
+                        .unwrap_or_default();
+                    (
+                        "ONNX",
+                        category.to_uppercase(),
+                        option
+                            .label
+                            .split(" · ")
+                            .last()
+                            .unwrap_or(&option.label)
+                            .to_owned(),
+                    )
+                }
+                NodeFactoryRequest::CustomOnnx { .. } => {
+                    ("ONNX", "CUSTOM".to_owned(), "Custom model".to_owned())
+                }
+            };
+            let group_index = menu_groups
                 .iter()
-                .map(|option| slint::SharedString::from(option.label.as_str()))
-                .collect::<Vec<_>>(),
-        ))));
+                .position(|group| group.section == section && group.label == category)
+                .unwrap_or_else(|| {
+                    menu_groups.push(crate::FactoryGroup {
+                        label: category.as_str().into(),
+                        section: section.into(),
+                        items: Default::default(),
+                    });
+                    menu_groups.len() - 1
+                });
+            let group = &mut menu_groups[group_index];
+            let mut entries = group.items.iter().collect::<Vec<_>>();
+            entries.push(crate::FactoryEntry {
+                label: label.to_uppercase().into(),
+                index: index as i32,
+            });
+            group.items = slint::ModelRc::new(slint::VecModel::from(entries));
+        }
+        window.set_factory_groups(slint::ModelRc::new(slint::VecModel::from(menu_groups)));
         controller.borrow_mut().publish_project();
 
         let weak = Rc::downgrade(&controller);
-        window.on_open_project(move |path| {
+        window.on_project_action(move |action| {
             if let Some(controller) = weak.upgrade() {
-                controller
-                    .borrow_mut()
-                    .open_path(PathBuf::from(path.as_str()));
+                match action.as_str() {
+                    "open" => Self::with_file_dialog(
+                        &controller,
+                        rfd::FileDialog::new().add_filter("OpenQuartz project", &["json"]),
+                        false,
+                        |this, path| this.open_path(path),
+                    ),
+                    "save" | "save-as" => {
+                        let window = controller.borrow().window.upgrade();
+                        let path = window
+                            .as_ref()
+                            .map(|window| window.get_project_path().to_string())
+                            .unwrap_or_default();
+                        if action == "save" && !path.is_empty() {
+                            controller.borrow_mut().save_path(PathBuf::from(path));
+                        } else {
+                            Self::with_file_dialog(
+                                &controller,
+                                rfd::FileDialog::new()
+                                    .add_filter("OpenQuartz project", &["json"])
+                                    .set_file_name("Untitled.quartz.json"),
+                                true,
+                                |this, path| {
+                                    if let Some(window) = this.window.upgrade() {
+                                        window.set_project_path(
+                                            path.to_string_lossy().as_ref().into(),
+                                        );
+                                    }
+                                    this.save_path(path);
+                                },
+                            );
+                        }
+                    }
+                    "clear" => {
+                        let mut this = controller.borrow_mut();
+                        if this.edits_blocked() {
+                            return;
+                        }
+                        this.selected_node_ids = this
+                            .project
+                            .graph()
+                            .nodes()
+                            .iter()
+                            .map(|node| node.id.clone())
+                            .collect();
+                        this.remove_selected_nodes();
+                    }
+                    "new" => {
+                        let mut this = controller.borrow_mut();
+                        if this.edits_blocked() {
+                            return;
+                        }
+                        this.project = Arc::new(
+                            OpenQuartz::new(Environment::headless()).create_project("Untitled"),
+                        );
+                        this.selected_node_ids.clear();
+                        this.selected_edge_id = None;
+                        this.pending_connection = None;
+                        this.inspector_draft = None;
+                        this.undo_edits.clear();
+                        this.redo_edits.clear();
+                        this.selected_renderer_id = None;
+                        if let Some(window) = this.window.upgrade() {
+                            window.set_project_path("".into());
+                            window.invoke_reset_graph_view();
+                        }
+                        this.publish_project();
+                    }
+                    _ => {}
+                }
             }
         });
         let weak = Rc::downgrade(&controller);
-        window.on_save_project(move |path| {
+        window.on_rename_project(move |name| {
             if let Some(controller) = weak.upgrade() {
-                controller
-                    .borrow_mut()
-                    .save_path(PathBuf::from(path.as_str()));
+                let mut this = controller.borrow_mut();
+                if !this.edits_blocked() && !name.trim().is_empty() {
+                    Arc::make_mut(&mut this.project).set_name(name.trim());
+                    this.publish_graph_projection();
+                }
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -430,13 +596,18 @@ impl AppController {
         window.on_inspector_shader_draft_changed(move |text| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
-                if !controller.busy {
+                if !controller.busy && controller.window.upgrade().is_some_and(|window| !window.get_inspector_shader_read_only()) {
                     if let Some(draft) = controller.inspector_draft.as_mut() {
                         draft.shader_code = text.to_string();
                     }
+                    controller.publish_shader_editor_metadata();
                     controller.publish_inspector_dirty();
                 }
             }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_shader_find_requested(move |query| {
+            if let Some(controller) = weak.upgrade() { controller.borrow_mut().publish_shader_find_offsets(query.as_str()); }
         });
         let weak = Rc::downgrade(&controller);
         window.on_inspector_output_size_draft_changed(move |width, height, auto_size| {
@@ -527,6 +698,21 @@ impl AppController {
                 controller
                     .borrow_mut()
                     .select_node(node_id.as_str(), additive);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_toggle_preview(move |node_id| {
+            if let Some(controller) = weak.upgrade() {
+                let mut this = controller.borrow_mut();
+                if this.edits_blocked() { return; }
+                let Some(mut data) = this.project.graph().nodes().iter().find(|node| node.id == node_id.as_str()).map(|node| node.data.clone()) else { return; };
+                let expanded = data.extra.get("expanded").and_then(serde_json::Value::as_bool).unwrap_or(true);
+                data.extra.insert("expanded".into(), (!expanded).into());
+                let revision = this.project.graph_revision();
+                match Arc::make_mut(&mut this.project).apply_graph_command(GraphCommand::UpdateNodeData { node_id: NodeId::new(node_id.as_str()), data }, revision) {
+                    Ok(_) => { this.undo_edits.push(EditKind::Layout); this.redo_edits.clear(); this.publish_graph_projection(); }
+                    Err(error) => this.set_edit_status(&error.to_json()),
+                }
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -933,7 +1119,7 @@ impl AppController {
         window.set_renderer_options(slint::ModelRc::new(slint::VecModel::from(
             candidates
                 .iter()
-                .map(|node| slint::SharedString::from(format!("{} · {}", node.data.label, node.id)))
+                .map(|node| slint::SharedString::from(node.data.label.as_str()))
                 .collect::<Vec<_>>(),
         )));
         window.set_renderer_index(
@@ -948,11 +1134,22 @@ impl AppController {
         window.set_screen_saver_available(
             cfg!(target_os = "windows") && self.graph_stress_count.is_none(),
         );
-        let selection_changed = self.selected_renderer_id != selected;
         self.selected_renderer_id = selected;
-        if selection_changed {
-            self.publish_preview_selection();
-        }
+        let preview = self
+            .selected_node_ids
+            .iter()
+            .next()
+            .filter(|_| self.selected_node_ids.len() == 1)
+            .and_then(|id| {
+                self.project
+                    .graph()
+                    .nodes()
+                    .iter()
+                    .find(|node| &node.id == id)
+            })
+            .is_some_and(node_has_texture_preview);
+        window.set_inspector_has_preview(preview);
+        self.publish_preview_selection();
     }
 
     fn select_renderer(&mut self, index: i32) {
@@ -976,7 +1173,22 @@ impl AppController {
 
     fn publish_preview_selection(&self) {
         if let Some(renderer) = &self.renderer {
-            if let Err(error) = renderer.select_preview(self.selected_renderer_id.clone()) {
+            let preview = self
+                .selected_node_ids
+                .iter()
+                .next()
+                .filter(|_| self.selected_node_ids.len() == 1)
+                .and_then(|id| {
+                    self.project
+                        .graph()
+                        .nodes()
+                        .iter()
+                        .find(|node| &node.id == id)
+                })
+                .filter(|node| node_has_texture_preview(node))
+                .map(|node| node.id.clone())
+                .or_else(|| self.selected_renderer_id.clone());
+            if let Err(error) = renderer.select_preview(preview) {
                 if let Some(window) = self.window.upgrade() {
                     window.set_runtime_status(error.into());
                 }
@@ -1098,7 +1310,19 @@ impl AppController {
             return;
         };
         match renderer.set_playback(action) {
-            Ok(()) => self.set_edit_status(&format!("Playback: {action}")),
+            Ok(()) => {
+                if let Some(window) = self.window.upgrade() {
+                    window.set_playback_state(
+                        match action {
+                            "play" => "playing",
+                            "pause" => "paused",
+                            _ => "stopped",
+                        }
+                        .into(),
+                    );
+                }
+                self.set_edit_status(&format!("Playback: {action}"));
+            }
             Err(error) => self.set_edit_status(&error),
         }
     }
@@ -1501,6 +1725,8 @@ impl AppController {
     }
 
     fn publish_project(&mut self) {
+        self.node_previews.clear();
+        self.node_errors.clear();
         if self.graph_stress_count.is_none() {
             self.sync_project_resources();
         }
@@ -1586,6 +1812,21 @@ impl AppController {
         self.graph_nodes.set_vec(
             (0..projection.nodes.row_count())
                 .filter_map(|index| projection.nodes.row_data(index))
+                .map(|mut node| {
+                    if let Some(image) = self.node_previews.get(node.node_id.as_str()) {
+                        node.preview = image.clone();
+                        node.has_preview = true;
+                        let size = image.size();
+                        node.resolution = format!("{}×{}", size.width, size.height).into();
+                    }
+                    if let Some(state) = self.onnx_states.get(node.node_id.as_str()) {
+                        node.status = if state.failed { "error" } else if state.attached { "ready" } else { "not-ready" }.into();
+                    }
+                    if self.node_errors.contains_key(node.node_id.as_str()) {
+                        node.status = "error".into();
+                    }
+                    node
+                })
                 .collect::<Vec<crate::GraphNode>>(),
         );
         self.graph_edges.set_vec(
@@ -1593,7 +1834,6 @@ impl AppController {
                 .filter_map(|index| projection.edges.row_data(index))
                 .collect::<Vec<crate::GraphEdge>>(),
         );
-        window.set_graph_summary(projection.summary.into());
         window.set_graph_content_width(projection.content_width);
         window.set_graph_content_height(projection.content_height);
         window.set_graph_origin_x(projection.origin_x);
@@ -1603,9 +1843,29 @@ impl AppController {
         self.publish_desktop_controls();
         Some(stats)
     }
+    fn publish_shader_editor_metadata(&self) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let Some(draft) = self.inspector_draft.as_ref() else { return; };
+        let metadata = crate::code_editor::metadata(&draft.shader_code, &draft.shader_find_query);
+        window.set_inspector_shader_line_numbers(slint::ModelRc::new(slint::VecModel::from(metadata.line_numbers.into_iter().map(Into::into).collect::<Vec<slint::SharedString>>())));
+        window.set_inspector_shader_line_offsets(slint::ModelRc::new(slint::VecModel::from(metadata.line_offsets)));
+        window.set_inspector_shader_find_offsets(slint::ModelRc::new(slint::VecModel::from(metadata.find_offsets)));
+        window.set_inspector_shader_find_lengths(slint::ModelRc::new(slint::VecModel::from(metadata.find_lengths)));
+    }
+
+    fn publish_shader_find_offsets(&mut self, query: &str) {
+        if let Some(draft) = self.inspector_draft.as_mut() { draft.shader_find_query = query.to_owned(); }
+        self.publish_shader_editor_metadata();
+    }
 
     fn select_node(&mut self, node_id: &str, additive: bool) {
         if self.edits_blocked() {
+            return;
+        }
+        if node_id.is_empty() {
+            self.selected_node_ids.clear();
+            self.selected_edge_id = None;
+            self.publish_graph_projection();
             return;
         }
         if self
@@ -1840,10 +2100,13 @@ impl AppController {
                 .into(),
         );
         window.set_inspector_is_shader(node.node_type == NodeType::Shader);
+        window.set_inspector_shader_read_only(node.data.shader_template_id.is_some());
         window.set_inspector_supports_output_size(matches!(
             node.node_type,
             NodeType::Shader | NodeType::Constant
         ));
+        self.publish_shader_editor_metadata();
+        window.set_inspector_shader_find_query(draft.shader_find_query.as_str().into());
         window.set_inspector_node_label(draft.label.as_str().into());
         window.set_inspector_shader_code(draft.shader_code.as_str().into());
         window.set_inspector_auto_size(draft.auto_size);
@@ -1877,6 +2140,14 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        for index in 0..self.graph_nodes.row_count() {
+            if let Some(mut node) = self.graph_nodes.row_data(index) {
+                if let Some(state) = self.onnx_states.get(node.node_id.as_str()) {
+                    node.status = if state.failed || self.node_errors.contains_key(node.node_id.as_str()) { "error" } else if state.attached { "ready" } else { "not-ready" }.into();
+                    self.graph_nodes.set_row_data(index, node);
+                }
+            }
+        }
         let id = window.get_inspector_node_id();
         let state = self.onnx_states.get(id.as_str());
         window.set_inspector_onnx_available(
@@ -2691,12 +2962,40 @@ impl AppController {
         }
         let update = self.renderer.as_ref().and_then(RenderBridge::take_update);
         if let Some(update) = update {
+            if let Some(error) = update.node_error {
+                if let Some(node_id) = error.node_id {
+                    self.node_errors.insert(node_id, error.message);
+                }
+            }
             if let Some(states) = update.onnx {
                 self.onnx_states = states;
                 self.publish_onnx_runtime();
             }
             if let Some(status) = update.status {
                 window.set_runtime_status(status.into());
+            }
+            if let Some(previews) = update.previews {
+                self.node_previews.clear();
+                for (id, texture) in previews {
+                    match slint::Image::try_from(texture) {
+                        Ok(image) => { self.node_previews.insert(id, image); }
+                        Err(error) => window.set_runtime_status(format!("Node preview import failed: {error:?}").into()),
+                    }
+                }
+                for index in 0..self.graph_nodes.row_count() {
+                    if let Some(mut node) = self.graph_nodes.row_data(index) {
+                        if let Some(image) = self.node_previews.get(node.node_id.as_str()) {
+                            node.preview = image.clone(); node.has_preview = true;
+                            let size = image.size(); node.resolution = format!("{}×{}", size.width, size.height).into();
+                        } else {
+                            node.preview = slint::Image::default(); node.has_preview = false; node.resolution = Default::default();
+                        }
+                        if self.node_errors.contains_key(node.node_id.as_str()) {
+                            node.status = "error".into();
+                        }
+                        self.graph_nodes.set_row_data(index, node);
+                    }
+                }
             }
             if update.clear_image {
                 window.set_renderer_image(slint::Image::default());
@@ -2751,10 +3050,10 @@ fn commit_inspector(
             }
         }
         InspectorChange::Shader => {
-            if node.node_type != NodeType::Shader {
+            if node.node_type != NodeType::Shader || node.data.shader_template_id.is_some() {
                 return Err(SdkError::new(
                     open_quartz_sdk::SdkErrorCode::InvalidState,
-                    "Only Shader nodes have editable WGSL source",
+                    "Only custom Shader nodes have editable WGSL source",
                 ));
             }
             if node.data.shader_code == draft.shader_code {
@@ -3855,6 +4154,8 @@ mod tests {
             inspector_forms: std::rc::Rc::new(slint::VecModel::default()),
             graph_nodes: std::rc::Rc::new(slint::VecModel::default()),
             graph_edges: std::rc::Rc::new(slint::VecModel::default()),
+            node_previews: std::collections::BTreeMap::new(),
+            node_errors: std::collections::BTreeMap::new(),
             image_assets: std::collections::BTreeMap::new(),
             framebuffer_assets: std::collections::BTreeMap::new(),
             pending_resources: std::collections::BTreeMap::new(),

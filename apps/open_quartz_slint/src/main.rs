@@ -5,6 +5,8 @@ mod inspector_forms;
 mod inspector_onnx;
 mod onnx_runtime;
 mod render_bridge;
+mod shader_catalog;
+mod code_editor;
 mod services {
     pub mod desktop_export;
     pub mod file_service;

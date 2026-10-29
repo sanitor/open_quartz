@@ -3,9 +3,9 @@ import {
   predefinedShaders,
   CUSTOM_SHADER_CODE,
   CUSTOM_2IN1_SHADER,
+  generatorShaders,
+  feedbackShaders,
 } from '../../src/shaders';
-import { generatorShaders } from '../../src/shaders/generator';
-import { feedbackShaders } from '../../src/shaders/feedback';
 import { parseWgslShader } from '../../src/sdk/wgslParser';
 import { Project } from '../../src/sdk';
 

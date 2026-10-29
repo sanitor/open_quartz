@@ -1,9 +1,11 @@
-import { Button, ComboBox, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct GraphPort {
     port-id: string,
     label: string,
+    data-type: string,
+    connected: bool,
     y: float,
     output: bool,
 }
@@ -12,6 +14,14 @@ export struct GraphNode {
     node-id: string,
     label: string,
     kind: string,
+    title: string,
+    status: string,
+    preview: image,
+    has-preview: bool,
+    preview-top: float,
+    preview-height: float,
+    preview-expanded: bool,
+    resolution: string,
     x: float,
     y: float,
     width: float,
@@ -30,15 +40,84 @@ export struct GraphEdge {
     target-y: float,
 }
 
+component NodeTypeIcon inherits Rectangle {
+    in property <string> kind;
+    if root.kind == "Renderer": Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: #ffffff99; stroke-width: 1.3px; fill: transparent;
+        commands: "M2 3 L14 3 L14 11 L2 11 Z M8 11 L8 14 M5 14 L11 14";
+    }
+    if root.kind == "Math": Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: #ffffff99; stroke-width: 1.3px; fill: transparent;
+        commands: "M3 6 L13 6 M8 2 L8 10 M3 13 L13 13";
+    }
+    if root.kind == "Onnx": Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: #ffffff99; stroke-width: 1.3px; fill: transparent;
+        commands: "M8 2 C16 2 16 14 8 14 C0 14 0 2 8 2 Z M5 8 L8 5 L11 8 L8 11 Z";
+    }
+    if root.kind == "Input": Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: #ffffff99; stroke-width: 1.3px; fill: transparent;
+        commands: "M4.5 5 C.5 5 .5 11 4.5 11 C8.5 11 8.5 5 4.5 5 Z M7.5 8 L14 8";
+    }
+    if root.kind == "Shader" || root.kind == "Constant": Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: #ffffff99; stroke-width: 1.3px; fill: transparent;
+        commands: "M4 4 L12 4 L12 12 L4 12 Z M5 4 L5 1 M8 4 L8 1 M11 4 L11 1 M5 12 L5 15 M8 12 L8 15 M11 12 L11 15 M4 5 L1 5 M4 8 L1 8 M4 11 L1 11 M12 5 L15 5 M12 8 L15 8 M12 11 L15 11";
+    }
+}
+
+component GraphToolButton inherits Rectangle {
+    in property <string> text;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    in property <bool> fit-icon: false;
+    callback clicked();
+    width: 32px;
+    height: 30px;
+    background: root.active ? #e8f2ff : hit.has-hover && root.enabled ? #f5f5f7 : transparent;
+    border-radius: 4px;
+    opacity: root.enabled ? 1 : 0.35;
+    Text {
+        width: parent.width; height: parent.height;
+        text: root.text;
+        color: root.active ? Theme.accent : #1d1d1f;
+        font-size: root.text == "−" || root.text == "+" ? 20px : 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.fit-icon: Path {
+        x: 9px; y: 8px; width: 14px; height: 14px;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: root.active ? Theme.accent : #1d1d1f;
+        stroke-width: 1.4px; fill: transparent;
+        commands: "M1 6 L1 1 L6 1 M10 1 L15 1 L15 6 M15 10 L15 15 L10 15 M6 15 L1 15 L1 10";
+    }
+    hit := TouchArea {
+        width: parent.width; height: parent.height;
+        enabled: root.enabled;
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+    }
+}
+
 export component GraphView inherits Rectangle {
     in property <[GraphNode]> nodes;
     in property <[GraphEdge]> edges;
-    in property <string> summary;
     in property <float> content-width;
     in property <float> content-height;
     in property <float> origin-x;
     in property <float> origin-y;
-    in property <[string]> node-factory-options;
     in property <bool> busy;
     callback node-selected(string, bool);
     callback node-moved(string, float, float);
@@ -61,9 +140,8 @@ export component GraphView inherits Rectangle {
     callback copy();
     callback paste();
     callback select-all();
-    callback add-node(int);
     callback remove-nodes();
-    private property <int> node-factory-index: 0;
+    callback toggle-preview(string);
 
     private property <int> drag-node-index: -1;
     private property <length> drag-offset-x: 0px;
@@ -76,7 +154,6 @@ export component GraphView inherits Rectangle {
         : root.manual-zoom;
     private property <length> canvas-offset-x: max(0px, (canvas.width - root.content-width * root.zoom * 1px) / 2);
     private property <length> canvas-offset-y: max(0px, (canvas.height - root.content-height * root.zoom * 1px) / 2);
-    private property <float> grid-step: 64 * max(1, ceil(max(root.content-width, root.content-height) / 8192));
     private property <length> minimap-width: min(176px, max(120px, scroll.visible-width * 0.3));
     private property <length> minimap-height: min(120px, max(84px, scroll.visible-height * 0.28));
     private property <length> minimap-padding: 7px;
@@ -95,6 +172,31 @@ export component GraphView inherits Rectangle {
         || root.visible-world-right < root.content-width - 0.001
         || root.visible-world-bottom < root.content-height - 0.001
     );
+
+    function output-color(data-type: string) -> color {
+        if (data-type == "float" || data-type == "Float" || data-type == "mat4" || data-type == "Mat4") { return #4fc3f7; }
+        if (data-type == "int" || data-type == "Int") { return #81c784; }
+        if (data-type == "uint" || data-type == "Uint") { return #66bb6a; }
+        if (data-type == "bool" || data-type == "Bool" || data-type == "json" || data-type == "Json") { return #ffb74d; }
+        if (data-type == "vec2" || data-type == "Vec2") { return #ba68c8; }
+        if (data-type == "vec3" || data-type == "Vec3") { return #e57373; }
+        if (data-type == "vec4" || data-type == "Vec4") { return #f06292; }
+        if (data-type == "ivec2" || data-type == "Ivec2") { return #a1887f; }
+        if (data-type == "ivec3" || data-type == "Ivec3") { return #90a4ae; }
+        if (data-type == "ivec4" || data-type == "Ivec4" || data-type == "mesh" || data-type == "Mesh") { return #7986cb; }
+        if (data-type == "uvec2" || data-type == "Uvec2") { return #78909c; }
+        if (data-type == "uvec3" || data-type == "Uvec3") { return #8d6e63; }
+        if (data-type == "uvec4" || data-type == "Uvec4") { return #5c6bc0; }
+        if (data-type == "bvec2" || data-type == "Bvec2") { return #ffa726; }
+        if (data-type == "bvec3" || data-type == "Bvec3") { return #ff7043; }
+        if (data-type == "bvec4" || data-type == "Bvec4") { return #ab47bc; }
+        if (data-type == "mat2" || data-type == "Mat2") { return #4db6ac; }
+        if (data-type == "mat3" || data-type == "Mat3") { return #4dd0e1; }
+        if (data-type == "sampler2D" || data-type == "Sampler2d") { return #aed581; }
+        if (data-type == "samplerCube" || data-type == "SamplerCube") { return #dce775; }
+        if (data-type == "roi" || data-type == "Roi") { return #ff8a65; }
+        return #8e8e93;
+    }
 
     function center-on-world(world-x: float, world-y: float) {
         if (root.drag-node-index >= 0 || root.nodes.length == 0) { return; }
@@ -123,8 +225,7 @@ export component GraphView inherits Rectangle {
         scroll.content-y = 0px;
     }
 
-    background: Theme.panel;
-    border-radius: 8px;
+    background: #e0e0e0;
 
     forward-focus: graph-focus;
     graph-focus := FocusScope {
@@ -146,83 +247,49 @@ export component GraphView inherits Rectangle {
                     return accept;
                 }
             }
+            if (event.modifiers.control && !event.modifiers.alt && (event.text == "z" || event.text == "Z")) {
+                if (!root.busy && root.drag-node-index < 0) {
+                    if (event.modifiers.shift) { if (root.can-redo) { root.redo(); } }
+                    else if (root.can-undo) { root.undo(); }
+                }
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.drag-node-index = -1;
+                root.drag-offset-x = 0px;
+                root.drag-offset-y = 0px;
+                if (!root.busy && root.connection-active) { root.cancel-connection(); }
+                return accept;
+            }
+            if (event.text == Key.Delete || event.text == Key.Backspace) {
+                if (!root.busy && root.drag-node-index < 0) {
+                    if (root.selected-edge-id != "") { root.delete-edge(); }
+                    else if (root.selection-count > 0) { root.remove-nodes(); }
+                }
+                return accept;
+            }
             reject
         }
-    VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
-
-        Text {
-            text: "Graph · " + root.summary;
-            color: Theme.foreground;
-            font-size: 17px;
-        }
-
-        HorizontalLayout {
-            spacing: 4px;
-            ComboBox {
-                model: root.node-factory-options;
-                current-index <=> root.node-factory-index;
-                enabled: !root.busy && root.node-factory-options.length > 0;
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "Add node";
-                enabled: !root.busy && root.node-factory-options.length > 0;
-                clicked => {
-                    if (root.node-factory-index >= 0 && root.node-factory-index < root.node-factory-options.length) {
-                        root.add-node(root.node-factory-index);
-                    }
+        viewport := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            clip: true;
+            private property <length> grid-spacing: 20px * root.zoom * max(1, ceil(0.5 / root.zoom));
+            private property <length> grid-x: scroll.content-x + root.canvas-offset-x - floor((scroll.content-x + root.canvas-offset-x) / self.grid-spacing) * self.grid-spacing;
+            private property <length> grid-y: scroll.content-y + root.canvas-offset-y - floor((scroll.content-y + root.canvas-offset-y) / self.grid-spacing) * self.grid-spacing;
+            // Draw only visible grid marks, even when the graph is very large.
+            for column in ceil(viewport.width / viewport.grid-spacing) + 1: Rectangle {
+                x: column * viewport.grid-spacing + viewport.grid-x;
+                width: 3px; height: viewport.height;
+                background: transparent;
+                for row in ceil(viewport.height / viewport.grid-spacing) + 1: Rectangle {
+                    y: row * viewport.grid-spacing + viewport.grid-y;
+                    width: 3px; height: 3px;
+                    background: transparent;
+                    Rectangle { x: 1px; width: 1px; height: 3px; background: #c0c0c0; }
+                    Rectangle { y: 1px; width: 3px; height: 1px; background: #c0c0c0; }
                 }
             }
-            Button { text: "Delete node"; enabled: !root.busy && root.selection-count > 0; clicked => { root.remove-nodes(); } }
-        }
-
-        HorizontalLayout {
-            spacing: 4px;
-            Button { text: "Undo"; enabled: !root.busy && root.can-undo; clicked => { root.undo(); } }
-            Button { text: "Redo"; enabled: !root.busy && root.can-redo; clicked => { root.redo(); } }
-            Button { text: "Reconnect"; enabled: !root.busy && root.selected-edge-id != ""; clicked => { root.reconnect-edge(); } }
-            Button { text: "Delete edge"; enabled: !root.busy && root.selected-edge-id != ""; clicked => { root.delete-edge(); } }
-            Button { text: "Cancel"; enabled: !root.busy && root.connection-active; clicked => { root.cancel-connection(); } }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            Button { text: "−"; accessible-label: "Zoom out"; enabled: root.zoom > 0.01 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom / 1.25); } }
-            zoom-readout := Text {
-                min-width: 48px; max-width: 48px; preferred-width: 48px;
-                min-height: 28px; max-height: 28px; preferred-height: 28px;
-                text: "100%";
-                color: Theme.foreground;
-                vertical-alignment: center; horizontal-alignment: center;
-            }
-            Button { text: "+"; accessible-label: "Zoom in"; enabled: root.zoom < 2 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom * 1.25); } }
-            Button { text: "100%"; accessible-label: "Reset zoom to 100 percent"; enabled: root.drag-node-index < 0; clicked => { root.set-zoom(1); } }
-            Button {
-                text: "Fit View";
-                primary: root.fitting;
-                enabled: root.nodes.length > 0 && root.drag-node-index < 0;
-                clicked => { root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; }
-            }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            Button { text: "Select all"; enabled: !root.busy && root.nodes.length > 0; clicked => { root.select-all(); graph-focus.focus(); } }
-            Button { text: "Copy"; enabled: !root.busy && root.can-copy; clicked => { root.copy(); graph-focus.focus(); } }
-            Button { text: "Paste"; enabled: !root.busy && root.can-paste; clicked => { root.paste(); graph-focus.focus(); } }
-            Text { text: root.selection-count + " selected · Shift-click toggles"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
-        }
-        Text {
-            text: root.connection-active ? "Choose an input to connect; choose an output to change source. Cancel keeps the graph unchanged." : "Output then input connects/replaces. Click a connected input or link marker to select an edge.";
-            color: Theme.secondary;
-            wrap: word-wrap;
-            font-size: 11px;
-        }
-
-        viewport := Rectangle {
-            horizontal-stretch: 1;
-            vertical-stretch: 1;
-            clip: true;
         scroll := ScrollView {
             width: parent.width;
             height: parent.height;
@@ -235,34 +302,46 @@ export component GraphView inherits Rectangle {
             canvas := Rectangle {
                 width: scroll.content-width;
                 height: scroll.content-height;
-                background: #121925;
-                border-color: Theme.border;
-                border-width: 1px;
-                border-radius: 6px;
+                background: transparent;
 
-                TouchArea {
+                pan-area := TouchArea {
+                    private property <length> start-x;
+                    private property <length> start-y;
+                    private property <length> start-scroll-x;
+                    private property <length> start-scroll-y;
+                    private property <bool> panned: false;
                     width: parent.width; height: parent.height;
-                    clicked => { graph-focus.focus(); }
-                }
-                for grid-column in ceil(root.content-width / root.grid-step): Rectangle {
-                    x: root.canvas-offset-x + grid-column * root.grid-step * 1px * root.zoom;
-                    width: 1px;
-                    height: parent.height;
-                    background: #1d2939;
-                }
-                for grid-row in ceil(root.content-height / root.grid-step): Rectangle {
-                    y: root.canvas-offset-y + grid-row * root.grid-step * 1px * root.zoom;
-                    width: parent.width;
-                    height: 1px;
-                    background: #1d2939;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                            graph-focus.focus();
+                            self.start-scroll-x = scroll.content-x;
+                            self.start-scroll-y = scroll.content-y;
+                            self.start-x = self.mouse-x + scroll.content-x;
+                            self.start-y = self.mouse-y + scroll.content-y;
+                            self.panned = false;
+                        }
+                    }
+                    moved => {
+                        if (self.pressed && root.drag-node-index < 0) {
+                            let dx = self.mouse-x + scroll.content-x - self.start-x;
+                            let dy = self.mouse-y + scroll.content-y - self.start-y;
+                            if (Math.abs(dx) >= 3px || Math.abs(dy) >= 3px) { self.panned = true; }
+                            scroll.content-x = clamp(self.start-scroll-x + dx, min(0px, scroll.visible-width - scroll.content-width), 0px);
+                            scroll.content-y = clamp(self.start-scroll-y + dy, min(0px, scroll.visible-height - scroll.content-height), 0px);
+                        }
+                    }
+                    clicked => {
+                        graph-focus.focus();
+                        if (!self.panned && !root.busy) { root.node-selected("", false); }
+                    }
                 }
 
                 for edge in root.edges: Path {
                     width: canvas.width;
                     height: canvas.height;
                     fit: preserve;
-                    stroke: root.selected-edge-id == edge.edge-id ? Theme.accent : #56708f;
-                    stroke-width: max(0.5px, 2px * root.zoom);
+                    stroke: root.selected-edge-id == edge.edge-id ? Theme.accent : #8e8e93;
+                    stroke-width: max(0.5px, (root.selected-edge-id == edge.edge-id ? 3px : 1.5px) * root.zoom);
                     MoveTo {
                         x: (edge.source-x + root.origin-x + (edge.source-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
                         y: (edge.source-y + root.origin-y + (edge.source-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
@@ -277,7 +356,7 @@ export component GraphView inherits Rectangle {
                     }
                 }
 
-                for edge in root.edges: TouchArea {
+                for edge in root.edges: edge-hit := TouchArea {
                     x: root.canvas-offset-x + ((edge.source-x + edge.target-x) / 2 * 1px + root.origin-x * 1px
                         + (edge.source-index == root.drag-node-index || edge.target-index == root.drag-node-index ? root.drag-offset-x / 2 : 0px) - 12px) * root.zoom;
                     y: root.canvas-offset-y + ((edge.source-y + edge.target-y) / 2 * 1px + root.origin-y * 1px
@@ -289,19 +368,13 @@ export component GraphView inherits Rectangle {
                     clicked => { graph-focus.focus(); root.edge-selected(edge.edge-id); }
                     accessible-action-default => { self.clicked(); }
                     Rectangle {
-                        width: parent.width; height: parent.height;
-                        background: #263f56;
-                        border-radius: 12px * root.zoom;
-                        border-width: 1px * root.zoom;
-                        border-color: root.selected-edge-id == edge.edge-id ? Theme.accent : Theme.border;
-                        if root.zoom >= 0.25: Text {
-                            width: parent.width; height: parent.height;
-                            text: root.selected-edge-id == edge.edge-id ? "●" : "○";
-                            color: Theme.foreground;
-                            font-size: 12px * root.zoom;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        // Keep the midpoint target discreet while preserving edge selection.
+                        background: root.selected-edge-id == edge.edge-id ? Theme.accent : edge-hit.has-hover ? #8e8e93 : transparent;
+                        border-radius: 4px * root.zoom;
+                        width: 8px * root.zoom;
+                        height: 8px * root.zoom;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
                     accessible-role: button;
                 }
@@ -359,70 +432,130 @@ export component GraphView inherits Rectangle {
                         y: root.drag-node-index == index ? root.drag-offset-y * root.zoom : 0px;
                         width: parent.width;
                         height: parent.height;
-                        background: self.highlighted ? #263f56 : Theme.card;
-                        border-color: self.highlighted ? Theme.accent : Theme.border;
-                        border-width: (self.highlighted ? 2px : 1px) * root.zoom;
-                        border-radius: 7px * root.zoom;
+                        background: white;
+                        border-color: self.highlighted ? Theme.accent : #d2d2d7;
+                        border-width: 1px * root.zoom;
+                        border-radius: 12px * root.zoom;
+                        drop-shadow-color: self.highlighted ? #00000024 : #00000012;
+                        drop-shadow-blur: (self.highlighted ? 8px : 3px) * root.zoom;
+                        drop-shadow-offset-y: 2px * root.zoom;
                         Rectangle {
+                            x: 0px; y: 0px;
                             width: parent.width;
-                            height: min(parent.height, 58px * root.zoom);
+                            height: min(parent.height, 28px * root.zoom);
                             accessible-enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: "Select node " + node.label;
                             accessible-action-default => { root.node-selected(node.node-id, false); graph-focus.focus(); }
                         }
 
+                        Rectangle {
+                            x: 0px; y: 0px;
+                            width: parent.width;
+                            height: min(parent.height, 28px * root.zoom);
+                            border-top-left-radius: 11px * root.zoom;
+                            border-top-right-radius: 11px * root.zoom;
+                            background: #1e293b;
+                        }
+                        if root.zoom >= 0.25: NodeTypeIcon {
+                            x: 12px * root.zoom; y: 8px * root.zoom;
+                            width: 12px * root.zoom; height: 12px * root.zoom;
+                            kind: node.kind;
+                        }
                         if root.zoom >= 0.25: Text {
-                            x: 10px * root.zoom; y: 8px * root.zoom; width: parent.width - 20px * root.zoom; height: 22px * root.zoom;
+                            x: 30px * root.zoom; y: 0px;
+                            width: max(0px, parent.width * 0.6 - 40px * root.zoom);
+                            height: 28px * root.zoom;
+                            text: node.title;
+                            color: white;
+                            font-size: 10px * root.zoom;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if root.zoom >= 0.25: Text {
+                            x: parent.width * 0.6; y: 0px;
+                            width: max(0px, parent.width * 0.4 - (node.preview-height > 0 ? 34px : 24px) * root.zoom);
+                            height: 28px * root.zoom;
                             text: node.label;
-                            color: Theme.accent;
-                            font-size: 15px * root.zoom;
+                            color: #ffffff80;
+                            font-size: 10px * root.zoom;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
                             overflow: elide;
                         }
-                        if root.zoom >= 0.25: Text {
-                            x: 10px * root.zoom; y: 32px * root.zoom; width: parent.width - 20px * root.zoom; height: 18px * root.zoom;
-                            text: node.kind;
-                            color: Theme.secondary;
-                            font-size: 12px * root.zoom;
-                            overflow: elide;
+                        Rectangle {
+                            x: parent.width - 17px * root.zoom; y: 10.5px * root.zoom;
+                            width: 7px * root.zoom; height: 7px * root.zoom; border-radius: self.width / 2;
+                            background: node.status == "error" ? #ff3b30 : node.status == "ready" ? #34c759 : #8e8e93;
                         }
-                        for port in node.ports: port-area := TouchArea {
-                            x: port.output ? parent.width / 2 : 0px;
+                        if node.preview-height > 0: TouchArea {
+                            x: parent.width - 34px * root.zoom; y: 0px; width: 16px * root.zoom; height: 28px * root.zoom;
+                            enabled: !root.busy;
+                            accessible-role: button;
+                            accessible-label: (node.preview-expanded ? "Collapse " : "Expand ") + node.label + " preview";
+                            accessible-action-default => { root.toggle-preview(node.node-id); }
+                            clicked => { root.toggle-preview(node.node-id); }
+                            Text { width: parent.width; height: parent.height; text: node.preview-expanded ? "▴" : "▾"; color: #ffffffcc; font-size: 10px * root.zoom; vertical-alignment: center; horizontal-alignment: center; }
+                        }
+                        if node.preview-height > 0 && node.preview-expanded: Rectangle {
+                            x: 8px * root.zoom; y: node.preview-top * root.zoom * 1px;
+                            width: parent.width - 16px * root.zoom; height: node.preview-height * root.zoom * 1px;
+                            background: #f5f5f7; border-radius: 4px * root.zoom;
+                            border-color: #e8e8ed; border-width: 1px * root.zoom;
+                            Image { width: parent.width; height: parent.height; source: node.preview; image-fit: contain; }
+                            if !node.has-preview: Text { width: parent.width; height: parent.height; text: node.status == "error" ? "Output unavailable" : "No output"; font-size: 10px * root.zoom; color: #aeaeb2; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { y: parent.height + 3px * root.zoom; width: parent.width; text: node.resolution; font-size: 9px * root.zoom; color: #aeaeb2; horizontal-alignment: center; }
+                        }
+                        for port[port-index] in node.ports: port-area := TouchArea {
+                            private property <color> port-color: port.output ? root.output-color(port.data-type) : #8e8e93;
+                            x: node.kind == "Math" && port.output ? parent.width / 2 : 0px;
                             y: (port.y * 1px - 11px) * root.zoom;
-                            width: parent.width / 2;
+                            width: node.kind == "Math" ? parent.width / 2 : parent.width;
                             height: 22px * root.zoom;
                             enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
                             clicked => { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); }
                             accessible-action-default => { self.clicked(); }
+                            if node.kind != "Math" && port.output && port-index > 0 && !node.ports[port-index - 1].output: Rectangle {
+                                x: 12px * root.zoom; y: -3px * root.zoom;
+                                width: parent.width - 24px * root.zoom; height: 1px * root.zoom;
+                                background: #f0f0f0;
+                            }
                             Rectangle {
-                                x: port.output ? parent.width - 5px * root.zoom : -5px * root.zoom;
-                                y: 6px * root.zoom; width: 10px * root.zoom; height: 10px * root.zoom;
-                                border-radius: 5px * root.zoom;
-                                background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : #89a9ce;
+                                x: port.output ? parent.width - 6px * root.zoom : -6px * root.zoom;
+                                y: 5px * root.zoom; width: 12px * root.zoom; height: 12px * root.zoom;
+                                border-radius: 6px * root.zoom;
+                                border-width: 2px * root.zoom;
+                                border-color: port.output ? white : root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port-area.port-color;
+                                background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port.output || port.connected ? port-area.port-color : white;
                             }
                             if root.zoom >= 0.25: Text {
-                                x: 8px * root.zoom; width: parent.width - 16px * root.zoom; height: parent.height;
+                                x: port.output && node.kind != "Math" ? parent.width / 2 : 14px * root.zoom;
+                                y: 0px; height: parent.height;
+                                width: node.kind == "Math" ? parent.width - 28px * root.zoom : parent.width / 2 - 14px * root.zoom;
                                 text: port.label;
                                 color: port-area.has-hover ? Theme.accent : Theme.foreground;
-                                font-size: 10px * root.zoom;
+                                font-size: (node.kind == "Math" ? 10px : 11px) * root.zoom;
                                 vertical-alignment: center;
                                 horizontal-alignment: port.output ? right : left;
+                                overflow: elide;
+                            }
+                            if root.zoom >= 0.25 && node.kind != "Math": Text {
+                                x: port.output ? 14px * root.zoom : parent.width / 2;
+                                width: parent.width / 2 - 14px * root.zoom; height: parent.height;
+                                text: port.data-type;
+                                color: #aeaeb2;
+                                font-size: 9px * root.zoom;
+                                vertical-alignment: center;
+                                horizontal-alignment: port.output ? left : right;
                                 overflow: elide;
                             }
                         }
                     }
                 }
 
-                if root.nodes.length == 0: Text {
-                    width: parent.width;
-                    height: parent.height;
-                    text: "This project has an empty graph.";
-                    color: Theme.secondary;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
             }
         }
 
@@ -432,10 +565,13 @@ export component GraphView inherits Rectangle {
             width: root.minimap-width;
             height: root.minimap-height;
             visible: root.minimap-needed;
-            background: #0c121cdd;
-            border-color: Theme.accent;
+            background: #ffffffed;
+            border-color: #d2d2d7;
             border-width: 1px;
-            border-radius: 6px;
+            border-radius: 8px;
+            drop-shadow-color: #00000016;
+            drop-shadow-blur: 4px;
+            drop-shadow-offset-y: 1px;
             clip: true;
 
             for node in root.nodes: Rectangle {
@@ -443,7 +579,7 @@ export component GraphView inherits Rectangle {
                 y: root.minimap-content-offset-y + (node.y + root.origin-y) * root.minimap-scale * 1px;
                 width: max(2px, node.width * root.minimap-scale * 1px);
                 height: max(2px, node.height * root.minimap-scale * 1px);
-                background: node.selected ? Theme.accent : #58728f;
+                background: node.selected ? Theme.accent : #d0d0d0;
                 border-radius: 1px;
             }
 
@@ -452,8 +588,8 @@ export component GraphView inherits Rectangle {
                 y: root.minimap-content-offset-y + root.visible-world-top * root.minimap-scale * 1px;
                 width: max(2px, (root.visible-world-right - root.visible-world-left) * root.minimap-scale * 1px);
                 height: max(2px, (root.visible-world-bottom - root.visible-world-top) * root.minimap-scale * 1px);
-                background: #80c7ff18;
-                border-color: Theme.accent;
+                background: #00000012;
+                border-color: #8e8e93;
                 border-width: 1px;
                 border-radius: 2px;
             }
@@ -484,7 +620,44 @@ export component GraphView inherits Rectangle {
                 }
             }
         }
+
+        // Native equivalent of React Flow's floating bottom-left controls.
+        Rectangle {
+            x: 15px; y: parent.height - self.height - 15px;
+            width: 32px; height: 120px;
+            background: white; border-color: #d2d2d7;
+            border-width: 1px; border-radius: 8px;
+            drop-shadow-color: #00000018; drop-shadow-blur: 4px;
+            drop-shadow-offset-y: 1px;
+            VerticalLayout {
+                padding: 0px; spacing: 0px;
+                GraphToolButton { text: "+"; label: "Zoom in"; enabled: root.zoom < 2 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom * 1.25); graph-focus.focus(); } }
+                GraphToolButton { text: "−"; label: "Zoom out"; enabled: root.zoom > 0.01 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom / 1.25); graph-focus.focus(); } }
+                GraphToolButton { fit-icon: true; label: "Fit graph in view"; active: root.fitting; enabled: root.nodes.length > 0 && root.drag-node-index < 0; clicked => { root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; graph-focus.focus(); } }
+                GraphToolButton {
+                    label: "Reset zoom to 100 percent";
+                    enabled: root.drag-node-index < 0;
+                    clicked => { root.set-zoom(1); graph-focus.focus(); }
+                    zoom-readout := Text { width: parent.width; height: parent.height; text: "100%"; font-size: 9px; color: #6e6e73; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
         }
-    }
+
+        if root.selected-edge-id != "" || root.connection-active: Rectangle {
+            x: (parent.width - self.width) / 2; y: 12px;
+            width: root.connection-active ? 166px : root.selected-edge-id != "" ? 136px : 154px;
+            height: 36px;
+            background: #ffffffed; border-color: #d2d2d7;
+            border-width: 1px; border-radius: 8px;
+            drop-shadow-color: #00000012; drop-shadow-blur: 4px;
+            HorizontalLayout {
+                padding: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 2px;
+                if root.connection-active: Text { text: "Choose an input"; color: #6e6e73; font-size: 11px; vertical-alignment: center; }
+                if !root.connection-active && root.selected-edge-id != "": GraphToolButton { width: 72px; text: "Reconnect"; label: "Reconnect selected edge"; enabled: !root.busy; clicked => { root.reconnect-edge(); graph-focus.focus(); } }
+                if !root.connection-active: GraphToolButton { width: 48px; text: "Delete"; label: "Delete selection"; enabled: !root.busy; clicked => { if (root.selected-edge-id != "") { root.delete-edge(); } else { root.remove-nodes(); } graph-focus.focus(); } }
+                if root.connection-active: GraphToolButton { width: 48px; text: "Cancel"; label: "Cancel connection"; enabled: !root.busy; clicked => { root.cancel-connection(); graph-focus.focus(); } }
+            }
+        }
+        }
     }
 }

@@ -1,4 +1,6 @@
-import { Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
+import { CheckBox, ScrollView } from "std-widgets.slint";
+import { CodeEditor } from "code_editor.slint";
+import { Button, ComboBox, LineEdit, SpinBox } from "compact_widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct InspectorPort {
@@ -38,6 +40,62 @@ export struct InspectorFormGroup {
 export struct InspectorOnnxRow {
     label: string,
     value: string,
+}
+
+component InspectorSection inherits Rectangle {
+    in property <string> title;
+    private property <bool> expanded: true;
+    vertical-stretch: 0;
+    background: Theme.panel;
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+        Rectangle {
+            height: 30px;
+            background: section-touch.has-hover ? Theme.card : Theme.panel;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 6px;
+                Text {
+                    text: root.expanded ? "▾" : "▸";
+                    color: Theme.secondary;
+                    font-size: 16px;
+                    width: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.title;
+                    color: Theme.secondary;
+                    font-size: 11px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            section-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.expanded = !root.expanded; }
+            }
+        }
+        Rectangle {
+            height: root.expanded ? content-layout.preferred-height : 0px;
+            vertical-stretch: 0;
+            clip: true;
+            visible: root.expanded;
+            content-layout := VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 6px;
+                padding-bottom: 12px;
+                spacing: 6px;
+                @children
+            }
+        }
+    }
 }
 
 export component Inspector inherits Rectangle {
@@ -84,11 +142,18 @@ export component Inspector inherits Rectangle {
     callback unload-onnx();
     in-out property <string> node-label;
     in-out property <string> shader-code;
+    in property <bool> shader-read-only: false;
+    in property <[string]> shader-line-numbers;
+    in property <[int]> shader-line-offsets;
+    in property <[int]> shader-find-offsets;
+    in property <[int]> shader-find-lengths;
+    in-out property <string> shader-find-query;
     in-out property <bool> auto-size;
     in-out property <int> output-width;
     in-out property <int> output-height;
     callback label-draft-changed(string);
     callback shader-draft-changed(string);
+    callback shader-find-requested(string);
     callback output-size-draft-changed(int, int, bool);
     callback uniform-draft-changed(string, string);
     callback apply-label();
@@ -98,66 +163,106 @@ export component Inspector inherits Rectangle {
     callback discard-drafts();
     callback form-draft-changed(string, string);
     callback apply-form(string);
+    callback delete-node();
 
     background: Theme.panel;
-    border-radius: 8px;
-    min-width: 220px;
+    min-width: 240px;
+    preferred-width: 320px;
 
     VerticalLayout {
-        padding: 12px;
-        spacing: 8px;
-        Text { text: "Inspector"; color: Theme.foreground; font-size: 17px; font-weight: 600; }
+        padding: 0px;
+        spacing: 0px;
+        if root.has-selection: Rectangle {
+            height: 36px;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                Text {
+                    text: root.node-type;
+                    color: Theme.secondary;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 0;
+                }
+                LineEdit {
+                    text <=> root.node-label;
+                    horizontal-stretch: 1;
+                    enabled: !root.project-busy;
+                    edited => { root.label-draft-changed(self.text); }
+                    accepted => { if root.label-dirty { root.apply-label(); } }
+                }
+                if root.label-dirty: Button { text: "Apply"; enabled: !root.project-busy; clicked => { root.apply-label(); } }
+                Rectangle {
+                    width: 20px; height: 22px;
+                    Path { x: 3px; y: 4px; width: 14px; height: 14px; viewbox-width: 16; viewbox-height: 16; stroke: hit.has-hover ? #ff3b30 : #aeaeb2; stroke-width: 1.3px; commands: "M3 5V14H13V5 M1 5H15 M6 2H10 M6 7.5V11.5 M10 7.5V11.5"; }
+                    hit := TouchArea { enabled: !root.project-busy && !root.inspector-dirty; accessible-role: button; accessible-label: "Delete node"; clicked => { root.delete-node(); } accessible-action-default => { root.delete-node(); } }
+                }
+            }
+        }
         if root.inspector-dirty: VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 6px;
+            padding-bottom: 8px;
             spacing: 4px;
-            Text { text: "Unapplied drafts · graph and file actions paused"; color: Theme.accent; wrap: word-wrap; font-size: 11px; }
+            Text { text: "Unapplied changes · apply or discard to continue"; color: Theme.accent; wrap: word-wrap; font-size: 11px; }
             Button {
-                text: "Discard inspector edits";
+                text: "Discard changes";
                 enabled: !root.project-busy;
                 clicked => { root.discard-drafts(); }
             }
         }
-        if !root.has-selection: Text {
-            text: root.selection-message;
-            color: Theme.secondary;
-            wrap: word-wrap;
+        if !root.has-selection: Rectangle {
             vertical-stretch: 1;
-            vertical-alignment: center;
+            Text {
+                x: 24px;
+                width: parent.width - 48px;
+                height: parent.height;
+                text: root.selection-message == "" ? "Select a node to inspect its properties." : root.selection-message;
+                color: Theme.secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
         if root.has-selection: ScrollView {
             content-width: self.visible-width;
             horizontal-scrollbar-policy: always-off;
             VerticalLayout {
                 alignment: start;
-                spacing: 10px;
-                Text { text: root.node-type + " · " + root.node-id; color: Theme.secondary; font-size: 11px; overflow: elide; }
+                spacing: 0px;
 
-                if root.image-input: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "Image resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+
+                if root.image-input: InspectorSection {
+                    title: "IMAGE";
                     Text {
-                        text: root.image-name == "" ? "No image loaded" : root.image-name + (root.image-size == "" ? "" : " · " + root.image-size);
-                        color: Theme.secondary;
+                        text: root.image-name == "" ? "No image loaded" : root.image-name;
+                        color: Theme.foreground;
+                        font-size: 12px;
                         wrap: word-wrap;
                     }
+                    if root.image-size != "": Text { text: root.image-size; color: Theme.secondary; font-size: 11px; }
                     Button {
                         text: root.image-name == "" ? "Choose image…" : "Replace image…";
                         enabled: !root.project-busy && !root.inspector-dirty;
                         clicked => { root.choose-image(); }
                     }
                 }
-                if root.framebuffer-input: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "Raw framebuffer resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    Text { text: root.framebuffer-name == "" ? "No raw file loaded" : root.framebuffer-name; color: Theme.secondary; wrap: word-wrap; }
+                if root.framebuffer-input: InspectorSection {
+                    title: "FRAMEBUFFER";
+                    Text { text: root.framebuffer-name == "" ? "No raw file loaded" : root.framebuffer-name; color: Theme.foreground; font-size: 12px; wrap: word-wrap; }
                     Button {
                         text: root.framebuffer-name == "" ? "Choose raw file…" : "Replace raw file…";
                         enabled: !root.project-busy && !root.inspector-dirty;
                         clicked => { root.choose-framebuffer(); }
                     }
                 }
-                if root.video-input: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "Video / camera resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                if root.video-input: InspectorSection {
+                    title: "VIDEO / CAMERA";
                     Button {
                         text: "Choose video file…";
                         enabled: !root.project-busy && !root.inspector-dirty;
@@ -176,117 +281,43 @@ export component Inspector inherits Rectangle {
                         preferred-width: 160px;
                         selected => { root.select-camera(self.current-index); }
                     }
-                    Text { text: "Camera selection edits the Video draft. Apply video to open it. Native source errors appear in runtime status."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    Text { text: "Apply the Video draft to open the selected camera."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                 }
 
-                Text { text: "Name"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                LineEdit {
-                    text <=> root.node-label;
-                    enabled: !root.project-busy;
-                    placeholder-text: "Node name";
-                    edited => { root.label-draft-changed(self.text); }
-                }
-                Button {
-                    text: "Apply name";
-                    enabled: root.label-dirty && !root.project-busy;
-                    clicked => { root.apply-label(); }
-                }
-
-                if root.supports-output-size: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "Output"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    CheckBox {
-                        text: "Auto size";
-                        checked <=> root.auto-size;
-                        enabled: !root.project-busy;
-                        toggled => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: "Width"; color: Theme.secondary; vertical-alignment: center; }
-                        SpinBox {
-                            minimum: 1;
-                            maximum: 8192;
-                            value <=> root.output-width;
-                            enabled: !root.project-busy && !root.auto-size;
-                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: "Height"; color: Theme.secondary; vertical-alignment: center; }
-                        SpinBox {
-                            minimum: 1;
-                            maximum: 8192;
-                            value <=> root.output-height;
-                            enabled: !root.project-busy && !root.auto-size;
-                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
-                        }
-                    }
-                    Button {
-                        text: "Apply output size";
-                        enabled: root.output-size-dirty && !root.project-busy;
-                        clicked => { root.apply-output-size(); }
-                    }
-                }
-
-                if root.is-shader: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "WGSL source"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    TextEdit {
+                if root.is-shader: InspectorSection {
+                    title: "SHADER EDITOR";
+                    CodeEditor {
                         text <=> root.shader-code;
-                        font-family: "Menlo";
-                        font-size: 12px;
-                        wrap: no-wrap;
+                        read-only: root.shader-read-only;
                         enabled: !root.project-busy;
-                        min-height: 180px;
-                        vertical-stretch: 1;
+                        line-numbers: root.shader-line-numbers;
+                        line-offsets: root.shader-line-offsets;
+                        find-offsets: root.shader-find-offsets;
+                        find-lengths: root.shader-find-lengths;
+                        find-query <=> root.shader-find-query;
+                        preferred-height: 220px;
+                        max-height: 320px;
                         edited => { root.shader-draft-changed(self.text); }
-                    }
-                    if root.validation-message != "": Text {
-                        text: "Shader parse error: " + root.validation-message;
-                        color: #ff9b8f;
-                        wrap: word-wrap;
+                        find-requested(query) => { root.shader-find-requested(query); }
                     }
                 }
-
-                if root.is-shader && root.uniforms.length > 0: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: "Uniforms"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    Text { text: "Vectors: comma-separated. Matrices: column-major."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                    for uniform in root.uniforms: VerticalLayout {
-                        spacing: 4px;
-                        Text { text: uniform.name + " · " + uniform.data-type; color: Theme.secondary; wrap: word-wrap; }
-                        LineEdit {
-                            text: uniform.value;
-                            enabled: !uniform.connected && !root.project-busy;
-                            edited => { root.uniform-draft-changed(uniform.name, self.text); }
-                        }
-                        if uniform.connected: Text { text: "Connected · upstream value wins"; color: Theme.accent; wrap: word-wrap; }
-                        if !uniform.connected && !uniform.valid: Text {
-                            text: uniform.error;
-                            color: #ff9b8f;
-                            wrap: word-wrap;
-                        }
-                    }
-                    Button {
-                        text: "Apply uniforms";
-                        enabled: root.uniform-dirty && root.uniforms-valid && !root.project-busy;
-                        clicked => { root.apply-uniforms(); }
-                    }
+                // Validation remains visible even with the editor collapsed.
+                if root.is-shader && root.validation-message != "": VerticalLayout {
+                    padding: 12px;
+                    Text { text: "Shader parse error: " + root.validation-message; color: #ff3b30; font-size: 11px; wrap: word-wrap; }
                 }
-
-                for group in root.forms: VerticalLayout {
-                    spacing: 6px;
-                    Text { text: group.title; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    Text { text: group.hint; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                    for field in group.fields: VerticalLayout {
-                        spacing: 4px;
-                        if field.kind != "toggle": Text { text: field.label; color: Theme.secondary; wrap: word-wrap; }
+                for group in root.forms: InspectorSection {
+                    title: group.title;
+                    if group.hint != "": Text { text: group.hint; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    for field in group.fields: HorizontalLayout {
+                        spacing: 6px;
+                        if field.kind != "toggle": Text { text: field.label; width: 52px; color: Theme.secondary; font-size: 11px; wrap: word-wrap; vertical-alignment: center; }
                         if field.kind == "choice": ComboBox {
                             model: field.options;
                             current-index <=> field.choice;
                             enabled: !root.project-busy;
+                            min-width: 0px;
+                            preferred-width: 160px;
                             selected => { root.form-draft-changed(field.key, "" + self.current-index); }
                         }
                         if field.kind == "text": LineEdit {
@@ -301,8 +332,8 @@ export component Inspector inherits Rectangle {
                             toggled => { root.form-draft-changed(field.key, self.checked ? "true" : "false"); }
                         }
                     }
-                    if group.error != "": Text { text: group.error; color: #ff9b8f; wrap: word-wrap; }
-                    Button {
+                    if group.error != "": Text { text: group.error; color: #ff3b30; font-size: 11px; wrap: word-wrap; }
+                    if group.dirty: Button {
                         text: "Apply " + group.key;
                         enabled: group.dirty && group.error == "" && !root.project-busy;
                         clicked => { root.apply-form(group.key); }
@@ -310,13 +341,84 @@ export component Inspector inherits Rectangle {
                 }
 
 
-                if root.onnx-config.length > 0: VerticalLayout {
-                    spacing: 8px;
-                    Text { text: "ONNX · Live session"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    Text { text: root.onnx-status; color: Theme.accent; wrap: word-wrap; }
-                    Text { text: "Optional local model path · session only"; color: Theme.secondary; wrap: word-wrap; }
-                    LineEdit { text <=> root.onnx-path; enabled: !root.project-busy && !root.onnx-loading; }
-                    Text { text: "Blank uses the saved custom path or catalog cache/download. Loading is explicit; session state and this path are not saved."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                if root.supports-output-size: InspectorSection {
+                    title: "OUTPUT SIZE";
+                    CheckBox {
+                        text: "Auto size";
+                        checked <=> root.auto-size;
+                        enabled: !root.project-busy;
+                        toggled => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Width"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 8192;
+                            value <=> root.output-width;
+                            enabled: !root.project-busy && !root.auto-size;
+                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Height"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 8192;
+                            value <=> root.output-height;
+                            enabled: !root.project-busy && !root.auto-size;
+                            edited => { root.output-size-draft-changed(root.output-width, root.output-height, root.auto-size); }
+                        }
+                    }
+                    if root.output-size-dirty: Button {
+                        text: "Apply output size";
+                        enabled: root.output-size-dirty && !root.project-busy;
+                        clicked => { root.apply-output-size(); }
+                    }
+                }
+
+                if root.is-shader && root.uniforms.length > 0: InspectorSection {
+                    title: "UNIFORMS";
+                    Text { text: "Vectors: comma-separated. Matrices: column-major."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    for uniform in root.uniforms: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text { text: uniform.name; color: Theme.foreground; font-size: 11px; overflow: elide; }
+                            Text { text: uniform.data-type; color: Theme.secondary; font-size: 10px; horizontal-alignment: right; }
+                        }
+                        LineEdit {
+                            text: uniform.value;
+                            enabled: !uniform.connected && !root.project-busy;
+                            edited => { root.uniform-draft-changed(uniform.name, self.text); }
+                        }
+                        if uniform.connected: Text { text: "Connected · upstream value"; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
+                        if !uniform.connected && !uniform.valid: Text { text: uniform.error; color: #ff3b30; font-size: 11px; wrap: word-wrap; }
+                    }
+                    if root.uniform-dirty: Button {
+                        text: "Apply uniforms";
+                        enabled: root.uniform-dirty && root.uniforms-valid && !root.project-busy;
+                        clicked => { root.apply-uniforms(); }
+                    }
+                }
+
+                if root.ports.length > 0: InspectorSection {
+                    title: "PORTS";
+                    for port in root.ports: HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: port.output ? "OUT" : "IN"; color: Theme.secondary; font-size: 10px; width: 28px; }
+                        Text { text: port.label; color: Theme.foreground; font-size: 11px; wrap: word-wrap; }
+                        Text { text: port.data-type; color: Theme.secondary; font-size: 10px; horizontal-alignment: right; wrap: word-wrap; }
+                    }
+                }
+
+                if root.onnx-config.length > 0: InspectorSection {
+                    title: "ONNX · LIVE SESSION";
+                    Text { text: root.onnx-status; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
+                    Text { text: "Local model path (optional)"; color: Theme.secondary; font-size: 11px; }
+                    LineEdit { text <=> root.onnx-path; enabled: !root.project-busy && !root.onnx-loading; placeholder-text: "Saved path or catalog model"; }
+                    Text { text: "Blank uses the saved path or catalog cache/download. This path and live session are not saved."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 6px;
                         Button {
@@ -333,47 +435,36 @@ export component Inspector inherits Rectangle {
                     for field in root.onnx-live: VerticalLayout {
                         spacing: 2px;
                         Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                        Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
+                        Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }
                     }
-                    Text { text: "ONNX configuration · Read-only"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    Text {
-                        text: "Recorded project configuration below is separate from this application's live session.";
-                        color: Theme.accent;
-                        wrap: word-wrap;
-                    }
+                }
+                if root.onnx-config.length > 0: InspectorSection {
+                    title: "ONNX CONFIGURATION";
+                    Text { text: "Read-only project configuration · separate from the live session"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     for field in root.onnx-config: VerticalLayout {
                         spacing: 2px;
                         Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                        Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
-                    }
-                    if root.onnx-saved.length > 0: VerticalLayout {
-                        spacing: 6px;
-                        Text { text: "Saved metadata · not live session state"; color: Theme.accent; wrap: word-wrap; }
-                        for field in root.onnx-saved: VerticalLayout {
-                            spacing: 2px;
-                            Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                            Text { text: field.value; color: Theme.foreground; wrap: word-wrap; min-width: 0px; }
-                        }
+                        Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }
                     }
                 }
-
-                if root.ports.length > 0: VerticalLayout {
-                    spacing: 4px;
-                    Text { text: "Ports"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
-                    for port in root.ports: Text {
-                        text: (port.output ? "OUT  " : "IN   ") + port.label + "  ·  " + port.data-type;
-                        color: Theme.secondary;
-                        font-size: 11px;
-                        wrap: word-wrap;
+                if root.onnx-config.length > 0 && root.onnx-saved.length > 0: InspectorSection {
+                    title: "ONNX SAVED METADATA";
+                    Text { text: "Saved metadata · not live session state"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    for field in root.onnx-saved: VerticalLayout {
+                        spacing: 2px;
+                        Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                        Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }
                     }
                 }
-
             }
         }
-        if root.node-id != "" && root.is-shader: Button {
-            text: "Apply shader";
-            enabled: root.shader-dirty && !root.project-busy;
-            clicked => { root.apply-shader(); }
+        if root.has-selection && root.is-shader && !root.shader-read-only: HorizontalLayout {
+            padding: 8px;
+            Button {
+                text: "Apply shader";
+                enabled: root.shader-dirty && !root.project-busy;
+                clicked => { root.apply-shader(); }
+            }
         }
     }
 }

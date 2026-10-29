@@ -1,0 +1,177 @@
+import { ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, SpinBox } from "compact_widgets.slint";
+import { Theme } from "../theme.slint";
+
+// Native multiline editor used for shader source. The actual editable surface is
+// TextInput (not a painted Text mirror), so platform cursor, IME, selection,
+// clipboard and Unicode behavior remain intact.
+export component CodeEditor inherits Rectangle {
+    in-out property <string> text;
+    in property <bool> read-only: false;
+    in property <bool> enabled: true;
+    in property <[string]> line-numbers;
+    // UTF-8 byte offsets for the first byte of each line. These are supplied by
+    // the controller because Slint expressions intentionally do not expose a
+    // string split/index API for arbitrary source text.
+    in property <[int]> line-offsets;
+    // UTF-8 byte offsets and lengths for matches of the current find query.
+    in property <[int]> find-offsets;
+    in property <[int]> find-lengths;
+    in-out property <string> find-query;
+    in-out property <int> goto-line: 1;
+    in property <length> line-height: 18px;
+    callback edited(string);
+    callback find-requested(string);
+
+    private property <int> find-index: 0;
+    private property <length> gutter-width: 42px;
+
+    background: #ffffff;
+    border-width: 1px;
+    border-color: #e5e5ea;
+    clip: true;
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 56px;
+            vertical-stretch: 0;
+            background: #f8f8fa;
+            border-width: 0px;
+            VerticalLayout {
+                spacing: 0px;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 5px;
+                Text { text: "Line"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; }
+                SpinBox {
+                    value <=> root.goto-line;
+                    minimum: 1;
+                    maximum: max(1, root.line-offsets.length);
+                    enabled: root.enabled;
+                    width: 58px;
+                    edited => { root.goto-line = self.value; }
+                }
+                Button {
+                    text: "Go";
+                    enabled: root.enabled && root.line-offsets.length > 0;
+                    clicked => {
+                        if root.goto-line >= 1 && root.goto-line <= root.line-offsets.length {
+                            editor.set-selection-offsets(root.line-offsets[root.goto-line - 1], root.line-offsets[root.goto-line - 1]);
+                            editor.focus();
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.find-query == "" ? "" : root.find-offsets.length + " matches"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; }
+            }
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 5px;
+                Text { text: "Find"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; }
+                query := LineEdit {
+                    text <=> root.find-query;
+                    placeholder-text: "text";
+                    enabled: root.enabled;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    edited => {
+                        root.find-index = 0;
+                        root.find-requested(self.text);
+                    }
+                    accepted => {
+                        if root.find-offsets.length > 0 && root.find-lengths.length == root.find-offsets.length {
+                            root.find-index = Math.mod(root.find-index, root.find-offsets.length);
+                            editor.set-selection-offsets(root.find-offsets[root.find-index], root.find-offsets[root.find-index] + root.find-lengths[root.find-index]);
+                            root.find-index = Math.mod(root.find-index + 1, root.find-offsets.length);
+                            editor.focus();
+                        }
+                    }
+                }
+                Button {
+                    text: "Next";
+                    enabled: root.enabled && query.text != "" && root.find-offsets.length > 0 && root.find-lengths.length == root.find-offsets.length;
+                    clicked => {
+                        if root.find-offsets.length > 0 && root.find-lengths.length == root.find-offsets.length {
+                            root.find-index = Math.mod(root.find-index, root.find-offsets.length);
+                            editor.set-selection-offsets(root.find-offsets[root.find-index], root.find-offsets[root.find-index] + root.find-lengths[root.find-index]);
+                            root.find-index = Math.mod(root.find-index + 1, root.find-offsets.length);
+                            editor.focus();
+                        }
+                    }
+                }
+            }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            // Fixed gutter: it follows the editor's vertical scroll but does
+            // not follow horizontal content-x.
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: root.gutter-width;
+                height: parent.height;
+                clip: true;
+                background: #fafafa;
+                Rectangle { x: parent.width - 1px; width: 1px; height: parent.height; background: #e8e8ed; }
+                for line[index] in root.line-numbers: Text {
+                    x: 0px;
+                    y: index * root.line-height + editor-scroll.content-y;
+                    width: root.gutter-width - 6px;
+                    height: root.line-height;
+                    text: line;
+                    color: index == root.goto-line - 1 ? #007aff : #8e8e93;
+                    font-family: "Menlo";
+                    font-size: 11px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+            editor-scroll := ScrollView {
+                x: root.gutter-width;
+                width: parent.width - root.gutter-width;
+                height: parent.height;
+                content-width: max(self.visible-width, editor.preferred-width);
+                content-height: max(self.visible-height, editor.preferred-height);
+                horizontal-scrollbar-policy: always-on;
+                vertical-scrollbar-policy: always-on;
+                editor := TextInput {
+                    width: max(parent.visible-width, self.preferred-width);
+                    height: max(parent.visible-height, self.preferred-height);
+                    text <=> root.text;
+                    enabled: root.enabled;
+                    read-only: root.read-only;
+                    single-line: false;
+                    wrap: no-wrap;
+                    font-family: "Menlo";
+                    font-size: 12px;
+                    line-height-factor: 1.25;
+                    color: #1d1d1f;
+                    selection-background-color: #b3d7ff;
+                    selection-foreground-color: #1d1d1f;
+                    vertical-alignment: top;
+                    edited => { root.edited(self.text); }
+                    cursor-position-changed(cpos) => {
+                        if (cpos.x + editor-scroll.content-x < 0px) {
+                            editor-scroll.content-x = min(0px, max(editor-scroll.visible-width - self.width, -cpos.x));
+                        } else if (cpos.x + editor-scroll.content-x > editor-scroll.visible-width - self.text-cursor-width) {
+                            editor-scroll.content-x = min(0px, max(editor-scroll.visible-width - self.width, editor-scroll.visible-width - cpos.x - self.text-cursor-width));
+                        }
+                        if (cpos.y + editor-scroll.content-y < 0px) {
+                            editor-scroll.content-y = min(0px, max(editor-scroll.visible-height - self.height, -cpos.y));
+                        } else if (cpos.y + editor-scroll.content-y > editor-scroll.visible-height - self.font-size) {
+                            editor-scroll.content-y = min(0px, max(editor-scroll.visible-height - self.height, editor-scroll.visible-height - cpos.y - self.font-size));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public function focus-editor() { editor.focus(); }
+    public function select-all() { editor.select-all(); }
+}

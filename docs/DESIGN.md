@@ -49,6 +49,10 @@ Slint AppWindow / GraphView / Inspector
 - SDK、domain、graph/history、execution、host API 分别属于现有 Rust crate 边界；Slint 只投影 UI，不在 UI 中重建 graph/inference policy。
 - NativeHost 与 Slint 使用同一组 wgpu 30 Device/Queue；Renderer 正常呈现直接导入纹理。只有显式 PNG 截图执行 readback/编码，不把 PNG/base64 当实时预览。
 - Image/Framebuffer 解码、项目 I/O、模型读取/下载不阻塞 UI；ONNX 会话由 NativeHost 管理。Video file/camera 配置持久化并由 host 对齐，缺失资源/权限/推理失败显示真实错误。
+- GraphView 将 Shader、Constant、Renderer 和 sampler 输出节点的实际共享 GPU 纹理导入原生卡片，显示分辨率并允许收起预览；实时预览不经过 PNG/base64，Renderer 侧栏复用 GPU 输出纹理。
+- 原生 Shader 编辑器由 Slint 多行 `TextInput` 与固定行号栏组成；Rust 提供 UTF-8 字节安全的行号、跳转、Find/Next 匹配范围，源码仍显式 Apply。Slint 1.18 没有可编辑 per-token 富文本，故不提供语法着色或补全。
+- GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 NativeHost / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
+- 原生 Shader 菜单包含 7 个分类、34 个预设。AppKit 实际打开并取消了 FILE → Open 与 Save As 对话框；GUI 键盘验收边界见原生 app README。
 - Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。
 - `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
 - Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。

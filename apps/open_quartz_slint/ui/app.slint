@@ -1,29 +1,44 @@
-import { Button, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { Button, ComboBox } from "components/compact_widgets.slint";
 import { Theme } from "theme.slint";
-import { TopBar } from "components/top_bar.slint";
+import { TopBar, FactoryEntry, FactoryGroup } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
 import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow } from "components/inspector.slint";
-export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow }
+export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow, FactoryEntry, FactoryGroup }
 
 export component AppWindow inherits Window {
-    title: "OpenQuartz · Slint";
+    title: root.project-name + " — OpenQuartz";
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 800px;
     min-height: 540px;
     background: Theme.background;
-    init => { Palette.color-scheme = ColorScheme.dark; }
+    default-font-size: 11px;
+    init => { Palette.color-scheme = ColorScheme.light; }
 
     in property <string> project-name;
     in-out property <string> project-path;
     in property <string> io-status;
     in property <string> runtime-status;
-    in property <string> graph-summary;
-    in property <[string]> node-factory-options;
+    in property <[FactoryGroup]> factory-groups;
+    in property <int> renderer-factory-index: -1;
+    in property <string> playback-state: "playing";
+    callback project-action(string);
+    callback rename-project(string);
+    private property <length> sidebar-width: 320px;
+    private property <length> sidebar-start-width;
+    private property <bool> preview-expanded: true;
     in property <[GraphNode]> graph-nodes;
     in property <[GraphEdge]> graph-edges;
     in property <float> graph-content-width;
     in property <float> graph-content-height;
+    in property <bool> inspector-shader-read-only;
+    in property <[string]> inspector-shader-line-numbers;
+    in property <[int]> inspector-shader-line-offsets;
+    in property <[int]> inspector-shader-find-offsets;
+    in property <[int]> inspector-shader-find-lengths;
+    in-out property <string> inspector-shader-find-query;
+    callback inspector-shader-find-requested(string);
     in property <float> graph-origin-x;
     in property <float> graph-origin-y;
     in property <bool> busy;
@@ -85,8 +100,7 @@ export component AppWindow inherits Window {
     callback inspector-apply-form(string);
     in property <image> renderer-image;
     in property <bool> has-renderer-image;
-    callback open-project(string);
-    callback save-project(string);
+    in property <bool> inspector-has-preview;
     callback graph-node-selected(string, bool);
     callback graph-node-moved(string, float, float);
     in property <string> selected-edge-id;
@@ -112,6 +126,7 @@ export component AppWindow inherits Window {
     callback graph-add-node(int);
     callback graph-remove-nodes();
     callback graph-select-all();
+    callback graph-toggle-preview(string);
     in property <[string]> renderer-options;
     in property <int> renderer-index: -1;
     in property <bool> native-runtime-available;
@@ -127,36 +142,38 @@ export component AppWindow inherits Window {
     }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        padding: 0px;
+        spacing: 0px;
         TopBar {
             project-name: root.project-name;
-            project-path <=> root.project-path;
             runtime-status: root.runtime-status;
+            io-status: root.io-status;
             busy: root.busy || root.inspector-dirty;
-            open-requested(path) => { root.open-project(path); }
-            save-requested(path) => { root.save-project(path); }
-            renderer-options: root.renderer-options;
-            renderer-index: root.renderer-index;
+            can-undo: root.can-undo;
+            can-redo: root.can-redo;
+            factory-groups: root.factory-groups;
+            renderer-factory-index: root.renderer-factory-index;
+            playback-state: root.playback-state;
             native-runtime-available: root.native-runtime-available;
             screen-saver-available: root.screen-saver-available;
-            export-selection-valid: root.graph-selection-count <= 1;
-            select-renderer(index) => { root.select-renderer(index); }
+            export-selection-valid: root.renderer-index >= 0 && root.graph-selection-count <= 1;
+            project-action(action) => { root.project-action(action); }
+            rename-project(name) => { root.rename-project(name); }
+            add-node(index) => { root.graph-add-node(index); }
+            undo => { root.graph-undo(); }
+            redo => { root.graph-redo(); }
             capture-png => { root.capture-png(); }
             export-screen-saver => { root.export-screen-saver(); }
             playback(action) => { root.playback(action); }
         }
-        Text { text: root.io-status; color: Theme.foreground; wrap: word-wrap; }
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 0px;
             graph-view := GraphView {
                 nodes: root.graph-nodes;
                 edges: root.graph-edges;
-                summary: root.graph-summary;
                 content-width: root.graph-content-width;
                 content-height: root.graph-content-height;
                 origin-x: root.graph-origin-x;
-                node-factory-options: root.node-factory-options;
                 origin-y: root.graph-origin-y;
                 busy: root.busy || root.inspector-dirty;
                 node-selected(node-id, additive) => { root.graph-node-selected(node-id, additive); }
@@ -180,18 +197,29 @@ export component AppWindow inherits Window {
                 copy => { root.graph-copy(); }
                 paste => { root.graph-paste(); }
                 select-all => { root.graph-select-all(); }
-                add-node(kind) => { root.graph-add-node(kind); }
                 remove-nodes => { root.graph-remove-nodes(); }
+                toggle-preview(node-id) => { root.graph-toggle-preview(node-id); }
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }
-            VerticalLayout {
-                spacing: 12px;
-                horizontal-stretch: 1;
+            if root.inspector-has-selection || root.graph-selection-count > 1: Rectangle {
+                width: root.sidebar-width;
+                background: Theme.panel;
+                Rectangle { width: 1px; height: parent.height; background: #d2d2d7; }
+                VerticalLayout {
+                    padding-left: 1px;
+                    spacing: 0px;
                 Inspector {
                     node-id: root.inspector-node-id;
                     has-selection: root.inspector-has-selection;
                     node-type: root.inspector-node-type;
+                    shader-read-only: root.inspector-shader-read-only;
+                    shader-line-numbers: root.inspector-shader-line-numbers;
+                    shader-line-offsets: root.inspector-shader-line-offsets;
+                    shader-find-offsets: root.inspector-shader-find-offsets;
+                    shader-find-lengths: root.inspector-shader-find-lengths;
+                    shader-find-query <=> root.inspector-shader-find-query;
+                    shader-find-requested(query) => { root.inspector-shader-find-requested(query); }
                     selection-message: root.inspector-selection-message;
                     project-busy: root.busy;
                     is-shader: root.inspector-is-shader;
@@ -245,50 +273,47 @@ export component AppWindow inherits Window {
                     apply-uniforms => { root.inspector-apply-uniforms(); }
                     discard-drafts => { root.inspector-discard-drafts(); }
                     form-draft-changed(key, value) => { root.inspector-form-draft-changed(key, value); }
+                    delete-node => { root.graph-remove-nodes(); }
                     apply-form(key) => { root.inspector-apply-form(key); }
                     horizontal-stretch: 1;
-                    preferred-height: 0px;
-                    vertical-stretch: 3;
+                    preferred-height: root.inspector-node-type == "Shader" ? 400px : root.inspector-node-type == "Renderer" ? 116px : 0px;
+                    vertical-stretch: root.inspector-node-type == "Renderer" ? 0 : 1;
+                    min-height: root.inspector-node-type == "Shader" ? 280px : 0px;
                 }
-                Rectangle {
-                    background: Theme.panel;
-                    border-radius: 8px;
-                    horizontal-stretch: 1;
-                    min-height: 120px;
+                if root.inspector-has-selection && root.inspector-has-preview: Rectangle {
+                    background: Theme.card;
+                    min-height: root.preview-expanded ? 180px : 30px;
                     preferred-height: 0px;
-                    vertical-stretch: 1;
+                    vertical-stretch: root.preview-expanded ? 2 : 0;
                     VerticalLayout {
-                        padding: 12px;
-                        spacing: 10px;
-                        HorizontalLayout {
-                            Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; horizontal-stretch: 1; }
-                            Button {
-                                text: "Fullscreen";
-                                enabled: root.has-renderer-image;
-                                clicked => { root.preview-requested(true); }
-                            }
-                        }
-                        Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
+                        spacing: 0px;
                         Rectangle {
-                            background: #080b11;
+                            height: 30px;
+                            background: Theme.panel;
+                            Rectangle { x: 0px; y: 0px; height: 1px; width: parent.width; background: Theme.border; }
+                            Text { x: 16px; height: parent.height; text: (root.preview-expanded ? "▾" : "▸") + "  PREVIEW"; font-size: 11px; color: Theme.secondary; vertical-alignment: center; }
+                            TouchArea { clicked => { root.preview-expanded = !root.preview-expanded; } }
+                        }
+                        if root.preview-expanded: HorizontalLayout {
+                            padding: 8px; spacing: 4px;
+                            Text { text: root.inspector-node-label; color: Theme.secondary; font-size: 10px; horizontal-stretch: 1; overflow: elide; }
+                            Button { text: "Fullscreen"; accessible-label: "Fullscreen preview"; enabled: root.has-renderer-image; clicked => { root.preview-requested(true); } }
+                        }
+                        if root.preview-expanded: Rectangle {
                             horizontal-stretch: 1;
                             vertical-stretch: 1;
-                            Image {
-                                width: parent.width;
-                                height: parent.height;
-                                source: root.renderer-image;
-                                image-fit: contain;
-                            }
-                            if !root.has-renderer-image: Text {
-                                width: parent.width;
-                                height: parent.height;
-                                text: "No renderer image";
-                                color: Theme.secondary;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Image { width: parent.width; height: parent.height; source: root.renderer-image; image-fit: contain; }
+                            if !root.has-renderer-image: Text { width: parent.width; height: parent.height; text: "No renderer image"; font-size: 12px; color: #aeaeb2; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { enabled: root.has-renderer-image; double-clicked => { root.preview-requested(true); } }
                         }
                     }
+                }
+                }
+                resize-area := TouchArea {
+                    width: 4px; height: parent.height;
+                    mouse-cursor: ew-resize;
+                    pointer-event(event) => { if event.kind == PointerEventKind.down { root.sidebar-start-width = root.sidebar-width; } }
+                    moved => { if self.pressed { root.sidebar-width = clamp(root.sidebar-start-width + self.pressed-x - self.mouse-x, 240px, min(640px, root.width - 400px)); } }
                 }
             }
         }
@@ -306,12 +331,12 @@ export component AppWindow inherits Window {
             }
             return reject;
         }
-        Rectangle { width: parent.width; height: parent.height; background: Theme.background; }
+        Rectangle { width: parent.width; height: parent.height; background: #111111; }
         VerticalLayout {
             padding: 16px;
             spacing: 12px;
             HorizontalLayout {
-                Text { text: "Renderer preview"; color: Theme.foreground; font-size: 20px; horizontal-stretch: 1; }
+                Text { text: root.inspector-node-label + " · Preview"; color: white; font-size: 14px; horizontal-stretch: 1; }
                 Button { text: "Close · Esc"; clicked => { root.preview-requested(false); } }
             }
             Image { source: root.renderer-image; image-fit: contain; horizontal-stretch: 1; vertical-stretch: 1; }

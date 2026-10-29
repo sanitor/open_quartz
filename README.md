@@ -107,17 +107,17 @@ The following editor details describe the retained React interface; they are not
 - Windows `File → Export As Screen Saver…` packages a selected Renderer into a self-contained version-3 native `.scr` with its graph-required image/video/model/runtime resources; `/s`, `/p <HWND>`, and `/c` do not require an installed OpenQuartz app.
 
 ## Default Native Desktop (Slint)
-- Standalone Rust application with Slint 1.18.1 and wgpu 30; no WebView, browser, WASM build, or Node process is required by the packaged application.
-- Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
-- Slint and `NativeHost` share one GPU device/queue; Renderer presentation imports GPU textures directly. PNG capture is explicit readback, not the realtime presentation path.
-- Rust-owned graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, preview/fullscreen controls, and Windows screen saver export. See the app README for exact UI behavior.
-- The WGSL editor is a plain native TextEdit with explicit Apply; it does not provide CodeMirror syntax highlighting, completion, or inline lint.
+- Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
+- Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build, and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux, and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
+- Slint and `NativeHost` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
+- The native Shader editor is a multiline `TextInput` with byte-safe line numbers, goto-line, UTF-8 find/next selection, live match counts, and explicit Apply. Native caret, selection, IME, clipboard, Unicode, and preset read-only behavior remain on Slint's input path. Syntax highlighting, completion, and inline lint are unavailable in Slint 1.18.
+- Rust owns graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, previews/fullscreen, and Windows screen saver export. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
 - Portable packages include architecture-matched FFmpeg and official ONNX Runtime **1.21.0**, their notices, and (Windows) DirectML, app-local VC++ runtime DLLs, and the screen saver stub. Missing required resources fail packaging instead of producing a partial app.
 - macOS packages include an icon and camera usage description. They are ad-hoc signed, **not notarized**; Windows packages are unsigned. Camera access still requires OS permission and a real device.
-- macOS packaging and production video/PNG/fullscreen/ONNX smoke pass; unlocked native Video/Image/Framebuffer dialogs and PNG save/cancel also pass. A fresh LaunchServices launch (including `--args --project …`) rendered bundled video successfully. An earlier winit startup abort remains unexplained and un-reproduced; camera permission/capture and Windows/Linux runtime/`.scr` gates remain pending.
+- macOS packaging and production video/PNG/fullscreen/ONNX smoke pass; unlocked native Video/Image/Framebuffer dialogs and PNG save/cancel also pass. A fresh LaunchServices launch (including `--args --project …`) rendered bundled video successfully. An earlier winit startup abort remains unexplained and unreproduced; camera permission/capture and Windows/Linux runtime/`.scr` gates remain pending.
 
 ### Tauri Fallback
-The prior React/Tauri shell and its native runtime remain available for one version through explicit commands below. Windows WebView2 TextureStream and bounded readback presentation belong to this fallback, not the Slint renderer. Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint or Tauri application; camera inputs are not deterministic export sources.
+The prior React/Tauri shell and its native runtime remain available for one version through explicit commands. Windows WebView2 TextureStream and bounded readback presentation belong to this fallback, not the Slint renderer. Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint or Tauri application; camera inputs are not deterministic export sources.
 
 ## Rust SDK and Structured Runtime
 - Real crate boundaries: `open_quartz_schema` → `open_quartz_execution` → `open_quartz_host_api` → `open_quartz_sdk`, with `open_quartz` as the thin native/WASM facade and `open_quartz_bindings` for JNI
@@ -190,7 +190,7 @@ npm run test:models                  # real-model browser inference
 npm run test:shaders                 # real-GPU browser shader tests
 ```
 
-Local verification passed: 62 Slint tests, 292 workspace test results, 704 Web tests, independent Web production build and macOS native packaging/signature. Production Controller/NativeHost/FemtoVG smoke and unlocked Video/Image/Framebuffer/PNG dialogs passed. Cold LaunchServices starts—including project-open arguments—rendered packaged video. One previous winit startup abort lacks a recoverable panic payload and remains unexplained, not declared fixed. Real camera capture and Windows/Linux/.scr acceptance remain pending; Mobile Phase 6 is deferred.
+Recent local verification: the native Slint package builds and its **66 application tests** pass. Real shared-GPU smoke covers node thumbnails, resolution labels, collapse/expand, categorized Shader creation, read-only presets, Unicode editor navigation, exact GPU error status, stale-preview clearing and Undo recovery. Native FILE → Open and Save As dialogs were opened and cancelled successfully. Full Web, cross-platform and camera claims above remain separately scoped.
 
 ## Tech Stack
 

@@ -14,7 +14,7 @@
 |---|---|
 | Slint 能否覆盖五个原生平台 | 框架支持五平台；本轮完成 macOS，Windows/Linux 验收与 Android/iOS 明确延后 |
 | 能否消除 WebView 纹理传输 | 桌面 Slint 与 NativeHost 共享 `wgpu::Device/Queue` 并直接导入纹理；已有 macOS 单切片记录不代表所有平台/新包已验收 |
-| 是否有现成 WGSL 编辑器 | **没有**：Slint 只有纯文本 `TextEdit` 和只读 `StyledText`，富文本编辑 issue #2723 仍 open |
+| 是否有现成 WGSL 编辑器 | **没有**：Slint 1.18 没有可编辑富文本/span API；当前实现使用原生 `TextInput` 组合补齐行号、导航和查找，但不提供 per-token 高亮 |
 | 是否有现成节点图 | **没有**：需要基于 Slint 图元重写，触摸、连线、缩放都要自己做 |
 | Web 是否保留 | **独立保留** React/Web，显式 `dev:web/build:web/preview:web`；不做 Slint WASM port |
 | 当前默认桌面 | **Slint**；Tauri 降为一个版本的显式 fallback，不删除其 WebView/TextureStream 实现 |
@@ -134,7 +134,7 @@ flowchart TD
 | 文件对话框 | `@tauri-apps/plugin-dialog` + HTML file input | `rfd`（桌面）或平台 document picker（移动端） |
 | 窗口 | `getCurrentWindow()` 拖动/最小化/最大化/关闭 | Slint `Window` / 平台窗口适配 |
 | 节点图 | React Flow | Slint 自绘 GraphView |
-| 编辑器 | CodeMirror 6 | Slint `TextEdit` v1；自研编辑器为后续选项 |
+| 编辑器 | CodeMirror 6 | 原生 `TextInput` 组合：行号、goto/find/next、独立滚动；无语法高亮 |
 | 状态 | Zustand + Immer + React hooks | Rust `AppController` + Slint models/properties |
 | 屏幕保护 | Tauri `.scr` host + WebView | 保留独立 `.scr` host；UI 只调用导出服务 |
 | 打包 | Tauri/npm | Cargo + Android/iOS 工程 + 平台资源 |
@@ -562,60 +562,49 @@ A 的验收：
 
 ### 7.3 WGSL 编辑器
 
-当前 CodeMirror 能力：
+当前 Web/Tauri CodeMirror 能力仍包括：
 
 - WGSL 语法高亮；
 - 行号、当前行、选择、撤销；
-- naga 解析错误；
-- GPU 编译诊断（行/列/长度）；
-- 400ms 提交防抖、750ms lint 防抖；
-- 预置 shader 只读。
+- naga 解析错误和 GPU 编译诊断；
+- 提交/lint 防抖；
+- 预置 Shader 只读。
 
-Slint 现状：
+原生 Slint 路径的实际实现是 `CodeEditor` 组件：
 
-- `TextEdit`：纯文本、多行、选择、剪贴板、IME、滚动；**无 per-token 高亮**。
-- `StyledText`：只读富文本/Markdown 子集；**不可编辑**。
-- 富文本编辑 issue #2723 仍 open；官方明确短期不做代码编辑器。
-- 社区有 `slint-codeeditor` 原型，但不是生产级编辑器。
-
-候选：
+- 真正可编辑的原生多行 `TextInput`，保留平台光标、选区、IME、剪贴板、Unicode 和只读语义；
+- Rust `code_editor::metadata` 生成 UTF-8 字节安全的行号、行起点、匹配起点和匹配长度；
+- goto-line、Find/Next、实时匹配数量，以及可独立横向/纵向滚动的代码区；
+- 预置 Shader 只读，Apply 保持在侧栏滚动区之外；
+- 不提供语法高亮、补全或输入时 GPU lint。Slint 1.18 没有不会破坏光标/选区的 editable span API。
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| A. `TextEdit` v1 | 最快、IME/移动端可用、风险低 | 无语法高亮；体验退化 | **v1 采用** |
-| B. 自研 Slint 编辑器 | 纯原生、可控 | 光标/选区/IME/撤销/滚动/无障碍成本极高 | 后续评估，不在首版 |
-| C. 桌面 WebView + CodeMirror | 体验最好 | 五平台分叉、移动端很脏、违背目标 | 仅作应急 fallback |
-| D. 等 Slint 上游 | 无自研成本 | 时间不可控 | 跟踪 #2723 |
+| A. 原生 `TextInput` 组合 | 原生输入、IME、选区和剪贴板；实现成本可控 | 无 per-token 高亮和补全 | **当前采用** |
+| B. 自研完整富文本编辑器 | 可实现高亮/折叠 | 光标、选区、IME、撤销、无障碍成本极高 | 后续独立评估 |
+| C. 桌面 WebView + CodeMirror | 体验最好 | 五平台分叉，违背纯原生目标 | 仅作 fallback |
+| D. 等 Slint 上游富文本编辑 | 无自研成本 | 时间不可控 | 跟踪上游 issue |
 
-**目标选型：`TextEdit` + Rust/naga 诊断 + 错误列表/行标记；不把透明 `TextEdit` 叠 `StyledText` 当生产方案。** 当前已实现纯文本编辑、SDK Apply 和已有错误展示，尚未实现防抖诊断或行标记。如果基础编辑体验不可接受，再启动自研编辑器，且必须先做独立原型和性能/IME 验收。
-
-后续诊断路径（尚未实现）：
-
-- 输入停止后 300–500ms 防抖；
-- Rust `naga` 解析；
-- 可选的 GPU 编译验证（复用现有 compiler）；
-- 错误通过 property/model 显示在编辑器下方或行标记；
-- 预置 shader 只读。
+GPU 编译失败不伪装成成功输出：`NativeHost` 保留结构化 `SdkError.node_id`，`RenderBridge` 将其传回 `AppController`，准确节点的状态灯变红并清除过期预览；无关 ONNX 节点不会被批量标记失败。
 
 #### 7.3.1 macOS 原生编辑体验评估
 
-- **实测**：Apple M4 Pro/Metal release AppKit 窗口载入含 300 行中英文长注释的 66,706-byte WGSL；编辑器独立滚动至第 300 行及 fragment 函数，外层 Inspector 和固定底部 Apply 保持可用。真实 HID 指针聚焦后，连续两次键盘输入得到 `// native caret αβ`，未丢失光标位置；草稿保护生效，Apply 后 SDK Save 保留全部原注释及新增文本，96×48 共享纹理继续显示绿色。
-- **窄窗口**：800×540 客户区仍能同时看到源码末尾、Unicode 光标、固定 Apply 和真实输出。长行保持 no-wrap，需要横向滚动；较短面板需外层滚动，不是完整代码工作区。
-- **决定**：本轮保留原生 `TextEdit` 和显式 Apply，不新增编辑器依赖、WebView、叠层高亮或第二套 WGSL parser。适用于当前手动修改/提交流程，不宣称与 CodeMirror 对等。
-- **缺口**：没有行号、语法高亮、补全、折叠、查找替换或行内诊断；现有 SDK `parseError` 和 NativeHost runtime error 不等于输入时 lint。若继续改善编辑器，优先经现有 Rust 编译能力提供结构化诊断，再独立评估高亮/行导航；不在本次体验评估中扩张 SDK API。
-- **验证边界**：本次没有编辑延迟基准、IME 组合输入或 Windows/Linux/移动端输入验收；Unicode 文本插入不代表 IME 已验证。
+- 已验证：原生窗口中的代码区、行号、UTF-8 查找元数据、只读预置和固定 Apply；真实 GPU smoke 覆盖 Unicode 草稿、匹配数量变化和 Undo 后纹理恢复。
+- 800×540 窄窗口下，编辑器工具条拆成两行，代码区仍有行号、横向/纵向滚动和固定 Apply。
+- 语法高亮、补全、折叠、行内 lint 和 IME 组合输入不作当前验收承诺；自动化 provider 不能可靠地把任意键盘事件送入 TextInput，但实现仍使用平台原生输入控件。
+- AppKit accessibility 已打开并取消 FILE → Open 和 Save As 原生对话框；详情以 `apps/open_quartz_slint/README.md` 当前验收记录为准。
 
 ### 7.4 预览与输出
 
-当前输出是 data URL；新 UI 不应继续使用 base64。
+当前 Slint 输出优先导入 `wgpu::Texture` 为原生 `Image`：节点卡片、Renderer
+侧栏和 fullscreen 共享实际 GPU 输出及宽高元数据；不在实时路径使用 data URL
+或 base64。PNG 仅在用户明确截图时执行 readback 与编码。
 
-建议新增/使用：
+建议保持：
 
-- `PreviewFrame`：`SharedPixelBuffer` 或 `wgpu::Texture` + 元数据（width/height/format/generation）。
-- Renderer 主输出：纹理导入。
-- 图片/视频缩略图：RGBA buffer。
-- 截图：显式 readback + 编码，仅用户触发。
-- 订阅按 nodeId/output/generation 去重；旧帧不得覆盖新帧。
+- `PreviewFrame`：`wgpu::Texture` + width/height/format/generation 元数据；
+- 订阅按 nodeId/output/generation 去重，旧帧不得覆盖新帧；
+- shared texture import 失败时清理可见预览并显示真实错误，不回退为无限制 CPU/base64 热路径。
 
 ### 7.5 文件 I/O
 

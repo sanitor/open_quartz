@@ -43,6 +43,7 @@ pub struct LiveOnnxState {
     pub result: String,
     pub loading: bool,
     pub attached: bool,
+    pub failed: bool,
 }
 
 pub enum ModelMessage {
@@ -322,6 +323,7 @@ impl OnnxRuntime {
             return;
         };
         state.status = format!("Inference output · {}×{}", event.width, event.height);
+        state.failed = false;
         state.backend = event.backend;
         state.result = event
             .data
@@ -330,8 +332,12 @@ impl OnnxRuntime {
     }
 
     pub fn render_failed(&mut self, error: &str) {
-        for state in self.states.values_mut().filter(|state| state.attached) {
+        let failed_node = serde_json::from_str::<open_quartz_sdk::SdkError>(error)
+            .ok()
+            .and_then(|error| error.node_id);
+        for (node_id, state) in self.states.iter_mut().filter(|(_, state)| state.attached) {
             state.status = format!("Runtime stopped: {error}");
+            state.failed |= failed_node.as_deref() == Some(node_id.as_str());
             state.result.clear();
         }
     }
@@ -342,6 +348,7 @@ impl OnnxRuntime {
             node_id.into(),
             LiveOnnxState {
                 status: format!("Model load failed: {error}"),
+                failed: true,
                 ..Default::default()
             },
         );
@@ -423,4 +430,28 @@ fn model_specs(graph: &Graph) -> Result<BTreeMap<String, ModelSpec>, String> {
             _ => None,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::{LiveOnnxState, OnnxRuntime};
+    use open_quartz_sdk::{SdkError, SdkErrorCode};
+
+    #[test]
+    fn render_error_only_marks_the_attributed_onnx_node_failed() {
+        let mut runtime = OnnxRuntime::default();
+        for id in ["model_a", "model_b"] {
+            runtime.states.insert(id.into(), LiveOnnxState {
+                attached: true,
+                ..Default::default()
+            });
+        }
+        runtime.render_failed(&SdkError::new(SdkErrorCode::InvalidResource, "Bad shader")
+            .for_node("shader_1").to_json());
+        assert!(runtime.states.values().all(|state| !state.failed));
+        runtime.render_failed(&SdkError::new(SdkErrorCode::InvalidResource, "Inference failed")
+            .for_node("model_a").to_json());
+        assert!(runtime.states["model_a"].failed);
+        assert!(!runtime.states["model_b"].failed);
+    }
 }

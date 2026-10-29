@@ -377,9 +377,14 @@ impl NativeHost {
                 .runtime
                 .execution_plan()
                 .ok_or_else(|| "Native engine did not retain an execution plan".to_owned())?;
-            self.executor
-                .sync_plan(plan)
-                .map_err(|error| error.to_string())?;
+            self.executor.sync_plan(plan).map_err(|error| {
+                let mut sdk_error = SdkError::new(
+                    open_quartz_schema::SdkErrorCode::InvalidResource,
+                    error.message,
+                );
+                sdk_error.node_id = error.node_id;
+                runtime_error(sdk_error)
+            })?;
             (
                 plan.output_nodes.first().cloned(),
                 plan.nodes

@@ -68,18 +68,36 @@ An empty project opens with an empty graph and an explicit idle renderer status.
 creates a deterministic spatial fixture with 100 nodes by default and accepts an
 explicit count from 1 through 300. The two options are mutually exclusive.
 
-The path field is used for **both Open and Save**. Press Enter to open that path,
-or use the corresponding button. Save writes the SDK's `Project::to_file()` JSON
-representation and **overwrites an existing file at the entered path**. Parent
-directories must already exist. Relative paths are resolved against the process
-working directory. Project Open/Save use this path field; resource selection uses native
-file dialogs. Save is manual; there is no automatic save.
+Use **FILE → OPEN… / SAVE / SAVE AS…** for native project dialogs. Save writes
+the SDK's `Project::to_file()` JSON to the current path; Save As chooses a new
+path and the platform dialog handles overwrite confirmation. Save is manual.
+Double-click the project title and press Enter to rename it. NEW starts an empty
+project; CLEAR removes the graph as one undoable edit. Neither automatically saves.
 
 ## Graph and application boundary
 
-- A real Slint window with project name, path entry, Open/Save, I/O and runtime
-  status, a scrollable spatial graph, node selection and drag-to-move, typed ports,
-  editable connection paths, Undo/Redo, zoom/Fit View, MiniMap, graph Copy/Paste, and renderer output.
+- The original React/Tauri light visual layout is restored in native Slint: 48px
+  icon toolbar with FILE/SOURCE/MATH/SHADER/ONNX menus, a full-bleed cross-grid
+  canvas, dark-blue 28px node captions, typed ports, real shared-GPU node
+  thumbnails with resolution labels and status LEDs, and a 320px resizable
+  sidebar. The sidebar appears on selection; semantic sections and texture
+  previews collapse. Runtime and project details are available through FILE →
+  RUNTIME STATUS…. At 800×540 the toolbar shortens its brand and hides the
+  version to preserve actions.
+- The native shader editor uses Slint TextInput, preserving platform caret,
+  selection, IME, clipboard, Unicode and read-only behavior. It adds byte-safe
+  line numbers, goto-line, UTF-8 find/next selection, live match counts and a
+  fixed Apply action. Syntax coloring is intentionally not provided because
+  Slint 1.18 has no rich editable text/span API.
+- Restoration verification: 66 Slint tests pass and the native application builds.
+  Real-window/shared-GPU smoke covers Shader and Renderer thumbnails, resolution
+  labels, collapse/expand, categorized shader creation, read-only presets,
+  Unicode drafts, live find metadata, exact GPU error status, failed-preview
+  clearing and Undo recovery. AppKit accessibility checks also opened and
+  cancelled native FILE → Open and Save As dialogs. A remaining limitation is
+  that this automation provider cannot reliably synthesize keyboard focus for
+  arbitrary TextInput key events; semantic set-value and the in-app smoke cover
+  the same model updates.
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
   computes padded scroll content bounds. Its origin offset keeps loaded nodes with
   negative coordinates reachable while preserving graph-space edge coordinates.
@@ -192,9 +210,9 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
 
 ## Inspector and WGSL editing
 
-- Select exactly one node to inspect its ID, kind, and typed input/output ports.
-  Empty/multi-selection shows an explicit selection prompt. Shader nodes expose
-  uniform rows for Float/Int/Uint/Bool, Vec2–4/Ivec2–4/Uvec2–4, and Mat2–4 inputs.
+- Select exactly one node to inspect its kind, name, and typed input/output ports.
+  Empty selection hides the sidebar; multi-selection shows an explicit prompt.
+  Shader nodes expose uniform rows for Float/Int/Uint/Bool, Vec2–4/Ivec2–4/Uvec2–4, and Mat2–4 inputs.
   Connected rows are read-only because their upstream value wins. Samplers, Auto,
   boolean vectors, and other resource/object types are not uniform rows; the Ports
   list still shows them. Sampling and Input configuration forms are described below.
@@ -203,16 +221,17 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   width, height, and optional row stride before choosing the file. A successful
   import updates SDK node data as one undoable edit; Save includes the embedded data
   URL, and Open revalidates and uploads it asynchronously.
-- Edit the name and use **Apply name**. Shader/Constant nodes also expose
-  **Auto size**, width and height (1–8192), and **Apply output size**. Auto size
-  delegates resolution to the engine; applying it clears explicit dimensions.
-- Shader nodes expose a plain, scrollable WGSL `TextEdit` and a fixed-bottom
-  **Apply shader** button. Built-in node implementations are not source-editable.
-  There is no syntax highlighting, inline GPU linter, or debounced auto-apply.
+- Edit the name in the sidebar header and press Enter or **Apply**. Its trash icon
+  deletes the node. Shader/Constant nodes also expose **Auto size**, width/height
+  (1–8192), and **Apply output size**. Auto size delegates resolution to the engine.
+- Shader nodes expose a native multiline TextInput editor with UTF-8-safe line
+  numbers, goto-line and find/next navigation, plus an **Apply shader** action.
+  Built-in implementations are not source-editable. There is no syntax
+  highlighting, inline GPU linter, or debounced auto-apply.
 - All fields are session-local drafts until their respective Apply action. Name,
   uniform values, Sampling, Framebuffer/Video configuration, output size, and WGSL
   source are independent groups, so applying one preserves drafts in every other group.
-  Use **Discard inspector edits** to restore all fields without creating a revision.
+  Use **Discard changes** to restore all fields without creating a revision.
 - While drafts differ from the project, graph mutations/selection/history and
   Open/Save are disabled and rejected by the controller. Apply or discard before
   switching nodes/projects. Project I/O disables Inspector edits and Apply too.
@@ -230,8 +249,10 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   dirty-locking the graph. Failed connected-port source changes preserve the graph,
   revision, history, and draft. SDK syntax errors can be committed when the graph
   remains valid; the stored `parseError` is shown in the panel. Apply valid source to
-  clear it. NativeHost/GPU errors are reported in runtime status, not disguised as
-  successful output.
+  clear it. GPU compilation failures carry their structured node ID back from
+  NativeHost: the affected node's status LED turns red, its stale texture preview
+  clears, and the runtime status remains readable. Unrelated attached ONNX nodes
+  are not marked failed.
 - Each changed Apply is one SDK history entry. No-op Apply creates no revision.
   Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
   source/uniform/output-size edits and their history refresh the NativeHost graph.
@@ -317,9 +338,10 @@ The shader editor and project I/O do not require a loaded model session.
   zero-copy. Windows requests DirectML with the existing CPU fallback; macOS/Linux
   use the existing CPU execution provider.
 
-The WGSL editor remains native `TextEdit` with explicit Apply. The macOS large-text
-assessment and decision, including diagnostic/IME/platform limits, are recorded in
-[`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
+The WGSL editor remains a native multiline `TextInput` with explicit Apply,
+UTF-8-safe line/find navigation, and platform caret/selection behavior. The macOS
+large-text assessment and decision, including diagnostic/IME/platform limits, are
+recorded in [`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
 
 ## Validation scope
 
@@ -338,8 +360,9 @@ and Auto transitions, rejected connected-port changes, persisted parse errors an
 repair, plus typed uniform scalar/vector/matrix parsing, bounds/exact arity, connected
 exclusion, invalid-draft atomicity, schema refresh, missing-zero no-ops, complete-node-data
 preservation, independent drafts, single Content history, and SDK persistence.
-All **49 Slint tests** and **280 workspace tests / 45 suites** pass; the release
-build and formatting checks succeed.
+The historical Inspector/ONNX validation snapshot at this point passed **49 Slint
+tests** and **280 workspace tests / 45 suites**; those counts predate the editor
+and graph-preview restoration below.
 
 The uniform slice was also exercised in the release AppKit window on Apple M4
 Pro/Metal at 1180×760 and an 800×540 client area. Invalid `NaN` showed a per-row
@@ -487,3 +510,14 @@ macOS, and Linux, with Linux desktop/GPU dependencies installed. Results from th
 new matrix are pending. The NativeHost boundary previously compile-checked for
 `aarch64-apple-ios`; that is not an iOS app or hardware acceptance. Android/iOS
 delivery and mobile runtime/gesture validation are explicitly deferred by user decision.
+
+Current native UI restoration verification (2026-10-29): offline Slint build
+passed and all **66 application tests** passed. A real shared-GPU window smoke
+verified Shader/Renderer thumbnails and resolution labels, preview collapse and
+expand, the 34-entry categorized Shader catalog, preset read-only behavior,
+Unicode drafts and live find metadata, precise GPU failure status, stale preview
+clearing, and Undo recovery to a real texture. Native FILE → Open and Save As
+dialogs opened and cancelled. The automation provider did not reliably deliver
+arbitrary keyboard focus to a TextInput, so this run does not claim native typing
+or IME-composition acceptance; the existing TextInput implementation retains the
+platform editor's input behavior.

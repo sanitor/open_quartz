@@ -1,97 +1,207 @@
-import { Button, ComboBox, LineEdit } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+
+export struct FactoryEntry { label: string, index: int }
+export struct FactoryGroup { label: string, section: string, items: [FactoryEntry] }
+
+component ToolButton inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <string> icon-path;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: max(38px, caption.preferred-width + 12px);
+    height: 40px;
+    background: area.has-hover && root.enabled ? Theme.card : transparent;
+    border-radius: 4px;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Path {
+        x: (parent.width - 14px) / 2; y: 4px; width: 14px; height: 14px;
+        viewbox-width: 16; viewbox-height: 16;
+        commands: root.icon-path;
+        stroke: !root.enabled ? #aeaeb2 : area.has-hover ? Theme.accent : Theme.foreground;
+        stroke-width: 1.2px;
+    }
+    if root.icon-path == "": Text {
+        x: 0px; y: 2px; width: parent.width; height: 18px;
+        text: root.glyph; font-size: 15px;
+        color: !root.enabled ? #aeaeb2 : area.has-hover ? Theme.accent : Theme.foreground;
+        horizontal-alignment: center;
+    }
+    caption := Text {
+        y: 23px; width: parent.width; height: 12px;
+        text: root.text; font-size: 9px; font-weight: 700;
+        color: !root.enabled ? #aeaeb2 : area.has-hover ? Theme.accent : Theme.foreground;
+        horizontal-alignment: center;
+    }
+    area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> active;
+    callback clicked();
+    height: 28px;
+    background: (area.has-hover || root.active) && root.enabled ? Theme.card : transparent;
+    Text { x: 12px; width: parent.width - 24px; height: parent.height; text: root.text; font-size: 10px; font-weight: 600; color: !root.enabled ? #aeaeb2 : (area.has-hover || root.active) ? Theme.accent : Theme.foreground; vertical-alignment: center; overflow: elide; }
+    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+component Divider inherits Rectangle { width: 1px; height: 40px; Rectangle { y: 11px; width: 1px; height: 18px; background: #e8e8ed; } }
 
 export component TopBar inherits Rectangle {
     in property <string> project-name;
     in property <string> runtime-status;
+    in property <string> io-status;
     in property <bool> busy;
-    in-out property <string> project-path;
-    callback open-requested(string);
-    callback save-requested(string);
-    in property <[string]> renderer-options;
-    in property <int> renderer-index: -1;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
     in property <bool> native-runtime-available;
     in property <bool> screen-saver-available;
     in property <bool> export-selection-valid;
-    callback select-renderer(int);
+    in property <string> playback-state: "playing";
+    in property <[FactoryGroup]> factory-groups;
+    in property <int> renderer-factory-index: -1;
+    callback project-action(string);
+    callback rename-project(string);
+    callback add-node(int);
+    callback undo();
+    callback redo();
     callback capture-png();
     callback export-screen-saver();
     callback playback(string);
-
+    private property <string> menu-section;
+    private property <int> group-index: -1;
+    private property <bool> editing-name;
+    private property <string> name-draft;
+    private property <length> menu-x;
+    private property <length> available-width: 1180px;
+    changed width => { root.available-width = self.width; }
+    function open-node-menu(section: string, position: length) {
+        root.menu-section = section;
+        root.menu-x = position;
+        root.group-index = -1;
+        node-menu.show();
+    }
+    function open-status() { status-popup.show(); }
+    height: 48px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
     background: Theme.panel;
-    border-radius: 8px;
-    VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
-        HorizontalLayout {
-            spacing: 12px;
-            Text {
-                text: root.project-name;
-                color: Theme.foreground;
-                font-size: 20px;
-                font-weight: 600;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
-            Text {
-                text: "Desktop · NativeHost";
-                color: Theme.accent;
-            }
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            LineEdit {
-                text <=> root.project-path;
-                placeholder-text: "Project JSON path (used for both Open and Save)";
-                enabled: !root.busy;
-                horizontal-stretch: 1;
-                accepted => { root.open-requested(root.project-path); }
-            }
-            Button {
-                text: "Open";
-                enabled: !root.busy;
-                clicked => { root.open-requested(root.project-path); }
-            }
-            Button {
-                text: "Save";
-                enabled: !root.busy;
-                clicked => { root.save-requested(root.project-path); }
+    Rectangle { y: parent.height - 1px; height: 1px; width: parent.width; background: #d2d2d7; }
+    HorizontalLayout {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        padding-left: 16px; padding-right: 16px; spacing: 4px;
+        padding-top: 4px; padding-bottom: 4px;
+        alignment: stretch;
+        Rectangle { width: 16px; height: 40px; Image { y: 12px; source: @image-url("../../../../public/favicon.svg"); width: 16px; height: 16px; } }
+        Text { text: root.available-width < 960px ? "OQ" : "OPENQUARTZ"; font-size: 13px; font-weight: 700; color: Theme.foreground; height: 40px; vertical-alignment: center; }
+        if root.available-width >= 1100px: Text { text: "v0.20.0b"; font-size: 11px; color: #aeaeb2; height: 40px; vertical-alignment: center; }
+        name := Rectangle {
+            width: clamp(name-text.preferred-width + 12px, 52px, root.available-width < 1000px ? 80px : 120px); height: 40px;
+            name-text := Text { visible: !root.editing-name; width: parent.width; height: parent.height; text: root.project-name; font-size: 12px; color: Theme.foreground; font-weight: 500; vertical-alignment: center; overflow: elide; }
+            name-area := TouchArea { enabled: !root.busy; double-clicked => { root.name-draft = root.project-name; root.editing-name = true; name-edit.focus(); } }
+            name-edit := TextInput {
+                visible: root.editing-name; width: parent.width; height: parent.height;
+                text <=> root.name-draft; single-line: true; font-size: 12px; color: Theme.foreground;
+                accepted => { root.rename-project(self.text); root.editing-name = false; }
+                key-pressed(event) => { if event.text == Key.Escape { root.editing-name = false; return accept; } return reject; }
             }
         }
-        HorizontalLayout {
-            spacing: 8px;
-            Text { text: "Renderer"; color: Theme.secondary; vertical-alignment: center; }
-            ComboBox {
-                model: root.renderer-options;
-                current-index: root.renderer-index;
-                enabled: !root.busy && root.renderer-options.length > 0;
-                horizontal-stretch: 1;
-                min-width: 100px;
-                preferred-width: 180px;
-                selected => { root.select-renderer(self.current-index); }
+        Divider {}
+        file-button := ToolButton {
+            text: "FILE ▾"; icon-path: "M2 2.5H6L7.5 4H14L15 5V13L14 14H2L1 13V3.5Z";
+            enabled: !root.busy;
+            clicked => { file-menu.show(); }
+        }
+        Divider {}
+        for section in ["SOURCE", "MATH", "SHADER", "ONNX"]: ToolButton {
+            text: section + " ▾";
+            icon-path: section == "SOURCE" ? "M7.5 8H14 M7.5 8A3 3 0 1 1 1.5 8A3 3 0 1 1 7.5 8" : section == "SHADER" ? "M3.5 3.5H12.5V12.5H3.5Z M5 1V3.5 M8 1V3.5 M11 1V3.5 M5 12.5V15 M8 12.5V15 M11 12.5V15 M1 5H3.5 M1 8H3.5 M1 11H3.5 M12.5 5H15 M12.5 8H15 M12.5 11H15" : section == "ONNX" ? "M14 8A6 6 0 1 1 2 8A6 6 0 1 1 14 8 M5 8L8 5L11 8L8 11Z" : "";
+            glyph: "±"; enabled: !root.busy;
+            clicked => { root.open-node-menu(section, self.x); }
+        }
+        ToolButton { text: "RENDERER"; icon-path: "M1.5 2.5H14.5V11.5H1.5Z M5 14H11 M8 11.5V14"; enabled: !root.busy && root.renderer-factory-index >= 0; clicked => { root.add-node(root.renderer-factory-index); } }
+        Divider {}
+        ToolButton { text: "UNDO"; icon-path: "M6 3L2 7L6 11 M2 7H10C15 7 15 14 9 14"; enabled: !root.busy && root.can-undo; clicked => { root.undo(); } }
+        ToolButton { text: "REDO"; icon-path: "M10 3L14 7L10 11 M14 7H6C1 7 1 14 7 14"; enabled: !root.busy && root.can-redo; clicked => { root.redo(); } }
+        Divider {}
+        ToolButton { text: "CLEAR"; glyph: "×"; enabled: !root.busy; clicked => { root.project-action("clear"); } }
+        Rectangle { horizontal-stretch: 1; }
+        ToolButton { text: root.playback-state == "playing" ? "PAUSE" : root.playback-state == "paused" ? "RESUME" : "PLAY"; glyph: root.playback-state == "playing" ? "Ⅱ" : "▶"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback(root.playback-state == "playing" ? "pause" : "play"); } }
+        if root.playback-state != "stopped": ToolButton { text: "STOP"; glyph: "■"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
+    }
+            status-popup := PopupWindow {
+                x: file-button.x; y: root.height; width: 460px;
+                Rectangle { background: white; border-width: 1px; border-color: #d2d2d7; border-radius: 8px;
+                    VerticalLayout { padding: 16px; spacing: 10px;
+                        Text { text: "Runtime & project status"; font-size: 12px; font-weight: 600; color: Theme.foreground; }
+                        Text { text: root.runtime-status; font-size: 11px; color: Theme.secondary; wrap: word-wrap; }
+                        Text { text: root.io-status; font-size: 11px; color: Theme.foreground; wrap: word-wrap; }
+                    }
+                }
             }
-            Button {
-                text: "Capture PNG…";
-                enabled: !root.busy && root.native-runtime-available && root.renderer-index >= 0 && root.export-selection-valid;
-                clicked => { root.capture-png(); }
+            file-menu := PopupWindow {
+                x: file-button.x; y: root.height; width: 220px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: white; border-width: 1px; border-color: #d2d2d7; border-radius: 8px;
+                    VerticalLayout { padding-top: 4px; padding-bottom: 4px;
+                        MenuItem { text: "NEW"; clicked => { file-menu.close(); root.project-action("new"); } }
+                        MenuItem { text: "OPEN…"; clicked => { file-menu.close(); root.project-action("open"); } }
+                        MenuItem { text: "SAVE"; clicked => { file-menu.close(); root.project-action("save"); } }
+                        MenuItem { text: "SAVE AS…"; clicked => { file-menu.close(); root.project-action("save-as"); } }
+                        Rectangle { height: 1px; background: Theme.border; }
+                        MenuItem { text: "CAPTURE PNG…"; enabled: root.native-runtime-available && root.export-selection-valid; clicked => { file-menu.close(); root.capture-png(); } }
+                        if root.screen-saver-available: MenuItem { text: "EXPORT AS SCREEN SAVER…"; enabled: root.export-selection-valid; clicked => { file-menu.close(); root.export-screen-saver(); } }
+                        Rectangle { height: 1px; background: Theme.border; }
+                        MenuItem { text: "RUNTIME STATUS…"; clicked => { file-menu.close(); root.open-status(); } }
+                    }
+                }
             }
-            if root.screen-saver-available: Button {
-                text: "Export .scr…";
-                enabled: !root.busy && root.renderer-index >= 0 && root.export-selection-valid;
-                clicked => { root.export-screen-saver(); }
+    node-menu := PopupWindow {
+        x: root.menu-x; y: root.height;
+        // Slint fixes the popup hit region at show(); size the menu sheets
+        // independently so opening a submenu doesn't outgrow that region.
+        width: 360px; height: 420px;
+        close-policy: close-on-click-outside;
+        TouchArea { clicked => { node-menu.close(); } }
+        Rectangle {
+            x: 0px; y: 0px; width: 140px;
+            height: category-layout.preferred-height;
+            background: white; border-width: 1px; border-color: #d2d2d7; border-radius: 8px;
+            category-layout := VerticalLayout {
+                padding-top: 4px; padding-bottom: 4px; spacing: 0px;
+                for group[index] in root.factory-groups: MenuItem {
+                    visible: group.section == root.menu-section;
+                    height: group.section == root.menu-section ? 24px : 0px;
+                    text: group.label + "  ›"; active: index == root.group-index;
+                    clicked => { root.group-index = index; }
+                    TouchArea { moved => { root.group-index = index; } clicked => { root.group-index = index; } }
+                }
             }
         }
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            Button { text: "Play"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("play"); } }
-            Button { text: "Pause"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("pause"); } }
-            Button { text: "Stop"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
-        }
-        Text {
-            text: root.runtime-status;
-            color: Theme.secondary;
-            wrap: word-wrap;
+        if root.group-index >= 0: Rectangle {
+            x: 140px; y: 0px; width: 220px;
+            height: min(420px, root.factory-groups[root.group-index].items.length * 24px + 8px);
+            background: white; border-width: 1px; border-color: #d2d2d7; border-radius: 8px;
+            VerticalLayout {
+                padding-top: 4px; padding-bottom: 4px; spacing: 0px;
+                ScrollView {
+                    VerticalLayout { spacing: 0px;
+                        for item in root.factory-groups[root.group-index].items: MenuItem {
+                            text: item.label; height: 24px;
+                            clicked => { root.add-node(item.index); node-menu.close(); }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+            }
         }
     }
 }

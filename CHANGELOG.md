@@ -19,6 +19,8 @@
 
 ### Features
 
+- **Native Slint editor restoration** — restore the 7-category/34-entry Shader menu, real shared-GPU thumbnails and resolution labels on eligible node cards, collapsible previews, and per-node runtime status. GPU failures preserve the node ID, mark only the affected LED, clear stale textures, and no longer blanket-fail unrelated ONNX nodes. Replace the old plain editor with native multiline `TextInput`, UTF-8-safe line/goto/find/next navigation, live match counts, independent scrolling, read-only presets, and fixed Apply; syntax highlighting remains unsupported by Slint 1.18. AppKit dialogs and a real shared-GPU error/recovery smoke are verified.
+- **Shared Shader catalog** — move Web and Slint menus onto one `catalog.json` source while preserving category, order, source, and template IDs; native factory creation covers all seven categories and 34 presets.
 - **Default native desktop** — switch `npm run dev/build` to Slint with host-architecture Windows/macOS/Linux portable packaging, bundled native runtimes and three-platform CI. Web remains independently buildable; Tauri remains an explicit one-version fallback. Mobile Phase 6 is deferred. Packages run the staged executable's `--help` before archiving; macOS is ad-hoc signed, not notarized.
 - **Desktop media and output** — acquire video files and enumerate/select cameras through native services; reconcile playback settings in NativeHost, select the displayed Renderer, open the same shared texture in fullscreen with Escape return, request PNG readback explicitly, and export Windows screen savers on the project I/O worker.
 

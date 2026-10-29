@@ -1,34 +1,43 @@
-import type { ShaderEntry } from './filter';
-import { filterShaders } from './filter';
-import { colorShaders } from './color';
-import { generatorShaders } from './generator';
-import { blendShaders } from './blend';
-import { distortionShaders } from './distortion';
-import { feedbackShaders } from './feedback';
+import catalog from './catalog.json';
 
-export type { ShaderEntry } from './filter';
+export interface ShaderEntry {
+  label: string;
+  code: string;
+}
+
+export interface ShaderPreset extends ShaderEntry {
+  templateName: string;
+  shaderTemplateId: string | null;
+}
 
 export interface ShaderGroup {
   category: string;
   items: ShaderEntry[];
 }
 
-export { CUSTOM_SHADER_CODE, CUSTOM_2IN1_SHADER } from './templates';
-export { filterShaders } from './filter';
-export { colorShaders } from './color';
-export { generatorShaders } from './generator';
-export { blendShaders } from './blend';
-export { distortionShaders } from './distortion';
-export { feedbackShaders } from './feedback';
+const catalogGroups: { category: string; items: ShaderPreset[] }[] = catalog.groups;
 
-export const shaderGroups: ShaderGroup[] = [
-  { category: 'FILTER', items: filterShaders },
-  { category: 'COLOR', items: colorShaders },
-  { category: 'GENERATOR', items: generatorShaders },
-  { category: 'BLEND', items: blendShaders },
-  { category: 'DISTORTION', items: distortionShaders },
-  { category: 'FEEDBACK', items: feedbackShaders },
-];
+export const customShaderTemplates: ShaderPreset[] = catalogGroups.find(
+  (group) => group.category === 'CUSTOM',
+)!.items;
+
+export const CUSTOM_SHADER_CODE = customShaderTemplates[0].code;
+export const CUSTOM_2IN1_SHADER = customShaderTemplates[1].code;
+
+export const shaderGroups: ShaderGroup[] = catalogGroups.filter(
+  (group) => group.category !== 'CUSTOM',
+);
+
+function shadersIn(category: string): ShaderEntry[] {
+  return shaderGroups.find((group) => group.category === category)!.items;
+}
+
+export const filterShaders = shadersIn('FILTER');
+export const colorShaders = shadersIn('COLOR');
+export const generatorShaders = shadersIn('GENERATOR');
+export const blendShaders = shadersIn('BLEND');
+export const distortionShaders = shadersIn('DISTORTION');
+export const feedbackShaders = shadersIn('FEEDBACK');
 
 export const predefinedShaders = shaderGroups.flatMap((group) => group.items);
 

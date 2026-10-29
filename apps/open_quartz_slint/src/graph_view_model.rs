@@ -1,21 +1,19 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use open_quartz_sdk::{Port, Project};
+use open_quartz_sdk::{DataType, InputMode, NodeType, Port, Project, ProjectNode};
 use slint::{ModelRc, VecModel};
 
 use crate::{GraphEdge, GraphNode, GraphPort};
 
-const NODE_WIDTH: f32 = 184.0;
-const NODE_HEIGHT: f32 = 92.0;
-const PORT_TOP: f32 = 72.0;
-const PORT_SPACING: f32 = 24.0;
+const NODE_WIDTH: f32 = 200.0;
+const PORT_TOP: f32 = 41.0;
+const PORT_SPACING: f32 = 26.0;
 const CONTENT_PADDING: f32 = 24.0;
 
 pub struct GraphViewModel {
     pub nodes: ModelRc<GraphNode>,
     pub edges: ModelRc<GraphEdge>,
-    pub summary: String,
     pub content_width: f32,
     pub content_height: f32,
     pub origin_x: f32,
@@ -35,6 +33,11 @@ impl GraphViewModel {
             .enumerate()
             .map(|(index, node)| (node.id.as_str(), index))
             .collect::<HashMap<_, _>>();
+        let connected_inputs = graph
+            .edges()
+            .iter()
+            .map(|edge| (edge.target.as_str(), edge.target_handle.as_str()))
+            .collect::<HashSet<_>>();
         // Tight graph-space bounds keep Fit View independent of the world's origin.
         let bounds = graph
             .nodes()
@@ -42,8 +45,8 @@ impl GraphViewModel {
             .map(|node| {
                 let x = node.position.x as f32;
                 let y = node.position.y as f32;
-                let height = node_height(node.data.inputs.len().max(node.data.outputs.len()));
-                (x, y, x + NODE_WIDTH, y + height)
+                let height = node_height(node);
+                (x, y, x + node_width(node), y + height)
             })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
         let (mut min_x, min_y, mut max_x, max_y) = bounds.unwrap_or((0.0, 0.0, 0.0, 0.0));
@@ -54,7 +57,11 @@ impl GraphViewModel {
                 node_indices.get(edge.target.as_str()),
             ) {
                 min_x = min_x.min(graph.nodes()[target].position.x as f32 - 48.0);
-                max_x = max_x.max(graph.nodes()[source].position.x as f32 + NODE_WIDTH + 48.0);
+                max_x = max_x.max(
+                    graph.nodes()[source].position.x as f32
+                        + node_width(&graph.nodes()[source])
+                        + 48.0,
+                );
             }
         }
         let origin_x = CONTENT_PADDING - min_x;
@@ -68,22 +75,38 @@ impl GraphViewModel {
                 node_id: node.id.as_str().into(),
                 label: node.data.label.as_str().into(),
                 kind: format!("{:?}", node.node_type).into(),
+                title: node_title(node).into(),
+                status: node_status(node, &connected_inputs).into(),
+                preview: slint::Image::default(),
+                has_preview: false,
+                preview_top: port_body_height(node) + 2.0,
+                preview_height: preview_height(node),
+                preview_expanded: node.data.extra.get("expanded").and_then(serde_json::Value::as_bool).unwrap_or(true),
+                resolution: Default::default(),
                 x: node.position.x as f32,
                 y: node.position.y as f32,
-                width: NODE_WIDTH,
-                height: node_height(node.data.inputs.len().max(node.data.outputs.len())),
+                width: node_width(node),
+                height: node_height(node),
                 ports: ModelRc::new(VecModel::from(
                     node.data
                         .inputs
                         .iter()
                         .enumerate()
-                        .map(|(index, port)| project_port(port, index, false))
+                        .map(|(index, port)| {
+                            project_port(
+                                port,
+                                index,
+                                false,
+                                node,
+                                connected_inputs.contains(&(node.id.as_str(), port.id.as_str())),
+                            )
+                        })
                         .chain(
                             node.data
                                 .outputs
                                 .iter()
                                 .enumerate()
-                                .map(|(index, port)| project_port(port, index, true)),
+                                .map(|(index, port)| project_port(port, index, true, node, true)),
                         )
                         .collect::<Vec<_>>(),
                 )),
@@ -102,7 +125,7 @@ impl GraphViewModel {
                     edge_id: edge.id.as_str().into(),
                     source_index: source_index as i32,
                     target_index: target_index as i32,
-                    source_x: source.position.x as f32 + NODE_WIDTH,
+                    source_x: source.position.x as f32 + node_width(source),
                     source_y: source.position.y as f32
                         + port_y(
                             source
@@ -110,6 +133,8 @@ impl GraphViewModel {
                                 .outputs
                                 .iter()
                                 .position(|port| port.id == edge.source_handle)?,
+                            source,
+                            true,
                         ),
                     target_x: target.position.x as f32,
                     target_y: target.position.y as f32
@@ -119,6 +144,8 @@ impl GraphViewModel {
                                 .inputs
                                 .iter()
                                 .position(|port| port.id == edge.target_handle)?,
+                            target,
+                            false,
                         ),
                 })
             })
@@ -129,10 +156,6 @@ impl GraphViewModel {
         Self {
             nodes: ModelRc::new(VecModel::from(nodes)),
             edges: ModelRc::new(VecModel::from(edges)),
-            summary: format!(
-                "{node_count} nodes · {edge_count} connections · projected in {} µs",
-                projection_duration.as_micros()
-            ),
             content_width,
             content_height,
             origin_x,
@@ -144,19 +167,113 @@ impl GraphViewModel {
     }
 }
 
-fn port_y(index: usize) -> f32 {
-    PORT_TOP + index as f32 * PORT_SPACING
+fn node_width(node: &ProjectNode) -> f32 {
+    if node.node_type == NodeType::Math {
+        120.0
+    } else {
+        NODE_WIDTH
+    }
 }
 
-fn node_height(port_count: usize) -> f32 {
-    (PORT_TOP + port_count.saturating_sub(1) as f32 * PORT_SPACING + 20.0).max(NODE_HEIGHT)
+fn port_y(index: usize, node: &ProjectNode, output: bool) -> f32 {
+    if node.node_type == NodeType::Math {
+        return 39.0 + index as f32 * 22.0;
+    }
+    let offset = if output && !node.data.inputs.is_empty() {
+        node.data.inputs.len() as f32 * PORT_SPACING + 1.0
+    } else {
+        0.0
+    };
+    PORT_TOP + offset + index as f32 * PORT_SPACING
 }
 
-fn project_port(port: &Port, index: usize, output: bool) -> GraphPort {
+fn port_body_height(node: &ProjectNode) -> f32 {
+    if node.node_type == NodeType::Math {
+        28.0 + node.data.inputs.len().max(node.data.outputs.len()).max(1) as f32 * 22.0 + 4.0
+    } else {
+        28.0 + (node.data.inputs.len() + node.data.outputs.len()).max(1) as f32 * PORT_SPACING + 5.0
+    }
+}
+
+fn preview_height(node: &ProjectNode) -> f32 {
+    match node.node_type {
+        NodeType::Renderer => 112.0,
+        NodeType::Shader => 64.0,
+        NodeType::Input if matches!(node.data.input_mode, Some(InputMode::Image | InputMode::Framebuffer | InputMode::Video)) => 100.0,
+        NodeType::Onnx if node.data.outputs.iter().any(|port| port.data_type == DataType::Sampler2d) => 64.0,
+        _ => 0.0,
+    }
+}
+
+fn node_height(node: &ProjectNode) -> f32 {
+    let expanded = node.data.extra.get("expanded").and_then(serde_json::Value::as_bool).unwrap_or(true);
+    port_body_height(node) + if expanded && preview_height(node) > 0.0 { preview_height(node) + 22.0 } else { 0.0 }
+}
+
+fn node_title(node: &ProjectNode) -> String {
+    match node.node_type {
+        NodeType::Shader | NodeType::Onnx => node.data.template_name.as_deref().unwrap_or(&node.data.label).to_uppercase(),
+        NodeType::Input => match node.data.input_mode {
+            Some(InputMode::Image) => "IMAGE".into(), Some(InputMode::Video) => "VIDEO".into(),
+            Some(InputMode::Framebuffer) => "FRAMEBUFFER".into(), Some(InputMode::System) => node.data.system_source.map(|source| format!("{source:?}").to_uppercase()).unwrap_or_else(|| "SYSTEM".into()),
+            _ => node.data.input_data_type.map(|kind| format!("{kind:?}").to_uppercase()).unwrap_or_else(|| "SOURCE".into()),
+        },
+        NodeType::Constant => "COLOR".into(), NodeType::Math => "MATH".into(), NodeType::Renderer => "RENDERER".into(),
+    }
+}
+
+fn node_status(node: &ProjectNode, connected: &HashSet<(&str, &str)>) -> &'static str {
+    if node.data.extra.get("parseError").is_some_and(|error| !error.is_null() && error.as_str() != Some("")) { return "error"; }
+    match node.node_type {
+        NodeType::Input if matches!(node.data.input_mode, Some(InputMode::Image | InputMode::Video | InputMode::Framebuffer)) => {
+            if node.data.image_data_url.is_some() || node.data.raw_data_url.is_some() || node.data.video_file_path.is_some() || node.data.video_device_id.is_some() { "ready" } else { "not-ready" }
+        }
+        NodeType::Onnx => "not-ready",
+        _ if node.data.inputs.iter().any(|port| !connected.contains(&(node.id.as_str(), port.id.as_str()))) => "not-ready",
+        _ => "ready",
+    }
+}
+
+fn project_port(
+    port: &Port,
+    index: usize,
+    output: bool,
+    node: &ProjectNode,
+    connected: bool,
+) -> GraphPort {
+    let data_type = match port.data_type {
+        DataType::Float => "float",
+        DataType::Int => "int",
+        DataType::Uint => "uint",
+        DataType::Bool => "bool",
+        DataType::Vec2 => "vec2",
+        DataType::Vec3 => "vec3",
+        DataType::Vec4 => "vec4",
+        DataType::Ivec2 => "ivec2",
+        DataType::Ivec3 => "ivec3",
+        DataType::Ivec4 => "ivec4",
+        DataType::Uvec2 => "uvec2",
+        DataType::Uvec3 => "uvec3",
+        DataType::Uvec4 => "uvec4",
+        DataType::Bvec2 => "bvec2",
+        DataType::Bvec3 => "bvec3",
+        DataType::Bvec4 => "bvec4",
+        DataType::Mat2 => "mat2",
+        DataType::Mat3 => "mat3",
+        DataType::Mat4 => "mat4",
+        DataType::Sampler2d => "sampler2D",
+        DataType::SamplerCube => "samplerCube",
+        DataType::Roi => "roi",
+        DataType::Mesh => "mesh",
+        DataType::Json => "json",
+        DataType::Auto => "auto",
+    };
     GraphPort {
         port_id: port.id.as_str().into(),
-        label: format!("{} · {:?}", port.label, port.data_type).into(),
-        y: port_y(index),
+        label: port.label.as_str().into(),
+        data_type: data_type.into(),
+        connected,
+        y: port_y(index, node, output),
         output,
     }
 }

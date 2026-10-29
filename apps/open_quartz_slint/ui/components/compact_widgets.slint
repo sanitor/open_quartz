@@ -1,0 +1,24 @@
+import { Button as StandardButton, LineEdit as StandardLineEdit, ComboBox as StandardComboBox, SpinBox as StandardSpinBox } from "std-widgets.slint";
+
+// Match the original desktop sidebar's compact form density while retaining
+// native keyboard, focus, selection and accessibility behavior.
+export component Button inherits StandardButton {
+    min-height: 22px;
+    preferred-height: 22px;
+    max-height: 22px;
+}
+export component LineEdit inherits StandardLineEdit {
+    min-height: 22px;
+    preferred-height: 22px;
+    max-height: 22px;
+}
+export component ComboBox inherits StandardComboBox {
+    min-height: 22px;
+    preferred-height: 22px;
+    max-height: 22px;
+}
+export component SpinBox inherits StandardSpinBox {
+    min-height: 22px;
+    preferred-height: 22px;
+    max-height: 22px;
+}

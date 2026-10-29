@@ -1,0 +1,243 @@
+{
+  "groups": [
+    {
+      "category": "CUSTOM",
+      "items": [
+        {
+          "label": "CUSTOM SHADER",
+          "code": "// Sample shader: scales image brightness by intensity.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> intensity: f32; // Brightness multiplier. 0 to 2, default 1\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  var color = textureSample(inputImage, inputImageSampler, v_uv);\n  color = vec4f(color.rgb * intensity, color.a);\n  return color;\n}",
+          "templateName": "CUSTOM SHADER",
+          "shaderTemplateId": null
+        },
+        {
+          "label": "CUSTOM 2IN-1",
+          "code": "// Blends two images using a mix factor.\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n@group(0) @binding(4) var<uniform> mixFactor: f32; // Blend ratio. 0 = first image, 1 = second. Default 0.5\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return mix(a, b, mixFactor);\n}",
+          "templateName": "CUSTOM 2IN-1",
+          "shaderTemplateId": null
+        }
+      ]
+    },
+    {
+      "category": "FILTER",
+      "items": [
+        {
+          "label": "Resample",
+          "code": "\n// Passes the input image through unchanged (identity/resample).\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  return textureSample(inputImage, inputImageSampler, v_uv);\n}",
+          "templateName": "Resample",
+          "shaderTemplateId": "Resample"
+        },
+        {
+          "label": "Sobel Edge Detection",
+          "code": "\n// Detects edges using the Sobel operator.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> intensity: f32; // Edge strength multiplier. 0–5, default 1\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let px = 1.0 / vec2f(textureDimensions(inputImage));\n\n  let tl = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x, -px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n  let t  = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f(  0.0, -px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n  let tr = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x, -px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n  let l  = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,   0.0)).rgb, vec3f(0.299, 0.587, 0.114));\n  let r  = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,   0.0)).rgb, vec3f(0.299, 0.587, 0.114));\n  let bl = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,  px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n  let b  = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f(  0.0,  px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n  let br = dot(textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  px.y)).rgb, vec3f(0.299, 0.587, 0.114));\n\n  let gx = -tl - 2.0 * l - bl + tr + 2.0 * r + br;\n  let gy = -tl - 2.0 * t - tr + bl + 2.0 * b + br;\n  let edge = sqrt(gx * gx + gy * gy) * intensity;\n\n  return vec4f(vec3f(edge), 1.0);\n}",
+          "templateName": "Sobel Edge Detection",
+          "shaderTemplateId": "Sobel Edge Detection"
+        },
+        {
+          "label": "Gaussian Blur 3x3",
+          "code": "\n// Applies a 3×3 Gaussian blur kernel.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let px = 1.0 / vec2f(textureDimensions(inputImage));\n\n  var col = vec4f(0.0);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x, -px.y)) * 0.0625;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0,  -px.y)) * 0.125;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x, -px.y)) * 0.0625;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,  0.0))  * 0.125;\n  col += textureSample(inputImage, inputImageSampler, v_uv)                        * 0.25;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  0.0))  * 0.125;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,  px.y)) * 0.0625;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0,   px.y)) * 0.125;\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  px.y)) * 0.0625;\n\n  return col;\n}",
+          "templateName": "Gaussian Blur 3x3",
+          "shaderTemplateId": "Gaussian Blur 3x3"
+        },
+        {
+          "label": "Box Blur",
+          "code": "\n// Applies a 3×3 box (mean) blur.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let px = 1.0 / vec2f(textureDimensions(inputImage));\n\n  var col = vec4f(0.0);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-1.0, -1.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0, -1.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 1.0, -1.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-1.0,  0.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 1.0,  0.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f(-1.0,  1.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0,  1.0) * px);\n  col += textureSample(inputImage, inputImageSampler, v_uv + vec2f( 1.0,  1.0) * px);\n  return col / 9.0;\n}",
+          "templateName": "Box Blur",
+          "shaderTemplateId": "Box Blur"
+        },
+        {
+          "label": "Sharpen",
+          "code": "\n// Sharpens the image using unsharp masking.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> strength: f32; // Sharpening intensity. 0–10, default 1\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let px = 1.0 / vec2f(textureDimensions(inputImage));\n\n  let center = textureSample(inputImage, inputImageSampler, v_uv);\n  var blur =\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x, -px.y)) +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0,  -px.y)) +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x, -px.y)) +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,  0.0))  +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  0.0))  +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x,  px.y)) +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( 0.0,   px.y)) +\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  px.y));\n  blur /= 8.0;\n\n  return center + (center - blur) * strength;\n}",
+          "templateName": "Sharpen",
+          "shaderTemplateId": "Sharpen"
+        },
+        {
+          "label": "Emboss",
+          "code": "\n// Applies an emboss (relief) effect.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let px = 1.0 / vec2f(textureDimensions(inputImage));\n\n  let col =\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f(-px.x, -px.y)) -\n    textureSample(inputImage, inputImageSampler, v_uv + vec2f( px.x,  px.y));\n  let gray = dot(col.rgb, vec3f(0.299, 0.587, 0.114)) + 0.5;\n\n  return vec4f(vec3f(gray), 1.0);\n}",
+          "templateName": "Emboss",
+          "shaderTemplateId": "Emboss"
+        },
+        {
+          "label": "Pixelate",
+          "code": "\n// Reduces resolution into blocky pixels.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> blockSize: vec2f; // Block size in pixels (width, height). Default (8, 8)\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let size = vec2f(textureDimensions(inputImage));\n  let blocks = size / max(blockSize, vec2f(1.0));\n  let uv = floor(v_uv * blocks) / blocks;\n  return textureSample(inputImage, inputImageSampler, uv);\n}",
+          "templateName": "Pixelate",
+          "shaderTemplateId": "Pixelate"
+        }
+      ]
+    },
+    {
+      "category": "COLOR",
+      "items": [
+        {
+          "label": "Invert",
+          "code": "// Inverts RGB channels (negative image).\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let col = textureSample(inputImage, inputImageSampler, v_uv);\n  return vec4f(1.0 - col.rgb, col.a);\n}",
+          "templateName": "Invert",
+          "shaderTemplateId": "Invert"
+        },
+        {
+          "label": "Grayscale",
+          "code": "// Converts to grayscale using luminance weights.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let col = textureSample(inputImage, inputImageSampler, v_uv);\n  let gray = dot(col.rgb, vec3f(0.299, 0.587, 0.114));\n  return vec4f(vec3f(gray), col.a);\n}",
+          "templateName": "Grayscale",
+          "shaderTemplateId": "Grayscale"
+        },
+        {
+          "label": "Brightness/Contrast",
+          "code": "// Adjusts brightness and contrast.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> brightness: f32; // Additive brightness. -1 to 1, default 0\n@group(0) @binding(3) var<uniform> contrast: f32; // Contrast multiplier. 0 to 4, default 1\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let c = textureSample(inputImage, inputImageSampler, v_uv);\n  let adjusted = (c.rgb - vec3f(0.5)) * max(contrast, 0.0) + vec3f(0.5) + vec3f(brightness);\n  return vec4f(clamp(adjusted, vec3f(0.0), vec3f(1.0)), c.a);\n}",
+          "templateName": "Brightness/Contrast",
+          "shaderTemplateId": "Brightness/Contrast"
+        },
+        {
+          "label": "Hue Rotate",
+          "code": "// Rotates hue in HSV color space.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> angle: f32; // Rotation angle in radians. 0 to 2π\n\nfn rgb2hsv(c: vec3f) -> vec3f {\n  let K = vec4f(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n  let p = mix(vec4f(c.bg, K.wz), vec4f(c.gb, K.xy), step(c.b, c.g));\n  let q = mix(vec4f(p.xyw, c.r), vec4f(c.r, p.yzx), step(p.x, c.r));\n  let d = q.x - min(q.w, q.y);\n  let e = 1.0e-10;\n  return vec3f(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n\nfn hsv2rgb(c: vec3f) -> vec3f {\n  let K = vec4f(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n  let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n  return c.z * mix(K.xxx, clamp(p - K.xxx, vec3f(0.0), vec3f(1.0)), c.y);\n}\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let col = textureSample(inputImage, inputImageSampler, v_uv);\n  let hsv = rgb2hsv(col.rgb);\n  let h = fract(hsv.x + angle / 6.28318530718);\n  return vec4f(hsv2rgb(vec3f(h, hsv.y, hsv.z)), col.a);\n}",
+          "templateName": "Hue Rotate",
+          "shaderTemplateId": "Hue Rotate"
+        },
+        {
+          "label": "Threshold",
+          "code": "// Converts to black/white at a luminance threshold.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> threshold: f32; // Luminance cutoff. 0 to 1, default 0.5\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let col = textureSample(inputImage, inputImageSampler, v_uv);\n  let lum = dot(col.rgb, vec3f(0.299, 0.587, 0.114));\n  let bw = step(threshold, lum);\n  return vec4f(vec3f(bw), col.a);\n}",
+          "templateName": "Threshold",
+          "shaderTemplateId": "Threshold"
+        },
+        {
+          "label": "Sepia",
+          "code": "// Applies a warm sepia tone.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let col = textureSample(inputImage, inputImageSampler, v_uv);\n  let r = dot(col.rgb, vec3f(0.393, 0.769, 0.189));\n  let g = dot(col.rgb, vec3f(0.349, 0.686, 0.168));\n  let b = dot(col.rgb, vec3f(0.272, 0.534, 0.131));\n  return vec4f(min(r, 1.0), min(g, 1.0), min(b, 1.0), col.a);\n}",
+          "templateName": "Sepia",
+          "shaderTemplateId": "Sepia"
+        },
+        {
+          "label": "Field Color Map",
+          "code": "// Maps luminance to a turbo colormap (scientific visualization).\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n\nfn turbo(t: f32) -> vec3f {\n  let a = vec3f(0.114, 0.056, 0.566);\n  let b = vec3f(0.376, 0.763, 0.843);\n  let c = vec3f(0.267, 0.472, 0.090);\n  let d = vec3f(0.905, 0.811, 0.011);\n  let e = vec3f(0.740, 0.080, 0.055);\n\n  var r: vec3f;\n  if (t < 0.25) { r = mix(a, b, t / 0.25); }\n  else if (t < 0.5) { r = mix(b, c, (t - 0.25) / 0.25); }\n  else if (t < 0.75) { r = mix(c, d, (t - 0.5) / 0.25); }\n  else { r = mix(d, e, (t - 0.75) / 0.25); }\n  return r;\n}\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let raw = textureSample(inputImage, inputImageSampler, v_uv);\n  let v = raw.g;\n  let color = turbo(clamp(v, 0.0, 1.0));\n  return vec4f(color, 1.0);\n}",
+          "templateName": "Field Color Map",
+          "shaderTemplateId": "Field Color Map"
+        }
+      ]
+    },
+    {
+      "category": "GENERATOR",
+      "items": [
+        {
+          "label": "Solid Color",
+          "code": "// Outputs a solid color.\n@group(0) @binding(0) var<uniform> color: vec4f; // RGBA color value\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  return color;\n}",
+          "templateName": "Solid Color",
+          "shaderTemplateId": "Solid Color"
+        },
+        {
+          "label": "Gradient",
+          "code": "// Horizontal linear gradient between two colors.\n@group(0) @binding(0) var<uniform> colorA: vec4f; // Left edge color\n@group(0) @binding(1) var<uniform> colorB: vec4f; // Right edge color\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  return mix(colorA, colorB, v_uv.x);\n}",
+          "templateName": "Gradient",
+          "shaderTemplateId": "Gradient"
+        },
+        {
+          "label": "Checkerboard",
+          "code": "// Generates a checkerboard pattern.\n@group(0) @binding(0) var<uniform> gridSize: vec2f; // Number of cells (columns, rows). Default (8, 8)\n@group(0) @binding(1) var<uniform> color1: vec4f; // First square color\n@group(0) @binding(2) var<uniform> color2: vec4f; // Second square color\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let cell = floor(v_uv * max(gridSize, vec2f(1.0)));\n  let checker = (cell.x + cell.y) % 2.0;\n  return mix(color1, color2, checker);\n}",
+          "templateName": "Checkerboard",
+          "shaderTemplateId": "Checkerboard"
+        },
+        {
+          "label": "Noise",
+          "code": "// Generates value noise.\n@group(0) @binding(0) var<uniform> scale: f32; // Noise frequency. Higher = finer detail. Default 10\nfn hash(p: vec2f) -> f32 {\n  return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453123);\n}\n\nfn valueNoise(p: vec2f) -> f32 {\n  let i = floor(p);\n  let f = fract(p);\n  let u = f * f * (vec2f(3.0) - 2.0 * f);\n  let a = hash(i);\n  let b = hash(i + vec2f(1.0, 0.0));\n  let c = hash(i + vec2f(0.0, 1.0));\n  let d = hash(i + vec2f(1.0, 1.0));\n  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let n = valueNoise(v_uv * max(scale, 1.0));\n  return vec4f(vec3f(n), 1.0);\n}",
+          "templateName": "Noise",
+          "shaderTemplateId": "Noise"
+        },
+        {
+          "label": "Circle",
+          "code": "// Draws a filled circle.\n@group(0) @binding(0) var<uniform> circle: vec4f; // Circle parameters (centerX, centerY, radius, unused). Default (0.5, 0.5, 0.25, 0)\n@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let center = circle.xy;\n  let radius = circle.z;\n  let dist = length(v_uv - center);\n  let mask = 1.0 - step(radius, dist);\n  return vec4f(vec3f(mask), 1.0);\n}",
+          "templateName": "Circle",
+          "shaderTemplateId": "Circle"
+        }
+      ]
+    },
+    {
+      "category": "BLEND",
+      "items": [
+        {
+          "label": "Add",
+          "code": "// Adds two images (clamped to white).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return min(a + b, vec4f(1.0));\n}",
+          "templateName": "Add",
+          "shaderTemplateId": "Add"
+        },
+        {
+          "label": "Multiply",
+          "code": "// Multiplies two images (darkens).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return a * b;\n}",
+          "templateName": "Multiply",
+          "shaderTemplateId": "Multiply"
+        },
+        {
+          "label": "Screen",
+          "code": "// Screen blend (brightens, opposite of multiply).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return vec4f(1.0) - (vec4f(1.0) - a) * (vec4f(1.0) - b);\n}",
+          "templateName": "Screen",
+          "shaderTemplateId": "Screen"
+        },
+        {
+          "label": "Overlay",
+          "code": "// Overlay blend (combines multiply and screen).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\nfn overlay(base: vec3f, blend: vec3f) -> vec3f {\n  return mix(\n    2.0 * base * blend,\n    vec3f(1.0) - 2.0 * (vec3f(1.0) - base) * (vec3f(1.0) - blend),\n    step(vec3f(0.5), base)\n  );\n}\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return vec4f(overlay(a.rgb, b.rgb), max(a.a, b.a));\n}",
+          "templateName": "Overlay",
+          "shaderTemplateId": "Overlay"
+        },
+        {
+          "label": "Difference",
+          "code": "// Absolute difference between two images.\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return vec4f(abs(a.rgb - b.rgb), max(a.a, b.a));\n}",
+          "templateName": "Difference",
+          "shaderTemplateId": "Difference"
+        },
+        {
+          "label": "Exclusion",
+          "code": "// Exclusion blend (similar to difference, lower contrast).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return vec4f(a.rgb + b.rgb - 2.0 * a.rgb * b.rgb, max(a.a, b.a));\n}",
+          "templateName": "Exclusion",
+          "shaderTemplateId": "Exclusion"
+        },
+        {
+          "label": "Soft Light",
+          "code": "// Soft light blend (gentle dodging/burning).\n@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n\nfn softLight(base: vec3f, blend: vec3f) -> vec3f {\n  let lo = 2.0 * base * blend + base * base * (vec3f(1.0) - 2.0 * blend);\n  let hi = 2.0 * base * (vec3f(1.0) - blend) + sqrt(base) * (2.0 * blend - vec3f(1.0));\n  return mix(lo, hi, step(vec3f(0.5), blend));\n}\n\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let a = textureSample(inputA, inputASampler, v_uv);\n  let b = textureSample(inputB, inputBSampler, v_uv);\n  return vec4f(softLight(a.rgb, b.rgb), max(a.a, b.a));\n}",
+          "templateName": "Soft Light",
+          "shaderTemplateId": "Soft Light"
+        }
+      ]
+    },
+    {
+      "category": "DISTORTION",
+      "items": [
+        {
+          "label": "Twirl",
+          "code": "// Twirls the image around the center.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> radius: f32; // Twirl radius. 0 to 1, default 0.5\n@group(0) @binding(3) var<uniform> angle: f32; // Twirl angle in radians. -10 to 10, default 3\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let center = vec2f(0.5);\n  var uv = v_uv - center;\n  let dist = length(uv);\n  let factor = max(1.0 - dist / max(radius, 0.001), 0.0);\n  let a = angle * factor * factor;\n  let s = sin(a);\n  let c = cos(a);\n  uv = vec2f(uv.x * c - uv.y * s, uv.x * s + uv.y * c);\n  return textureSample(inputImage, inputImageSampler, uv + center);\n}",
+          "templateName": "Twirl",
+          "shaderTemplateId": "Twirl"
+        },
+        {
+          "label": "Ripple",
+          "code": "// Applies a sinusoidal wave distortion.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> frequency: f32; // Wave frequency. 1 to 50, default 10\n@group(0) @binding(3) var<uniform> amplitude: f32; // Wave amplitude. 0 to 0.1, default 0.02\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  var uv = v_uv;\n  uv.x += sin(uv.y * frequency) * amplitude;\n  uv.y += sin(uv.x * frequency) * amplitude;\n  return textureSample(inputImage, inputImageSampler, uv);\n}",
+          "templateName": "Ripple",
+          "shaderTemplateId": "Ripple"
+        },
+        {
+          "label": "Displacement",
+          "code": "// Displaces pixels using a displacement map.\n@group(0) @binding(0) var displaceMap: texture_2d<f32>;\n@group(0) @binding(1) var displaceMapSampler: sampler;\n@group(0) @binding(2) var inputImage: texture_2d<f32>;\n@group(0) @binding(3) var inputImageSampler: sampler;\n@group(0) @binding(4) var<uniform> strength: f32; // Displacement strength. 0 to 1, default 0.1\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let disp = textureSample(displaceMap, displaceMapSampler, v_uv);\n  let offset = (disp.rg - vec2f(0.5)) * 2.0 * strength;\n  return textureSample(inputImage, inputImageSampler, v_uv + offset);\n}",
+          "templateName": "Displacement",
+          "shaderTemplateId": "Displacement"
+        },
+        {
+          "label": "Barrel",
+          "code": "// Applies barrel/pincushion lens distortion.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> k1: f32; // Quadratic distortion coefficient. -1 to 1\n@group(0) @binding(3) var<uniform> k2: f32; // Quartic distortion coefficient. -1 to 1\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let uv = v_uv * 2.0 - vec2f(1.0);\n  let r2 = dot(uv, uv);\n  let distortion = 1.0 + k1 * r2 + k2 * r2 * r2;\n  let distorted = uv * distortion * 0.5 + vec2f(0.5);\n  if (distorted.x < 0.0 || distorted.x > 1.0 || distorted.y < 0.0 || distorted.y > 1.0) {\n    return vec4f(0.0);\n  }\n  return textureSample(inputImage, inputImageSampler, distorted);\n}",
+          "templateName": "Barrel",
+          "shaderTemplateId": "Barrel"
+        },
+        {
+          "label": "Pinch",
+          "code": "// Pinches or expands the image radially.\n@group(0) @binding(0) var inputImage: texture_2d<f32>;\n@group(0) @binding(1) var inputImageSampler: sampler;\n@group(0) @binding(2) var<uniform> radius: f32; // Effect radius. 0 to 1, default 0.5\n@group(0) @binding(3) var<uniform> strength: f32; // Pinch strength. -2 to 2, default 0.5\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n  let center = vec2f(0.5);\n  var uv = v_uv - center;\n  let dist = length(uv);\n  let r = max(radius, 0.001);\n  if (dist < r) {\n    let factor = dist / r;\n    let pinch = pow(factor, 1.0 + strength) * r;\n    uv = normalize(uv) * pinch;\n  }\n  return textureSample(inputImage, inputImageSampler, uv + center);\n}",
+          "templateName": "Pinch",
+          "shaderTemplateId": "Pinch"
+        }
+      ]
+    },
+    {
+      "category": "FEEDBACK",
+      "items": [
+        {
+          "label": "Gray-Scott Reaction-Diffusion",
+          "code": "// Simulates Gray-Scott reaction-diffusion patterns.\n@group(0) @binding(0) var<uniform> dA: f32; // Diffusion rate of chemical A. Default 0.21\n@group(0) @binding(1) var<uniform> dB: f32; // Diffusion rate of chemical B. Default 0.105\n@group(0) @binding(2) var<uniform> feedRate: f32; // Feed rate (F). Default 0.055\n@group(0) @binding(3) var<uniform> killRate: f32; // Kill rate (k). Default 0.062\n@group(0) @binding(4) var<uniform> timestep: f32; // Simulation time step. Default 1.0\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n    let uv = v_uv;\n\n    if (iFrame < 0.5) {\n        var a = 1.0;\n        var b = 0.0;\n        let center = vec2f(0.5);\n        let halfSeed = vec2f(0.06);\n        let d = abs(uv - center);\n        if (d.x < halfSeed.x && d.y < halfSeed.y) {\n            a = 0.5;\n            b = 0.25;\n        }\n        return vec4f(a, b, 0.0, 1.0);\n    }\n\n    let px = vec2f(1.0) / vec2f(textureDimensions(previousFrame));\n    let c = textureSample(previousFrame, previousFrameSampler, uv);\n    var a = c.r;\n    var b = c.g;\n\n    let up    = textureSample(previousFrame, previousFrameSampler, uv + vec2f(0.0, px.y)).rg;\n    let down  = textureSample(previousFrame, previousFrameSampler, uv - vec2f(0.0, px.y)).rg;\n    let left  = textureSample(previousFrame, previousFrameSampler, uv - vec2f(px.x, 0.0)).rg;\n    let right = textureSample(previousFrame, previousFrameSampler, uv + vec2f(px.x, 0.0)).rg;\n\n    let la = up.r + down.r + left.r + right.r - 4.0 * a;\n    let lb = up.g + down.g + left.g + right.g - 4.0 * b;\n\n    let rxn = a * b * b;\n    a += (dA * la - rxn + feedRate * (1.0 - a)) * timestep;\n    b += (dB * lb + rxn - (feedRate + killRate) * b) * timestep;\n\n    return vec4f(clamp(a, 0.0, 1.0), clamp(b, 0.0, 1.0), 0.0, 1.0);\n}\n// 5-point Laplacian stencil on pixel grid.\n// Labyrinth: F=0.055,k=0.062 | Coral: F=0.062,k=0.061 | Spots: F=0.035,k=0.065\n// Mitosis: F=0.028,k=0.062 | Worms: F=0.078,k=0.061\n// Clear Color (R=1,G=0,B=0,A=0) for A=1,B=0 initial field.\n",
+          "templateName": "Gray-Scott Reaction-Diffusion",
+          "shaderTemplateId": "Gray-Scott Reaction-Diffusion"
+        }
+      ]
+    }
+  ]
+}

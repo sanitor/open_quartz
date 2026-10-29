@@ -1,6 +1,6 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use open_quartz_execution::native_video::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz_native_host::NativeHost;
@@ -16,6 +16,8 @@ pub struct RenderUpdate {
     pub texture: Option<wgpu::Texture>,
     pub clear_image: bool,
     pub onnx: Option<BTreeMap<String, LiveOnnxState>>,
+    pub previews: Option<BTreeMap<String, wgpu::Texture>>,
+    pub node_error: Option<open_quartz_sdk::SdkError>,
 }
 
 impl RenderUpdate {
@@ -26,6 +28,8 @@ impl RenderUpdate {
             texture: None,
             clear_image: false,
             onnx: None,
+            previews: None,
+            node_error: None,
         }
     }
 }
@@ -254,6 +258,29 @@ fn publish_status(
     }
 }
 
+fn publish_failure(
+    updates: &Mutex<Option<RenderUpdate>>,
+    generation: u64,
+    context: &str,
+    error: &str,
+) {
+    if let Ok(mut pending) = updates.lock() {
+        let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+        if update.generation != generation {
+            *update = RenderUpdate::new(generation);
+        }
+        let parsed = serde_json::from_str::<open_quartz_sdk::SdkError>(error).ok();
+        update.node_error = parsed.clone();
+        update.status = Some(format!(
+            "{context}: {}",
+            parsed.as_ref().map_or(error, |error| error.message.as_str())
+        ));
+        update.texture = None;
+        update.clear_image = true;
+        update.previews = Some(BTreeMap::new());
+    }
+}
+
 fn publish_onnx(updates: &Mutex<Option<RenderUpdate>>, generation: u64, onnx: &OnnxRuntime) {
     if let Ok(mut pending) = updates.lock() {
         let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
@@ -273,6 +300,7 @@ fn render_worker(
 ) {
     let mut generation = 0;
     let mut running = false;
+    let mut render_failed = false;
     let mut first_frame = true;
     let mut onnx = OnnxRuntime::default();
     let mut image_keys = BTreeMap::<String, u64>::new();
@@ -281,6 +309,8 @@ fn render_worker(
     let mut stopped = false;
     let mut playback_requested = true;
     let mut preview_renderer: Option<String> = None;
+    let mut preview_nodes = Vec::<String>::new();
+    let mut preview_tick = Instant::now();
     loop {
         if onnx.reap_workers() {
             publish_onnx(&updates, generation, &onnx);
@@ -313,8 +343,14 @@ fn render_worker(
                 generation = next_generation;
                 first_frame = true;
                 running = false;
+                render_failed = false;
                 stopped = false;
                 playback_requested = true;
+                preview_nodes = graph.nodes().iter().filter(|node| {
+                    matches!(node.node_type, open_quartz_sdk::NodeType::Shader | open_quartz_sdk::NodeType::Constant | open_quartz_sdk::NodeType::Renderer)
+                        || node.data.outputs.iter().any(|port| port.data_type == open_quartz_sdk::DataType::Sampler2d)
+                }).map(|node| node.id.clone()).collect();
+                preview_tick = Instant::now() - Duration::from_millis(100);
                 if reset_resources {
                     onnx.clear(&mut host);
                 }
@@ -382,12 +418,10 @@ fn render_worker(
                         };
                         publish_status(&updates, generation, status, true);
                     }
-                    Err(error) => publish_status(
-                        &updates,
-                        generation,
-                        format!("NativeHost graph initialization failed: {error}"),
-                        true,
-                    ),
+                    Err(error) => {
+                        render_failed = true;
+                        publish_failure(&updates, generation, "NativeHost graph initialization failed", &error);
+                    }
                 }
                 publish_onnx(&updates, generation, &onnx);
             }
@@ -442,6 +476,12 @@ fn render_worker(
             }) if requested == generation => {
                 preview_renderer = node_id;
                 first_frame = true;
+                publish_status(
+                    &updates,
+                    generation,
+                    "Waiting for selected node preview…".into(),
+                    true,
+                );
                 if !running {
                     if let Some(node_id) = preview_renderer.as_deref() {
                         match host.preview_source(node_id) {
@@ -524,8 +564,9 @@ fn render_worker(
                         }
                         Err(error) => {
                             running = false;
+                            render_failed = true;
                             onnx.render_failed(&error);
-                            publish_status(&updates, generation, error, true);
+                            publish_failure(&updates, generation, "NativeHost resume failed", &error);
                         }
                     }
                 } else if let Some(state) = onnx.states.get(&node_id) {
@@ -538,6 +579,17 @@ fn render_worker(
             Some(Command::LoadOnnx { .. } | Command::UnloadOnnx { .. }) => {}
             None => {}
         }
+        if !render_failed && preview_tick.elapsed() >= Duration::from_millis(100) {
+            let previews = preview_nodes.iter().filter_map(|id| {
+                host.preview_source(id).ok().map(|output| (id.clone(), (*output.texture).clone()))
+            }).collect();
+            if let Ok(mut pending) = updates.lock() {
+                let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+                if update.generation != generation { *update = RenderUpdate::new(generation); }
+                update.previews = Some(previews);
+            }
+            preview_tick = Instant::now();
+        }
         if !running {
             continue;
         }
@@ -546,11 +598,17 @@ fn render_worker(
             if rendered.width == 0 || rendered.height == 0 {
                 return Ok(None);
             }
-            let output = host.preview_source(
+            let output = match host.preview_source(
                 preview_renderer
                     .as_deref()
                     .unwrap_or(&rendered.output_node_id),
-            )?;
+            ) {
+                Ok(output) => output,
+                // An unexecuted/disconnected inspector node may not have a texture.
+                // Choosing it must not pause a healthy graph's Renderer output.
+                Err(_) if preview_renderer.is_some() => return Ok(None),
+                Err(error) => return Err(error),
+            };
             Ok(Some((
                 (*output.texture).clone(),
                 output.width,
@@ -582,14 +640,10 @@ fn render_worker(
             Err(error) => {
                 let _ = host.pause();
                 running = false;
+                render_failed = true;
                 onnx.render_failed(&error);
                 publish_onnx(&updates, generation, &onnx);
-                publish_status(
-                    &updates,
-                    generation,
-                    format!("NativeHost rendering stopped: {error}"),
-                    true,
-                );
+                publish_failure(&updates, generation, "NativeHost rendering stopped", &error);
             }
         }
     }
@@ -654,4 +708,24 @@ fn save_output_png(path: &std::path::Path, payload: &[u8]) -> Result<(), String>
         image::ImageFormat::Png,
     )
     .map_err(|error| format!("Cannot save {}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_retains_node_identity_and_clears_failed_generation_previews() {
+        let updates = Mutex::new(Some(RenderUpdate::new(1)));
+        let error = open_quartz_sdk::SdkError::new(
+            open_quartz_sdk::SdkErrorCode::InvalidResource, "Invalid WGSL type",
+        ).for_node("shader_7");
+        publish_failure(&updates, 2, "Rendering stopped", &error.to_json());
+        let update = updates.lock().unwrap();
+        let update = update.as_ref().unwrap();
+        assert_eq!(update.generation, 2);
+        assert_eq!(update.node_error.as_ref(), Some(&error));
+        assert!(update.clear_image && update.texture.is_none());
+        assert!(update.previews.as_ref().unwrap().is_empty());
+    }
 }
