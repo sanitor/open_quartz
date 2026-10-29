@@ -7,8 +7,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use open_quartz_sdk::{
-    DataType, Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz, PortId,
-    PortKey, Position, Project, SdkError,
+    DataType, Environment, FramebufferFormat, GraphCommand, InputMode, NodeFactoryRequest, NodeId,
+    NodeType, OpenQuartz, PortId, PortKey, Position, Project, SdkError,
 };
 use slint::{ComponentHandle, Model};
 
@@ -93,10 +93,175 @@ impl InspectorChange {
             Self::OutputSize => "Output size applied through the SDK.",
             Self::Uniforms => "Uniform values applied through the SDK.",
             Self::Form(FormKind::Sampling) => "Sampling applied through the SDK.",
-            Self::Form(FormKind::Framebuffer) => "Framebuffer configuration saved through the SDK; raw resource loading is not available.",
-            Self::Form(FormKind::Video) => "Video configuration saved through the SDK; video/camera opening is not available.",
+            Self::Form(FormKind::Framebuffer) => {
+                "Framebuffer configuration applied through the SDK."
+            }
+            Self::Form(FormKind::Video) => {
+                "Video source and playback settings applied through the SDK."
+            }
         }
     }
+}
+
+#[derive(Clone)]
+struct NodeFactoryOption {
+    label: String,
+    request: NodeFactoryRequest,
+    onnx_params: Option<BTreeMap<String, open_quartz_sdk::OnnxParamValue>>,
+}
+
+fn node_factory_options() -> Vec<NodeFactoryOption> {
+    let mut options = vec![NodeFactoryOption {
+        label: "Constant · Vector/color".into(),
+        request: NodeFactoryRequest::Constant { position: None },
+        onnx_params: None,
+    }];
+    for (label, data_type) in [
+        ("Float", DataType::Float),
+        ("Int", DataType::Int),
+        ("Uint", DataType::Uint),
+        ("Bool", DataType::Bool),
+        ("Vec2", DataType::Vec2),
+        ("Vec3", DataType::Vec3),
+        ("Vec4", DataType::Vec4),
+        ("Ivec2", DataType::Ivec2),
+        ("Ivec3", DataType::Ivec3),
+        ("Ivec4", DataType::Ivec4),
+        ("Uvec2", DataType::Uvec2),
+        ("Uvec3", DataType::Uvec3),
+        ("Uvec4", DataType::Uvec4),
+        ("Mat2", DataType::Mat2),
+        ("Mat3", DataType::Mat3),
+        ("Mat4", DataType::Mat4),
+    ] {
+        options.push(NodeFactoryOption {
+            label: format!("Constant · {label}"),
+            request: NodeFactoryRequest::Input {
+                position: None,
+                data_type,
+                input_mode: None,
+            },
+            onnx_params: None,
+        });
+    }
+    options.push(NodeFactoryOption {
+        label: "Shader · Brightness sample".into(),
+        request: NodeFactoryRequest::Shader {
+            position: None,
+            code: default_shader_code(),
+            label: "Custom Shader".into(),
+            template_name: None,
+            shader_template_id: None,
+        },
+        onnx_params: None,
+    });
+    options.push(NodeFactoryOption {
+        label: "Shader · Two-image blend sample".into(),
+        request: NodeFactoryRequest::Shader {
+            position: None,
+            code: "@group(0) @binding(0) var inputA: texture_2d<f32>;\n@group(0) @binding(1) var inputASampler: sampler;\n@group(0) @binding(2) var inputB: texture_2d<f32>;\n@group(0) @binding(3) var inputBSampler: sampler;\n@group(0) @binding(4) var<uniform> mixFactor: f32;\n@fragment\nfn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {\n    return mix(textureSample(inputA, inputASampler, v_uv), textureSample(inputB, inputBSampler, v_uv), mixFactor);\n}".into(),
+            label: "Custom 2-in-1".into(), template_name: None, shader_template_id: None,
+        },
+        onnx_params: None,
+    });
+    for (label, input_mode) in [
+        ("Image", open_quartz_sdk::InputMode::Image),
+        ("Framebuffer", open_quartz_sdk::InputMode::Framebuffer),
+        ("Video", open_quartz_sdk::InputMode::Video),
+    ] {
+        options.push(NodeFactoryOption {
+            label: format!("Input · {label}"),
+            request: NodeFactoryRequest::Input {
+                position: None,
+                data_type: DataType::Sampler2d,
+                input_mode: Some(input_mode),
+            },
+            onnx_params: None,
+        });
+    }
+    for source in [
+        open_quartz_sdk::SystemSource::Time,
+        open_quartz_sdk::SystemSource::TimeDelta,
+        open_quartz_sdk::SystemSource::Frame,
+        open_quartz_sdk::SystemSource::Mouse,
+        open_quartz_sdk::SystemSource::Resolution,
+    ] {
+        options.push(NodeFactoryOption {
+            label: format!("System · {source:?}"),
+            request: NodeFactoryRequest::System {
+                position: None,
+                source,
+            },
+            onnx_params: None,
+        });
+    }
+    options.extend(
+        open_quartz_execution::catalog::math_ops()
+            .into_iter()
+            .map(|operation| NodeFactoryOption {
+                label: format!("Math · {}", operation.label),
+                request: NodeFactoryRequest::Math {
+                    position: None,
+                    op: operation.id,
+                },
+                onnx_params: None,
+            }),
+    );
+    options.push(NodeFactoryOption {
+        label: "Renderer".into(),
+        request: NodeFactoryRequest::Renderer { position: None },
+        onnx_params: None,
+    });
+    options.extend(
+        open_quartz_execution::catalog::onnx_models()
+            .into_iter()
+            .map(|model| {
+                let params = model.default_params.as_ref().map(|defaults| {
+                    defaults
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            serde_json::from_value(value.default.clone())
+                                .ok()
+                                .map(|value| (key.clone(), value))
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                });
+                NodeFactoryOption {
+                    label: format!("ONNX · {}", model.label),
+                    request: NodeFactoryRequest::Onnx {
+                        position: None,
+                        label: model.label.clone(),
+                        template_name: Some(model.label),
+                        model_id: Some(model.id.clone()),
+                        catalog_id: Some(model.id),
+                        inputs: model.expected_io.inputs,
+                        outputs: model.expected_io.outputs,
+                    },
+                    onnx_params: params,
+                }
+            }),
+    );
+    options.push(NodeFactoryOption {
+        label: "ONNX · Custom model".into(),
+        request: NodeFactoryRequest::CustomOnnx { position: None },
+        onnx_params: None,
+    });
+    options
+}
+
+fn default_shader_code() -> String {
+    [
+        "@group(0) @binding(0) var inputImage: texture_2d<f32>;",
+        "@group(0) @binding(1) var inputImageSampler: sampler;",
+        "@group(0) @binding(2) var<uniform> intensity: f32;",
+        "",
+        "@fragment",
+        "fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {",
+        "  let color = textureSample(inputImage, inputImageSampler, v_uv);",
+        "  return vec4f(color.rgb * intensity, color.a);",
+        "}",
+    ]
+    .join("\n")
 }
 
 pub struct AppController {
@@ -116,6 +281,14 @@ pub struct AppController {
     pending_connection: Option<PendingConnection>,
     undo_edits: Vec<EditKind>,
     redo_edits: Vec<EditKind>,
+    image_assets: BTreeMap<String, crate::services::file_service::ImageAsset>,
+    framebuffer_assets: BTreeMap<String, crate::services::file_service::FramebufferAsset>,
+    pending_resources: BTreeMap<String, PendingResource>,
+    resource_ticket: u64,
+    video_devices: Vec<open_quartz_execution::native_video::NativeVideoDevice>,
+    camera_loading: bool,
+    selected_renderer_id: Option<String>,
+    pending_capture: Option<(PathBuf, mpsc::Receiver<Result<(), String>>)>,
     files: ProjectIo,
     busy: bool,
     timer: slint::Timer,
@@ -131,6 +304,17 @@ struct ProjectionStats {
 struct PendingConnection {
     source: PortKey,
     edge_id: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResourceKind {
+    Image,
+    Framebuffer,
+}
+
+struct PendingResource {
+    ticket: u64,
+    kind: ResourceKind,
+    expected_data_url: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -169,6 +353,14 @@ impl AppController {
             inspector_forms: Rc::new(slint::VecModel::default()),
             graph_nodes: Rc::new(slint::VecModel::default()),
             graph_edges: Rc::new(slint::VecModel::default()),
+            image_assets: BTreeMap::new(),
+            framebuffer_assets: BTreeMap::new(),
+            pending_resources: BTreeMap::new(),
+            resource_ticket: 0,
+            video_devices: Vec::new(),
+            camera_loading: false,
+            selected_renderer_id: None,
+            pending_capture: None,
             clipboard: None,
             graph_stress_count,
             selected_edge_id: None,
@@ -191,10 +383,19 @@ impl AppController {
         window.set_graph_edges(slint::ModelRc::from(
             controller.borrow().graph_edges.clone(),
         ));
+        window.set_inspector_image_input(false);
+        window.set_inspector_framebuffer_input(false);
         window.set_runtime_status(runtime_status.into());
         window.set_io_status(
             "Enter an explicit project path to Open or Save. Save overwrites that path.".into(),
         );
+        let node_factories = node_factory_options();
+        window.set_node_factory_options(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+            node_factories
+                .iter()
+                .map(|option| slint::SharedString::from(option.label.as_str()))
+                .collect::<Vec<_>>(),
+        ))));
         controller.borrow_mut().publish_project();
 
         let weak = Rc::downgrade(&controller);
@@ -415,11 +616,87 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
+        window.on_graph_add_node(move |index| {
+            if let (Some(controller), Some(option)) =
+                (weak.upgrade(), node_factories.get(index.max(0) as usize))
+            {
+                controller.borrow_mut().add_node(option.clone());
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_remove_nodes(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().remove_selected_nodes();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
         window.on_inspector_load_onnx(move |path| {
             if let Some(controller) = weak.upgrade() {
                 controller
                     .borrow_mut()
                     .change_onnx_session(Some(path.to_string()));
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_choose_image(move || {
+            if let Some(controller) = weak.upgrade() {
+                Self::choose_image(&controller);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_choose_framebuffer(move || {
+            if let Some(controller) = weak.upgrade() {
+                Self::choose_framebuffer(&controller);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_choose_video(move || {
+            if let Some(controller) = weak.upgrade() {
+                Self::choose_video(&controller);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_refresh_cameras(move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().refresh_cameras();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_select_camera(move |index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().select_camera(index);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_select_renderer(move |index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().select_renderer(index);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_capture_png(move || {
+            if let Some(controller) = weak.upgrade() {
+                Self::capture_png(&controller);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_export_screen_saver(move || {
+            if let Some(controller) = weak.upgrade() {
+                Self::export_screen_saver(&controller);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_playback(move |action| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().set_playback(action.as_str());
+            }
+        });
+        let weak_window = window.as_weak();
+        window.on_preview_requested(move |open| {
+            if let Some(window) = weak_window.upgrade() {
+                let open = open && window.get_has_renderer_image();
+                window.set_preview_open(open);
+                window.window().set_fullscreen(open);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -464,7 +741,769 @@ impl AppController {
         self.renderer.take();
     }
 
+    fn next_resource_ticket(
+        &mut self,
+        node_id: &str,
+        kind: ResourceKind,
+        expected_data_url: Option<String>,
+    ) -> u64 {
+        self.resource_ticket = self.resource_ticket.wrapping_add(1).max(1);
+        let ticket = self.resource_ticket;
+        self.pending_resources.insert(
+            node_id.to_owned(),
+            PendingResource {
+                ticket,
+                kind,
+                expected_data_url,
+            },
+        );
+        ticket
+    }
+
+    fn with_file_dialog(
+        controller: &Rc<RefCell<Self>>,
+        dialog: rfd::FileDialog,
+        save: bool,
+        complete: impl FnOnce(&mut Self, PathBuf),
+    ) {
+        {
+            let mut this = controller.borrow_mut();
+            if this.edits_blocked() {
+                return;
+            }
+            this.busy = true;
+            if let Some(window) = this.window.upgrade() {
+                window.set_busy(true);
+            }
+        }
+        // AppKit runs a nested event loop here. Timers and native callbacks must
+        // be able to borrow the controller while the modal panel is open.
+        let path = if save {
+            dialog.save_file()
+        } else {
+            dialog.pick_file()
+        };
+        let mut this = controller.borrow_mut();
+        this.busy = false;
+        if let Some(window) = this.window.upgrade() {
+            window.set_busy(false);
+        }
+        if let Some(path) = path {
+            complete(&mut this, path);
+        }
+    }
+
+    fn choose_video(controller: &Rc<RefCell<Self>>) {
+        let this = controller.borrow();
+        if this.edits_blocked() || this.selected_node_ids.len() != 1 {
+            return;
+        }
+        let Some(node) = this.project.graph().nodes().iter().find(|node| {
+            this.selected_node_ids.contains(&node.id) && FormKind::Video.supports(&node.data)
+        }) else {
+            this.set_edit_status("Select one Video input before choosing a video file.");
+            return;
+        };
+        let node_id = node.id.clone();
+        let mut data = node.data.clone();
+        drop(this);
+        Self::with_file_dialog(
+            controller,
+            rfd::FileDialog::new()
+                .add_filter("Video", &["mp4", "mov", "mkv", "webm", "avi", "m4v"]),
+            false,
+            move |this, path| {
+                data.video_source_type = Some(open_quartz_sdk::VideoSourceType::File);
+                data.video_file_path = Some(path.to_string_lossy().into_owned());
+                if this
+                    .project
+                    .graph()
+                    .nodes()
+                    .iter()
+                    .any(|node| node.id == node_id && node.data == data)
+                {
+                    return;
+                }
+                if this.apply_resource_data(&node_id, data) {
+                    this.inspector_draft = None;
+                    this.publish_project();
+                    this.set_edit_status(
+                        "Video file saved through the SDK; NativeHost is opening the source.",
+                    );
+                }
+            },
+        );
+    }
+
+    fn refresh_cameras(&mut self) {
+        if self.busy || self.camera_loading || self.selected_node_ids.len() != 1 {
+            return;
+        }
+        if !self.project.graph().nodes().iter().any(|node| {
+            self.selected_node_ids.contains(&node.id) && FormKind::Video.supports(&node.data)
+        }) {
+            return;
+        }
+        if self.files.sender.send(FileRequest::ListCameras).is_err() {
+            self.set_edit_status("Camera enumeration worker is no longer available.");
+            return;
+        }
+        self.camera_loading = true;
+        self.publish_video_devices();
+        self.set_edit_status("Enumerating native camera devices…");
+    }
+
+    fn select_camera(&mut self, index: i32) {
+        if self.busy || self.camera_loading || self.selected_node_ids.len() != 1 {
+            return;
+        }
+        if !self.project.graph().nodes().iter().any(|node| {
+            self.selected_node_ids.contains(&node.id) && FormKind::Video.supports(&node.data)
+        }) {
+            return;
+        }
+        let Some(device) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.video_devices.get(index))
+        else {
+            return;
+        };
+        let id = device.id.clone();
+        self.change_form_draft("video-source", "1");
+        self.change_form_draft("video-device", &id);
+        self.publish_video_devices();
+        self.set_edit_status("Camera selected in the Video draft. Apply video to open it; other drafts are retained.");
+    }
+
+    fn publish_video_devices(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        window.set_inspector_camera_loading(self.camera_loading);
+        window.set_inspector_camera_options(slint::ModelRc::new(slint::VecModel::from(
+            self.video_devices
+                .iter()
+                .map(|device| {
+                    slint::SharedString::from(format!("{} · {}", device.label, device.id))
+                })
+                .collect::<Vec<_>>(),
+        )));
+        let selected = self.inspector_draft.as_ref().and_then(|draft| {
+            (draft.forms.video_source == "1")
+                .then(|| {
+                    self.video_devices
+                        .iter()
+                        .position(|device| device.id == draft.forms.video_device)
+                })
+                .flatten()
+        });
+        window.set_inspector_camera_index(selected.map_or(-1, |index| index as i32));
+    }
+
+    fn renderer_candidates(&self) -> Vec<&open_quartz_sdk::ProjectNode> {
+        self.project
+            .graph()
+            .nodes()
+            .iter()
+            .filter(|node| node.node_type == NodeType::Renderer)
+            .collect()
+    }
+
+    fn publish_desktop_controls(&mut self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let candidates = self.renderer_candidates();
+        let selected = if self.selected_node_ids.len() == 1 {
+            candidates
+                .iter()
+                .find(|node| self.selected_node_ids.contains(&node.id))
+                .map(|node| node.id.clone())
+        } else {
+            None
+        };
+        let selected = selected
+            .or_else(|| {
+                self.selected_renderer_id
+                    .as_ref()
+                    .filter(|id| candidates.iter().any(|node| &node.id == *id))
+                    .cloned()
+            })
+            .or_else(|| (candidates.len() == 1).then(|| candidates[0].id.clone()));
+        window.set_renderer_options(slint::ModelRc::new(slint::VecModel::from(
+            candidates
+                .iter()
+                .map(|node| slint::SharedString::from(format!("{} · {}", node.data.label, node.id)))
+                .collect::<Vec<_>>(),
+        )));
+        window.set_renderer_index(
+            selected
+                .as_ref()
+                .and_then(|id| candidates.iter().position(|node| &node.id == id))
+                .map_or(-1, |index| index as i32),
+        );
+        window.set_native_runtime_available(
+            self.renderer.is_some() && self.graph_stress_count.is_none(),
+        );
+        window.set_screen_saver_available(
+            cfg!(target_os = "windows") && self.graph_stress_count.is_none(),
+        );
+        let selection_changed = self.selected_renderer_id != selected;
+        self.selected_renderer_id = selected;
+        if selection_changed {
+            self.publish_preview_selection();
+        }
+    }
+
+    fn select_renderer(&mut self, index: i32) {
+        if self.edits_blocked() {
+            return;
+        }
+        self.selected_renderer_id = usize::try_from(index).ok().and_then(|index| {
+            self.renderer_candidates()
+                .get(index)
+                .map(|node| node.id.clone())
+        });
+        if let Some(window) = self.window.upgrade() {
+            window.set_renderer_index(if self.selected_renderer_id.is_some() {
+                index
+            } else {
+                -1
+            });
+        }
+        self.publish_preview_selection();
+    }
+
+    fn publish_preview_selection(&self) {
+        if let Some(renderer) = &self.renderer {
+            if let Err(error) = renderer.select_preview(self.selected_renderer_id.clone()) {
+                if let Some(window) = self.window.upgrade() {
+                    window.set_runtime_status(error.into());
+                }
+            }
+        }
+    }
+
+    fn export_renderer(&self) -> Result<String, String> {
+        if self.selected_node_ids.len() > 1 {
+            return Err("Select at most one node before capture or export.".into());
+        }
+        self.selected_renderer_id
+            .as_ref()
+            .filter(|id| {
+                self.renderer_candidates()
+                    .iter()
+                    .any(|node| &node.id == *id)
+            })
+            .cloned()
+            .ok_or_else(|| "Choose a Renderer explicitly before capture or export.".into())
+    }
+
+    fn capture_png(controller: &Rc<RefCell<Self>>) {
+        let this = controller.borrow();
+        if this.edits_blocked() {
+            return;
+        }
+        let node_id = match this.export_renderer() {
+            Ok(id) => id,
+            Err(error) => {
+                this.set_edit_status(&error);
+                return;
+            }
+        };
+        if this.renderer.is_none() {
+            this.set_edit_status("PNG capture requires the native renderer.");
+            return;
+        }
+        drop(this);
+        Self::with_file_dialog(
+            controller,
+            rfd::FileDialog::new()
+                .add_filter("PNG image", &["png"])
+                .set_file_name("open-quartz.png"),
+            true,
+            move |this, path| {
+                let path = path.with_extension("png");
+                let Some(renderer) = &this.renderer else {
+                    return;
+                };
+                match renderer.capture_png(node_id, path.clone()) {
+                    Ok(receiver) => {
+                        this.pending_capture = Some((path, receiver));
+                        this.busy = true;
+                        if let Some(window) = this.window.upgrade() {
+                            window.set_busy(true);
+                        }
+                        this.set_edit_status("Capturing renderer output as PNG…");
+                    }
+                    Err(error) => this.set_edit_status(&error),
+                }
+            },
+        );
+    }
+
+    fn export_screen_saver(controller: &Rc<RefCell<Self>>) {
+        let this = controller.borrow();
+        if this.edits_blocked() {
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        this.set_edit_status("Windows .scr export is available only on Windows.");
+        #[cfg(target_os = "windows")]
+        {
+            let renderer_node_id = match this.export_renderer() {
+                Ok(id) => id,
+                Err(error) => {
+                    this.set_edit_status(&error);
+                    return;
+                }
+            };
+            drop(this);
+            Self::with_file_dialog(
+                controller,
+                rfd::FileDialog::new()
+                    .add_filter("Windows screen saver", &["scr"])
+                    .set_file_name("open-quartz.scr"),
+                true,
+                move |this, path| {
+                    if this
+                        .files
+                        .sender
+                        .send(FileRequest::ExportScreenSaver {
+                            path: path.with_extension("scr"),
+                            project: Arc::clone(&this.project),
+                            renderer_node_id,
+                        })
+                        .is_err()
+                    {
+                        this.set_edit_status("Screen saver export worker is no longer available.");
+                        return;
+                    }
+                    this.busy = true;
+                    if let Some(window) = this.window.upgrade() {
+                        window.set_busy(true);
+                    }
+                    this.set_edit_status("Exporting Windows screen saver…");
+                },
+            );
+        }
+    }
+
+    fn set_playback(&mut self, action: &str) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some(renderer) = &self.renderer else {
+            self.set_edit_status("Playback requires the native renderer.");
+            return;
+        };
+        match renderer.set_playback(action) {
+            Ok(()) => self.set_edit_status(&format!("Playback: {action}")),
+            Err(error) => self.set_edit_status(&error),
+        }
+    }
+
+    fn choose_image(controller: &Rc<RefCell<Self>>) {
+        let this = controller.borrow();
+        if this.edits_blocked() || this.selected_node_ids.len() != 1 {
+            return;
+        }
+        let node_id = this
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| {
+                this.selected_node_ids.contains(&node.id)
+                    && node.node_type == NodeType::Input
+                    && node.data.input_mode == Some(InputMode::Image)
+            })
+            .map(|node| node.id.clone());
+        let Some(node_id) = node_id else {
+            this.set_edit_status("Select one Image input node before choosing an image.");
+            return;
+        };
+        drop(this);
+        Self::with_file_dialog(
+            controller,
+            rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp"]),
+            false,
+            move |this, path| {
+                let ticket = this.next_resource_ticket(&node_id, ResourceKind::Image, None);
+                if this
+                    .files
+                    .sender
+                    .send(FileRequest::LoadImage {
+                        node_id: node_id.clone(),
+                        path: path.clone(),
+                        ticket,
+                    })
+                    .is_err()
+                {
+                    this.pending_resources.remove(&node_id);
+                    this.set_edit_status("Image resource worker is no longer available.");
+                    return;
+                }
+                if let Some(window) = this.window.upgrade() {
+                    window.set_io_status(format!("Loading image {}…", path.display()).into());
+                }
+            },
+        );
+    }
+
+    fn choose_framebuffer(controller: &Rc<RefCell<Self>>) {
+        let this = controller.borrow();
+        if this.edits_blocked() || this.selected_node_ids.len() != 1 {
+            return;
+        }
+        let selected = this
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| {
+                this.selected_node_ids.contains(&node.id)
+                    && node.node_type == NodeType::Input
+                    && node.data.input_mode == Some(InputMode::Framebuffer)
+            })
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    node.data.fb_format.unwrap_or(FramebufferFormat::Rgba8),
+                    node.data.fb_width,
+                    node.data.fb_height,
+                    node.data.fb_stride,
+                )
+            });
+        let Some((node_id, format, Some(width), Some(height), stride)) = selected else {
+            this.set_edit_status(
+                "Select a Framebuffer input and apply its format, width, and height first.",
+            );
+            return;
+        };
+        drop(this);
+        Self::with_file_dialog(
+            controller,
+            rfd::FileDialog::new(),
+            false,
+            move |this, path| {
+                let ticket = this.next_resource_ticket(&node_id, ResourceKind::Framebuffer, None);
+                if this
+                    .files
+                    .sender
+                    .send(FileRequest::LoadFramebuffer {
+                        node_id: node_id.clone(),
+                        path: path.clone(),
+                        format,
+                        width,
+                        height,
+                        stride,
+                        ticket,
+                    })
+                    .is_err()
+                {
+                    this.pending_resources.remove(&node_id);
+                    this.set_edit_status("Framebuffer resource worker is no longer available.");
+                    return;
+                }
+                if let Some(window) = this.window.upgrade() {
+                    window.set_io_status(format!("Loading framebuffer {}…", path.display()).into());
+                }
+            },
+        );
+    }
+
+    fn sync_project_resources(&mut self) {
+        let nodes = self.project.graph().nodes();
+        self.image_assets.retain(|node_id, asset| {
+            nodes.iter().any(|node| {
+                node.id == *node_id
+                    && node.node_type == NodeType::Input
+                    && node.data.input_mode == Some(InputMode::Image)
+                    && node.data.image_data_url.as_deref() == Some(asset.data_url.as_str())
+            })
+        });
+        self.framebuffer_assets.retain(|node_id, asset| {
+            nodes.iter().any(|node| {
+                node.id == *node_id
+                    && node.node_type == NodeType::Input
+                    && node.data.input_mode == Some(InputMode::Framebuffer)
+                    && node.data.raw_data_url.as_deref() == Some(asset.data_url.as_str())
+                    && node.data.fb_format.unwrap_or(FramebufferFormat::Rgba8) == asset.format
+                    && node.data.fb_width == Some(asset.width)
+                    && node.data.fb_height == Some(asset.height)
+                    && node.data.fb_stride == asset.stride
+            })
+        });
+        self.pending_resources.retain(|node_id, pending| {
+            nodes.iter().any(|node| {
+                if node.id != *node_id || node.node_type != NodeType::Input {
+                    return false;
+                }
+                let current = match pending.kind {
+                    ResourceKind::Image if node.data.input_mode == Some(InputMode::Image) => {
+                        node.data.image_data_url.as_deref()
+                    }
+                    ResourceKind::Framebuffer
+                        if node.data.input_mode == Some(InputMode::Framebuffer) =>
+                    {
+                        node.data.raw_data_url.as_deref()
+                    }
+                    _ => return false,
+                };
+                pending
+                    .expected_data_url
+                    .as_deref()
+                    .is_none_or(|expected| current == Some(expected))
+            })
+        });
+
+        let mut requests = Vec::new();
+        for node in nodes {
+            if node.node_type != NodeType::Input {
+                continue;
+            }
+            match node.data.input_mode {
+                Some(InputMode::Image) => {
+                    let Some(data_url) = node.data.image_data_url.as_ref() else {
+                        continue;
+                    };
+                    let current = self
+                        .image_assets
+                        .get(&node.id)
+                        .is_some_and(|asset| asset.data_url == *data_url);
+                    let pending = self.pending_resources.get(&node.id).is_some_and(|pending| {
+                        pending.kind == ResourceKind::Image
+                            && pending.expected_data_url.as_deref() == Some(data_url.as_str())
+                    });
+                    if current || pending || self.pending_resources.contains_key(&node.id) {
+                        continue;
+                    }
+                    self.resource_ticket = self.resource_ticket.wrapping_add(1).max(1);
+                    let ticket = self.resource_ticket;
+                    let file_name = node
+                        .data
+                        .extra
+                        .get("imageFileName")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("embedded-image")
+                        .to_owned();
+                    self.pending_resources.insert(
+                        node.id.clone(),
+                        PendingResource {
+                            ticket,
+                            kind: ResourceKind::Image,
+                            expected_data_url: Some(data_url.clone()),
+                        },
+                    );
+                    requests.push(FileRequest::DecodeImage {
+                        node_id: node.id.clone(),
+                        data_url: data_url.clone(),
+                        file_name,
+                        ticket,
+                    });
+                }
+                Some(InputMode::Framebuffer) => {
+                    let (Some(data_url), Some(width), Some(height)) = (
+                        node.data.raw_data_url.as_ref(),
+                        node.data.fb_width,
+                        node.data.fb_height,
+                    ) else {
+                        continue;
+                    };
+                    let format = node.data.fb_format.unwrap_or(FramebufferFormat::Rgba8);
+                    let stride = node.data.fb_stride;
+                    let current = self.framebuffer_assets.get(&node.id).is_some_and(|asset| {
+                        asset.data_url == *data_url
+                            && asset.format == format
+                            && asset.width == width
+                            && asset.height == height
+                            && asset.stride == stride
+                    });
+                    if current || self.pending_resources.contains_key(&node.id) {
+                        continue;
+                    }
+                    self.resource_ticket = self.resource_ticket.wrapping_add(1).max(1);
+                    let ticket = self.resource_ticket;
+                    let file_name = node
+                        .data
+                        .extra
+                        .get("rawFileName")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("embedded-framebuffer")
+                        .to_owned();
+                    self.pending_resources.insert(
+                        node.id.clone(),
+                        PendingResource {
+                            ticket,
+                            kind: ResourceKind::Framebuffer,
+                            expected_data_url: Some(data_url.clone()),
+                        },
+                    );
+                    requests.push(FileRequest::DecodeFramebuffer {
+                        node_id: node.id.clone(),
+                        data_url: data_url.clone(),
+                        file_name,
+                        format,
+                        width,
+                        height,
+                        stride,
+                        ticket,
+                    });
+                }
+                _ => {}
+            }
+        }
+        for request in requests {
+            if self.files.sender.send(request).is_err() {
+                self.pending_resources.clear();
+                if let Some(window) = self.window.upgrade() {
+                    window.set_io_status("Resource worker is no longer available.".into());
+                }
+                break;
+            }
+        }
+    }
+
+    fn apply_resource_data(&mut self, node_id: &str, data: open_quartz_sdk::NodeData) -> bool {
+        let revision = self.project.graph_revision();
+        match Arc::make_mut(&mut self.project).apply_graph_command(
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(node_id),
+                data,
+            },
+            revision,
+        ) {
+            Ok(_) => {
+                self.undo_edits.push(EditKind::Content);
+                self.redo_edits.clear();
+                self.pending_connection = None;
+                true
+            }
+            Err(error) => {
+                self.set_edit_status(&format!(
+                    "Cannot apply resource; project unchanged: {}",
+                    error.to_json()
+                ));
+                false
+            }
+        }
+    }
+
+    fn finish_image_load(
+        &mut self,
+        node_id: String,
+        asset: crate::services::file_service::ImageAsset,
+        ticket: u64,
+    ) {
+        let Some(pending) = self.pending_resources.get(&node_id) else {
+            return;
+        };
+        if pending.ticket != ticket || pending.kind != ResourceKind::Image {
+            return;
+        }
+        let expected_data_url = pending.expected_data_url.clone();
+        self.pending_resources.remove(&node_id);
+        let node = self
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.id == node_id);
+        let Some(node) = node.filter(|node| {
+            node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Image)
+        }) else {
+            return;
+        };
+        if expected_data_url
+            .as_deref()
+            .is_some_and(|expected| node.data.image_data_url.as_deref() != Some(expected))
+        {
+            self.sync_project_resources();
+            return;
+        }
+        if expected_data_url.is_none() {
+            let mut data = node.data.clone();
+            data.image_data_url = Some(asset.data_url.clone());
+            data.image_width = Some(asset.width);
+            data.image_height = Some(asset.height);
+            data.extra.insert(
+                "imageFileName".into(),
+                serde_json::Value::String(asset.file_name.clone()),
+            );
+            if !self.apply_resource_data(&node_id, data) {
+                return;
+            }
+        }
+        self.image_assets.insert(node_id, asset);
+        self.publish_project();
+    }
+
+    fn finish_framebuffer_load(
+        &mut self,
+        node_id: String,
+        asset: crate::services::file_service::FramebufferAsset,
+        ticket: u64,
+    ) {
+        let Some(pending) = self.pending_resources.get(&node_id) else {
+            return;
+        };
+        if pending.ticket != ticket || pending.kind != ResourceKind::Framebuffer {
+            return;
+        }
+        let expected_data_url = pending.expected_data_url.clone();
+        self.pending_resources.remove(&node_id);
+        let node = self
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.id == node_id);
+        let Some(node) = node.filter(|node| {
+            node.node_type == NodeType::Input
+                && node.data.input_mode == Some(InputMode::Framebuffer)
+        }) else {
+            return;
+        };
+        if expected_data_url
+            .as_deref()
+            .is_some_and(|expected| node.data.raw_data_url.as_deref() != Some(expected))
+        {
+            self.sync_project_resources();
+            return;
+        }
+        if expected_data_url.is_none()
+            && (node.data.fb_format.unwrap_or(FramebufferFormat::Rgba8) != asset.format
+                || node.data.fb_width != Some(asset.width)
+                || node.data.fb_height != Some(asset.height)
+                || node.data.fb_stride != asset.stride)
+        {
+            self.set_edit_status("Framebuffer settings changed while the file was loading; choose the raw file again.");
+            return;
+        }
+        if expected_data_url.is_none() {
+            let mut data = node.data.clone();
+            data.raw_data_url = Some(asset.data_url.clone());
+            data.fb_format = Some(asset.format);
+            data.fb_width = Some(asset.width);
+            data.fb_height = Some(asset.height);
+            data.fb_stride = asset.stride;
+            data.extra.insert(
+                "rawFileName".into(),
+                serde_json::Value::String(asset.file_name.clone()),
+            );
+            if !self.apply_resource_data(&node_id, data) {
+                return;
+            }
+        }
+        self.framebuffer_assets.insert(node_id, asset);
+        self.publish_project();
+    }
+
     fn publish_project(&mut self) {
+        if self.graph_stress_count.is_none() {
+            self.sync_project_resources();
+        }
         let Some(projection) = self.publish_graph_projection() else {
             return;
         };
@@ -487,8 +1526,46 @@ impl AppController {
             );
             return;
         }
+        let graph = self.project.graph_snapshot();
+        let image_node_ids = graph
+            .nodes()
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let images = self
+            .image_assets
+            .iter()
+            .filter(|(node_id, _)| image_node_ids.contains(node_id.as_str()))
+            .map(|(node_id, asset)| {
+                (
+                    node_id.clone(),
+                    crate::render_bridge::ImageUpload {
+                        key: asset.key,
+                        width: asset.width,
+                        height: asset.height,
+                        rgba: asset.rgba.clone(),
+                    },
+                )
+            })
+            .chain(
+                self.framebuffer_assets
+                    .iter()
+                    .filter(|(node_id, _)| image_node_ids.contains(node_id.as_str()))
+                    .map(|(node_id, asset)| {
+                        (
+                            node_id.clone(),
+                            crate::render_bridge::ImageUpload {
+                                key: asset.key,
+                                width: asset.width,
+                                height: asset.height,
+                                rgba: asset.rgba.clone(),
+                            },
+                        )
+                    }),
+            )
+            .collect();
         if let Some(renderer) = &mut self.renderer {
-            match renderer.set_graph(self.project.graph_snapshot()) {
+            match renderer.set_graph(graph, images) {
                 Ok(()) => window.set_runtime_status("NativeHost is applying the SDK graph…".into()),
                 Err(error) => window.set_runtime_status(error.into()),
             }
@@ -523,6 +1600,7 @@ impl AppController {
         window.set_graph_origin_y(projection.origin_y);
         self.publish_edit_state();
         self.publish_inspector();
+        self.publish_desktop_controls();
         Some(stats)
     }
 
@@ -670,6 +1748,12 @@ impl AppController {
             window.set_inspector_onnx_saved(slint::ModelRc::default());
             window.set_inspector_onnx_live(slint::ModelRc::default());
             window.set_inspector_onnx_path("".into());
+            window.set_inspector_image_input(false);
+            window.set_inspector_image_name("".into());
+            window.set_inspector_image_size("".into());
+            window.set_inspector_framebuffer_input(false);
+            window.set_inspector_framebuffer_name("".into());
+            window.set_inspector_video_input(false);
             window.set_inspector_selection_message(
                 if self.selected_node_ids.is_empty() {
                     "Select a node to inspect its properties."
@@ -699,6 +1783,62 @@ impl AppController {
         window.set_inspector_has_selection(true);
         window.set_inspector_node_id(node.id.as_str().into());
         window.set_inspector_node_type(format!("{:?}", node.node_type).into());
+        let image_input =
+            node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Image);
+        let framebuffer_input = node.node_type == NodeType::Input
+            && node.data.input_mode == Some(InputMode::Framebuffer);
+        window.set_inspector_video_input(
+            node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Video),
+        );
+        window.set_inspector_image_input(image_input);
+        window.set_inspector_image_name(
+            self.image_assets
+                .get(&node.id)
+                .map(|asset| asset.file_name.as_str())
+                .or_else(|| {
+                    node.data
+                        .extra
+                        .get("imageFileName")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or(if node.data.image_data_url.is_some() {
+                    "Embedded image"
+                } else {
+                    ""
+                })
+                .into(),
+        );
+        window.set_inspector_image_size(
+            self.image_assets
+                .get(&node.id)
+                .map(|asset| format!("{} × {}", asset.width, asset.height))
+                .or_else(|| {
+                    node.data
+                        .image_width
+                        .zip(node.data.image_height)
+                        .map(|(width, height)| format!("{width} × {height}"))
+                })
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_inspector_framebuffer_input(framebuffer_input);
+        window.set_inspector_framebuffer_name(
+            self.framebuffer_assets
+                .get(&node.id)
+                .map(|asset| asset.file_name.as_str())
+                .or_else(|| {
+                    node.data
+                        .extra
+                        .get("rawFileName")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or(if node.data.raw_data_url.is_some() {
+                    "Embedded framebuffer"
+                } else {
+                    ""
+                })
+                .into(),
+        );
         window.set_inspector_is_shader(node.node_type == NodeType::Shader);
         window.set_inspector_supports_output_size(matches!(
             node.node_type,
@@ -730,6 +1870,7 @@ impl AppController {
         self.publish_forms();
         self.publish_inspector_dirty();
         self.publish_onnx_runtime();
+        self.publish_video_devices();
     }
 
     fn publish_onnx_runtime(&self) {
@@ -833,6 +1974,7 @@ impl AppController {
         }
         self.publish_forms();
         self.publish_inspector_dirty();
+        self.publish_video_devices();
     }
 
     fn publish_forms(&self) {
@@ -1154,6 +2296,104 @@ impl AppController {
         self.set_edit_status("Reconnecting: choose a new input, or an output then input. The old edge remains until a valid commit.");
     }
 
+    fn add_node(&mut self, option: NodeFactoryOption) {
+        if self.edits_blocked() {
+            return;
+        }
+        let revision = self.project.graph_revision();
+        let mut candidate = self.project.as_ref().clone();
+        let node = match candidate.create_graph_node(option.request, revision) {
+            Ok((node, _)) => node,
+            Err(error) => {
+                self.set_edit_status(&format!(
+                    "Cannot create node; project unchanged: {}",
+                    error.to_json()
+                ));
+                return;
+            }
+        };
+        if let Some(params) = option.onnx_params.filter(|params| !params.is_empty()) {
+            let mut data = node.data.clone();
+            data.onnx_params = Some(params.clone());
+            data.onnx_score_threshold =
+                params.get("scoreThreshold").and_then(|value| match value {
+                    open_quartz_sdk::OnnxParamValue::Number(value) => Some(*value),
+                    _ => None,
+                });
+            data.onnx_iou_threshold = params.get("iouThreshold").and_then(|value| match value {
+                open_quartz_sdk::OnnxParamValue::Number(value) => Some(*value),
+                _ => None,
+            });
+            if let Err(error) = candidate.apply_graph_command(
+                GraphCommand::UpdateNodeData {
+                    node_id: NodeId::new(&node.id),
+                    data,
+                },
+                candidate.graph_revision(),
+            ) {
+                self.set_edit_status(&format!(
+                    "Cannot initialize model node; project unchanged: {}",
+                    error.to_json()
+                ));
+                return;
+            }
+        }
+        let Some(node) = candidate
+            .graph()
+            .nodes()
+            .iter()
+            .find(|current| current.id == node.id)
+            .cloned()
+        else {
+            self.set_edit_status(
+                "Cannot create node; project unchanged: the SDK omitted the created node.",
+            );
+            return;
+        };
+        match Arc::make_mut(&mut self.project).replace_graph(candidate.graph_snapshot(), revision) {
+            Ok(_) => {
+                self.selected_node_ids.clear();
+                self.selected_node_ids.insert(node.id.clone());
+                self.selected_edge_id = None;
+                self.pending_connection = None;
+                self.inspector_draft = Some(InspectorDraft::from_node(&node));
+                self.finish_topology_edit("Node created through the Rust SDK.");
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot create node; project unchanged: {}",
+                error.to_json()
+            )),
+        }
+    }
+
+    fn remove_selected_nodes(&mut self) {
+        if self.edits_blocked() || self.selected_node_ids.is_empty() {
+            return;
+        }
+        let mut graph = self.project.graph_snapshot();
+        let selected = &self.selected_node_ids;
+        graph.nodes.retain(|node| !selected.contains(&node.id));
+        graph
+            .edges
+            .retain(|edge| !selected.contains(&edge.source) && !selected.contains(&edge.target));
+        let revision = self.project.graph_revision();
+        match Arc::make_mut(&mut self.project).replace_graph(graph, revision) {
+            Ok(_) => {
+                self.selected_node_ids.clear();
+                self.selected_edge_id = None;
+                self.pending_connection = None;
+                self.inspector_draft = None;
+                self.finish_topology_edit(
+                    "Selected nodes and their connections were deleted through the SDK.",
+                );
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot delete selected nodes; project unchanged: {}",
+                error.to_json()
+            )),
+        }
+    }
+
     fn delete_edge(&mut self) {
         if self.edits_blocked() {
             return;
@@ -1290,6 +2530,18 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        if save
+            && self
+                .pending_resources
+                .values()
+                .any(|pending| pending.expected_data_url.is_none())
+        {
+            window.set_io_status(
+                "Wait for the selected image or framebuffer to finish loading before saving."
+                    .into(),
+            );
+            return;
+        }
         if path.as_os_str().is_empty() {
             window.set_io_status("A project path is required. Enter a path above.".into());
             return;
@@ -1320,13 +2572,58 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        if let Some((path, receiver)) = &self.pending_capture {
+            let completed = match receiver.try_recv() {
+                Ok(result) => Some(result.map(|()| format!("Captured PNG {}", path.display()))),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "PNG capture worker disconnected before completion.".into(),
+                )),
+            };
+            if let Some(result) = completed {
+                self.pending_capture = None;
+                self.busy = false;
+                window.set_busy(false);
+                window.set_io_status(result.unwrap_or_else(|error| error).into());
+            }
+        }
         while let Ok(result) = self.files.receiver.try_recv() {
-            self.busy = false;
-            window.set_busy(false);
             match result {
+                FileResult::VideoDevices(result) => {
+                    self.camera_loading = false;
+                    match result {
+                        Ok(devices) => {
+                            self.video_devices = devices;
+                            self.set_edit_status(if self.video_devices.is_empty() {
+                                "No native camera devices found."
+                            } else {
+                                "Camera devices refreshed. Select a camera, then Apply video."
+                            });
+                        }
+                        Err(error) => {
+                            self.set_edit_status(&format!("Camera enumeration failed: {error}"))
+                        }
+                    }
+                    self.publish_video_devices();
+                }
+                #[cfg(target_os = "windows")]
+                FileResult::ExportedScreenSaver(path) => {
+                    self.busy = false;
+                    window.set_busy(false);
+                    self.set_edit_status(&format!(
+                        "Exported Windows screen saver {}",
+                        path.display()
+                    ));
+                }
                 FileResult::Opened { path, project } => {
+                    self.busy = false;
+                    window.set_busy(false);
                     self.project = Arc::new(project);
+                    self.selected_renderer_id = None;
                     self.onnx_states.clear();
+                    self.image_assets.clear();
+                    self.framebuffer_assets.clear();
+                    self.pending_resources.clear();
                     if let Some(renderer) = &mut self.renderer {
                         renderer.begin_project();
                     }
@@ -1345,12 +2642,51 @@ impl AppController {
                     window.invoke_reset_graph_view();
                 }
                 FileResult::Saved(path) => {
+                    self.busy = false;
+                    window.set_busy(false);
                     window.set_project_path(path.to_string_lossy().as_ref().into());
                     window.set_io_status(
                         format!("Saved {} through the Rust SDK.", path.display()).into(),
                     );
                 }
-                FileResult::Failed(error) => window.set_io_status(error.into()),
+                FileResult::LoadedImage {
+                    node_id,
+                    asset,
+                    ticket,
+                } => {
+                    self.finish_image_load(node_id, asset, ticket);
+                }
+                FileResult::LoadedFramebuffer {
+                    node_id,
+                    asset,
+                    ticket,
+                } => {
+                    self.finish_framebuffer_load(node_id, asset, ticket);
+                }
+                FileResult::Failed {
+                    node_id: None,
+                    error,
+                    ticket: None,
+                } => {
+                    self.busy = false;
+                    window.set_busy(false);
+                    window.set_io_status(error.into());
+                }
+                FileResult::Failed {
+                    node_id: Some(node_id),
+                    error,
+                    ticket: Some(ticket),
+                } => {
+                    if self
+                        .pending_resources
+                        .get(&node_id)
+                        .is_some_and(|pending| pending.ticket == ticket)
+                    {
+                        self.pending_resources.remove(&node_id);
+                        window.set_io_status(error.into());
+                    }
+                }
+                FileResult::Failed { .. } => {}
             }
         }
         let update = self.renderer.as_ref().and_then(RenderBridge::take_update);
@@ -1892,13 +3228,70 @@ enum FileRequest {
         path: PathBuf,
         project: Arc<Project>,
     },
+    ListCameras,
+    #[cfg(target_os = "windows")]
+    ExportScreenSaver {
+        path: PathBuf,
+        project: Arc<Project>,
+        renderer_node_id: String,
+    },
+    LoadImage {
+        node_id: String,
+        path: PathBuf,
+        ticket: u64,
+    },
+    LoadFramebuffer {
+        node_id: String,
+        path: PathBuf,
+        format: open_quartz_sdk::FramebufferFormat,
+        width: u32,
+        height: u32,
+        stride: Option<u32>,
+        ticket: u64,
+    },
+    DecodeImage {
+        node_id: String,
+        data_url: String,
+        file_name: String,
+        ticket: u64,
+    },
+    DecodeFramebuffer {
+        node_id: String,
+        data_url: String,
+        file_name: String,
+        format: open_quartz_sdk::FramebufferFormat,
+        width: u32,
+        height: u32,
+        stride: Option<u32>,
+        ticket: u64,
+    },
     Shutdown,
 }
 
 enum FileResult {
-    Opened { path: PathBuf, project: Project },
+    Opened {
+        path: PathBuf,
+        project: Project,
+    },
     Saved(PathBuf),
-    Failed(String),
+    VideoDevices(Result<Vec<open_quartz_execution::native_video::NativeVideoDevice>, String>),
+    #[cfg(target_os = "windows")]
+    ExportedScreenSaver(PathBuf),
+    LoadedImage {
+        node_id: String,
+        asset: crate::services::file_service::ImageAsset,
+        ticket: u64,
+    },
+    LoadedFramebuffer {
+        node_id: String,
+        asset: crate::services::file_service::FramebufferAsset,
+        ticket: u64,
+    },
+    Failed {
+        node_id: Option<String>,
+        error: String,
+        ticket: Option<u64>,
+    },
 }
 
 struct ProjectIo {
@@ -1917,6 +3310,28 @@ impl ProjectIo {
                 let sdk = OpenQuartz::new(Environment::headless());
                 while let Ok(request) = requests.recv() {
                     let result = match request {
+                        FileRequest::ListCameras => FileResult::VideoDevices(
+                            open_quartz_execution::native_video::list_video_devices(),
+                        ),
+                        #[cfg(target_os = "windows")]
+                        FileRequest::ExportScreenSaver {
+                            path,
+                            project,
+                            renderer_node_id,
+                        } => {
+                            match crate::services::desktop_export::export_screen_saver(
+                                &project,
+                                &renderer_node_id,
+                                &path,
+                            ) {
+                                Ok(()) => FileResult::ExportedScreenSaver(path),
+                                Err(error) => FileResult::Failed {
+                                    node_id: None,
+                                    error,
+                                    ticket: None,
+                                },
+                            }
+                        }
                         FileRequest::Open(path) => {
                             let project = file_service::read_project(&path).and_then(|contents| {
                                 sdk.open_project_json(&contents).map_err(|error| {
@@ -1925,20 +3340,111 @@ impl ProjectIo {
                             });
                             match project {
                                 Ok(project) => FileResult::Opened { path, project },
-                                Err(error) => FileResult::Failed(error),
+                                Err(error) => FileResult::Failed {
+                                    node_id: None,
+                                    error,
+                                    ticket: None,
+                                },
                             }
                         }
                         FileRequest::Save { path, project } => {
                             let contents = serde_json::to_string_pretty(&project.to_file())
                                 .map_err(|error| {
                                     format!("Cannot serialize {}: {error}", path.display())
+                                })
+                                .and_then(|mut contents| {
+                                    contents.push('\n');
+                                    file_service::write_project(&path, &contents)
                                 });
-                            match contents.and_then(|mut contents| {
-                                contents.push('\n');
-                                file_service::write_project(&path, &contents)
-                            }) {
+                            match contents {
                                 Ok(()) => FileResult::Saved(path),
-                                Err(error) => FileResult::Failed(error),
+                                Err(error) => FileResult::Failed {
+                                    node_id: None,
+                                    error,
+                                    ticket: None,
+                                },
+                            }
+                        }
+                        FileRequest::LoadImage {
+                            node_id,
+                            path,
+                            ticket,
+                        } => match file_service::read_image(&path) {
+                            Ok(asset) => FileResult::LoadedImage {
+                                node_id,
+                                asset,
+                                ticket,
+                            },
+                            Err(error) => FileResult::Failed {
+                                node_id: Some(node_id),
+                                error,
+                                ticket: Some(ticket),
+                            },
+                        },
+                        FileRequest::LoadFramebuffer {
+                            node_id,
+                            path,
+                            format,
+                            width,
+                            height,
+                            stride,
+                            ticket,
+                        } => {
+                            match file_service::read_framebuffer(
+                                &path, format, width, height, stride,
+                            ) {
+                                Ok(asset) => FileResult::LoadedFramebuffer {
+                                    node_id,
+                                    asset,
+                                    ticket,
+                                },
+                                Err(error) => FileResult::Failed {
+                                    node_id: Some(node_id),
+                                    error,
+                                    ticket: Some(ticket),
+                                },
+                            }
+                        }
+                        FileRequest::DecodeImage {
+                            node_id,
+                            data_url,
+                            file_name,
+                            ticket,
+                        } => match file_service::decode_image_data_url(&data_url, file_name) {
+                            Ok(asset) => FileResult::LoadedImage {
+                                node_id,
+                                asset,
+                                ticket,
+                            },
+                            Err(error) => FileResult::Failed {
+                                node_id: Some(node_id),
+                                error,
+                                ticket: Some(ticket),
+                            },
+                        },
+                        FileRequest::DecodeFramebuffer {
+                            node_id,
+                            data_url,
+                            file_name,
+                            format,
+                            width,
+                            height,
+                            stride,
+                            ticket,
+                        } => {
+                            match file_service::decode_framebuffer_data_url(
+                                &data_url, file_name, format, width, height, stride,
+                            ) {
+                                Ok(asset) => FileResult::LoadedFramebuffer {
+                                    node_id,
+                                    asset,
+                                    ticket,
+                                },
+                                Err(error) => FileResult::Failed {
+                                    node_id: Some(node_id),
+                                    error,
+                                    ticket: Some(ticket),
+                                },
                             }
                         }
                         FileRequest::Shutdown => break,
@@ -1948,7 +3454,7 @@ impl ProjectIo {
                     }
                 }
             })
-            .map_err(|error| format!("Cannot start project file worker: {error}"))?;
+            .map_err(|error| format!("Cannot start native resource worker: {error}"))?;
         Ok(Self {
             sender,
             receiver,
@@ -1976,9 +3482,132 @@ mod tests {
 
     use super::{
         commit_connection, commit_inspector, commit_node_position, graph_stress_project,
-        sample_project, GraphViewModel, InspectorChange, InspectorDraft,
+        node_factory_options, sample_project, GraphViewModel, InspectorChange, InspectorDraft,
     };
 
+    #[test]
+    fn node_factory_options_cover_native_graph_families_and_rust_catalogs() {
+        use std::collections::BTreeSet;
+
+        let options = node_factory_options();
+        let labels = options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(labels.len(), options.len());
+        for operation in open_quartz_execution::catalog::math_ops() {
+            assert!(labels.contains(format!("Math · {}", operation.label).as_str()));
+        }
+        for model in open_quartz_execution::catalog::onnx_models() {
+            assert!(labels.contains(format!("ONNX · {}", model.label).as_str()));
+        }
+        for source in ["Time", "TimeDelta", "Frame", "Mouse", "Resolution"] {
+            assert!(labels.contains(format!("System · {source}").as_str()));
+        }
+        for source in ["Image", "Framebuffer", "Video"] {
+            assert!(labels.contains(format!("Input · {source}").as_str()));
+        }
+        assert!(labels.contains("Renderer"));
+        assert!(labels.contains("ONNX · Custom model"));
+    }
+
+    #[test]
+    fn adding_catalog_node_commits_one_undoable_sdk_revision() {
+        let mut controller = controller_for_uniforms(uniform_project(&[]));
+        controller.inspector_draft = None;
+        let before = controller.project.graph_snapshot();
+        let revision = controller.project.graph_revision();
+        let option = node_factory_options()
+            .into_iter()
+            .find(|option| option.label == "Math · Add")
+            .unwrap();
+
+        controller.add_node(option);
+
+        let after = controller.project.graph_snapshot();
+        assert_eq!(after.nodes.len(), before.nodes.len() + 1);
+        assert_eq!(controller.project.graph_revision(), revision + 1);
+        assert_eq!(controller.undo_edits.len(), 1);
+        let created = after
+            .nodes
+            .iter()
+            .find(|node| node.node_type == NodeType::Math)
+            .unwrap();
+        assert_eq!(created.data.math_op.as_deref(), Some("add"));
+        assert_eq!(
+            controller.selected_node_ids,
+            [created.id.clone()].into_iter().collect()
+        );
+
+        controller.restore_edit(false);
+        assert_eq!(controller.project.graph_snapshot(), before);
+        controller.restore_edit(true);
+        assert_eq!(controller.project.graph_snapshot(), after);
+    }
+
+    #[test]
+    fn catalog_onnx_defaults_are_applied_with_the_single_node_history_entry() {
+        let mut controller = controller_for_uniforms(uniform_project(&[]));
+        controller.inspector_draft = None;
+        let revision = controller.project.graph_revision();
+        let option = node_factory_options()
+            .into_iter()
+            .find(|option| option.label == "ONNX · YOLOv8n Detector")
+            .unwrap();
+
+        controller.add_node(option);
+
+        assert_eq!(controller.project.graph_revision(), revision + 1);
+        assert_eq!(controller.undo_edits.len(), 1);
+        let node = controller
+            .project
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.node_type == NodeType::Onnx)
+            .unwrap();
+        assert_eq!(node.data.onnx_score_threshold, Some(0.25));
+        assert_eq!(node.data.onnx_iou_threshold, Some(0.45));
+        assert_eq!(
+            node.data.onnx_params.as_ref().unwrap()["scoreThreshold"],
+            open_quartz_sdk::OnnxParamValue::Number(0.25)
+        );
+        assert_eq!(
+            node.data.onnx_params.as_ref().unwrap()["iouThreshold"],
+            open_quartz_sdk::OnnxParamValue::Number(0.45)
+        );
+    }
+
+    #[test]
+    fn deleting_selected_connected_nodes_is_atomic_undoable_and_draft_guarded() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let project = sample_project(&sdk).unwrap();
+        let before = project.graph_snapshot();
+        let mut controller = controller_for_uniforms(project);
+        controller.selected_node_ids = before.nodes.iter().map(|node| node.id.clone()).collect();
+        controller
+            .inspector_draft
+            .as_mut()
+            .unwrap()
+            .label
+            .push_str(" pending");
+        controller.remove_selected_nodes();
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert!(controller.undo_edits.is_empty());
+
+        controller.inspector_draft = None;
+        let revision = controller.project.graph_revision();
+        controller.remove_selected_nodes();
+        assert!(controller.project.graph().nodes().is_empty());
+        assert!(controller.project.graph().edges().is_empty());
+        assert_eq!(controller.project.graph_revision(), revision + 1);
+        assert_eq!(controller.undo_edits.len(), 1);
+        controller.restore_edit(false);
+        assert_eq!(controller.project.graph_snapshot(), before);
+        controller.restore_edit(true);
+        assert!(controller.project.graph().nodes().is_empty());
+        assert!(controller.project.graph().edges().is_empty());
+    }
     #[test]
     fn node_forms_commit_independently_with_single_history_and_save_reload() {
         use crate::inspector_forms::FormKind;
@@ -2226,6 +3855,14 @@ mod tests {
             inspector_forms: std::rc::Rc::new(slint::VecModel::default()),
             graph_nodes: std::rc::Rc::new(slint::VecModel::default()),
             graph_edges: std::rc::Rc::new(slint::VecModel::default()),
+            image_assets: std::collections::BTreeMap::new(),
+            framebuffer_assets: std::collections::BTreeMap::new(),
+            pending_resources: std::collections::BTreeMap::new(),
+            resource_ticket: 0,
+            video_devices: Vec::new(),
+            camera_loading: false,
+            selected_renderer_id: None,
+            pending_capture: None,
             clipboard: None,
             graph_stress_count: None,
             selected_edge_id: None,

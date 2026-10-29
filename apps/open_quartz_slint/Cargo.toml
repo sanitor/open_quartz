@@ -11,13 +11,23 @@ description = "Native Slint application shell for OpenQuartz"
 
 [dependencies]
 open_quartz_sdk = { path = "../../crates/open_quartz_sdk" }
+open_quartz_execution = { path = "../../crates/open_quartz_execution" }
 open_quartz_native_host = { path = "../../crates/open_quartz_native_host" }
 open_quartz_host_api = { path = "../../crates/open_quartz_host_api" }
 directories = "6"
 pollster = "0.4"
+base64 = "0.22"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
 serde_json = "1.0"
 slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+rfd = "0.16"
+
+[target.'cfg(windows)'.dependencies]
+open_quartz_screensaver = { path = "../../crates/open_quartz_screensaver" }
+open_quartz_native_host = { path = "../../crates/open_quartz_native_host", features = ["native-video-d3d12"] }
 
 
 [build-dependencies]

@@ -1,4 +1,4 @@
-import { Button, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export struct GraphPort {
@@ -38,6 +38,7 @@ export component GraphView inherits Rectangle {
     in property <float> content-height;
     in property <float> origin-x;
     in property <float> origin-y;
+    in property <[string]> node-factory-options;
     in property <bool> busy;
     callback node-selected(string, bool);
     callback node-moved(string, float, float);
@@ -60,6 +61,9 @@ export component GraphView inherits Rectangle {
     callback copy();
     callback paste();
     callback select-all();
+    callback add-node(int);
+    callback remove-nodes();
+    private property <int> node-factory-index: 0;
 
     private property <int> drag-node-index: -1;
     private property <length> drag-offset-x: 0px;
@@ -152,6 +156,26 @@ export component GraphView inherits Rectangle {
             text: "Graph · " + root.summary;
             color: Theme.foreground;
             font-size: 17px;
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            ComboBox {
+                model: root.node-factory-options;
+                current-index <=> root.node-factory-index;
+                enabled: !root.busy && root.node-factory-options.length > 0;
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Add node";
+                enabled: !root.busy && root.node-factory-options.length > 0;
+                clicked => {
+                    if (root.node-factory-index >= 0 && root.node-factory-index < root.node-factory-options.length) {
+                        root.add-node(root.node-factory-index);
+                    }
+                }
+            }
+            Button { text: "Delete node"; enabled: !root.busy && root.selection-count > 0; clicked => { root.remove-nodes(); } }
         }
 
         HorizontalLayout {

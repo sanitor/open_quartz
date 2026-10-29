@@ -1,12 +1,54 @@
-# OpenQuartz Slint application shell
+# OpenQuartz Native Desktop (Slint)
 
-This native application shell includes Phase 4 Inspector/WGSL editing and Phase 5 ONNX sessions.
-It is a standalone Rust workspace, with Slint and its build compiler pinned to
-**1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
+Phase 5 and Phase 7 are complete within the agreed macOS scope. This is the default
+desktop application; the separate Web application remains independently buildable,
+and Tauri remains an explicit fallback for one version. Native package relocation,
+real resource dialogs and the Tauri fallback `.app` build are verified. Actual
+camera capture, Windows/Linux acceptance and Phase 6 Android/iOS are deferred.
+An earlier intermittent winit startup abort remains a known risk. The changes are
+still Unreleased; local stage completion does not mean a tagged release was published.
+
+The application is a standalone Rust workspace, with Slint and its build compiler
+pinned to **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
 ## Run
 
 From the repository root:
+
+```sh
+npm ci
+npm run dev
+npm run dev -- --project /absolute/path/project.quartz.json
+npm run build
+```
+
+The default Node entry point prepares native FFmpeg and official ONNX Runtime
+1.21.0, then builds/launches Rust directly. It does **not** build WASM, start Vite,
+or require a browser. Platform C++ build tools and Rust 1.92+ are required; see the
+[root README](../../README.md#getting-started--native-desktop) for Linux dependencies
+and Windows LLVM/VC++ redistributable requirements.
+
+Release output lives in `dist-desktop/`: a macOS `.app` plus ZIP, Windows portable
+ZIP, or Linux tarball. Packages include architecture-matched runtime libraries and
+notices; missing resources fail the build. macOS bundles have the icon and camera
+usage description and are ad-hoc signed, not notarized. Windows packages are unsigned;
+extract the whole directory, including `runtime/` and executable-adjacent DLLs.
+Windows also includes the independently built screen saver stub.
+
+The macOS ZIP was extracted outside the workspace and launched without ORT/FFmpeg
+environment overrides. It used its own `Contents/Resources/runtime/ffmpeg`, rendered
+real 96×48 video through Metal, and exited normally with code 0. Extracted-bundle
+code signing and `--help` verification passed. `dist-desktop/` is ignored by Git.
+
+The retained Tauri shell also builds via `npm run package:tauri -- --bundles app`;
+its macOS bundle lives at the root workspace's `target/release/bundle/macos/`.
+
+Windows FFmpeg uses a dated BtbN FFmpeg 9.0.2 snapshot pinned by SHA-256 (ABI 63).
+Upstream snapshot retention is not guaranteed: keep the download cache for repeat/
+offline builds. Missing downloads or mismatched bytes fail explicitly rather than
+falling back to a partial package or a system decoder.
+
+Direct Cargo commands remain useful if native runtime paths are configured:
 
 ```sh
 cargo run --manifest-path apps/open_quartz_slint/Cargo.toml
@@ -30,7 +72,8 @@ The path field is used for **both Open and Save**. Press Enter to open that path
 or use the corresponding button. Save writes the SDK's `Project::to_file()` JSON
 representation and **overwrites an existing file at the entered path**. Parent
 directories must already exist. Relative paths are resolved against the process
-working directory. There is no native file dialog or automatic save.
+working directory. Project Open/Save use this path field; resource selection uses native
+file dialogs. Save is manual; there is no automatic save.
 
 ## Graph and application boundary
 
@@ -87,16 +130,16 @@ working directory. There is no native file dialog or automatic save.
   copying again resets that offset. Failed pastes preserve project/history and
   the next offset. Copy with no selection leaves the existing clipboard intact.
 - The graph clipboard survives project Open and source edits/removal until replaced
-  by another Copy or the app exits. Referenced external media/model resources are
-  not duplicated or attached by this shell. Text fields retain their normal text
-  clipboard shortcuts. Graph Copy/Paste/Select all are disabled during project I/O;
-  graph shortcuts do not run during a node drag.
+  by another Copy or the app exits. Embedded Image and Framebuffer data URLs are
+  copied with their node data; ONNX model files and video/camera sources remain
+  external. Text fields retain their normal text clipboard shortcuts. Graph Copy/Paste/
+  Select all are disabled during project I/O; graph shortcuts do not run during a node drag.
 - `AppController` owns the SDK `Project` and updates Slint properties/models.
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
-- A file worker performs disk I/O and SDK parsing/serialization. A separate render
-  worker owns `open_quartz_native_host::NativeHost`; no execution engine logic is
-  reproduced in this crate.
+- A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
+  A separate render worker owns `open_quartz_native_host::NativeHost`; no execution
+  engine logic is reproduced in this crate.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
   into `NativeHost::from_shared_wgpu`, and passes the originals to Slint's
   `WGPUConfiguration::Manual`. The host receives the SDK graph, advances playback,
@@ -108,13 +151,44 @@ working directory. There is no native file dialog or automatic save.
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The shell includes Sampling, Framebuffer, and Video configuration forms plus ONNX
-model loading and inference. It does **not** yet load image/raw/video inputs,
-enumerate cameras, or adapt gestures for mobile. Sampling is executable: NativeHost
-applies each source node's Linear/Nearest filter and Clamp/Repeat/Mirror wrap to
-generated or externally uploaded textures. Framebuffer and Video persist configuration
-only; absent resources and host failures are reported instead of replaced with
-sample output. Only RGBA8 host preview outputs can be imported.
+The app includes Sampling, Framebuffer, and Video configuration forms plus ONNX
+model loading and inference. Image inputs accept PNG/JPEG/BMP/WebP files; raw
+Framebuffer inputs accept binary files decoded using the applied format, dimensions,
+and optional row stride. Image/Framebuffer resources are embedded in the SDK project
+and decoded asynchronously after Open. NativeHost receives decoded RGBA textures;
+errors are reported instead of replaced with sample output. Video file paths and
+camera IDs are persisted and reconciled by NativeHost, with native camera enumeration,
+file selection, loop, and playback rate controls. Video files and cameras remain
+external resources and can fail if a file/device is missing or OS permission is
+denied. Sampling applies each source node's Linear/Nearest filter and Clamp/Repeat/
+Mirror wrap. Only RGBA8 host preview outputs can be imported. Mobile gestures and
+mobile camera/file permission adapters are deferred with Phase 6.
+
+Renderer controls select an explicit output and reuse its shared texture in the
+normal preview or **Fullscreen**; **Close · Esc** returns without readback or a
+second decoder. PNG capture requests full-resolution readback only on user action.
+Windows screen saver export runs on the project I/O worker, uses an explicit
+Renderer, and exposes eligible Image/Video inputs in the exported settings. Camera
+graphs are rejected as nondeterministic sources. Raw framebuffer sources are baked
+into PNG assets in the export copy; the editor project is unchanged. Exported
+`.scr` files include required media/models, shared codec/VC++ DLLs and runtime
+resources; their MSVC launcher uses a static CRT and delay-loads FFmpeg until after
+extraction. Independent Windows execution still requires platform acceptance.
+
+The macOS production Controller/NativeHost smoke used the packaged FFmpeg and
+ORT 1.21.0 libraries: advancing 96×48 video, exact 2×2 blue/red PNGs, Renderer
+selection while paused, fullscreen/Escape, Stop/Play, Save/Open, ONNX cancellation,
+inference and unload all passed with actual FemtoVG window snapshots and ordinary
+process exit. After unlocking the session, real AppKit dialogs exposed a Controller
+borrow held across a nested modal loop; the fix releases that borrow and keeps
+project edits busy-guarded. Native Video cancel/select, Image loading, raw 2×1
+red/green framebuffer loading, and PNG save/cancel now pass in the rebuilt package.
+The saved video PNG is 80×40; the user also confirms fullscreen button behavior.
+Camera enumeration returned no devices; live camera permission/capture and
+Windows/Linux runtime gates remain. Windows cross-check reached bindgen with real,
+checksum-verified FFmpeg headers but lacks Windows SDK `errno.h`. An earlier
+LaunchServices launch aborted inside winit; a later logged launch rendered normally.
+Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
 
 ## Inspector and WGSL editing
 
@@ -124,6 +198,11 @@ sample output. Only RGBA8 host preview outputs can be imported.
   Connected rows are read-only because their upstream value wins. Samplers, Auto,
   boolean vectors, and other resource/object types are not uniform rows; the Ports
   list still shows them. Sampling and Input configuration forms are described below.
+- Image and Framebuffer inputs provide native file selection in the Inspector. Image
+  dimensions are detected from the file. For raw Framebuffer data, apply its format,
+  width, height, and optional row stride before choosing the file. A successful
+  import updates SDK node data as one undoable edit; Save includes the embedded data
+  URL, and Open revalidates and uploads it asynchronously.
 - Edit the name and use **Apply name**. Shader/Constant nodes also expose
   **Auto size**, width and height (1–8192), and **Apply output size**. Auto size
   delegates resolution to the engine; applying it clears explicit dimensions.
@@ -163,10 +242,10 @@ sample output. Only RGBA8 host preview outputs can be imported.
   both the form and output.
 - Framebuffer Inputs expose all schema formats, required 1–8192 width/height, and
   optional positive-u32 stride (`blank` or `0` means auto). Video Inputs expose
-  File/Camera source, free-form camera ID, Loop, and finite 0.1–4.0 playback rate.
-  These forms explicitly say configuration-only because this shell does not load
-  raw buffers or open video/camera resources. Changing source does not erase a
-  preserved file path; all groups clone complete SDK `NodeData`.
+  File/Camera source, native file/device selection, Loop, and finite 0.1–4.0 playback
+  rate. Apply persists complete SDK `NodeData`; source switches preserve the saved
+  file path, and NativeHost reconciles committed source configuration. Raw buffer
+  resources are decoded by the file worker rather than on the Slint UI thread.
 
 ### Read-only ONNX metadata
 
@@ -186,18 +265,25 @@ sample output. Only RGBA8 host preview outputs can be imported.
 
 ### Native ONNX sessions
 
-Set a compatible ONNX Runtime library **before launching** the shell:
+`npm run dev` and packaged builds prepare the compatible **official ONNX Runtime
+1.21.0** distribution automatically. They do not use the separate Node ORT version.
+Windows uses Microsoft's DirectML package plus its declared DirectML 1.15.4
+dependency; macOS/Linux use the CPU distribution. Source URLs and notices are bundled.
+
+Startup resolves runtime resources beside the executable (`runtime/`) or, for a
+macOS app, `Contents/Resources/runtime/`. The primary library names are
+`onnxruntime.dll`, `libonnxruntime.1.21.0.dylib`, and `libonnxruntime.so.1.21.0`.
+Development commands explicitly configure `ORT_DYLIB_PATH`,
+`OPEN_QUARTZ_FFMPEG_PATH`, and runtime `PATH`. For direct Cargo launches, an explicit
+`ORT_DYLIB_PATH` can point to an [official native 1.21.0 library](https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0):
 
 ```sh
 ORT_DYLIB_PATH=/absolute/path/libonnxruntime.1.21.0.dylib \
   cargo run --release --manifest-path apps/open_quartz_slint/Cargo.toml -- --project project.json
 ```
 
-Use the platform CPU library (`onnxruntime.dll`, `.dylib`, or `.so`) from an
-[official native ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0).
-Missing configuration and invalid paths are reported in the live model status;
-the shader shell and project I/O work without an attached session. Runtime bundling
-is not automatic in this app.
+Missing/invalid runtime configuration is a visible error, not fabricated inference.
+The shader editor and project I/O do not require a loaded model session.
 
 - Select one ONNX node and explicitly **Load model**. A temporary local path
   overrides the saved custom path only for the current session. Without an
@@ -281,9 +367,10 @@ test loaded the `image_identity.onnx` fixture in NativeHost with the official ON
 Runtime 1.21.0 CPU dylib, passed its expected 2×2 RGBA through the downstream
 Renderer, emitted the CPU output event, and exited normally. Native model cache
 tests cover streamed publication, digest validation, cancellation, and invalid IDs.
-The target macOS session later became screen-locked before the final Slint AppKit
-window acceptance. **Load/cancel/unload and live panel behavior still need native
-window verification after the workstation session is unlocked.**
+These are historical headless ONNX-slice results, not evidence for the current
+packaging/media/capture cutover. The current combined Phase 5/7 native-window,
+catalog/custom load/cancel/unload, and portable package acceptance are pending the
+final local smoke/tests. Earlier lock-screen observations are not a current blocker.
 
 The ONNX slice was exercised in the release AppKit window at 1180×760 and an
 800×540 client area with catalog, custom, and empty ONNX nodes. Saved `ready`,
@@ -394,6 +481,9 @@ recursive-lock tracer is a separate TLS value; macOS may destroy the tracer firs
 otherwise abort when Slint later drops the queue. Release builds never enable that tracer.
 The override does not disable assertions in OpenQuartz, Slint, or application code.
 
-Windows DX12 remains covered by the Phase 1 spike. The NativeHost boundary compile-checks
-for `aarch64-apple-ios` and selects Metal there, but texture import remains unverified on
-iOS hardware. Linux, Android, and mobile runtime validation are deferred.
+Windows DX12 remains covered by the earlier Phase 1 spike, not by a completed
+Phase 5/7 package acceptance. CI now builds/tests the Slint desktop on Windows,
+macOS, and Linux, with Linux desktop/GPU dependencies installed. Results from the
+new matrix are pending. The NativeHost boundary previously compile-checked for
+`aarch64-apple-ios`; that is not an iOS app or hardware acceptance. Android/iOS
+delivery and mobile runtime/gesture validation are explicitly deferred by user decision.

@@ -209,6 +209,14 @@ mod windows_host {
                 }
             }
         }
+        let mut runtime_paths = vec![root];
+        if let Some(existing) = env::var_os("PATH") {
+            runtime_paths.extend(env::split_paths(&existing));
+        }
+        env::set_var(
+            "PATH",
+            env::join_paths(runtime_paths).map_err(|error| error.to_string())?,
+        );
         Ok(paths)
     }
 

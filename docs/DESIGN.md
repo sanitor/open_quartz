@@ -1,9 +1,9 @@
 # Open Quartz 软件架构设计
 
-> 架构基线：v0.19.0b（2026-08-19）
+> 桌面入口更新：v0.20.0b，Phase 5/7；以下单独标注原 v0.19.0b Browser/Tauri 历史审计。
 >
-> 本文只描述当前源码中可验证的结构，并单独标出目标边界和已发现的边界漂移。
-> `当前`、`遗留`、`目标`不能混写；性能结果不等同于分层正确性。
+> 当前默认桌面是 Rust/Slint；Web 独立保留，不迁移到 Slint WASM；Tauri 明确保留一个版本作为 fallback。
+> Phase 5/7 按用户确认的 macOS 范围完成：默认 Slint 入口、原生包/搬迁运行、Web production build 与显式 Tauri fallback `.app` 构建通过；原生资源对话框重入崩溃已修复。真实相机、Windows/Linux（含 `.scr`）、Phase 6 Android/iOS 验收延后。一次未复现的 winit 启动 abort 保留为已知风险；当前仍在 Unreleased，未执行 tag 或远端发布。
 
 ## 0. 阅读指南
 
@@ -31,23 +31,54 @@
 | **遗留** | 源码仍存在，但生产入口不再使用 |
 | **目标** | 应收敛到的边界，不代表已实现 |
 
-### 0.1 当前状态摘要
+### 0.1 当前桌面入口与所有权（Phase 5/7）
 
-截至本基线，Rust/WASM 执行内核和 TypeScript 生产入口已经完成一次切换：Rust public object API、Rust wgpu Browser execution、React adapter 和 Tauri/native Player 路径均已接入；旧 `PipelineRuntime`、TS `Compositor/WebGPUExecutionEngine`、`RealtimeHost` 已删除。但“TypeScript 除 GUI/平台能力外保持极薄”尚未完成：TS 仍持有本地 Project/Graph 模型、Store graph mutation、Project I/O、screen saver transform、ORT task policy、resource reconciliation 和多份 catalog/codec 规则。
+`npm run dev` 经 `scripts/desktop.mjs` 准备原生运行库并启动
+`apps/open_quartz_slint`；`npm run build` 构建 release 并生成 portable package。
+这两条默认路径不编译 WASM、不运行 Vite、不要求 browser/WebView。
 
-仍需明确区分三类状态：
+```text
+Slint AppWindow / GraphView / Inspector
+  -> Rust AppController -> open_quartz_sdk::Project / Graph commands / history
+  -> ProjectIo worker   -> project/resource/model I/O + Windows screen saver export
+  -> RenderBridge      -> open_quartz_native_host::NativeHost
+                         -> shared Rust Runtime / GPU executor / native ONNX / FFmpeg
+                         -> shared wgpu Device/Queue -> Slint texture Image import
+```
 
-| 项目 | 状态 | 说明 |
-|---|---|---|
-| Rust/TypeScript public object graph | **部分** | public 类名和生产入口已建立，但 TS `Project/Graph/Node` 仍是本地 React Flow-backed 模型，并非 Rust object 的真实薄 proxy |
-| Browser execution ownership | **当前/部分** | topology、clock、dirty、feedback、Math 和 shader/GPU execution 位于 Rust/WASM；ORT task/pre/postprocess、output subscription projection、video/resource host policy 仍有较厚 TS 实现 |
-| Native execution ownership | **当前/部分** | lifecycle/clock/graph/output 进入共享 Rust Runtime/Player；Tauri host 仍组合 native resource、ONNX worker和 presentation transport |
-| Java SDK/JNI | **部分** | Java object facade、environment contracts、Rust aggregate handle/C ABI 和 conformance tests 已存在；完整 JNI method 覆盖、真实动态库加载及 Android/Desktop surface 集成仍未完成 |
-| Rust 编译边界 | **部分** | schema 与 JNI bindings 已拆 crate；public SDK、host API、execution 仍主要共处 `open_quartz`，部分 internal 模块以 `#[doc(hidden)] pub` 供 native host 使用 |
-| Web 性能 | **已知问题，暂缓修复** | 功能链路可运行，但当前 Web 链路存在性能问题；本轮只记录，不在架构文档更新中修改实现 |
-| TypeScript 薄层目标 | **未完成** | 已消除第二套 graph/GPU engine，但 domain/editor/resource/inference 业务仍散落在 `store`、`engine`、`catalog`、`utils`、`screensaver.ts` 和厚 host adapter |
+- SDK、domain、graph/history、execution、host API 分别属于现有 Rust crate 边界；Slint 只投影 UI，不在 UI 中重建 graph/inference policy。
+- NativeHost 与 Slint 使用同一组 wgpu 30 Device/Queue；Renderer 正常呈现直接导入纹理。只有显式 PNG 截图执行 readback/编码，不把 PNG/base64 当实时预览。
+- Image/Framebuffer 解码、项目 I/O、模型读取/下载不阻塞 UI；ONNX 会话由 NativeHost 管理。Video file/camera 配置持久化并由 host 对齐，缺失资源/权限/推理失败显示真实错误。
+- Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。
+- `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
+- Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。
 
-Web 性能问题必须作为独立工作项重新测量，不能再使用“已达到 copy budget”描述当前状态。源码中可验证的高成本路径包括：Renderer preview 最多约 15 Hz 执行 GPU readback → `ImageData` → PNG blob → base64；ORT-Web 输入执行 GPU readback，输出再上传；DOM video 每帧 `createImageBitmap` 后 transferable postMessage；Worker 使用约 60 Hz `setTimeout` 调度。它们是待 profile 的候选热点，不等同于已经确认的唯一根因。
+### 0.2 打包与启动资源约定
+
+`dist-desktop/` 输出按版本、平台和 host architecture 区分：macOS arm64/x64
+`.app` + ZIP，Windows x64 ZIP，Linux x64/arm64 tarball（仍依赖系统桌面/GPU 库）。
+macOS binary 在 `Contents/MacOS/open_quartz_slint`，运行库在
+`Contents/Resources/runtime/`；其余平台及 dev binary 使用 executable-parent 的
+`runtime/`。macOS bundle 包含 icon、`NSCameraUsageDescription` 并做 ad-hoc
+签名；这不等于 notarization。Windows 包未签名。
+
+运行库固定来自官方 ONNX Runtime **1.21.0** 分发而不是 Node 的 ORT 版本：
+`libonnxruntime.1.21.0.dylib` / `onnxruntime.dll` / `libonnxruntime.so.1.21.0`。
+Windows 使用官方 DirectML 包及其声明的 DirectML 1.15.4 依赖，同时包含 FFmpeg
+shared DLL、VC++ app-local DLL 和 `open-quartz-screensaver-stub.exe`。FFmpeg 由
+现有 helper 准备。必需资源缺失、架构不支持、下载/校验失败均中止，不产生静默残缺包。
+Windows DLL 也必须放在主 exe 同目录：链接器导入在 `main` 前解析，仅在 Rust startup
+修改 PATH 不够。开发入口设置 `ORT_DYLIB_PATH`、`OPEN_QUARTZ_FFMPEG_PATH` 和 PATH；
+安装包启动按上述目录解析。依赖许可证、来源和 notices 随包保留。
+
+### 0.3 下面历史审计的阅读边界
+
+第 1–12 节保留原 v0.19.0b Browser/Tauri 设计与边界审计，作为迁移背景，
+其中“当前/目标/生产”均指该历史基线，**不是当前 Slint 默认入口或新增发布包的验收结论**。
+尤其旧 TS domain ownership、crate 共仓、WebView/TextureStream、wgpu 版本和 copy
+预算不能用于判断当前 native UI；当前桌面以本节、app README 和
+[`SLINT_UI_REFACTOR.md`](./SLINT_UI_REFACTOR.md) 为准。Web 的性能问题需独立测量，
+不因为 native UI 切换就宣称修复或删除 Web。
 
 ---
 

@@ -3,48 +3,119 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tauri_fallback:
+        description: Also build the one-version Tauri fallback (workflow artifacts only)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  desktop:
+    name: Slint desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux desktop and GPU dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev libdbus-1-dev libvulkan1 mesa-vulkan-drivers
+
+      - name: Configure Windows bindgen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV'
+
+      - run: npm ci
+
+      - name: Build portable Slint desktop
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slint-${{ matrix.os }}
+          path: |
+            dist-desktop/*.zip
+            dist-desktop/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish native desktop archives
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: slint-*
+          merge-multiple: true
+          path: release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*.zip
+            release-assets/*.tar.gz
+          fail_on_unmatched_files: true
+          name: Open Quartz ${{ github.ref_name }}
+          body: |
+            Native Slint desktop is the default application. Unpack the archive before launching.
+            macOS archives contain an ad-hoc-signed .app, not a notarized installer;
+            Windows archives include the runtime and screen saver export host.
+            See CHANGELOG.md for release notes and README.md for platform requirements.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'b') || contains(github.ref_name, '-') }}
+
+  tauri-fallback:
+    name: Optional Tauri fallback (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' && inputs.tauri_fallback
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install frontend dependencies
-        run: npm install
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-
-      - name: Build and upload
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm ci
+      - name: Configure Windows FFmpeg and bindgen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm run copy:ffmpeg
+          "FFMPEG_DIR=$pwd\src-tauri\runtime\ffmpeg-shared" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+      - name: Build explicit Tauri fallback
+        run: npm run package:tauri
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Open Quartz ${{ github.ref_name }}'
-          releaseBody: |
-            See [CHANGELOG.md](https://github.com/sanitor/open_quartz/blob/master/CHANGELOG.md) for full release notes.
-          releaseDraft: false
-          prerelease: false
+          name: tauri-fallback-${{ matrix.os }}
+          path: target/release/bundle/
+          if-no-files-found: error

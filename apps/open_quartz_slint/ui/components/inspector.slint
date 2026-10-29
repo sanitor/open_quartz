@@ -67,6 +67,20 @@ export component Inspector inherits Rectangle {
     in property <bool> onnx-attached;
     in-out property <string> onnx-path;
     callback load-onnx(string);
+    in property <bool> image-input;
+    in property <string> image-name;
+    in property <string> image-size;
+    in property <bool> framebuffer-input;
+    in property <string> framebuffer-name;
+    callback choose-image();
+    callback choose-framebuffer();
+    in property <bool> video-input;
+    in property <[string]> camera-options;
+    in property <int> camera-index: -1;
+    in property <bool> camera-loading;
+    callback choose-video();
+    callback refresh-cameras();
+    callback select-camera(int);
     callback unload-onnx();
     in-out property <string> node-label;
     in-out property <string> shader-code;
@@ -116,6 +130,54 @@ export component Inspector inherits Rectangle {
                 alignment: start;
                 spacing: 10px;
                 Text { text: root.node-type + " · " + root.node-id; color: Theme.secondary; font-size: 11px; overflow: elide; }
+
+                if root.image-input: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Image resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text {
+                        text: root.image-name == "" ? "No image loaded" : root.image-name + (root.image-size == "" ? "" : " · " + root.image-size);
+                        color: Theme.secondary;
+                        wrap: word-wrap;
+                    }
+                    Button {
+                        text: root.image-name == "" ? "Choose image…" : "Replace image…";
+                        enabled: !root.project-busy && !root.inspector-dirty;
+                        clicked => { root.choose-image(); }
+                    }
+                }
+                if root.framebuffer-input: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Raw framebuffer resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Text { text: root.framebuffer-name == "" ? "No raw file loaded" : root.framebuffer-name; color: Theme.secondary; wrap: word-wrap; }
+                    Button {
+                        text: root.framebuffer-name == "" ? "Choose raw file…" : "Replace raw file…";
+                        enabled: !root.project-busy && !root.inspector-dirty;
+                        clicked => { root.choose-framebuffer(); }
+                    }
+                }
+                if root.video-input: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Video / camera resource"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                    Button {
+                        text: "Choose video file…";
+                        enabled: !root.project-busy && !root.inspector-dirty;
+                        clicked => { root.choose-video(); }
+                    }
+                    Button {
+                        text: root.camera-loading ? "Finding cameras…" : "Refresh cameras";
+                        enabled: !root.project-busy && !root.camera-loading;
+                        clicked => { root.refresh-cameras(); }
+                    }
+                    if root.camera-options.length > 0: ComboBox {
+                        model: root.camera-options;
+                        current-index: root.camera-index;
+                        enabled: !root.project-busy && !root.camera-loading;
+                        min-width: 0px;
+                        preferred-width: 160px;
+                        selected => { root.select-camera(self.current-index); }
+                    }
+                    Text { text: "Camera selection edits the Video draft. Apply video to open it. Native source errors appear in runtime status."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                }
 
                 Text { text: "Name"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
                 LineEdit {
@@ -246,6 +308,7 @@ export component Inspector inherits Rectangle {
                         clicked => { root.apply-form(group.key); }
                     }
                 }
+
 
                 if root.onnx-config.length > 0: VerticalLayout {
                     spacing: 8px;

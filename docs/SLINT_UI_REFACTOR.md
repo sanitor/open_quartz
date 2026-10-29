@@ -1,24 +1,24 @@
 # Open Quartz Slint UI 重构方案
 
-> 状态：Phase 2/3 和 Phase 4 Inspector/WGSL、Shader uniform、Sampling/Framebuffer/Video 配置、只读 ONNX 及编辑器体验已完成 macOS 原生验收；Phase 5 已接通 ONNX 会话与 NativeHost。workspace 288 tests/46 suites、Slint 51 tests、release build 与格式检查通过；官方 ONNX Runtime 1.21.0/rc.12 NativeHost CPU identity 推理和清洁退出通过。macOS GUI 当前锁屏，Phase 5 AppKit Load/Cancel/Unload 与目录下载窗口验收待解锁；未切换默认入口
+> 状态：**Phase 5 与 Phase 7 按用户确认的当前范围完成**。Slint 已是默认桌面入口，macOS portable 包及搬迁运行、独立 Web production build、显式 Tauri fallback `.app` 构建均已验证。真实相机、Windows/Linux 验收（含 `.scr` 独立运行）、Phase 6 Android/iOS 明确延后，不作为本轮退出条件，也不记为通过。一次未复现的 winit 启动 abort 单独保留为已知风险；当前为本地阶段交付，版本仍在 Unreleased，未进行 tag/远端发布。
 >
 > 基线：v0.20.0b（2026-10-25）
 >
-> 关系：本文是独立的 Slint 迁移方案，不替代 [`DESIGN.md`](./DESIGN.md)。当前生产架构、所有权和性能状态仍以 `DESIGN.md` 为准；本次 Phase 2 实现保留 Tauri 发布路径，待跨平台验证和发布门槛完成后再回写 `DESIGN.md`。
+> 关系：[`DESIGN.md`](./DESIGN.md) 的当前桌面摘要、根 README 与 app README 已回写 Slint 入口；本文保留迁移设计及历史验证记录。
 >
-> 结论：Slint 是当前同时覆盖 Windows/macOS/Linux/Android/iOS 的可行 Rust UI 候选，但不能直接全量重写。先验证“渲染器与 Slint 共享 wgpu device，并把输出纹理直接导入 Slint”这一条；验证通过后，再按阶段迁移节点图、Inspector、WGSL 编辑器和移动端。
+> 当前决定：本轮以 macOS 已完成的实现与验收收尾；真实相机、Windows/Linux 验收和 Android/iOS 延后。Tauri 保留一个版本作为显式 fallback；React/Web 独立保留，不迁移到 Slint WASM。以下多平台设计项作为后续方向，不是本轮验收承诺。
 
 ## 0. 结论摘要
 
 | 问题 | 结论 |
 |---|---|
-| Slint 能否覆盖五个原生平台 | **可以**：Windows、macOS、Linux、Android、iOS 都支持 Rust；iOS 在 1.18.1 已走 Metal GPU |
-| 能否消除 WebView 纹理传输 | **目标可以**：Slint 与渲染器共享 `wgpu::Device/Queue`，用 `Image::try_from(texture)` 直接导入；必须在五个平台分别验证 |
+| Slint 能否覆盖五个原生平台 | 框架支持五平台；本轮完成 macOS，Windows/Linux 验收与 Android/iOS 明确延后 |
+| 能否消除 WebView 纹理传输 | 桌面 Slint 与 NativeHost 共享 `wgpu::Device/Queue` 并直接导入纹理；已有 macOS 单切片记录不代表所有平台/新包已验收 |
 | 是否有现成 WGSL 编辑器 | **没有**：Slint 只有纯文本 `TextEdit` 和只读 `StyledText`，富文本编辑 issue #2723 仍 open |
 | 是否有现成节点图 | **没有**：需要基于 Slint 图元重写，触摸、连线、缩放都要自己做 |
-| Web 是否保留 | **v1 不保留**：Slint WASM 走 WebGL，且 wasm 上外部 wgpu 纹理导入尚未落地；Web 需要独立方案 |
-| 是否建议立即全量迁移 | **不建议**。先做独立 spike；通过后再决定是否投入节点图和编辑器 |
-| 当前最优先动作 | 统一 `wgpu 27 → 29/30` 与 Rust 1.92，然后做共享纹理 spike |
+| Web 是否保留 | **独立保留** React/Web，显式 `dev:web/build:web/preview:web`；不做 Slint WASM port |
+| 当前默认桌面 | **Slint**；Tauri 降为一个版本的显式 fallback，不删除其 WebView/TextureStream 实现 |
+| 当前验收边界 | Phase 5/7 按当前范围完成：macOS Slint 包、搬迁运行、原生交互及 Web/Tauri fallback 构建通过；真实相机和其余平台延后，间歇启动 abort 保留为已知风险 |
 
 本方案的推荐路径是：
 
@@ -29,11 +29,11 @@ Phase 2  抽出 Tauri-free NativeHost + Slint 应用壳
 Phase 3  节点图读/编辑
 Phase 4  Inspector + WGSL 编辑器
 Phase 5  预览/ONNX/视频
-Phase 6  Android/iOS 交付
-Phase 7  切换与 Web 评估
+Phase 6  Android/iOS 交付（用户决定延后，本轮跳过）
+Phase 7  Slint 默认入口/桌面打包；Web 独立保留（按 macOS 当前约定范围完成）
 ```
 
-任何阶段失败，都保留现有 Tauri 应用作为可发布路径，不做“半迁移”双维护。
+Tauri 保留一个版本的显式可构建 fallback；默认 native 路径与 Web/Tauri 构建必须分开，不靠隐式 host fallback 启动另一套 runtime。
 
 ---
 
@@ -687,13 +687,13 @@ Slint 现状：
 | Phase 2 | 抽出 Tauri-free NativeHost；Slint 应用壳；项目 I/O | 能打开/保存项目；空 graph 可启动；Tauri 仍可构建 |
 | Phase 3 | GraphView 读/编辑 | 100 节点可编辑；连线/删除/撤销/保存正确 |
 | Phase 4 | Inspector + WGSL v1 + 预览 | 选中节点可改参数/Shader；预览无 base64 |
-| Phase 5 | ONNX + 视频 + 截图 + Screen Saver 导出 | 功能达到桌面最低发布集 |
-| Phase 6 | Android/iOS 打包与触摸 UI | 至少一个移动端可安装、打开、播放、保存 |
-| Phase 7 | 切换默认入口；Web 评估 | 旧 Tauri 降为 fallback 或删除；文档回写 |
+| Phase 5 | ONNX + 视频 + 截图 + Screen Saver 导出 | **按当前约定范围完成**：功能实现与 macOS 验收通过；真实相机与 Windows/Linux 验收明确延后，不作退出门槛 |
+| Phase 6 | Android/iOS 打包与触摸 UI | **用户决定延后，本轮跳过**；不作为桌面切换前置 |
+| Phase 7 | Slint 默认入口、native package/CI、Web 独立保留 | **按当前约定范围完成**：macOS 包/搬迁运行、Web production 与 Tauri fallback 构建通过；Windows/Linux 与远端 CI 验收延后 |
 
 ### 8.2 Phase 0：决策，不写大代码
 
-- 确认 Web 是否放弃。
+- 已决定 Web 独立保留，不迁移为 Slint WASM。
 - 确认 v1 是否接受“纯文本 TextEdit 编辑器”。
 - 确认节点图是否必须完整对等。
 - 确认 Slint 授权路径。
@@ -759,7 +759,7 @@ Spike 范围：
 - **节点表单验收通过**：Slint 47 tests、workspace 278 tests/45 suites、release build/格式检查通过；回归覆盖所有枚举、范围、u32 边界、invalid/busy 原子性、独立草稿、完整数据/资源字段、单步 Undo/Redo、Save/Open，并以真实 GPU 两像素采样验证 Nearest/Linear 与 Clamp/Repeat/Mirror。AppKit 1180×760 和 800×540 上，96×48 nearest/clamp 蓝色输出经 Repeat Apply 变红；Undo 恢复蓝色和 Clamp 控件，Redo 恢复红色/Repeat。Framebuffer width 0 被拒后提交 64×16/stride 256；Video rate 9 被拒后提交 Camera `camera-native-1`、Loop off、rate 2.5。窄窗口滚动、popup、checkbox、文本与 Apply 均实操；SDK Save/Open 保留三组设置、原 video file path 和两条 edge。未声称资源加载已实现。
 - **只读 ONNX 面板**：显示记录的 source、model/catalog ID、自定义路径（未检查）、输入连接数、阈值、target size 和数值/布尔参数；缺失与零区分。保存的 file name/status/backend/native backend/error/progress 放入独立的 Saved metadata 区，明确不是当前会话状态；进度仅接受 0–1 数值，非法值直接说明，不当作实时下载。Slint 未绑定 ONNX session，不提供加载/下载/推理控件或虚构结果；单纯浏览不补默认值，不改变项目，空选/多选清除旧面板。
 - **ONNX Phase 4 验收通过**：Slint 49 tests、workspace 280 tests/45 suites、release build/格式检查通过。AppKit 1180×760、800×540 检查 catalog/custom/空 ONNX、保存的 ready/error/backend、零阈值、参数、非法进度、长 Unicode 路径换行、连接数和选择清除；SDK Save/Open 对整个 fixture graph 无损。真实图切换发现并修复 GPU executor Renderer 源映射缓存：实际输入变化时失效，改接未绑定 ONNX 输出后报告缺失 native GPU texture 并清图，重开有效图恢复 96×48 Metal 输出；GPU 回归覆盖改接及断开。
-- **编辑器评估完成**：保留原生 TextEdit/显式 Apply；300 行长 Unicode 注释、连续键盘输入、SDK 保存和窄窗口已验证，选型与验证边界见 §7.3.1。没有 CodeMirror 级高亮、补全/行号、输入时行内诊断或 IME 组合验收；未切换 Tauri 生产入口。
+- **历史编辑器评估完成**：保留原生 TextEdit/显式 Apply；300 行长 Unicode 注释、连续键盘输入、SDK 保存和窄窗口已验证，选型与验证边界见 §7.3.1。没有 CodeMirror 级高亮、补全/行号、输入时行内诊断或 IME 组合验收；该记录早于本轮 Slint 默认入口切换。
 
 ### 8.7 Phase 5：ONNX 原生运行时
 
@@ -767,17 +767,26 @@ Spike 范围：
 - NativeHost 与 Slint/Tauri 共用原生 `ModelStore`：校验模型 ID、流式 HTTP 下载至唯一临时文件、验证可用 SHA-256、完整响应后原子发布，失败/取消清理 partial。空 SHA 是未校验而不是命中校验。模型文件读取、session 创建在线程池/专用 worker，不阻塞 UI 或图像呈现。
 - 独立展示 session backend、输入/输出 tensor 名、实际已交付的输出尺寸及可用结构化结果；load/inference 错误可见。实时状态、临时 path 与资源生命周期不会写回 SDK `Project`、Undo 或保存元数据。macOS/Linux 使用 CPU，Windows 复用 DirectML 与 CPU fallback。推理数据仍经过 GPU readback → CPU ORT → GPU texture upload。
 - task ticket、graph revision、node generation 拦截取消、重新加载、改图或换工程后的 late completion，避免加载后旧任务复活纹理、清除新任务 pending 或发出过期事件；变化的推理 plan 清除旧图输出。
-- **自动化与真实 Host 验收通过**：`cargo test --workspace` 288 passed/46 suites，Slint app 51 passed，release build/格式检查成功；Host 使用官方 ONNX Runtime 1.21.0 CPU library 与 `image_identity.onnx` 真实执行 2×2 RGB identity、将 RGBA 上传 Renderer、发出 cpu output event，正常析构/退出。回归覆盖跨进程 cache lock、HTTP stream/hash/取消/partial、无效路径 ID、任务完成竞态、Slint late load/result state。macOS 当前报告 `CGSSessionScreenIsLocked=1`；Phase 5 AppKit Load/Cancel/Unload 面板与目录下载 UI 验收**尚未通过/待解锁**，不得把 headless Host 通过当成原生窗口验收。ONNX Runtime 未自动 bundle，启动需配置 `ORT_DYLIB_PATH`；使用文档见 app README。
+- **历史自动化与真实 Host 验收**：`cargo test --workspace` 288 passed/46 suites，Slint app 51 passed，release build/格式检查成功；Host 使用官方 ONNX Runtime 1.21.0 CPU library 与 `image_identity.onnx` 执行 2×2 RGB identity、上传 Renderer 并正常退出。回归覆盖 cache lock、HTTP stream/hash/取消/partial、无效路径 ID 和任务完成竞态。这些是历史单切片结果，不是本轮视频/截图/导出/运行库包的验收；旧锁屏状态不再作为当前 blocker。当前组合 native 窗口/模型 load/cancel/unload 和目录下载流程仍以最终本地 smoke 为准。现在 `desktop.mjs` 自动 bundle 官方 1.21.0；直接 Cargo 启动可显式指定 `ORT_DYLIB_PATH`。
 - Native ONNX 调整 Rust `ort` 至 `2.0.0-rc.12` + API 20，修复 process exit 时 global environment 晚于 ORT C++ static destructor 释放而锁失效/abort的问题。独立真实运行库测试确认 Host 正常退出，没有 `mem::forget`、`_exit` 或忽略状态码。
 
-### 8.8 后续运行时功能
+### 8.8 Phase 5：桌面媒体与输出集成
 
-- 视频/相机、截图、Screen Saver 导出；
-- ONNX catalog/native UI 的锁屏后 AppKit 窗口验收；
-- frame error/cadence/status。
+- **阶段结论：完成（按用户确认范围）**。真实相机权限/采集、Windows/Linux 验收及 `.scr` 独立运行延后；保留下列未验证事实用于后续工作，不再阻塞 Phase 5 收尾。未复现的 winit 启动 abort 作为独立已知风险保留。
+- Video 文件选择与 camera 设备枚举/选择，持久化 source/loop/rate 通过 NativeHost 同步，不在 Slint 重建解码器。
+- Renderer 明确选择，直接共享纹理预览/全屏；只有显式截图请求触发 PNG readback。
+- Windows Screen Saver 由 ProjectIo worker 调用共享 Rust 打包服务；选择 Renderer，公开合适的 Image/Video 输入，拒绝 camera 图，携带媒体/模型/runtime。Raw framebuffer 在导出副本中烘焙为 PNG，不修改编辑器工程；stub 静态链接 MSVC CRT，延迟加载 FFmpeg，先自解包共享 codec/VC++ DLL，再添加运行库 PATH。
+- shader/ONNX/video 的错误保持可见；不存在资源、权限或库缺失时不替换为示例输出。
+- **macOS 实际运行验证通过**：临时 harness 直接使用生产 Controller、NativeHost 与 FemtoVG/wgpu，以及 release 包中的 FFmpeg/ORT 1.21.0。96×48 视频帧确实推进；Renderer 切换使共享预览与 PNG 都成为精确蓝色 2×2；暂停时选择已有纹理、全屏原生窗口状态、同一 Image overlay、真实 Escape 事件返回、Stop/Play、Save/Open、ONNX cancel/load/红色 identity 推理/unload 清理均通过，正常退出。已读取普通与全屏窗口的真实 renderer 快照；harness 随后移除。
+- **解锁后原生对话框验收**：点击 Video chooser 实际复现 `panic_already_borrowed`：`rfd`/AppKit 模态循环重入 Slint timer，而 Controller 仍被可变借用。五个文件面板统一改为进入面板前释放借用，面板期间保持 busy guard；没有吞掉 panic 或跳过 timer。重建后真实系统面板完成 Video 取消/替换至 80×40、Image 加载、raw framebuffer 2×1 红绿输出、PNG 保存/取消；保存文件尺寸确为 80×40，62 Slint tests 与 release packaging 再次通过。用户实测确认全屏按钮正确响应。
+- **平台 gate 仍待验证**：摄像头枚举返回 `No native camera devices found.`，真实权限/采集未验证；无 Windows/Linux 验收主机。Windows 交叉检查下载并核对 FFmpeg SHA-256 后到达 bindgen，但缺 Windows SDK `errno.h`，不是通过的 Windows 编译。Stub 构建显式指定 MSVC target 隔离 static-CRT 参数与 host procedural macros。
+- **独立启动风险**：曾有一次 LaunchServices 启动在 winit `app_did_finish_launching` abort；崩溃报告与系统日志未保留原始 panic 信息。随后记录 stdout/stderr 的 LaunchServices 启动正常呈现 96×48 视频。间歇原因未确认，不将其归因于已修复的文件面板问题，也不宣称已解决。
+- **LaunchServices 冷启动复验**：最终 `.app` 明确声明普通前台应用（`LSUIElement=false`、`LSBackgroundOnly=false`，macOS 13+）；重新构建及签名校验通过。退出旧进程后，`open -n -F` 冷启动成功，AX 树可读 1180×792 Slint 窗口；另一轮独立冷启动通过 LaunchServices `--args --project …` 打开工程并真实呈现 96×48 packaged-video NativeHost 帧。此前 winit `app_did_finish_launching` abort 未复现，但 panic message 不在 crash report，根因未确认；不将标准 bundle metadata 宣称为已证实的根因修复。
 
 
 ### 8.9 Phase 6：移动端
+
+**按用户决定延后；本轮不实现、不安排 mobile CI，也不作为 Phase 7 前置。** 以下为未来方向。
 
 - Android 工程、权限、生命周期；
 - iOS 工程、Metal/wgpu 验证；
@@ -787,10 +796,16 @@ Spike 范围：
 
 ### 8.10 Phase 7：切换
 
-- 新 app 达到发布门槛后，才切换默认入口。
-- 旧 Tauri 保留一个版本作为 fallback。
-- 更新 `DESIGN.md`、README、构建脚本和 CI。
-- 删除不再使用的 WebView/TextureStream 路径前，确认没有发布分支依赖。
+- **阶段结论：完成（按当前约定范围）**。Slint 入口、macOS package 与实际运行、Web 独立构建、一个版本的显式 Tauri fallback 已交付；版本仍为 Unreleased，本阶段没有执行 tag/push/远端发布。真实相机及 Windows/Linux 验收延后。
+- 默认 `npm run dev/build` 改为 `scripts/desktop.mjs`，直接 build/run/package Slint；无 WASM/browser 前置。
+- `dev:web/build:web/preview:web` 保留独立 Web；Tauri 的 `beforeDev` 调 `dev:web`、`beforeBuild` 经 `build:tauri` 调 `build:web`，避免 native 默认入口递归。
+- Tauri 保留一个版本作为 `dev:tauri/package:tauri` 的显式 fallback，不删 WebView/TextureStream 代码。
+- **Fallback 实际打包**：`npm run package:tauri -- --bundles app` 成功，经 `build:tauri` → `build:web` 完成独立 WASM/TypeScript/Vite 构建后生成根 workspace 的 `target/release/bundle/macos/Open Quartz.app`；可选发布上传路径已据此修正，未删除旧 WebView/TextureStream 实现。
+- macOS `.app` + ZIP、Windows ZIP（含 screen saver stub、app-local DLL）及 Linux tarball 使用 host architecture；官方 ORT 1.21.0、FFmpeg、依赖与 notices 必须完整，缺失即失败。macOS icon/camera usage description 随包提供，ad-hoc 签名不等于 notarization。
+- 运行库为 executable-parent 的 `runtime/`，macOS bundle 则为 `Contents/Resources/runtime/`。Windows FFmpeg 导入 DLL 另放 exe 同目录以满足 `main` 前 loader。
+- **归档搬迁验收通过**：将 Slint ZIP 解压至工作区外 `/tmp`，移除 `ORT_DYLIB_PATH`/`OPEN_QUARTZ_FFMPEG_PATH` 后从 `/tmp` 启动；实际子进程使用解压包的 `Contents/Resources/runtime/ffmpeg`，AX/SCK 观察到 Metal 96×48 共享纹理视频输出，正常退出码 0。解压包签名、`--help` 与脚本语法校验通过；`dist-desktop/` 已加入忽略规则。
+- CI 配置 Windows/macOS ARM/Intel/Linux Slint 测试和 build/package，与正式 release 架构覆盖一致；发布 Slint ZIP/tar.gz，Tauri 仅 workflow_dispatch 可选产物。工作流已解析检查，远端结果未验证；Windows/Linux 验收按用户决定延后。
+- `DESIGN.md`、根/app README、开发指南、构建脚本与 CI 已回写。Slint 62、workspace 292 个测试结果、Web 704 回归与 production build、macOS release package 及显式 Tauri `.app` 打包通过；后续正式发布仍需独立处理版本、tag 与发布流程，不能把本地阶段完成等同于已上线。
 
 ### 8.11 分支与回退
 
@@ -952,7 +967,7 @@ Rust:
 
 在进入 Phase 2 前必须回答：
 
-1. Web 是否明确放弃？
+1. Web 已决定独立保留，不迁移为 Slint WASM。
 2. 是否接受 v1 纯文本 WGSL 编辑器？
 3. 节点图是否必须 100% 对等，还是允许先读/后编辑？
 4. Slint 授权选 GPL、Royalty-free 还是商业许可？
@@ -1043,7 +1058,7 @@ Rust:
 | Linux/Android 共享纹理 | **未验证**，按当前计划后置 |
 | iOS 外部纹理导入 | **运行时未验证**；`open_quartz_native_host` 已选择 Metal，`aarch64-apple-ios` compile check 通过，Phase 6 前仍须真机验证纹理导入 |
 | 节点图 100/300 节点性能 | **Apple M4 Pro macOS 原生 release 60 FPS gate 已通过**：AppKit/FemtoVG-wgpu swapchain 中 100 节点首报 59 后稳定 60 FPS，300 节点首报 51 后稳定 60 FPS；离屏 1180×760 release p95 分别 2.523ms / 3.338ms |
-| 移动端文件/相机/生命周期 | **未验证**，Phase 6 |
+| 移动端文件/相机/生命周期 | **用户决定延后**，Phase 6 不在本轮交付/CI |
 
 ---
 

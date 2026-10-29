@@ -6,6 +6,7 @@ mod inspector_onnx;
 mod onnx_runtime;
 mod render_bridge;
 mod services {
+    pub mod desktop_export;
     pub mod file_service;
 }
 
@@ -19,6 +20,7 @@ use render_bridge::RenderBridge;
 slint::include_modules!();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    services::desktop_export::configure_runtime()?;
     let options = match CliOptions::parse(std::env::args_os().skip(1))? {
         ParseOutcome::Options(options) => options,
         ParseOutcome::Help => {

@@ -79,6 +79,7 @@ dependencies = [
  "open_quartz_execution",
  "open_quartz_native_host",
  "open_quartz_schema",
+ "open_quartz_screensaver",
  "pollster",
  "regex",
  "serde",
@@ -2860,6 +2861,17 @@ version = "0.20.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "open_quartz_screensaver"
+version = "0.20.0"
+dependencies = [
+ "open_quartz",
+ "open_quartz_schema",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -2,9 +2,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use open_quartz_execution::native_video::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz_native_host::NativeHost;
 use open_quartz_sdk::Graph;
 use slint::wgpu_30::WGPUConfiguration;
+use std::path::PathBuf;
 
 use crate::onnx_runtime::{LiveOnnxState, ModelMessage, OnnxRuntime};
 use std::collections::BTreeMap;
@@ -28,11 +30,19 @@ impl RenderUpdate {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ImageUpload {
+    pub key: u64,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
+}
 pub(crate) enum Command {
     SetGraph {
         generation: u64,
         graph: Graph,
         reset_resources: bool,
+        images: BTreeMap<String, ImageUpload>,
     },
     LoadOnnx {
         generation: u64,
@@ -42,6 +52,20 @@ pub(crate) enum Command {
     UnloadOnnx {
         generation: u64,
         node_id: String,
+    },
+    CapturePng {
+        generation: u64,
+        node_id: String,
+        path: PathBuf,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    Playback {
+        generation: u64,
+        action: String,
+    },
+    SelectPreview {
+        generation: u64,
+        node_id: Option<String>,
     },
     Model(ModelMessage),
     Pause,
@@ -114,7 +138,11 @@ impl RenderBridge {
         ))
     }
 
-    pub fn set_graph(&mut self, graph: Graph) -> Result<(), String> {
+    pub fn set_graph(
+        &mut self,
+        graph: Graph,
+        images: BTreeMap<String, ImageUpload>,
+    ) -> Result<(), String> {
         self.generation = self.generation.wrapping_add(1);
         self.accepting_frames = true;
         self.sender
@@ -122,6 +150,7 @@ impl RenderBridge {
                 generation: self.generation,
                 graph,
                 reset_resources: std::mem::take(&mut self.reset_resources),
+                images,
             })
             .map_err(|_| "Native render thread is no longer available".to_owned())
     }
@@ -143,6 +172,43 @@ impl RenderBridge {
     pub fn unload_onnx(&self, node_id: String) -> Result<(), String> {
         self.sender
             .send(Command::UnloadOnnx {
+                generation: self.generation,
+                node_id,
+            })
+            .map_err(|_| "Native render thread is no longer available".to_owned())
+    }
+    pub fn capture_png(
+        &self,
+        node_id: String,
+        path: PathBuf,
+    ) -> Result<mpsc::Receiver<Result<(), String>>, String> {
+        let (response, receiver) = mpsc::channel();
+        self.sender
+            .send(Command::CapturePng {
+                generation: self.generation,
+                node_id,
+                path,
+                response,
+            })
+            .map_err(|_| "Native render thread is no longer available".to_owned())?;
+        Ok(receiver)
+    }
+
+    pub fn set_playback(&self, action: &str) -> Result<(), String> {
+        if !matches!(action, "play" | "pause" | "stop") {
+            return Err("Unknown playback action".into());
+        }
+        self.sender
+            .send(Command::Playback {
+                generation: self.generation,
+                action: action.to_owned(),
+            })
+            .map_err(|_| "Native render thread is no longer available".to_owned())
+    }
+
+    pub fn select_preview(&self, node_id: Option<String>) -> Result<(), String> {
+        self.sender
+            .send(Command::SelectPreview {
                 generation: self.generation,
                 node_id,
             })
@@ -209,6 +275,12 @@ fn render_worker(
     let mut running = false;
     let mut first_frame = true;
     let mut onnx = OnnxRuntime::default();
+    let mut image_keys = BTreeMap::<String, u64>::new();
+    let mut video_configs = BTreeMap::<String, NativeVideoConfig>::new();
+    let mut current_graph: Option<String> = None;
+    let mut stopped = false;
+    let mut playback_requested = true;
+    let mut preview_renderer: Option<String> = None;
     loop {
         if onnx.reap_workers() {
             publish_onnx(&updates, generation, &onnx);
@@ -229,16 +301,20 @@ fn render_worker(
             Some(Command::Shutdown) => break,
             Some(Command::Pause) => {
                 let _ = host.pause();
+                playback_requested = false;
                 running = false;
             }
             Some(Command::SetGraph {
                 generation: next_generation,
                 graph,
                 reset_resources,
+                images,
             }) => {
                 generation = next_generation;
                 first_frame = true;
                 running = false;
+                stopped = false;
+                playback_requested = true;
                 if reset_resources {
                     onnx.clear(&mut host);
                 }
@@ -247,9 +323,47 @@ fn render_worker(
                         host.stop()?;
                     }
                     onnx.sync(&graph, &mut host, false)?;
+                    let next_video_configs = graph_video_configs(&graph)?;
+                    for node_id in video_configs
+                        .iter()
+                        .filter(|(id, config)| {
+                            reset_resources || next_video_configs.get(*id) != Some(*config)
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>()
+                    {
+                        host.detach_video(&node_id)?;
+                        video_configs.remove(&node_id);
+                    }
                     let graph_json = serde_json::to_string(&graph)
                         .map_err(|error| format!("Cannot serialize the SDK graph: {error}"))?;
                     host.set_graph(&graph_json)?;
+                    for (node_id, config) in next_video_configs {
+                        if video_configs.get(&node_id) != Some(&config) {
+                            host.attach_video(&node_id, config.clone())?;
+                            video_configs.insert(node_id, config);
+                        }
+                    }
+                    current_graph = Some(graph_json);
+                    let stale_images = image_keys
+                        .iter()
+                        .filter(|(node_id, key)| {
+                            reset_resources
+                                || images.get(*node_id).is_none_or(|image| image.key != **key)
+                        })
+                        .map(|(node_id, _)| node_id.clone())
+                        .collect::<Vec<_>>();
+                    for node_id in stale_images {
+                        host.remove_texture(&node_id);
+                        image_keys.remove(&node_id);
+                    }
+                    for (node_id, image) in &images {
+                        if image_keys.get(node_id) == Some(&image.key) {
+                            continue;
+                        }
+                        host.upload_image(node_id, &image.rgba, image.width, image.height)?;
+                        image_keys.insert(node_id.clone(), image.key);
+                    }
                     // Frame events coalesce in the engine; clear graph/state history only on replacement.
                     let _ = host.drain_events();
                     if graph.nodes().is_empty() {
@@ -308,13 +422,98 @@ fn render_worker(
                 publish_status(&updates, generation, "ONNX session unloaded.".into(), true);
                 publish_onnx(&updates, generation, &onnx);
             }
+            Some(Command::CapturePng {
+                generation: requested,
+                node_id,
+                path,
+                response,
+            }) => {
+                let result = if requested == generation {
+                    host.read_output(&node_id)
+                        .and_then(|payload| save_output_png(&path, &payload))
+                } else {
+                    Err("Capture belongs to a replaced project".into())
+                };
+                let _ = response.send(result);
+            }
+            Some(Command::SelectPreview {
+                generation: requested,
+                node_id,
+            }) if requested == generation => {
+                preview_renderer = node_id;
+                first_frame = true;
+                if !running {
+                    if let Some(node_id) = preview_renderer.as_deref() {
+                        match host.preview_source(node_id) {
+                            Ok(output) => {
+                                if let Ok(mut pending) = updates.lock() {
+                                    let update = pending
+                                        .get_or_insert_with(|| RenderUpdate::new(generation));
+                                    update.texture = Some((*output.texture).clone());
+                                    update.clear_image = false;
+                                }
+                            }
+                            Err(error) => publish_status(&updates, generation, error, true),
+                        }
+                    }
+                }
+            }
+            Some(Command::SelectPreview { .. }) => {}
+            Some(Command::Playback {
+                generation: requested,
+                action,
+            }) if requested == generation => {
+                let result = match action.as_str() {
+                    "pause" => {
+                        if running {
+                            host.pause()
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    "stop" => host.stop(),
+                    _ if running => Ok(()),
+                    _ if stopped => (|| {
+                        let graph_json = current_graph
+                            .as_deref()
+                            .ok_or("No graph is ready for playback")?;
+                        host.set_graph(graph_json)?;
+                        for (node_id, config) in &video_configs {
+                            host.detach_video(node_id)?;
+                            host.attach_video(node_id, config.clone())?;
+                        }
+                        host.start_playback()
+                    })(),
+                    _ => host.resume(),
+                };
+                match result {
+                    Ok(()) => {
+                        running = action == "play";
+                        playback_requested = action == "play";
+                        if action == "stop" {
+                            stopped = true;
+                        }
+                        if action == "play" {
+                            stopped = false;
+                        }
+                        first_frame = true;
+                        publish_status(&updates, generation, format!("Playback: {action}"), false);
+                    }
+                    Err(error) => publish_status(&updates, generation, error, false),
+                }
+            }
+            Some(Command::Playback { .. }) => {}
             Some(Command::Model(message)) => {
                 let node_id = message.node_id().to_owned();
                 if onnx.receive(message, &mut host) {
-                    let result = if running { Ok(()) } else { host.resume() };
+                    let result = if running || !playback_requested {
+                        Ok(())
+                    } else {
+                        host.resume()
+                    };
                     match result {
                         Ok(()) => {
-                            running = true;
+                            running = playback_requested;
                             first_frame = true;
                             publish_status(
                                 &updates,
@@ -347,7 +546,11 @@ fn render_worker(
             if rendered.width == 0 || rendered.height == 0 {
                 return Ok(None);
             }
-            let output = host.preview_source(&rendered.output_node_id)?;
+            let output = host.preview_source(
+                preview_renderer
+                    .as_deref()
+                    .unwrap_or(&rendered.output_node_id),
+            )?;
             Ok(Some((
                 (*output.texture).clone(),
                 output.width,
@@ -393,4 +596,62 @@ fn render_worker(
     if host.has_graph() {
         let _ = host.stop();
     }
+}
+
+fn graph_video_configs(graph: &Graph) -> Result<BTreeMap<String, NativeVideoConfig>, String> {
+    use open_quartz_host_api::{
+        plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent,
+        HostResourceIntentRequest, HostResourceTarget, VideoSourceKind,
+    };
+    let snapshot: HostGraphSnapshot =
+        serde_json::from_value(serde_json::to_value(graph).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    let plan = plan_host_resource_intents(HostResourceIntentRequest {
+        host: HostResourceTarget::Native,
+        previous_graph: None,
+        graph: snapshot,
+    })?;
+    Ok(plan
+        .intents
+        .into_iter()
+        .filter_map(|intent| match intent {
+            HostResourceIntent::AttachVideo {
+                node_id,
+                kind,
+                source,
+                looping,
+                playback_rate,
+                ..
+            } => Some((
+                node_id,
+                NativeVideoConfig {
+                    kind: match kind {
+                        VideoSourceKind::File => NativeVideoSourceKind::File,
+                        VideoSourceKind::Camera => NativeVideoSourceKind::Camera,
+                    },
+                    source,
+                    looping,
+                    playback_rate,
+                },
+            )),
+            _ => None,
+        })
+        .collect())
+}
+
+fn save_output_png(path: &std::path::Path, payload: &[u8]) -> Result<(), String> {
+    if payload.len() < 8 {
+        return Err("Native output payload has no dimensions".into());
+    }
+    let width = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+    let height = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+    image::save_buffer_with_format(
+        path,
+        &payload[8..],
+        width,
+        height,
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .map_err(|error| format!("Cannot save {}: {error}", path.display()))
 }

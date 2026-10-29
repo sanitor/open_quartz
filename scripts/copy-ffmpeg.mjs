@@ -10,9 +10,11 @@ const runtimeDir = resolve(root, 'src-tauri', 'runtime');
 await mkdir(runtimeDir, { recursive: true });
 
 if (process.platform === 'win32' && process.arch === 'x64') {
-  const assetUrl = 'https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/assets/504009371';
-  const digest = '6c6ab0878a1cfb2cb49dbdae3174931fb3ab9b997754374c3493e782530c20cf';
+  const archiveRoot = 'ffmpeg-n9.0.2-36-g6882969ce9-win64-lgpl-shared-9.0';
+  const assetUrl = `https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-27-18-38/${archiveRoot}.zip`;
+  const digest = 'f70e43c4f5670fbbf2dc4eb667b0d6b3743d68386f766c08bb2e0ec3edece398';
   const cacheDir = resolve(root, 'node_modules', '.cache', 'open-quartz');
+  await mkdir(cacheDir, { recursive: true });
   const archive = resolve(cacheDir, `ffmpeg-shared-${digest}.zip`);
   const extracted = resolve(cacheDir, `ffmpeg-shared-${digest}`);
   const sharedRuntime = resolve(runtimeDir, 'ffmpeg-shared');
@@ -24,7 +26,7 @@ if (process.platform === 'win32' && process.arch === 'x64') {
       bytes = await readFile(archive);
     } catch {
       const response = await fetch(assetUrl, {
-        headers: { Accept: 'application/octet-stream', 'User-Agent': 'OpenQuartz-runtime-preparer' },
+        headers: { 'User-Agent': 'OpenQuartz-runtime-preparer' },
         signal: AbortSignal.timeout(600_000),
       });
       if (!response.ok) throw new Error(`FFmpeg download failed (${response.status})`);
@@ -41,7 +43,7 @@ if (process.platform === 'win32' && process.arch === 'x64') {
     if (unpack.status !== 0) throw new Error(`Cannot extract shared FFmpeg (tar exit ${unpack.status})`);
     await rm(sharedRuntime, { recursive: true, force: true });
     await cp(
-      resolve(extracted, 'ffmpeg-master-latest-win64-lgpl-shared'),
+      resolve(extracted, archiveRoot),
       sharedRuntime,
       { recursive: true },
     );
@@ -56,7 +58,7 @@ if (process.platform === 'win32' && process.arch === 'x64') {
   await writeFile(
     resolve(runtimeDir, 'FFMPEG-NOTICE.txt'),
     [
-      'FFmpeg master LGPL shared build from BtbN/FFmpeg-Builds.',
+      'FFmpeg 9.0.2 LGPL shared snapshot from BtbN/FFmpeg-Builds (libavcodec ABI 63).',
       `Asset: ${assetUrl}`,
       `SHA-256: ${digest}`,
       'FFmpeg is distributed under LGPL-2.1-or-later; source offer and license are in the bundled build.',

@@ -30,6 +30,7 @@ open_quartz = { path = "../crates/open_quartz" }
 open_quartz_execution = { path = "../crates/open_quartz_execution" }
 open_quartz_native_host = { path = "../crates/open_quartz_native_host", features = ["native-video-d3d12"] }
 open_quartz_schema = { path = "../crates/open_quartz_schema" }
+open_quartz_screensaver = { path = "../crates/open_quartz_screensaver" }
 pollster = "0.4"
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
 

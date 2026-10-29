@@ -38,7 +38,7 @@ pub enum NativeVideoSourceKind {
     Camera,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NativeVideoConfig {
     pub kind: NativeVideoSourceKind,
     pub source: String,

@@ -113,14 +113,51 @@ jobs:
         run: npm run test:sdk-wasm
 
   slint-app:
-    name: Slint application shell (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 20
+    name: Slint desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
-      - name: Check Slint application
-        run: cargo check --manifest-path apps/open_quartz_slint/Cargo.toml
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux desktop and GPU dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev libdbus-1-dev libvulkan1 mesa-vulkan-drivers xvfb
+
+      - name: Configure Windows bindgen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV'
+
+      - run: npm ci
+
+      - name: Test native desktop (Linux virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:desktop
+
+      - name: Test native desktop
+        if: runner.os != 'Linux'
+        run: npm run test:desktop
+
+      - name: Build and package native desktop (no Web/WASM)
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slint-desktop-${{ matrix.os }}
+          path: |
+            dist-desktop/*.zip
+            dist-desktop/*.tar.gz
+          if-no-files-found: error

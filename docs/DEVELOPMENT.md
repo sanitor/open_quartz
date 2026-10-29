@@ -1,5 +1,13 @@
 # OpenQuartz 开发文档
 
+## 当前开发入口（Slint 默认）
+
+默认桌面使用 `apps/open_quartz_slint`：`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。这些命令不构建 Web/WASM、不启动 Vite。`dist-desktop/` 是可重新生成的忽略产物。
+
+Web 独立使用 `npm run dev:web`、`npm run build:web`、`npm run preview:web`；Tauri 保留一个版本，通过 `npm run dev:tauri`、`npm run package:tauri` 显式使用。Tauri 的构建 hook 调用 Web 构建，不递归到 Slint。根 Cargo workspace 的 Tauri 产物位于 `target/release/bundle/`；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
+
+macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相机、Windows/Linux 验收和移动端按用户决定延后。详细阶段证据与已知启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md#810-phase-7切换)。下文保留历史 Web/Tauri 单元测试规划，旧 TypeScript engine 路径、工具和 CI 示例不代表当前实现；当前入口以 `package.json` 和 `.github/workflows/` 为准。
+
 ## 单元测试计划
 
 ### 1. 目标

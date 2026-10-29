@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses WebGPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph that runs at interactive frame rates. Connect source nodes (camera, video files, images, raw framebuffers), processing nodes (28 WGSL shader presets, 29 math ops, 7 ONNX models + custom), and renderer outputs on an infinite canvas. Inspired by Apple Quartz Composer, Shadertoy, and chaiNNer.
+Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses GPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph. The default desktop application is **Rust + Slint**, using the shared native GPU/runtime host directly. The React/Web application is retained separately, not ported to Slint; Tauri remains an explicit fallback for one version. Android/iOS delivery (Phase 6) is deferred by user decision.
 
 ## Node Catalog
 
@@ -21,7 +21,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 | Node | Type | Output | Description |
 |------|------|--------|-------------|
 | **Image** | Input | `sampler2D` | Load images as GPU textures. Drag-and-drop or file picker. |
-| **Video** | Input | `sampler2D` | Camera or video file input via browser HTML media; native FFmpeg decoding is available in the Tauri capability runtime. |
+| **Video** | Input | `sampler2D` | Native FFmpeg video files/cameras in Slint/Tauri; HTML media in the separate browser application. |
 | **Framebuffer** | Input | `sampler2D` | Raw binary dump files with configurable format (RGBA8/RGBA32F/RG8/RG32F/R8/R32F/NV12), width, height, stride. |
 | **Time** | System | `float` | Elapsed time in seconds since Play. |
 | **Time Delta** | System | `float` | Frame delta time. |
@@ -66,7 +66,7 @@ Auto type inference from connected peers. CPU-only evaluation, results propagate
 | **Depth Estimation** | MiDaS v2.1 Small | 63MB | 256×256 fixed | `sampler2D` grayscale depth | Monocular relative depth |
 | **Custom** | User `.onnx` file | any | auto-introspected | auto-introspected | Load any ONNX model, ports generated from I/O metadata |
 
-All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM fallback. Tauri hosts run graph-integrated native ORT on CPU or DirectML with observable fallback, async texture/tensor completion, task data, and downstream GPU continuation.
+Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime CPU or Windows DirectML with observable CPU fallback. The separate browser host uses adaptive WebGPU→WASM fallback. Loading, inference, and downstream GPU execution share the Rust host/runtime contracts.
 
 ### Output Nodes
 
@@ -74,7 +74,9 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 |------|-------|-------------|
 | **Renderer** | `sampler2D` | Explicit output viewer (Quartz Composer QCView equivalent) with in-place preview and fullscreen output mirror. |
 
-## Features
+## Retained Web/Tauri Interface Features
+
+The following editor details describe the retained React interface; they are not a claim that the Slint editor has CodeMirror/React Flow feature parity. See the [native app README](apps/open_quartz_slint/README.md) for the native controls and limitations.
 
 - **Worker-owned realtime rendering** — browser playback runs in a dedicated Worker with `OffscreenCanvas`; the Rust/WASM runtime owns clock, graph work batches, lifecycle, and output delivery. The React thread receives typed frame/output projections only.
 - **GPU-first output path** — the main realtime output stays on GPU; only selected preview or explicit screenshot/output requests perform readback.
@@ -104,61 +106,95 @@ All models auto-download on first use. Browser hosts use adaptive WebGPU→WASM 
 - Rust-owned 50-level undo/redo with Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z
 - Windows `File → Export As Screen Saver…` packages a selected Renderer into a self-contained version-3 native `.scr` with its graph-required image/video/model/runtime resources; `/s`, `/p <HWND>`, and `/c` do not require an installed OpenQuartz app.
 
-### Desktop App (Tauri)
-- Native desktop application via Tauri 2
-- Custom titlebar (macOS traffic lights, Windows min/max/close)
-- Video file persistence via asset protocol
-- Native Rust production runtime with an offscreen wgpu executor, DX12/Metal/Vulkan backend selection, FFmpeg file/camera decoding, Windows x64 file-source D3D12VA→P010 GPU import, and CPU/DirectML ONNX graph execution
-- `PipelineService` projects Zustand UI intent onto the public `Player`; browser uses `BrowserHost` with a dedicated Worker/WASM Runtime, while Tauri uses `NativeHost` and the same Rust lifecycle/resource contracts—no hidden dual-runtime fallback
-- Rust host resource intents own graph/resource reconciliation; TypeScript adapters retain only DOM/Tauri/WebView2 operations and opaque platform handles. Renderer previews are coalesced and size-bounded, while SAVE/screenshot performs an explicit full-resolution readback
-- Shared-texture and hardware-frame contracts cover DXGI/IOSurface/DMA-BUF. Windows x64 file-video now uses D3D12VA→wgpu P010 import and a WebView2 TextureStream consumer with StartRequested handling, reusable texture allocation, adapter-capability retry, first-frame handshake, and accurate presented-frame cadence telemetry; the tested 1920×1080 H.264 path sustains 61.31 FPS over a 10-second native benchmark with zero CPU-copy bytes. Camera/non-Windows video retains the explicit CPU-copy fallback; IOSurface, DMA-BUF, and camera hardware-frame adapters remain follow-up work.
-- WebView fallback remains lossless bounded RGBA readback. No H.264 preview path is used because Renderer output must preserve exact pixels; SAVE/screenshot always performs explicit lossless capture.
-- Restricted Content Security Policy and asset protocol scope for app data, bundled resources, and user media directories
-- Exported Windows screen savers use a self-contained Win32 host linked directly to the shared Rust Runtime and wgpu executor. The host renders straight into a DX12 window surface, embeds only graph-required video/model/runtime resources, and runs shader/image/math/feedback/renderer, file-video, and ONNX graphs without an installed OpenQuartz/Tauri app. Camera inputs are rejected because an export cannot preserve a deterministic camera source.
+## Default Native Desktop (Slint)
+- Standalone Rust application with Slint 1.18.1 and wgpu 30; no WebView, browser, WASM build, or Node process is required by the packaged application.
+- Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
+- Slint and `NativeHost` share one GPU device/queue; Renderer presentation imports GPU textures directly. PNG capture is explicit readback, not the realtime presentation path.
+- Rust-owned graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, preview/fullscreen controls, and Windows screen saver export. See the app README for exact UI behavior.
+- The WGSL editor is a plain native TextEdit with explicit Apply; it does not provide CodeMirror syntax highlighting, completion, or inline lint.
+- Portable packages include architecture-matched FFmpeg and official ONNX Runtime **1.21.0**, their notices, and (Windows) DirectML, app-local VC++ runtime DLLs, and the screen saver stub. Missing required resources fail packaging instead of producing a partial app.
+- macOS packages include an icon and camera usage description. They are ad-hoc signed, **not notarized**; Windows packages are unsigned. Camera access still requires OS permission and a real device.
+- macOS packaging and production video/PNG/fullscreen/ONNX smoke pass; unlocked native Video/Image/Framebuffer dialogs and PNG save/cancel also pass. A fresh LaunchServices launch (including `--args --project …`) rendered bundled video successfully. An earlier winit startup abort remains unexplained and un-reproduced; camera permission/capture and Windows/Linux runtime/`.scr` gates remain pending.
 
-### Rust SDK and Structured Runtime
+### Tauri Fallback
+The prior React/Tauri shell and its native runtime remain available for one version through explicit commands below. Windows WebView2 TextureStream and bounded readback presentation belong to this fallback, not the Slint renderer. Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint or Tauri application; camera inputs are not deterministic export sources.
+
+## Rust SDK and Structured Runtime
 - Real crate boundaries: `open_quartz_schema` → `open_quartz_execution` → `open_quartz_host_api` → `open_quartz_sdk`, with `open_quartz` as the thin native/WASM facade and `open_quartz_bindings` for JNI
 - Rust-backed public `OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, and `Player` aggregates with atomic edits, revision/history ownership, serialization, and structured errors
 - Rust-backed production WGSL parser/compiler validation via `naga`
 - Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, feedback state preservation, catalog semantics, ONNX tasks, and host resource intents
-- Native `wgpu` pipeline/target/readback primitives and a Tauri-owned render thread
+- Native `wgpu` pipeline/target/readback primitives and framework-neutral `NativeHost`, shared by Slint and the retained Tauri render thread
 - Dependency-boundary CI plus Rust/WASM/TypeScript/Java public-proxy conformance
 
-## Getting Started
+## Getting Started — Native Desktop
+
+Install Node.js 22.12+ and Rust 1.92+ with the platform C++ toolchain (Xcode command-line tools on macOS; Visual Studio C++ tools, Windows SDK, and LLVM/libclang on Windows). Then:
 
 ```bash
-npm install
-npm run dev
+npm ci
+npm run dev                         # build and launch Slint, not Vite
+npm run dev -- --project /path/to/project.quartz.json
+npm run build                       # release binary + portable desktop package
 ```
 
-Open http://localhost:5173 in your browser. See `docs/` for architecture and design documents.
+The first run downloads the platform runtime libraries. No wasm-pack, browser, or Web frontend build is required for these commands. Windows builds set `FFMPEG_DIR` from the existing pinned shared-FFmpeg helper; if LLVM is not on the toolchain search path, set `LIBCLANG_PATH` to its `bin` directory. Portable Windows packaging requires the Visual Studio x64 VC++ redistributable files.
 
-## Testing
+Linux build prerequisites (Debian/Ubuntu):
 
 ```bash
-npm test                  # 704 unit tests across 39 files (fast, CI gate)
-npm run test:sdk-coverage # all six Rust SDK crates: 100% lines/functions/regions
-npm run test:sdk-wasm     # WASM/browser GPU, ONNX routing, and external-media contracts
-npm run test:models       # 18 ONNX functional tests (real models, real inference)
-npm run test:shaders      # 56 WebGPU bit-true + pipeline tests (system browser, real GPU)
+sudo apt-get install pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev libdbus-1-dev libvulkan1 mesa-vulkan-drivers
 ```
 
-## Desktop app (Tauri)
+Linux packages still require the system desktop/font/Vulkan libraries; they are not universal static binaries. Native builds run on their host architecture: macOS arm64/x64, Windows x64, Linux x64/arm64. CI covers Windows, macOS, and Linux desktop build/tests; it does not substitute for GPU/camera/native-window acceptance on each platform.
+
+### Portable Artifacts and Runtime Resources
+
+`npm run build` writes `dist-desktop/OpenQuartz-<version>-<platform>-<arch>/` and an adjacent archive:
+
+- **macOS**: `Open Quartz.app` and `.zip`; executable at `Contents/MacOS/open_quartz_slint`, resources at `Contents/Resources/runtime/`.
+- **Windows**: `.zip` containing `open_quartz_slint.exe`, `icon.ico`, shortcut, and `runtime/`. DLLs are also placed beside the executable because FFmpeg imports are resolved before Rust startup. Extract the whole archive before launching.
+- **Linux**: `.tar.gz` with executable, icon, and `runtime/`; desktop/system-library dependencies remain external.
+
+`runtime/` contains `ffmpeg` (`ffmpeg.exe` on Windows), `libonnxruntime.1.21.0.dylib` / `onnxruntime.dll` / `libonnxruntime.so.1.21.0`, and required companion libraries/notices. Windows also includes `DirectML.dll` and `open-quartz-screensaver-stub.exe`. Startup resolves `executable-parent/runtime`, or the macOS app resource path above. Development commands set `ORT_DYLIB_PATH`, `OPEN_QUARTZ_FFMPEG_PATH`, and runtime `PATH` explicitly. The ONNX library is from the [official 1.21.0 release](https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0), not the unrelated Node ORT dependency; Microsoft's Windows DirectML package uses its declared [DirectML 1.15.4 dependency](https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4).
+
+Windows FFmpeg is a checksum-pinned, dated BtbN FFmpeg 9.0.2 snapshot (ABI 63), not a promise of permanent third-party hosting. BtbN may expire old snapshots; preserve the downloaded cache for repeat/offline builds. An unavailable asset or checksum mismatch stops preparation explicitly and requires updating the pinned dependency—there is no silent system/partial-runtime fallback.
+
+## Separate Web Application and Tauri Fallback
+
+These paths require wasm-pack and `rustup target add wasm32-unknown-unknown`:
 
 ```bash
-npm run tauri dev      # development
-npm run tauri build    # production installer
+npm run dev:web                     # Vite at http://localhost:5173
+npm run build:web                   # TypeScript + Vite output in dist/
+npm run preview:web                 # preview the Web build
+npm run dev:tauri                   # explicit one-version fallback
+npm run package:tauri               # Tauri installers, not Slint artifacts
 ```
 
-## Build (web)
+`npm run tauri -- dev` / `npm run tauri -- build` remain available. Tauri hooks deliberately call the Web commands (`dev:web` / `build:tauri` → `build:web`) and never recurse into the native default. `build:tauri` prepares the fallback frontend/stub; `package:tauri` invokes the actual installer build. Web is retained independently, not reimplemented with Slint WASM.
+
+The macOS fallback was verified with `npm run package:tauri -- --bundles app`;
+its output is `target/release/bundle/macos/Open Quartz.app` in the root Cargo
+workspace. Default Slint artifacts remain in `dist-desktop/`, which is ignored by Git.
+
+## Testing and Acceptance
 
 ```bash
-npm run build          # output to dist/
+npm run test:desktop                 # Slint tests with native runtime preparation
+cargo test --workspace               # shared Rust workspace
+npm test                            # separate Web unit tests
+npm run test:sdk-coverage            # Rust SDK coverage
+npm run test:sdk-wasm                # WASM/browser contracts
+npm run test:models                  # real-model browser inference
+npm run test:shaders                 # real-GPU browser shader tests
 ```
+
+Local verification passed: 62 Slint tests, 292 workspace test results, 704 Web tests, independent Web production build and macOS native packaging/signature. Production Controller/NativeHost/FemtoVG smoke and unlocked Video/Image/Framebuffer/PNG dialogs passed. Cold LaunchServices starts—including project-open arguments—rendered packaged video. One previous winit startup abort lacks a recoverable panic payload and remains unexplained, not declared fixed. Real camera capture and Windows/Linux/.scr acceptance remain pending; Mobile Phase 6 is deferred.
 
 ## Tech Stack
 
-React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · Rust · wgpu 27 · naga · ort · FFmpeg · onnxruntime-web/node
+Rust · Slint 1.18.1 · wgpu 30 · naga · ort · FFmpeg; retained Web/Tauri: React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
 
 ## Roadmap
 

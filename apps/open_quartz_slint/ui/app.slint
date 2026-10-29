@@ -1,4 +1,4 @@
-import { Palette } from "std-widgets.slint";
+import { Button, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
@@ -19,6 +19,7 @@ export component AppWindow inherits Window {
     in property <string> io-status;
     in property <string> runtime-status;
     in property <string> graph-summary;
+    in property <[string]> node-factory-options;
     in property <[GraphNode]> graph-nodes;
     in property <[GraphEdge]> graph-edges;
     in property <float> graph-content-width;
@@ -51,6 +52,20 @@ export component AppWindow inherits Window {
     in property <bool> inspector-onnx-attached;
     in-out property <string> inspector-onnx-path;
     callback inspector-load-onnx(string);
+    in property <bool> inspector-image-input;
+    in property <string> inspector-image-name;
+    in property <string> inspector-image-size;
+    in property <bool> inspector-framebuffer-input;
+    in property <string> inspector-framebuffer-name;
+    callback inspector-choose-image();
+    in property <bool> inspector-video-input;
+    in property <[string]> inspector-camera-options;
+    in property <int> inspector-camera-index: -1;
+    in property <bool> inspector-camera-loading;
+    callback inspector-choose-video();
+    callback inspector-refresh-cameras();
+    callback inspector-select-camera(int);
+    callback inspector-choose-framebuffer();
     callback inspector-unload-onnx();
     in-out property <string> inspector-node-label;
     in-out property <string> inspector-shader-code;
@@ -94,7 +109,22 @@ export component AppWindow inherits Window {
     in property <int> graph-selection-count;
     callback graph-copy();
     callback graph-paste();
+    callback graph-add-node(int);
+    callback graph-remove-nodes();
     callback graph-select-all();
+    in property <[string]> renderer-options;
+    in property <int> renderer-index: -1;
+    in property <bool> native-runtime-available;
+    in property <bool> screen-saver-available;
+    callback select-renderer(int);
+    callback capture-png();
+    callback export-screen-saver();
+    callback playback(string);
+    in-out property <bool> preview-open;
+    callback preview-requested(bool);
+    changed preview-open => {
+        if root.preview-open { preview-focus.focus(); } else { graph-view.focus(); }
+    }
 
     VerticalLayout {
         padding: 16px;
@@ -106,6 +136,15 @@ export component AppWindow inherits Window {
             busy: root.busy || root.inspector-dirty;
             open-requested(path) => { root.open-project(path); }
             save-requested(path) => { root.save-project(path); }
+            renderer-options: root.renderer-options;
+            renderer-index: root.renderer-index;
+            native-runtime-available: root.native-runtime-available;
+            screen-saver-available: root.screen-saver-available;
+            export-selection-valid: root.graph-selection-count <= 1;
+            select-renderer(index) => { root.select-renderer(index); }
+            capture-png => { root.capture-png(); }
+            export-screen-saver => { root.export-screen-saver(); }
+            playback(action) => { root.playback(action); }
         }
         Text { text: root.io-status; color: Theme.foreground; wrap: word-wrap; }
         HorizontalLayout {
@@ -117,6 +156,7 @@ export component AppWindow inherits Window {
                 content-width: root.graph-content-width;
                 content-height: root.graph-content-height;
                 origin-x: root.graph-origin-x;
+                node-factory-options: root.node-factory-options;
                 origin-y: root.graph-origin-y;
                 busy: root.busy || root.inspector-dirty;
                 node-selected(node-id, additive) => { root.graph-node-selected(node-id, additive); }
@@ -140,6 +180,8 @@ export component AppWindow inherits Window {
                 copy => { root.graph-copy(); }
                 paste => { root.graph-paste(); }
                 select-all => { root.graph-select-all(); }
+                add-node(kind) => { root.graph-add-node(kind); }
+                remove-nodes => { root.graph-remove-nodes(); }
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
             }
@@ -173,6 +215,20 @@ export component AppWindow inherits Window {
                     onnx-attached: root.inspector-onnx-attached;
                     onnx-path <=> root.inspector-onnx-path;
                     load-onnx(path) => { root.inspector-load-onnx(path); }
+                    image-input: root.inspector-image-input;
+                    image-name: root.inspector-image-name;
+                    image-size: root.inspector-image-size;
+                    framebuffer-input: root.inspector-framebuffer-input;
+                    framebuffer-name: root.inspector-framebuffer-name;
+                    choose-image => { root.inspector-choose-image(); }
+                    choose-framebuffer => { root.inspector-choose-framebuffer(); }
+                    video-input: root.inspector-video-input;
+                    camera-options: root.inspector-camera-options;
+                    camera-index: root.inspector-camera-index;
+                    camera-loading: root.inspector-camera-loading;
+                    choose-video => { root.inspector-choose-video(); }
+                    refresh-cameras => { root.inspector-refresh-cameras(); }
+                    select-camera(index) => { root.inspector-select-camera(index); }
                     unload-onnx => { root.inspector-unload-onnx(); }
                     node-label <=> root.inspector-node-label;
                     shader-code <=> root.inspector-shader-code;
@@ -204,7 +260,14 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         padding: 12px;
                         spacing: 10px;
-                        Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; }
+                        HorizontalLayout {
+                            Text { text: "Renderer output"; color: Theme.foreground; font-size: 17px; horizontal-stretch: 1; }
+                            Button {
+                                text: "Fullscreen";
+                                enabled: root.has-renderer-image;
+                                clicked => { root.preview-requested(true); }
+                            }
+                        }
                         Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
                         Rectangle {
                             background: #080b11;
@@ -228,6 +291,31 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+    preview-focus := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        visible: root.preview-open;
+        key-pressed(event) => {
+            if root.preview-open && event.text == Key.Escape {
+                root.preview-requested(false);
+                return accept;
+            }
+            return reject;
+        }
+        Rectangle { width: parent.width; height: parent.height; background: Theme.background; }
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+            HorizontalLayout {
+                Text { text: "Renderer preview"; color: Theme.foreground; font-size: 20px; horizontal-stretch: 1; }
+                Button { text: "Close · Esc"; clicked => { root.preview-requested(false); } }
+            }
+            Image { source: root.renderer-image; image-fit: contain; horizontal-stretch: 1; vertical-stretch: 1; }
+            Text { text: root.runtime-status; color: Theme.secondary; wrap: word-wrap; }
         }
     }
 }

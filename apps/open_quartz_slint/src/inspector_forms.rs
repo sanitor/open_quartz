@@ -55,6 +55,7 @@ pub(crate) struct NodeFormsDraft {
     pub(crate) video_device: String,
     pub(crate) video_loop: String,
     pub(crate) video_rate: String,
+    pub(crate) video_file_path: String,
 }
 
 impl NodeFormsDraft {
@@ -97,6 +98,7 @@ impl NodeFormsDraft {
             video_device: data.video_device_id.clone().unwrap_or_default(),
             video_loop: data.video_loop.unwrap_or(true).to_string(),
             video_rate: data.video_playback_rate.unwrap_or(1.0).to_string(),
+            video_file_path: data.video_file_path.clone().unwrap_or_default(),
         }
     }
 
@@ -112,6 +114,7 @@ impl NodeFormsDraft {
             "video-device" => (&mut self.video_device, FormKind::Video),
             "video-loop" => (&mut self.video_loop, FormKind::Video),
             "video-rate" => (&mut self.video_rate, FormKind::Video),
+            "video-file" => (&mut self.video_file_path, FormKind::Video),
             _ => return None,
         };
         *field = value.into();
@@ -136,6 +139,7 @@ impl NodeFormsDraft {
                 self.video_device = fresh.video_device;
                 self.video_loop = fresh.video_loop;
                 self.video_rate = fresh.video_rate;
+                self.video_file_path = fresh.video_file_path;
             }
         }
     }
@@ -154,6 +158,7 @@ impl NodeFormsDraft {
                     && self.video_device == other.video_device
                     && self.video_loop == other.video_loop
                     && self.video_rate == other.video_rate
+                    && self.video_file_path == other.video_file_path
             }
         }
     }
@@ -260,8 +265,12 @@ impl NodeFormsDraft {
                 if self.video_loop != original.video_loop {
                     next.video_loop = Some(looping);
                 }
-                if rate != data.video_playback_rate.unwrap_or(1.0) {
+                if self.video_rate != original.video_rate {
                     next.video_playback_rate = Some(rate);
+                }
+                if self.video_file_path != original.video_file_path {
+                    next.video_file_path = (!self.video_file_path.trim().is_empty())
+                        .then(|| self.video_file_path.trim().to_owned());
                 }
             }
         }
@@ -269,23 +278,89 @@ impl NodeFormsDraft {
     }
 
     pub(crate) fn groups(&self, data: &NodeData) -> Vec<crate::InspectorFormGroup> {
-        [FormKind::Sampling, FormKind::Framebuffer, FormKind::Video].into_iter().filter(|kind| kind.supports(data)).map(|kind| {
-            let fields = match kind {
-                FormKind::Sampling => vec![choice("filter", "Filter", &self.filter, &["Linear", "Nearest"]), choice("wrap", "Wrap", &self.wrap, &["Clamp", "Repeat", "Mirror"])],
-                FormKind::Framebuffer => vec![choice("fb-format", "Format", &self.fb_format, &["RGBA8", "RGBA32F", "RG8", "RG32F", "R8", "R32F", "NV12"]), text("fb-width", "Width", &self.fb_width), text("fb-height", "Height", &self.fb_height), text("fb-stride", "Stride bytes/row (blank or 0 = auto)", &self.fb_stride)],
-                FormKind::Video => {
-                    let mut fields = vec![choice("video-source", "Source", &self.video_source, &["File", "Camera"])];
-                    if self.video_source == "1" { fields.push(text("video-device", "Camera device ID (no enumeration)", &self.video_device)); }
-                    fields.push(crate::InspectorFormField { key: "video-loop".into(), label: "Loop".into(), value: self.video_loop.as_str().into(), kind: "toggle".into(), checked: self.video_loop == "true", ..Default::default() });
-                    fields.push(text("video-rate", "Playback rate (0.1–4.0)", &self.video_rate)); fields
+        [FormKind::Sampling, FormKind::Framebuffer, FormKind::Video]
+            .into_iter()
+            .filter(|kind| kind.supports(data))
+            .map(|kind| {
+                let fields = match kind {
+                    FormKind::Sampling => vec![
+                        choice("filter", "Filter", &self.filter, &["Linear", "Nearest"]),
+                        choice("wrap", "Wrap", &self.wrap, &["Clamp", "Repeat", "Mirror"]),
+                    ],
+                    FormKind::Framebuffer => vec![
+                        choice(
+                            "fb-format",
+                            "Format",
+                            &self.fb_format,
+                            &["RGBA8", "RGBA32F", "RG8", "RG32F", "R8", "R32F", "NV12"],
+                        ),
+                        text("fb-width", "Width", &self.fb_width),
+                        text("fb-height", "Height", &self.fb_height),
+                        text(
+                            "fb-stride",
+                            "Stride bytes/row (blank or 0 = auto)",
+                            &self.fb_stride,
+                        ),
+                    ],
+                    FormKind::Video => {
+                        let mut fields = vec![choice(
+                            "video-source",
+                            "Source",
+                            &self.video_source,
+                            &["File", "Camera"],
+                        )];
+                        if self.video_source == "1" {
+                            fields.push(text(
+                                "video-device",
+                                "Camera device ID",
+                                &self.video_device,
+                            ));
+                        }
+                        fields.push(text("video-file", "Video file path", &self.video_file_path));
+                        fields.push(crate::InspectorFormField {
+                            key: "video-loop".into(),
+                            label: "Loop".into(),
+                            value: self.video_loop.as_str().into(),
+                            kind: "toggle".into(),
+                            checked: self.video_loop == "true",
+                            ..Default::default()
+                        });
+                        fields.push(text(
+                            "video-rate",
+                            "Playback rate (0.1–4.0)",
+                            &self.video_rate,
+                        ));
+                        fields
+                    }
+                };
+                crate::InspectorFormGroup {
+                    key: kind.key().into(),
+                    title: match kind {
+                        FormKind::Sampling => "Sampling",
+                        FormKind::Framebuffer => "Framebuffer",
+                        FormKind::Video => "Video",
+                    }
+                    .into(),
+                    hint: match kind {
+                        FormKind::Sampling => "Output sampling settings",
+                        FormKind::Framebuffer => {
+                            "Raw resources loaded with the applied format and dimensions"
+                        }
+                        FormKind::Video => {
+                            "Load a video file or select an enumerated camera device"
+                        }
+                    }
+                    .into(),
+                    fields: slint::ModelRc::new(slint::VecModel::from(fields)),
+                    dirty: self.dirty(data, kind),
+                    error: self
+                        .updated_data(data, kind)
+                        .err()
+                        .unwrap_or_default()
+                        .into(),
                 }
-            };
-            crate::InspectorFormGroup {
-                key: kind.key().into(), title: match kind { FormKind::Sampling => "Sampling", FormKind::Framebuffer => "Framebuffer", FormKind::Video => "Video" }.into(),
-                hint: match kind { FormKind::Sampling => "Output sampling settings", FormKind::Framebuffer => "Configuration only · raw resources are not loaded by this shell", FormKind::Video => "Configuration only · video/camera resources are not opened by this shell" }.into(),
-                fields: slint::ModelRc::new(slint::VecModel::from(fields)), dirty: self.dirty(data, kind), error: self.updated_data(data, kind).err().unwrap_or_default().into(),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
@@ -433,6 +508,7 @@ mod tests {
             let next = draft.updated_data(&data, FormKind::Video).unwrap();
             assert_eq!(next.video_source_type, Some(VideoSourceType::Camera));
             assert_eq!(next.video_loop, Some(false));
+            assert_eq!(next.video_playback_rate, Some(rate.parse::<f64>().unwrap()));
             assert_eq!(next.video_device_id.as_deref(), Some("camera-id"));
             assert_eq!(next.video_file_path, data.video_file_path);
             assert_eq!(next.video_url, data.video_url);
@@ -446,6 +522,43 @@ mod tests {
                 .video_device_id,
             None
         );
+    }
+
+    #[test]
+    fn video_loop_rate_and_file_dispatch_restore_without_losing_other_drafts() {
+        let mut data = input(InputMode::Video);
+        data.video_source_type = Some(VideoSourceType::Camera);
+        data.video_device_id = Some("saved-camera".into());
+        data.video_file_path = Some("/saved.mp4".into());
+        data.video_loop = Some(true);
+        data.video_playback_rate = Some(1.5);
+        let mut draft = NodeFormsDraft::from_data(&data);
+        assert_eq!(draft.change("video-loop", "false"), Some(FormKind::Video));
+        assert!(draft.dirty(&data, FormKind::Video));
+        assert_eq!(
+            draft
+                .updated_data(&data, FormKind::Video)
+                .unwrap()
+                .video_loop,
+            Some(false)
+        );
+        assert_eq!(draft.change("video-rate", "2.5"), Some(FormKind::Video));
+        assert_eq!(
+            draft.change("video-file", "/new.mp4"),
+            Some(FormKind::Video)
+        );
+        let next = draft.updated_data(&data, FormKind::Video).unwrap();
+        assert_eq!(next.video_playback_rate, Some(2.5));
+        assert_eq!(next.video_file_path.as_deref(), Some("/new.mp4"));
+        assert_eq!(next.video_device_id, data.video_device_id);
+        draft.filter = "1".into();
+        draft.restore_group(&data, FormKind::Video);
+        assert_eq!(draft.filter, "1");
+        assert_eq!(draft.video_rate, "1.5");
+        assert_eq!(draft.video_loop, "true");
+        assert_eq!(draft.video_file_path, "/saved.mp4");
+        assert_eq!(draft.video_device, "saved-camera");
+        assert!(!draft.dirty(&data, FormKind::Video));
     }
 
     #[test]

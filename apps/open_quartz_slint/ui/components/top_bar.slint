@@ -1,4 +1,4 @@
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 export component TopBar inherits Rectangle {
@@ -8,6 +8,15 @@ export component TopBar inherits Rectangle {
     in-out property <string> project-path;
     callback open-requested(string);
     callback save-requested(string);
+    in property <[string]> renderer-options;
+    in property <int> renderer-index: -1;
+    in property <bool> native-runtime-available;
+    in property <bool> screen-saver-available;
+    in property <bool> export-selection-valid;
+    callback select-renderer(int);
+    callback capture-png();
+    callback export-screen-saver();
+    callback playback(string);
 
     background: Theme.panel;
     border-radius: 8px;
@@ -25,7 +34,7 @@ export component TopBar inherits Rectangle {
                 overflow: elide;
             }
             Text {
-                text: "Phase 5 · ONNX runtime";
+                text: "Desktop · NativeHost";
                 color: Theme.accent;
             }
         }
@@ -48,6 +57,36 @@ export component TopBar inherits Rectangle {
                 enabled: !root.busy;
                 clicked => { root.save-requested(root.project-path); }
             }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Renderer"; color: Theme.secondary; vertical-alignment: center; }
+            ComboBox {
+                model: root.renderer-options;
+                current-index: root.renderer-index;
+                enabled: !root.busy && root.renderer-options.length > 0;
+                horizontal-stretch: 1;
+                min-width: 100px;
+                preferred-width: 180px;
+                selected => { root.select-renderer(self.current-index); }
+            }
+            Button {
+                text: "Capture PNG…";
+                enabled: !root.busy && root.native-runtime-available && root.renderer-index >= 0 && root.export-selection-valid;
+                clicked => { root.capture-png(); }
+            }
+            if root.screen-saver-available: Button {
+                text: "Export .scr…";
+                enabled: !root.busy && root.renderer-index >= 0 && root.export-selection-valid;
+                clicked => { root.export-screen-saver(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Button { text: "Play"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("play"); } }
+            Button { text: "Pause"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("pause"); } }
+            Button { text: "Stop"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
         }
         Text {
             text: root.runtime-status;

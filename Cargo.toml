@@ -7,6 +7,7 @@ members = [
     "crates/open_quartz_native_host",
     "crates/open_quartz_sdk",
     "crates/open_quartz_bindings",
+    "crates/open_quartz_screensaver",
     "crates/open-quartz-screensaver-stub",
     "src-tauri",
 ]
