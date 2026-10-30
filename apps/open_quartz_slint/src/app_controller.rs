@@ -243,6 +243,16 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
 }
 
 
+// Slint 1.18 Image::eq returns false for WGPU and empty images, even when
+// cloned from the same image. Compare the underlying GPU handles explicitly.
+fn same_preview_image(left: &slint::Image, right: &slint::Image) -> bool {
+    match (left.to_wgpu_30_texture(), right.to_wgpu_30_texture()) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => left == right || (left.size().width == 0 && right.size().width == 0),
+        _ => false,
+    }
+}
+
 pub struct AppController {
     window: slint::Weak<AppWindow>,
     project: Arc<Project>,
@@ -255,6 +265,7 @@ pub struct AppController {
     graph_nodes: Rc<slint::VecModel<crate::GraphNode>>,
     graph_edges: Rc<slint::VecModel<crate::GraphEdge>>,
     node_previews: BTreeMap<String, slint::Image>,
+    renderer_texture: Option<wgpu::Texture>,
     node_errors: BTreeMap<String, String>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
@@ -328,13 +339,7 @@ impl AppController {
         graph_stress_count: Option<usize>,
     ) -> Result<Rc<RefCell<Self>>, String> {
         let sdk = OpenQuartz::new(Environment::headless());
-        let project = if project_path.is_some() {
-            sdk.create_project("Untitled")
-        } else if let Some(count) = graph_stress_count {
-            graph_stress_project(&sdk, count)?
-        } else {
-            sample_project(&sdk)?
-        };
+        let project = initial_project(&sdk, graph_stress_count)?;
         let controller = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             project: Arc::new(project),
@@ -349,6 +354,7 @@ impl AppController {
             graph_nodes: Rc::new(slint::VecModel::default()),
             graph_edges: Rc::new(slint::VecModel::default()),
             node_previews: BTreeMap::new(),
+            renderer_texture: None,
             node_errors: BTreeMap::new(),
             image_assets: BTreeMap::new(),
             framebuffer_assets: BTreeMap::new(),
@@ -383,6 +389,7 @@ impl AppController {
         window.set_inspector_image_input(false);
         window.set_inspector_framebuffer_input(false);
         window.set_runtime_status(runtime_status.into());
+        window.set_playback_state("stopped".into());
         window.set_io_status("Ready".into());
         let node_factories = node_factory_options();
         let math_catalog = open_quartz_execution::catalog::math_ops();
@@ -560,11 +567,17 @@ impl AppController {
                         this.undo_edits.clear();
                         this.redo_edits.clear();
                         this.selected_renderer_id = None;
+                        if let Some(renderer) = &mut this.renderer {
+                            renderer.begin_project();
+                        }
                         if let Some(window) = this.window.upgrade() {
+                            window.set_playback_state("stopped".into());
                             window.set_project_path("".into());
-                            window.invoke_reset_graph_view();
                         }
                         this.publish_project();
+                        if let Some(window) = this.window.upgrade() {
+                            window.invoke_reset_graph_view();
+                        }
                     }
                     _ => {}
                 }
@@ -1726,6 +1739,7 @@ impl AppController {
 
     fn publish_project(&mut self) {
         self.node_previews.clear();
+        self.renderer_texture = None;
         self.node_errors.clear();
         if self.graph_stress_count.is_none() {
             self.sync_project_resources();
@@ -1791,7 +1805,7 @@ impl AppController {
             )
             .collect();
         if let Some(renderer) = &mut self.renderer {
-            match renderer.set_graph(graph, images) {
+            match renderer.set_graph(graph, images, window.get_playback_state() == "playing") {
                 Ok(()) => window.set_runtime_status("NativeHost is applying the SDK graph…".into()),
                 Err(error) => window.set_runtime_status(error.into()),
             }
@@ -1802,6 +1816,7 @@ impl AppController {
 
     fn publish_graph_projection(&mut self) -> Option<ProjectionStats> {
         let window = self.window.upgrade()?;
+        window.invoke_graph_begin_projection();
         let projection = GraphViewModel::from_project(&self.project, &self.selected_node_ids);
         let stats = ProjectionStats {
             node_count: projection.node_count,
@@ -1841,6 +1856,7 @@ impl AppController {
         self.publish_edit_state();
         self.publish_inspector();
         self.publish_desktop_controls();
+        window.invoke_graph_end_projection();
         Some(stats)
     }
     fn publish_shader_editor_metadata(&self) {
@@ -2839,6 +2855,35 @@ impl AppController {
         window.set_io_status(status.into());
     }
 
+    fn publish_node_previews(&self) -> usize {
+        let mut changed = 0;
+        for index in 0..self.graph_nodes.row_count() {
+            if let Some(mut node) = self.graph_nodes.row_data(index) {
+                let previous_image = node.preview.clone();
+                let previous = (node.has_preview, node.resolution.clone(), node.status.clone());
+                if let Some(image) = self.node_previews.get(node.node_id.as_str()) {
+                    node.preview = image.clone();
+                    node.has_preview = true;
+                    let size = image.size();
+                    node.resolution = format!("{}×{}", size.width, size.height).into();
+                } else {
+                    node.preview = slint::Image::default();
+                    node.has_preview = false;
+                    node.resolution = Default::default();
+                }
+                if self.node_errors.contains_key(node.node_id.as_str()) {
+                    node.status = "error".into();
+                }
+                if !same_preview_image(&previous_image, &node.preview)
+                    || previous != (node.has_preview, node.resolution.clone(), node.status.clone()) {
+                    self.graph_nodes.set_row_data(index, node);
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     fn poll(&mut self) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -2898,6 +2943,7 @@ impl AppController {
                     if let Some(renderer) = &mut self.renderer {
                         renderer.begin_project();
                     }
+                    window.set_playback_state("stopped".into());
                     self.selected_node_ids.clear();
                     self.inspector_draft = None;
                     self.graph_stress_count = None;
@@ -2975,35 +3021,40 @@ impl AppController {
                 window.set_runtime_status(status.into());
             }
             if let Some(previews) = update.previews {
-                self.node_previews.clear();
+                self.node_previews.retain(|id, _| previews.contains_key(id));
+                if !previews.is_empty() {
+                    // Pixels can change in-place without changing the image identity.
+                    window.window().request_redraw();
+                }
                 for (id, texture) in previews {
+                    if self.node_previews.get(&id).and_then(slint::Image::to_wgpu_30_texture).as_ref() == Some(&texture) {
+                        continue;
+                    }
                     match slint::Image::try_from(texture) {
-                        Ok(image) => { self.node_previews.insert(id, image); }
-                        Err(error) => window.set_runtime_status(format!("Node preview import failed: {error:?}").into()),
+                        Ok(image) => {
+                            self.node_previews.insert(id, image);
+                        }
+                        Err(error) => {
+                            self.node_previews.remove(&id);
+                            window.set_runtime_status(format!("Node preview import failed: {error:?}").into());
+                        }
                     }
                 }
-                for index in 0..self.graph_nodes.row_count() {
-                    if let Some(mut node) = self.graph_nodes.row_data(index) {
-                        if let Some(image) = self.node_previews.get(node.node_id.as_str()) {
-                            node.preview = image.clone(); node.has_preview = true;
-                            let size = image.size(); node.resolution = format!("{}×{}", size.width, size.height).into();
-                        } else {
-                            node.preview = slint::Image::default(); node.has_preview = false; node.resolution = Default::default();
-                        }
-                        if self.node_errors.contains_key(node.node_id.as_str()) {
-                            node.status = "error".into();
-                        }
-                        self.graph_nodes.set_row_data(index, node);
-                    }
-                }
+                self.publish_node_previews();
             }
             if update.clear_image {
+                self.renderer_texture = None;
                 window.set_renderer_image(slint::Image::default());
                 window.set_has_renderer_image(false);
             }
             if let Some(texture) = update.texture {
-                match slint::Image::try_from(texture) {
+                window.window().request_redraw();
+                if self.renderer_texture.as_ref() == Some(&texture) {
+                    return;
+                }
+                match slint::Image::try_from(texture.clone()) {
                     Ok(image) => {
+                        self.renderer_texture = Some(texture);
                         window.set_renderer_image(image);
                         window.set_has_renderer_image(true);
                     }
@@ -3406,6 +3457,14 @@ fn commit_connection(
     Ok(true)
 }
 
+fn initial_project(sdk: &OpenQuartz, graph_stress_count: Option<usize>) -> Result<Project, String> {
+    match graph_stress_count {
+        Some(count) => graph_stress_project(sdk, count),
+        None => Ok(sdk.create_project("Untitled")),
+    }
+}
+
+#[cfg(test)]
 fn sample_project(sdk: &OpenQuartz) -> Result<Project, String> {
     let mut project = sdk.create_project("Untitled · Gradient");
     let (shader, _) = project.create_graph_node(NodeFactoryRequest::Shader {
@@ -4155,6 +4214,7 @@ mod tests {
             graph_nodes: std::rc::Rc::new(slint::VecModel::default()),
             graph_edges: std::rc::Rc::new(slint::VecModel::default()),
             node_previews: std::collections::BTreeMap::new(),
+            renderer_texture: None,
             node_errors: std::collections::BTreeMap::new(),
             image_assets: std::collections::BTreeMap::new(),
             framebuffer_assets: std::collections::BTreeMap::new(),
@@ -4971,5 +5031,85 @@ mod tests {
         assert_eq!(project.graph_snapshot(), before);
         project.rollback_graph(project.graph_revision()).unwrap();
         assert_eq!(project.graph_snapshot(), initial);
+    }
+
+    #[test]
+    fn unchanged_preview_frames_preserve_node_models_and_failure_clears_once() {
+        let mut controller = controller_for_uniforms(uniform_project(&[]));
+        let id = controller.project.graph().nodes()[0].id.clone();
+        controller.graph_nodes.push(crate::GraphNode {
+            node_id: id.as_str().into(),
+            selected: true,
+            status: "ready".into(),
+            ..Default::default()
+        });
+        controller.graph_nodes.push(crate::GraphNode {
+            node_id: "unrelated".into(),
+            ..Default::default()
+        });
+        let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(2, 1);
+        let image = slint::Image::from_rgba8(pixels);
+        controller.node_previews.insert(id.clone(), image.clone());
+        assert_eq!(controller.publish_node_previews(), 1);
+        for _ in 0..100 {
+            assert_eq!(controller.publish_node_previews(), 0);
+        }
+        let node = controller.graph_nodes.row_data(0).unwrap();
+        assert!(node.selected && node.has_preview);
+        assert_eq!(node.preview, image);
+        assert_eq!(node.resolution, "2×1");
+        controller.node_previews.clear();
+        controller.node_errors.insert(id, "GPU failure".into());
+        assert_eq!(controller.publish_node_previews(), 1);
+        assert_eq!(controller.publish_node_previews(), 0);
+        let node = controller.graph_nodes.row_data(0).unwrap();
+        assert_eq!(node.status, "error");
+        assert!(!node.has_preview);
+        assert!(node.resolution.is_empty());
+        assert!(controller.graph_nodes.row_data(1).unwrap().status.is_empty());
+    }
+
+    #[test]
+    fn gpu_preview_identity_uses_texture_handle_instead_of_slint_image_equality() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let descriptor = wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 2, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+        let texture = device.create_texture(&descriptor);
+        let first = slint::Image::try_from(texture.clone()).unwrap();
+        let same = slint::Image::try_from(texture).unwrap();
+        let replacement = slint::Image::try_from(device.create_texture(&descriptor)).unwrap();
+        assert!(super::same_preview_image(&first, &same));
+        assert!(!super::same_preview_image(&first, &replacement));
+        assert!(super::same_preview_image(&Default::default(), &Default::default()));
+        let controller = controller_for_uniforms(uniform_project(&[]));
+        controller.graph_nodes.push(crate::GraphNode { node_id: "gpu".into(), preview: first,
+            has_preview: true, resolution: "2×1".into(), ..Default::default() });
+        let mut controller = controller;
+        controller.node_previews.insert("gpu".into(), same);
+        assert_eq!(controller.publish_node_previews(), 0);
+        controller.node_previews.insert("gpu".into(), replacement);
+        assert_eq!(controller.publish_node_previews(), 1);
+        assert_eq!(controller.publish_node_previews(), 0);
+    }
+
+    #[test]
+    fn default_project_is_empty_without_history_and_stress_requires_an_option() {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let project = super::initial_project(&sdk, None).unwrap();
+        assert_eq!(project.name(), "Untitled");
+        assert!(project.graph().nodes().is_empty());
+        assert!(project.graph().edges().is_empty());
+        assert_eq!(project.graph_revision(), sdk.create_project("Untitled").graph_revision());
+        assert_eq!(super::initial_project(&sdk, Some(3)).unwrap().graph().nodes().len(), 3);
     }
 }

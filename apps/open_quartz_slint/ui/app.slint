@@ -22,7 +22,7 @@ export component AppWindow inherits Window {
     in property <string> runtime-status;
     in property <[FactoryGroup]> factory-groups;
     in property <int> renderer-factory-index: -1;
-    in property <string> playback-state: "playing";
+    in property <string> playback-state: "stopped";
     callback project-action(string);
     callback rename-project(string);
     private property <length> sidebar-width: 320px;
@@ -118,6 +118,10 @@ export component AppWindow inherits Window {
     callback graph-redo();
     callback reset-graph-view();
     reset-graph-view => { graph-view.reset-view(); }
+    callback graph-begin-projection();
+    callback graph-end-projection();
+    graph-begin-projection => { graph-view.begin-projection(); }
+    graph-end-projection => { graph-view.end-projection(); }
     in property <bool> can-copy;
     in property <bool> can-paste;
     in property <int> graph-selection-count;

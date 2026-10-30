@@ -146,14 +146,19 @@ export component GraphView inherits Rectangle {
     private property <int> drag-node-index: -1;
     private property <length> drag-offset-x: 0px;
     private property <length> drag-offset-y: 0px;
+    private property <length> view-offset-x: 0px;
+    private property <length> view-offset-y: 0px;
+    private property <length> saved-world-x;
+    private property <length> saved-world-y;
+    private property <bool> preserve-view;
 
     private property <float> manual-zoom: 1;
     private property <bool> fitting: false;
     private property <float> zoom: root.fitting && root.nodes.length > 0
         ? min(1, max(0.000001, (scroll.visible-width / 1px - 16) / root.content-width), max(0.000001, (scroll.visible-height / 1px - 16) / root.content-height))
         : root.manual-zoom;
-    private property <length> canvas-offset-x: max(0px, (canvas.width - root.content-width * root.zoom * 1px) / 2);
-    private property <length> canvas-offset-y: max(0px, (canvas.height - root.content-height * root.zoom * 1px) / 2);
+    private property <length> canvas-offset-x: max(0px, (canvas.width - root.content-width * root.zoom * 1px) / 2) + (root.fitting ? 0px : root.view-offset-x);
+    private property <length> canvas-offset-y: max(0px, (canvas.height - root.content-height * root.zoom * 1px) / 2) + (root.fitting ? 0px : root.view-offset-y);
     private property <length> minimap-width: min(176px, max(120px, scroll.visible-width * 0.3));
     private property <length> minimap-height: min(120px, max(84px, scroll.visible-height * 0.28));
     private property <length> minimap-padding: 7px;
@@ -218,9 +223,27 @@ export component GraphView inherits Rectangle {
         scroll.content-y = clamp(scroll.visible-height / 2 - graph-y * root.zoom - root.canvas-offset-y, min(0px, scroll.visible-height - scroll.content-height), 0px);
     }
 
+    // Tight bounds change when the only node (or a boundary node) moves. Keep
+    // the world-to-screen translation stable instead of centering those bounds.
+    public function begin-projection() {
+        root.preserve-view = !root.fitting && root.nodes.length > 0;
+        root.saved-world-x = scroll.content-x + root.canvas-offset-x + root.origin-x * root.zoom * 1px;
+        root.saved-world-y = scroll.content-y + root.canvas-offset-y + root.origin-y * root.zoom * 1px;
+    }
+
+    public function end-projection() {
+        if root.preserve-view && root.nodes.length > 0 {
+            root.view-offset-x += root.saved-world-x - (scroll.content-x + root.canvas-offset-x + root.origin-x * root.zoom * 1px);
+            root.view-offset-y += root.saved-world-y - (scroll.content-y + root.canvas-offset-y + root.origin-y * root.zoom * 1px);
+        }
+        root.preserve-view = false;
+    }
+
     public function reset-view() {
         root.fitting = false;
         root.manual-zoom = 1;
+        root.view-offset-x = 0px;
+        root.view-offset-y = 0px;
         scroll.content-x = 0px;
         scroll.content-y = 0px;
     }
@@ -277,18 +300,24 @@ export component GraphView inherits Rectangle {
             private property <length> grid-spacing: 20px * root.zoom * max(1, ceil(0.5 / root.zoom));
             private property <length> grid-x: scroll.content-x + root.canvas-offset-x - floor((scroll.content-x + root.canvas-offset-x) / self.grid-spacing) * self.grid-spacing;
             private property <length> grid-y: scroll.content-y + root.canvas-offset-y - floor((scroll.content-y + root.canvas-offset-y) / self.grid-spacing) * self.grid-spacing;
-            // Draw only visible grid marks, even when the graph is very large.
-            for column in ceil(viewport.width / viewport.grid-spacing) + 1: Rectangle {
-                x: column * viewport.grid-spacing + viewport.grid-x;
-                width: 3px; height: viewport.height;
-                background: transparent;
-                for row in ceil(viewport.height / viewport.grid-spacing) + 1: Rectangle {
-                    y: row * viewport.grid-spacing + viewport.grid-y;
-                    width: 3px; height: 3px;
-                    background: transparent;
-                    Rectangle { x: 1px; width: 1px; height: 3px; background: #c0c0c0; }
-                    Rectangle { y: 1px; width: 3px; height: 1px; background: #c0c0c0; }
-                }
+            // One repeated image keeps node motion independent of the number of
+            // visible grid marks. Its phase still follows world-space pan/zoom.
+            Image {
+                private property <float> grid-scale: viewport.grid-spacing / 20px;
+                x: viewport.grid-x - viewport.grid-spacing;
+                y: viewport.grid-y - viewport.grid-spacing;
+                width: viewport.width / self.grid-scale + 20px;
+                height: viewport.height / self.grid-scale + 20px;
+                transform-origin: { x: 0px, y: 0px };
+                transform-scale-x: self.grid-scale;
+                transform-scale-y: self.grid-scale;
+                source: @image-url("../assets/graph_grid.svg");
+                image-fit: preserve;
+                horizontal-alignment: left;
+                vertical-alignment: top;
+                horizontal-tiling: repeat;
+                vertical-tiling: repeat;
+                accessible-role: none;
             }
         scroll := ScrollView {
             width: parent.width;
@@ -397,6 +426,8 @@ export component GraphView inherits Rectangle {
                             return;
                         }
                         if (event.kind == PointerEventKind.down) {
+                            root.manual-zoom = root.zoom;
+                            root.fitting = false;
                             graph-focus.focus();
                             root.drag-node-index = index;
                             root.drag-offset-x = 0px;
@@ -633,7 +664,7 @@ export component GraphView inherits Rectangle {
                 padding: 0px; spacing: 0px;
                 GraphToolButton { text: "+"; label: "Zoom in"; enabled: root.zoom < 2 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom * 1.25); graph-focus.focus(); } }
                 GraphToolButton { text: "−"; label: "Zoom out"; enabled: root.zoom > 0.01 && root.drag-node-index < 0; clicked => { root.set-zoom(root.zoom / 1.25); graph-focus.focus(); } }
-                GraphToolButton { fit-icon: true; label: "Fit graph in view"; active: root.fitting; enabled: root.nodes.length > 0 && root.drag-node-index < 0; clicked => { root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; graph-focus.focus(); } }
+                GraphToolButton { fit-icon: true; label: "Fit graph in view"; active: root.fitting; enabled: root.nodes.length > 0 && root.drag-node-index < 0; clicked => { root.view-offset-x = 0px; root.view-offset-y = 0px; root.fitting = true; scroll.content-x = 0px; scroll.content-y = 0px; graph-focus.focus(); } }
                 GraphToolButton {
                     label: "Reset zoom to 100 percent";
                     enabled: root.drag-node-index < 0;

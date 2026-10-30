@@ -58,11 +58,12 @@ cargo run --manifest-path apps/open_quartz_slint/Cargo.toml -- --graph-stress
 cargo run --manifest-path apps/open_quartz_slint/Cargo.toml -- --graph-stress 300
 ```
 
-The first launch without `--project` creates a small gradient shader → renderer
-project through the Rust SDK node factory and graph commands. It is a real
-project and can be saved. A supplied project is read and validated asynchronously;
+Launching without `--project` opens an empty Untitled project and a blank canvas,
+with playback stopped. A supplied project is read and validated asynchronously;
 a failed open leaves the current project intact and reports the SDK or file error.
-An empty project opens with an empty graph and an explicit idle renderer status.
+Opening or creating a project leaves playback stopped. Adding, connecting or
+editing nodes preserves the current transport state; press **Play** explicitly
+to start rendering.
 
 `--project` accepts relative, absolute, and dash-prefixed paths. `--graph-stress`
 creates a deterministic spatial fixture with 100 nodes by default and accepts an
@@ -105,6 +106,10 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   below the three-pixel drag threshold select instead, and unchanged positions do
   not create a graph revision. Graph interaction is disabled while asynchronous
   project I/O is busy.
+- Manual canvas projection preserves the world-to-screen translation when graph
+  bounds change. A lone node stays at its drop position instead of recentering;
+  explicit **Fit View** still centers the graph. Pointer smoke covers positive
+  and negative drags, Undo, zoomed dragging and dragging after Fit.
 - Click an **output**, then an **input** to connect. The SDK replaces any existing
   edge on that input atomically. Click a **connected input** or a link's midpoint
   marker to select its edge, then use **Delete edge** or **Reconnect**. Reconnect
@@ -503,6 +508,20 @@ the manually supplied queue in its thread-local context, while wgpu-core's debug
 recursive-lock tracer is a separate TLS value; macOS may destroy the tracer first and
 otherwise abort when Slint later drops the queue. Release builds never enable that tracer.
 The override does not disable assertions in OpenQuartz, Slint, or application code.
+
+Development builds optimize dependencies (`profile.dev.package."*".opt-level = 2`)
+while retaining application debug information and assertions. A native pointer
+drag probe on Apple M4 Pro/Metal measured about 33ms of UI-thread frame encoding
+with unoptimized dependencies versus 4–5ms after optimization, with typical
+frame intervals around 16.6ms. These timings exclude snapshot/readback work and
+do not measure GPU execution time or establish results for every graph/device.
+The grid is one repeated image rather than thousands of rectangle items. Shared
+GPU previews reuse texture identities and notify node rows only when the image,
+resolution, availability or error state changes; in-place pixel updates still
+request redraw. Slint 1.18's generic `Image` equality does not recognize identical
+WGPU/empty images, so the cache compares GPU handles explicitly. A real Time-driven
+shader probe verified that pixels keep changing with the same cached texture and
+one Undo reverses a full drag. All 68 application tests and the dev build pass.
 
 Windows DX12 remains covered by the earlier Phase 1 spike, not by a completed
 Phase 5/7 package acceptance. CI now builds/tests the Slint desktop on Windows,

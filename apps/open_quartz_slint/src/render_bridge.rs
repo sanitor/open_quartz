@@ -47,6 +47,7 @@ pub(crate) enum Command {
         graph: Graph,
         reset_resources: bool,
         images: BTreeMap<String, ImageUpload>,
+        play: bool,
     },
     LoadOnnx {
         generation: u64,
@@ -146,6 +147,7 @@ impl RenderBridge {
         &mut self,
         graph: Graph,
         images: BTreeMap<String, ImageUpload>,
+        play: bool,
     ) -> Result<(), String> {
         self.generation = self.generation.wrapping_add(1);
         self.accepting_frames = true;
@@ -155,6 +157,7 @@ impl RenderBridge {
                 graph,
                 reset_resources: std::mem::take(&mut self.reset_resources),
                 images,
+                play,
             })
             .map_err(|_| "Native render thread is no longer available".to_owned())
     }
@@ -306,8 +309,9 @@ fn render_worker(
     let mut image_keys = BTreeMap::<String, u64>::new();
     let mut video_configs = BTreeMap::<String, NativeVideoConfig>::new();
     let mut current_graph: Option<String> = None;
-    let mut stopped = false;
-    let mut playback_requested = true;
+    let mut stopped = true;
+    let mut ready_to_start = false;
+    let mut playback_requested = false;
     let mut preview_renderer: Option<String> = None;
     let mut preview_nodes = Vec::<String>::new();
     let mut preview_tick = Instant::now();
@@ -339,13 +343,15 @@ fn render_worker(
                 graph,
                 reset_resources,
                 images,
+                play,
             }) => {
                 generation = next_generation;
                 first_frame = true;
                 running = false;
                 render_failed = false;
                 stopped = false;
-                playback_requested = true;
+                ready_to_start = !play;
+                playback_requested = play;
                 preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz_sdk::NodeType::Shader | open_quartz_sdk::NodeType::Constant | open_quartz_sdk::NodeType::Renderer)
                         || node.data.outputs.iter().any(|port| port.data_type == open_quartz_sdk::DataType::Sampler2d)
@@ -402,7 +408,7 @@ fn render_worker(
                     }
                     // Frame events coalesce in the engine; clear graph/state history only on replacement.
                     let _ = host.drain_events();
-                    if graph.nodes().is_empty() {
+                    if graph.nodes().is_empty() || !playback_requested {
                         return Ok(false);
                     }
                     host.start_playback()?;
@@ -413,8 +419,10 @@ fn render_worker(
                         running = should_run;
                         let status = if running {
                             format!("{description} · NativeHost graph ready; waiting for renderer output")
-                        } else {
+                        } else if graph.nodes().is_empty() {
                             format!("{description} · NativeHost ready; empty graph has no renderer output")
+                        } else {
+                            format!("{description} · NativeHost graph ready; press Play to render")
                         };
                         publish_status(&updates, generation, status, true);
                     }
@@ -524,6 +532,7 @@ fn render_worker(
                         }
                         host.start_playback()
                     })(),
+                    _ if ready_to_start => host.start_playback(),
                     _ => host.resume(),
                 };
                 match result {
@@ -535,6 +544,7 @@ fn render_worker(
                         }
                         if action == "play" {
                             stopped = false;
+                            ready_to_start = false;
                         }
                         first_frame = true;
                         publish_status(&updates, generation, format!("Playback: {action}"), false);
@@ -727,5 +737,44 @@ mod tests {
         assert_eq!(update.node_error.as_ref(), Some(&error));
         assert!(update.clear_image && update.texture.is_none());
         assert!(update.previews.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn preparing_a_graph_waits_for_explicit_play_and_preserves_first_frame_work() {
+        use open_quartz_sdk::{Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey};
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sdk.create_project("Explicit playback");
+        let (shader, _) = project.create_graph_node(NodeFactoryRequest::Shader {
+            position: None,
+            code: "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }".into(),
+            label: "Solid".into(), template_name: None, shader_template_id: None,
+        }, project.graph_revision()).unwrap();
+        let (renderer, _) = project.create_graph_node(NodeFactoryRequest::Renderer { position: None }, project.graph_revision()).unwrap();
+        project.apply_graph_command(GraphCommand::Connect {
+            source: PortKey::new(NodeId::new(&shader.id), PortId::new(&shader.data.outputs[0].id)),
+            target: PortKey::new(NodeId::new(&renderer.id), PortId::new(&renderer.data.inputs[0].id)),
+        }, project.graph_revision()).unwrap();
+        let (mut bridge, _configuration) = RenderBridge::initialize().unwrap();
+        let wait_for = |bridge: &RenderBridge, predicate: &dyn Fn(&RenderUpdate) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(update) = bridge.take_update() {
+                    assert!(update.node_error.is_none(), "{:?}", update.node_error);
+                    if predicate(&update) { return update; }
+                }
+                assert!(Instant::now() < deadline, "render worker did not reach expected state");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        bridge.set_graph(project.graph_snapshot(), BTreeMap::new(), false).unwrap();
+        let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("press Play")));
+        assert!(update.texture.is_none());
+        bridge.set_playback("play").unwrap();
+        wait_for(&bridge, &|update| update.texture.is_some());
+        bridge.set_playback("stop").unwrap();
+        bridge.set_graph(project.graph_snapshot(), BTreeMap::new(), false).unwrap();
+        let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("press Play")));
+        assert!(update.texture.is_none());
+        assert!(update.clear_image);
     }
 }

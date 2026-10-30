@@ -33,6 +33,12 @@ open_quartz_native_host = { path = "../../crates/open_quartz_native_host", featu
 [build-dependencies]
 slint-build = "=1.18.1"
 
+# Unoptimized Slint/wgpu dependencies spend tens of milliseconds encoding even
+# a two-node frame on the UI thread. Keep application debugging/incremental builds
+# while optimizing the rendering libraries used by `npm run dev`.
+[profile.dev.package."*"]
+opt-level = 2
+
 # Slint owns the manually supplied wgpu queue in a thread-local context. wgpu-core's
 # debug-only recursive-lock tracer is another TLS value and can be destroyed first on
 # macOS, causing Queue::drop to abort during normal process shutdown. Production builds

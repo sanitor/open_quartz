@@ -108,6 +108,7 @@ The following editor details describe the retained React interface; they are not
 
 ## Default Native Desktop (Slint)
 - Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
+- Launches into an empty Untitled canvas with playback stopped. Opening/New also stop playback; editing nodes does not implicitly press Play. Manual node drags preserve the drop position even for a single-node graph; Fit View remains explicit.
 - Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build, and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux, and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
 - Slint and `NativeHost` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
 - The native Shader editor is a multiline `TextInput` with byte-safe line numbers, goto-line, UTF-8 find/next selection, live match counts, and explicit Apply. Native caret, selection, IME, clipboard, Unicode, and preset read-only behavior remain on Slint's input path. Syntax highlighting, completion, and inline lint are unavailable in Slint 1.18.
