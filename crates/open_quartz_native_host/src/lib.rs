@@ -1046,6 +1046,61 @@ mod tests {
     }
 
     #[test]
+    fn first_play_after_stopped_shader_edit_and_connection_renders_blue() {
+        let (mut host, _) = pollster::block_on(NativeHost::new()).unwrap();
+        let mut graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "shader", "type": "shader", "position": {"x": 0, "y": 0},
+                    "data": {
+                        "type": "shader", "label": "Custom shader",
+                        "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }",
+                        "inputs": [],
+                        "outputs": [{"id": "out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                        "uniforms": {}, "autoSize": false, "width": 4, "height": 4
+                    }
+                },
+                {
+                    "id": "renderer", "type": "renderer", "position": {"x": 1, "y": 0},
+                    "data": {
+                        "type": "renderer", "label": "Renderer", "shaderCode": "",
+                        "inputs": [{"id": "in", "label": "image", "dataType": "sampler2D", "direction": "input"}],
+                        "outputs": [], "uniforms": {}
+                    }
+                }
+            ],
+            "edges": []
+        });
+        host.set_graph(&graph.to_string()).unwrap();
+        host.stop().unwrap();
+        graph["nodes"][0]["data"]["shaderCode"] = serde_json::json!(
+            "@fragment fn main() -> @location(0) vec4f { return vec4f(0.0, 0.0, 1.0, 1.0); }"
+        );
+        host.set_graph(&graph.to_string()).unwrap();
+        host.stop().unwrap();
+        graph["edges"] = serde_json::json!([
+            {"id": "edge", "source": "shader", "sourceHandle": "out", "target": "renderer", "targetHandle": "in"}
+        ]);
+        host.set_graph(&graph.to_string()).unwrap();
+
+        host.start_playback().unwrap();
+        let frame = host.render_next().unwrap();
+        assert_eq!(frame.frame, 1);
+        assert_eq!(frame.output_node_id, "renderer");
+        let payload = host.read_output("renderer").unwrap();
+        assert_eq!(&payload[..4], &4_u32.to_le_bytes());
+        assert_eq!(&payload[4..8], &4_u32.to_le_bytes());
+        assert_eq!(payload.len(), 8 + 4 * 4 * 4);
+        assert!(payload[8..].chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
+        assert_eq!(host.read_output("shader").unwrap(), payload);
+
+        // Static frames may emit no more draws but must retain the rendered pixels.
+        host.render_next().unwrap();
+        assert_eq!(host.read_output("renderer").unwrap(), payload);
+        host.stop().unwrap();
+    }
+
+    #[test]
     fn frame_contract_keeps_camel_case_names() {
         let value = serde_json::to_value(NativeFrameRendered {
             frame: 3,

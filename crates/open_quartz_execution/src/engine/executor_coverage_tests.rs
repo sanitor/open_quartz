@@ -99,7 +99,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
     for (name, expected) in [
         ("iTime", vec![1.5]),
         ("iTimeDelta", vec![0.25]),
-        ("iFrame", vec![7.0]),
+        ("iFrame", vec![6.0]),
         ("iDate", frame.date.to_vec()),
         ("iMouse", frame.mouse.to_vec()),
         ("iResolution", frame.resolution.to_vec()),
@@ -107,6 +107,13 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
     ] {
         assert_eq!(builtin_value(name, &bare_plan, &frame), expected);
     }
+    let mut first_frame = frame.clone();
+    first_frame.frame = 1;
+    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![0.0]);
+    first_frame.frame = 2;
+    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![1.0]);
+    first_frame.frame = 0;
+    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![0.0]);
     let target_plan = NodeExecutionPlan {
         target: Some(TargetSpec {
             width: 20,

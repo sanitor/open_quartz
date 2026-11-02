@@ -298,7 +298,7 @@ fn extract_comments(code: &str) -> (Option<String>, HashMap<String, String>) {
     (description, descriptions)
 }
 
-fn strip_comments(code: &str) -> String {
+pub(crate) fn strip_comments(code: &str) -> String {
     let line_re = Regex::new(r"//[^\n]*").expect("valid line comment regex");
     let block_re = Regex::new(r"/\*[\s\S]*?\*/").expect("valid block comment regex");
     block_re

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct FrameInputs {
     pub time: f64,
     pub delta: f64,
+    /// One-based rendered frame count; shader `iFrame` is this value minus one.
     pub frame: u64,
     #[serde(default)]
     pub date: [f32; 4],

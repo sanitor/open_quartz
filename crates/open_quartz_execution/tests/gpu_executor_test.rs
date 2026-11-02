@@ -334,3 +334,71 @@ fn uploads_reuses_and_releases_image_texture_resources() {
         assert!(executor.output_texture("image").is_none());
     });
 }
+
+#[test]
+fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
+    pollster::block_on(async {
+        let catalog: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shaders/catalog.json"
+        )).unwrap();
+        let shader = catalog["groups"].as_array().unwrap().iter()
+            .flat_map(|group| group["items"].as_array().unwrap())
+            .find(|item| item["label"] == "Gray-Scott Reaction-Diffusion")
+            .unwrap()["code"].as_str().unwrap();
+        let graph: open_quartz_schema::Graph = serde_json::from_value(json!({
+            "nodes": [
+                {"id":"feedback","type":"shader","position":{"x":0,"y":0},"data":{
+                    "type":"shader","label":"Gray-Scott Reaction-Diffusion","shaderCode":shader,
+                    "inputs":[
+                        {"id":"da","label":"dA","dataType":"float","direction":"input"},
+                        {"id":"db","label":"dB","dataType":"float","direction":"input"},
+                        {"id":"feed","label":"feedRate","dataType":"float","direction":"input"},
+                        {"id":"kill","label":"killRate","dataType":"float","direction":"input"},
+                        {"id":"step","label":"timestep","dataType":"float","direction":"input"}
+                    ],
+                    "outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],
+                    "uniforms":{"dA":0.21,"dB":0.105,"feedRate":0.055,"killRate":0.062,"timestep":1.0},
+                    "autoSize":false,"width":32,"height":32
+                }},
+                {"id":"renderer","type":"renderer","position":{"x":1,"y":0},"data":{
+                    "type":"renderer","label":"Renderer","shaderCode":"",
+                    "inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],
+                    "outputs":[],"uniforms":{}
+                }}
+            ],
+            "edges":[{"id":"e","source":"feedback","sourceHandle":"out","target":"renderer","targetHandle":"in"}]
+        })).unwrap();
+        let mut runtime = open_quartz_execution::host::PlayerHost::new_native(
+            open_quartz_execution::runtime::RuntimeCapabilities { data_paths: vec![] },
+        );
+        runtime.set_graph(&graph).unwrap();
+        runtime.play(0).unwrap();
+        let mut executor = GpuExecutor::new(request_backend().await);
+        let mut frames = Vec::new();
+        for number in 1..=3 {
+            let clock = runtime.advance(&open_quartz_execution::runtime::RuntimeFrameInput {
+                now_ns: (number - 1) * 16_666_667,
+                date: [0.0; 4], mouse: [0.0; 4], resolution: [32.0, 32.0, 1.0],
+            }).unwrap();
+            assert_eq!(clock.frame, number);
+            let commands = runtime.drain_commands();
+            let command = commands.iter().find(|command| command.node_id == "feedback").unwrap();
+            assert_eq!(command.uniforms["iFrame"], [(number - 1) as f32]);
+            executor.execute_commands(runtime.execution_plan().unwrap(), &commands).unwrap();
+            frames.push(executor.read_output_rgba("renderer").await.unwrap());
+        }
+        let pixel = |frame: &[u8], x: usize, y: usize| -> [u8; 4] {
+            frame[(y * 32 + x) * 4..(y * 32 + x + 1) * 4].try_into().unwrap()
+        };
+        let outside = pixel(&frames[0], 0, 0);
+        let seed = pixel(&frames[0], 14, 14);
+        assert_eq!(outside, [255, 0, 0, 255]);
+        assert!((127..=128).contains(&seed[0]) && (63..=64).contains(&seed[1]));
+        assert_eq!(&seed[2..], &[0, 255]);
+        let evolved = pixel(&frames[1], 14, 14);
+        assert!(evolved[0] > seed[0] + 20 && evolved[1] + 5 < seed[1]);
+        assert_ne!(frames[1], frames[0]);
+        assert_ne!(frames[2], frames[1]);
+        assert!(frames.iter().all(|frame| frame.chunks_exact(4).all(|p| p[2] == 0 && p[3] == 255)));
+    });
+}

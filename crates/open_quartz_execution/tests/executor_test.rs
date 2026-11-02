@@ -24,6 +24,24 @@ fn frame(frame: u64) -> FrameInputs {
     }
 }
 
+#[test]
+fn implicit_builtins_use_identifier_tokens_not_comments_or_substrings() {
+    let nodes = parse_nodes(json!([{
+        "id":"shader", "type":"shader", "position":{"x":0,"y":0},
+        "data":{"type":"shader","label":"Builtins",
+            "shaderCode":"// iTime iDate\n/* iMouse iResolution */\n@fragment fn main() -> @location(0) vec4f { let iFrameExtra = 0.0; return vec4f(iFrame, iTimeDelta, iFrameExtra, 1.0); }",
+            "inputs":[],"outputs":[],"uniforms":{}}
+    }]));
+    let mut engine = ExecutionEngine::prepare(nodes, vec![]);
+    let plan = &engine.plan().nodes[0];
+    assert!(plan.validation_errors.is_empty(), "{:?}", plan.validation_errors);
+    assert_eq!(plan.builtin_ports, ["iTimeDelta", "iFrame"]);
+    let work = engine.run_frame(&frame(2));
+    assert_eq!(work.frame, 2);
+    assert_eq!(work.commands[0].uniforms["iFrame"], [1.0]);
+    assert_eq!(work.commands[0].uniforms["iTimeDelta"], [1.0 / 60.0]);
+}
+
 fn math_result(operation: &str, values: &[f64]) -> f64 {
     let labels = ["a", "b", "c"];
     let input_ports = labels

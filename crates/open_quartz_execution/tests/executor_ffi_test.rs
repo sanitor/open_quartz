@@ -150,3 +150,67 @@ fn lifecycle_and_resource_generations_track_semantic_graph_changes() {
     engine.stop().unwrap();
     assert_eq!(engine.engine_state(), "stopped");
 }
+
+#[test]
+fn stopped_graph_edits_preserve_unexecuted_shader_work() {
+    let mut graph = json!({
+        "nodes": [
+            {
+                "id": "shader", "type": "shader", "position": {"x": 0, "y": 0},
+                "data": {
+                    "type": "shader", "label": "Custom shader",
+                    "shaderCode": "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }",
+                    "inputs": [],
+                    "outputs": [{"id": "out", "label": "output", "dataType": "sampler2D", "direction": "output"}],
+                    "uniforms": {}
+                }
+            },
+            {
+                "id": "renderer", "type": "renderer", "position": {"x": 1, "y": 0},
+                "data": {
+                    "type": "renderer", "label": "Renderer", "shaderCode": "",
+                    "inputs": [{"id": "in", "label": "image", "dataType": "sampler2D", "direction": "input"}],
+                    "outputs": [], "uniforms": {}
+                }
+            }
+        ],
+        "edges": []
+    });
+    let mut engine = Engine::new();
+    engine.set_graph_json(&graph.to_string()).unwrap();
+    engine.stop().unwrap();
+    graph["nodes"][0]["data"]["shaderCode"] = json!(
+        "@fragment fn main() -> @location(0) vec4f { return vec4f(0.0, 0.0, 1.0, 1.0); }"
+    );
+    engine.set_graph_json(&graph.to_string()).unwrap();
+    engine.stop().unwrap();
+    graph["edges"] = json!([
+        {"id": "edge", "source": "shader", "sourceHandle": "out", "target": "renderer", "targetHandle": "in"}
+    ]);
+    engine.set_graph_json(&graph.to_string()).unwrap();
+    engine
+        .run_frame(0.0, 0.0, 1, &[0.0; 4], &[0.0; 4], &[4.0, 4.0, 1.0])
+        .unwrap();
+    let commands = engine.drain_commands();
+    assert_eq!(
+        commands.iter().map(|command| command.node_id.as_str()).collect::<Vec<_>>(),
+        ["shader", "renderer"]
+    );
+
+    // A consumed static result stays clean across an identical replacement.
+    engine.stop().unwrap();
+    engine.set_graph_json(&graph.to_string()).unwrap();
+    engine
+        .run_frame(0.0, 0.0, 1, &[0.0; 4], &[0.0; 4], &[4.0, 4.0, 1.0])
+        .unwrap();
+    assert!(engine.drain_commands().is_empty());
+
+    // Removed pending nodes must not be restored by dirty preservation.
+    engine.mark_dirty("shader").unwrap();
+    engine.stop().unwrap();
+    engine.set_graph_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+    engine
+        .run_frame(0.0, 0.0, 1, &[0.0; 4], &[0.0; 4], &[4.0, 4.0, 1.0])
+        .unwrap();
+    assert!(engine.drain_commands().is_empty());
+}

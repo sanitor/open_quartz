@@ -88,13 +88,25 @@ pub fn build_execution_plan_with_options(
             .expect("topological sort only returns input node IDs");
         let upstream = upstream_for(node, edges);
         let connected = upstream.keys().collect::<HashSet<_>>();
-        let builtin_ports = node
-            .data
-            .inputs
-            .iter()
-            .filter(|port| {
-                !connected.contains(&port.label) && BUILTIN_UNIFORMS.contains(&port.label.as_str())
-            })
+        let mut input_ports = node.data.inputs.iter().map(|port| CompilePort {
+            label: port.label.clone(),
+            data_type: data_type_name(port.data_type).to_owned(),
+        }).collect::<Vec<_>>();
+        // Builtins are deliberately omitted from parsed user ports, but shader code
+        // can refer to them without declaring a binding (as in the catalog).
+        let shader_code = crate::wgsl::parser::strip_comments(&node.data.shader_code);
+        for (name, data_type) in [
+            ("iTime", "float"), ("iTimeDelta", "float"), ("iFrame", "float"),
+            ("iDate", "vec4"), ("iMouse", "vec4"), ("iResolution", "vec3"),
+        ] {
+            if !input_ports.iter().any(|port| port.label == name)
+                && shader_code.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|word| word == name)
+            {
+                input_ports.push(CompilePort { label: name.to_owned(), data_type: data_type.to_owned() });
+            }
+        }
+        let builtin_ports = input_ports.iter()
+            .filter(|port| !connected.contains(&port.label) && BUILTIN_UNIFORMS.contains(&port.label.as_str()))
             .map(|port| port.label.clone())
             .collect::<Vec<_>>();
         let target = target_for(node, default_width, default_height);
@@ -115,15 +127,7 @@ pub fn build_execution_plan_with_options(
                 };
                 let request = CompileRequest {
                     user_code: node.data.shader_code.clone(),
-                    input_ports: node
-                        .data
-                        .inputs
-                        .iter()
-                        .map(|port| CompilePort {
-                            label: port.label.clone(),
-                            data_type: data_type_name(port.data_type).to_owned(),
-                        })
-                        .collect(),
+                    input_ports,
                     upstream_map: upstream.clone(),
                     video_inputs,
                     target_format: "rgba8unorm".to_owned(),

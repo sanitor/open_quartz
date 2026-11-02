@@ -141,8 +141,20 @@ export async function validateWgslEdit(
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s+\w+\s*:\s*sampler\s*;/g, '')
     .replace(/@group\s*\(\s*\d+\s*\)\s*@binding\s*\(\s*\d+\s*\)\s*var\s*<\s*uniform\s*>\s*\w+\s*:\s*[\w<>]+\s*;/g, '');
 
-  // Build the lightweight validation preamble from parsed ports.
-  for (const port of inputPorts) {
+  // Builtins do not appear in parsed ports, but share the same binding path.
+  const identifiers = new Set(userCode.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '').match(/[A-Za-z_]\w*/g) ?? []);
+  const ports = [...inputPorts];
+  for (const [label, dataType] of [
+    ['iTime', 'float'], ['iTimeDelta', 'float'], ['iFrame', 'float'],
+    ['iDate', 'vec4'], ['iMouse', 'vec4'], ['iResolution', 'vec3'],
+  ]) {
+    if (identifiers.has(label) && !ports.some((port) => port.label === label)) {
+      ports.push({ label, dataType });
+    }
+  }
+
+  // Build the lightweight validation preamble from parsed and builtin ports.
+  for (const port of ports) {
     if (port.dataType === 'sampler2D') {
       preamble += `@group(0) @binding(${bindingIndex}) var ${port.label}: texture_2d<f32>;\n`;
       bindingIndex++;

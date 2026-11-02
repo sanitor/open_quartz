@@ -79,8 +79,12 @@ impl ExecutionEngine {
     ) {
         let mut next = Self::prepare_with_options(nodes, edges, self.external_video_textures);
         next.dirty.take_in_order(&next.plan.sorted_ids);
-        for node_id in changed_nodes {
-            next.dirty.mark_dirty(node_id);
+        // Unchanged nodes may still have work queued before the graph replacement.
+        // Propagate that work through the new graph, omitting removed nodes.
+        for node_id in &next.plan.sorted_ids {
+            if changed_nodes.contains(node_id) || self.dirty.contains(node_id) {
+                next.dirty.mark_dirty(node_id);
+            }
         }
 
         for node in &next.plan.nodes {
@@ -328,7 +332,8 @@ fn builtin_value(name: &str, plan: &NodeExecutionPlan, inputs: &FrameInputs) -> 
     match name {
         "iTime" => vec![inputs.time as f32],
         "iTimeDelta" => vec![inputs.delta as f32],
-        "iFrame" => vec![inputs.frame as f32],
+        // Runtime frames count rendered frames from one; Shadertoy iFrame starts at zero.
+        "iFrame" => vec![inputs.frame.saturating_sub(1) as f32],
         "iDate" => inputs.date.to_vec(),
         "iMouse" => inputs.mouse.to_vec(),
         "iResolution" => plan
