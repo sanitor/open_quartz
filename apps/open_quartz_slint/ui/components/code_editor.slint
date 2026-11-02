@@ -143,6 +143,7 @@ export component CodeEditor inherits Rectangle {
                     width: max(parent.visible-width, self.preferred-width);
                     height: max(parent.visible-height, self.preferred-height);
                     text <=> root.text;
+                    accessible-label: "Shader source";
                     enabled: root.enabled;
                     read-only: root.read-only;
                     single-line: false;

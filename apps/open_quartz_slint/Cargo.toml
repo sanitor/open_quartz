@@ -9,6 +9,9 @@ description = "Native Slint application shell for OpenQuartz"
 
 [workspace]
 
+[features]
+ui-automation = ["slint/mcp"]
+
 [dependencies]
 open_quartz_sdk = { path = "../../crates/open_quartz_sdk" }
 open_quartz_execution = { path = "../../crates/open_quartz_execution" }

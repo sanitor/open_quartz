@@ -145,7 +145,7 @@ fn is_recognized_option(argument: &std::ffi::OsStr) -> bool {
 
 fn print_usage() {
     println!("Usage: open_quartz_slint [--project <path> | --graph-stress [count]]");
-    println!("Without an option, opens an SDK-created gradient sample.");
+    println!("Without an option, opens an empty Untitled project with playback stopped.");
     println!(
         "--graph-stress creates a stress-test graph; count defaults to {DEFAULT_GRAPH_STRESS_COUNT} and is capped at {MAX_GRAPH_STRESS_COUNT}."
     );

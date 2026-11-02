@@ -8,6 +8,17 @@ export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, Inspe
 
 export component AppWindow inherits Window {
     title: root.project-name + " — OpenQuartz";
+    accessible-role: main;
+    accessible-label: root.project-name;
+    accessible-description: "Playback: " + root.playback-state
+        + "; Nodes: " + root.graph-nodes.length
+        + "; Connections: " + root.graph-edges.length
+        + "; Renderer image: " + (root.has-renderer-image ? "available" : "unavailable")
+        + "; Busy: " + (root.busy ? "true" : "false")
+        + "; Project path: " + root.project-path
+        + "; Inspector dirty: " + (root.inspector-dirty ? "true" : "false")
+        + "; IO status: " + root.io-status
+        + "; Runtime status: " + root.runtime-status;
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 800px;
@@ -303,9 +314,12 @@ export component AppWindow inherits Window {
                             Text { text: root.inspector-node-label; color: Theme.secondary; font-size: 10px; horizontal-stretch: 1; overflow: elide; }
                             Button { text: "Fullscreen"; accessible-label: "Fullscreen preview"; enabled: root.has-renderer-image; clicked => { root.preview-requested(true); } }
                         }
-                        if root.preview-expanded: Rectangle {
+                        if root.preview-expanded: renderer-preview := Rectangle {
                             horizontal-stretch: 1;
                             vertical-stretch: 1;
+                            accessible-role: image;
+                            accessible-label: "Renderer preview";
+                            accessible-description: root.has-renderer-image ? "Available" : "Unavailable";
                             Image { width: parent.width; height: parent.height; source: root.renderer-image; image-fit: contain; }
                             if !root.has-renderer-image: Text { width: parent.width; height: parent.height; text: "No renderer image"; font-size: 12px; color: #aeaeb2; horizontal-alignment: center; vertical-alignment: center; }
                             TouchArea { enabled: root.has-renderer-image; double-clicked => { root.preview-requested(true); } }
@@ -314,6 +328,7 @@ export component AppWindow inherits Window {
                 }
                 }
                 resize-area := TouchArea {
+                    x: 0px; y: 0px;
                     width: 4px; height: parent.height;
                     mouse-cursor: ew-resize;
                     pointer-event(event) => { if event.kind == PointerEventKind.down { root.sidebar-start-width = root.sidebar-width; } }

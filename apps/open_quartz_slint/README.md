@@ -348,6 +348,110 @@ UTF-8-safe line/find navigation, and platform caret/selection behavior. The macO
 large-text assessment and decision, including diagnostic/IME/platform limits, are
 recorded in [`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
 
+## UI automation
+
+Run `npm run test:desktop:ui` to build the optional `ui-automation` feature and
+drive the compiled application through Slint 1.18.1's embedded MCP server. It uses
+Node's built-in APIs; no Python testing license/token or external MCP client is
+required. The runner chooses a local port, launches its own application instances,
+and terminates them when finished. Normal `dev`/release builds omit this feature.
+
+The suite exercises empty/stopped startup, the real Shader/Renderer menus and
+ports, node dragging at manual zoom and after Fit, Undo/Redo, Inspector edits,
+explicit Play/Stop, and Save/relaunch with the same project. It asserts live UI
+state and node geometry and decodes screenshots to check blue pixels inside the
+Renderer preview. It requires a working GPU/window backend, including Vulkan
+with Mesa under Xvfb on Linux; `SLINT_BACKEND=headless` is not a substitute for
+the shared-wgpu rendering acceptance.
+Menus, toolbar buttons, Apply actions, ports, and node movement use simulated
+pointer input through the real Slint event loop. Node selection and editing
+use accessibility actions/values; this is not an OS keyboard/IME test.
+
+Local macOS/Apple M4 Pro acceptance passes all **17 UI checkpoints**, with
+**36,100/36,100** blue pixels in the Renderer preview ROI and both node thumbnails
+available. The 70 application tests and 226 execution/NativeHost test results pass.
+The suite exposed and now guards two production fixes: the sidebar resize strip
+previously intercepted centered Apply clicks, and repeated stopped graph edits
+discarded pending static Shader work before the first Play. Crash/timeout reports
+and targeted wrapper termination were also checked. Other CI platforms await
+their first run; local macOS success does not establish Linux/Windows acceptance.
+
+
+Each run writes a readable **`report.html`**, PNG screenshots, application logs,
+a saved project, and JSON reports under `test-results/slint-ui/<timestamp>/`.
+Open `report.html` for the complete Chinese case list, expected behavior,
+pass/fail/not-run results, durations, screenshot previews, and failure reasons.
+Search or filter by status; raw technical details remain collapsible. The terminal
+also prints each case as it runs and a final summary. Keep the report folder intact
+when downloading CI artifacts so relative screenshot/log links remain available.
+Failures retain UI-tree and screenshot diagnostics when the process remains responsive. Set
+`SLINT_UI_OUTPUT_DIR` to choose the output directory, or `SLINT_UI_TIMEOUT_MS`
+to change the default 180-second suite deadline (build time is separate).
+After an automation build, rerun without rebuilding using
+`node scripts/slint-ui-test.mjs apps/open_quartz_slint/target/debug/open_quartz_slint`.
+
+To convert an existing run without rerunning the application:
+`npm run report:desktop:ui -- test-results/slint-ui/<timestamp>`.
+The report distinguishes later cases that never ran from the failing case and an
+interrupted case without a final result. A startup failure leaves all 17 cases
+unexecuted and displays the application error. Report regressions can be checked
+with `node --test scripts/slint-ui-report.test.mjs`.
+
+### All catalog shaders with real image fixtures
+
+Run `npm run test:desktop:shaders` to exercise every entry in
+`src/shaders/catalog.json` in a native Slint window. The suite loads edge-free
+projects containing the original catalog source, explicit non-degenerate uniforms,
+and real 64×64 PNG image resources. It then clicks every sampler/Renderer port,
+starts playback, pauses the real GPU preview for pixel inspection, and stops.
+Single-input effects receive one PNG; blending and displacement receive two
+different PNGs. Generators have no sampler and do not receive artificial edges.
+
+Inputs are original, deterministic color/gradient/edge/geometric test charts in
+`tests/fixtures/shaders/`, not pure-color arrays or downloaded assets. Each case
+retains input images, an independent CPU reference image, the sampled Renderer
+image, native-window screenshots, parameters, and per-stage results in its HTML
+report. Spatial/color formulas account for linear preview scaling at physical
+pixel centers, with a maximum RGB error of 6/255. Noise's GPU sine/hash is
+platform-dependent: it checks grayscale, range, mean, variance, and neighboring
+pixel RMS gradients against the independent reference instead of equating random
+pixels. Wrong-frequency and spatially shuffled noise are rejected. Gray-Scott
+requires two distinct rendered frames, then matches the paused output against
+independent frames 1–200 (8/255 tolerance), quantizing its seed and every feedback
+step to the runtime's RGBA8 format. Pixelate uses binary-exact 8×4 blocks to avoid
+platform-dependent nearest-sampler ties after division.
+
+On macOS/Metal, all 34 Shader cases and all 17 ordinary interaction cases pass.
+Linux/macOS CI entries are configured; cross-platform CI results are not implied
+by this local acceptance.
+
+Every catalog entry must have a reference; adding a new entry fails preparation
+until its oracle is defined. Ordinary case failures are isolated and collected
+across the full catalog; an application crash or global cancellation aborts the
+run. The Shader suite has a default 600-second deadline, configurable through
+`SLINT_UI_TIMEOUT_MS`. To reuse an automation binary without building, append
+`--shaders` to `node scripts/slint-ui-test.mjs <binary> [output-directory]`.
+
+This suite covers normal project/image decoding, graph connections, parameter
+projection, native GPU rendering and display. It does not claim that preloading
+a project tests native file dialogs or every Shader creation-menu item. The
+separate interaction suite covers menu creation and Save/reopen behavior.
+
+
+For interactive inspection, use `npm run dev:desktop:ui` (optionally followed by
+`-- --project /absolute/path/project.quartz.json`). It exposes the MCP endpoint
+at `http://127.0.0.1:8080/mcp`; `SLINT_MCP_PORT` selects another port. Connect a
+Streamable HTTP MCP client to inspect elements, send input, and take screenshots.
+UI metadata is embedded by `build.rs` whenever `ui-automation` is enabled.
+
+CI runs the suite on Linux/Xvfb and macOS and uploads `slint-ui-<os>` artifacts
+even on failure. Windows compiles the optional feature with
+`npm run build:desktop:ui` and retains normal build/unit coverage; its UI run is not
+enabled until an interactive Windows runner is verified. This suite does not
+cover native OS file-dialog interaction, IME composition, camera permission,
+or broad screenshot-baseline comparisons. Save uses a preassigned project path;
+reopen launches the actual application with `--project`.
+
 ## Validation scope
 
 The crate contains unit coverage for multi-port edge endpoints, spatial bounds,

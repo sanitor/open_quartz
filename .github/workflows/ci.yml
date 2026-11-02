@@ -151,6 +151,34 @@ jobs:
         if: runner.os != 'Linux'
         run: npm run test:desktop
 
+      - name: Test desktop UI (Linux Vulkan virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:desktop:ui
+
+      - name: Test desktop UI (macOS native window)
+        if: runner.os == 'macOS'
+        run: npm run test:desktop:ui
+
+      - name: Test all catalog shaders with image fixtures (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:desktop:shaders
+
+      - name: Test all catalog shaders with image fixtures (macOS)
+        if: runner.os == 'macOS'
+        run: npm run test:desktop:shaders
+
+      - name: Build desktop UI automation (Windows compile coverage)
+        if: runner.os == 'Windows'
+        run: npm run build:desktop:ui
+
+      - name: Upload desktop UI screenshots and diagnostics
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slint-ui-${{ matrix.os }}
+          path: test-results/slint-ui/
+          if-no-files-found: warn
+
       - name: Build and package native desktop (no Web/WASM)
         run: npm run build
 

@@ -1,3 +1,6 @@
 fn main() {
-    slint_build::compile("ui/app.slint").expect("Cannot compile the Slint application UI");
+    let config = slint_build::CompilerConfiguration::new()
+        .with_debug_info(std::env::var_os("CARGO_FEATURE_UI_AUTOMATION").is_some());
+    slint_build::compile_with_config("ui/app.slint", config)
+        .expect("Cannot compile the Slint application UI");
 }

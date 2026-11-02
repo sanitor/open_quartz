@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
-if (!['dev', 'build', 'prepare', 'test'].includes(mode) || (mode !== 'dev' && appArgs.length)) {
-  throw new Error('Usage: node scripts/desktop.mjs dev [application arguments] | build | prepare | test');
+if (!['dev', 'build', 'prepare', 'test', 'test-ui', 'test-ui-shaders', 'dev-ui', 'build-ui'].includes(mode) || (!['dev', 'dev-ui'].includes(mode) && appArgs.length)) {
+  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui | test-ui-shaders | build-ui');
 }
 const platform = process.platform;
 const arch = process.arch;
@@ -34,10 +34,39 @@ const ortName = platform === 'win32' ? 'onnxruntime.dll'
 
 async function run(command, args, options = {}) {
   await new Promise((accept, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: 'inherit', ...options });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => code === 0 ? accept()
-      : reject(new Error(`${command} failed (${signal || code})`)));
+    const child = spawn(command, args, { cwd: root, stdio: 'inherit', detached: platform !== 'win32', ...options });
+    let interrupted;
+    let force;
+    const forward = (signal, hard = false) => {
+      if (!child.pid) return;
+      if (platform === 'win32') {
+        const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', ...(hard ? ['/F'] : [])], { stdio: 'ignore' });
+        killer.on('error', () => child.kill(signal));
+      } else {
+        try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      }
+    };
+    const interrupt = (signal) => {
+      interrupted = signal;
+      forward(signal);
+      force ??= setTimeout(() => forward('SIGKILL', true), 10_000);
+    };
+    const onSigint = () => interrupt('SIGINT');
+    const onSigterm = () => interrupt('SIGTERM');
+    const cleanup = () => {
+      clearTimeout(force);
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+    };
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
+    child.once('error', (error) => { cleanup(); reject(error); });
+    child.once('close', (code, signal) => {
+      cleanup();
+      if (interrupted) process.exitCode = interrupted === 'SIGINT' ? 130 : 143;
+      if (code === 0 && !interrupted) accept();
+      else reject(new Error(`${command} failed (${interrupted || signal || code})`));
+    });
   });
 }
 async function requireFile(path) {
@@ -267,6 +296,7 @@ async function packageDesktop(binary) {
   }
 }
 
+try {
 await prepareRuntime();
 const env = nativeEnv();
 if (mode === 'prepare') {
@@ -279,10 +309,18 @@ if (mode === 'prepare') {
     await copyRequired(join(helperRuntime, 'open-quartz-screensaver-stub.exe'), join(runtime, 'open-quartz-screensaver-stub.exe'));
   }
   const release = mode === 'build';
-  await run('cargo', ['build', '--locked', '--manifest-path', manifest, ...(release ? ['--release'] : [])], { env });
+  const automation = ['test-ui', 'test-ui-shaders', 'dev-ui', 'build-ui'].includes(mode);
+  await run('cargo', ['build', '--locked', '--manifest-path', manifest, ...(release ? ['--release'] : []), ...(automation ? ['--features', 'ui-automation'] : [])], { env });
   const directory = join(target, release ? 'release' : 'debug');
   const binary = join(directory, exe);
   await installRuntime(directory);
   if (release) await packageDesktop(binary);
-  else await run(binary, appArgs, { env });
+  else if (mode === 'test-ui' || mode === 'test-ui-shaders') await run(process.execPath,
+    ['scripts/slint-ui-test.mjs', binary, ...(mode === 'test-ui-shaders' ? ['--shaders'] : [])], { env });
+  else if (mode === 'build-ui') console.log(`[desktop] UI automation binary: ${binary}`);
+  else await run(binary, appArgs, { env: automation ? { ...env, SLINT_MCP_PORT: env.SLINT_MCP_PORT || '8080' } : env });
+}
+} catch (error) {
+  console.error(error.stack || String(error));
+  process.exitCode ||= 1;
 }

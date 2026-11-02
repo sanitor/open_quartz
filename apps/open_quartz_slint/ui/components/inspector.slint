@@ -77,6 +77,9 @@ component InspectorSection inherits Rectangle {
                 }
             }
             section-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: (root.expanded ? "Collapse " : "Expand ") + root.title;
+                accessible-action-default => { root.expanded = !root.expanded; }
                 mouse-cursor: pointer;
                 clicked => { root.expanded = !root.expanded; }
             }
@@ -187,14 +190,15 @@ export component Inspector inherits Rectangle {
                     overflow: elide;
                     horizontal-stretch: 0;
                 }
-                LineEdit {
+                node-label-editor := LineEdit {
                     text <=> root.node-label;
+                    accessible-label: "Node label";
                     horizontal-stretch: 1;
                     enabled: !root.project-busy;
                     edited => { root.label-draft-changed(self.text); }
                     accepted => { if root.label-dirty { root.apply-label(); } }
                 }
-                if root.label-dirty: Button { text: "Apply"; enabled: !root.project-busy; clicked => { root.apply-label(); } }
+                if root.label-dirty: Button { text: "Apply"; accessible-label: "Apply node label"; enabled: !root.project-busy; clicked => { root.apply-label(); } }
                 Rectangle {
                     width: 20px; height: 22px;
                     Path { x: 3px; y: 4px; width: 14px; height: 14px; viewbox-width: 16; viewbox-height: 16; stroke: hit.has-hover ? #ff3b30 : #aeaeb2; stroke-width: 1.3px; commands: "M3 5V14H13V5 M1 5H15 M6 2H10 M6 7.5V11.5 M10 7.5V11.5"; }
@@ -229,7 +233,7 @@ export component Inspector inherits Rectangle {
                 vertical-alignment: center;
             }
         }
-        if root.has-selection: ScrollView {
+        if root.has-selection: properties-scroll := ScrollView {
             content-width: self.visible-width;
             horizontal-scrollbar-policy: always-off;
             VerticalLayout {
@@ -388,7 +392,8 @@ export component Inspector inherits Rectangle {
                             Text { text: uniform.name; color: Theme.foreground; font-size: 11px; overflow: elide; }
                             Text { text: uniform.data-type; color: Theme.secondary; font-size: 10px; horizontal-alignment: right; }
                         }
-                        LineEdit {
+                        uniform-editor := LineEdit {
+                            accessible-label: "Uniform " + uniform.name;
                             text: uniform.value;
                             enabled: !uniform.connected && !root.project-busy;
                             edited => { root.uniform-draft-changed(uniform.name, self.text); }

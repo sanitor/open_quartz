@@ -477,6 +477,8 @@ export component GraphView inherits Rectangle {
                             accessible-enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: "Select node " + node.label;
+                            accessible-description: "Node id: " + node.node-id + "; World x: " + node.x + "; World y: " + node.y
+                                + "; Preview: " + (node.has-preview ? "available" : "unavailable") + "; Resolution: " + node.resolution;
                             accessible-action-default => { root.node-selected(node.node-id, false); graph-focus.focus(); }
                         }
 
