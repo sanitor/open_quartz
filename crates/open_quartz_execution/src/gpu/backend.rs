@@ -28,7 +28,7 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 #[cfg(test)]
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::sync::OnceLock;
 
 use wgpu::{Device, Extent3d, Features, Queue, TextureUsages};
@@ -54,6 +54,8 @@ pub struct GpuBackend {
     pub(crate) readback_fault: AtomicU8,
     #[cfg(windows)]
     pub(crate) p010_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) videotoolbox_importer: OnceLock<Result<super::videotoolbox::VideoToolboxImporter, String>>,
 }
 
 impl GpuBackend {
@@ -66,6 +68,8 @@ impl GpuBackend {
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             p010_converter: Arc::new(OnceLock::new()),
+            #[cfg(target_os = "macos")]
+            videotoolbox_importer: OnceLock::new(),
         }
     }
 
@@ -78,6 +82,8 @@ impl GpuBackend {
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             p010_converter: Arc::new(OnceLock::new()),
+            #[cfg(target_os = "macos")]
+            videotoolbox_importer: OnceLock::new(),
         }
     }
 

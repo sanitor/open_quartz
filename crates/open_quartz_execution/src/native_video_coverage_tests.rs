@@ -89,9 +89,6 @@ fn config_ffmpeg_thumbnail_and_device_argument_edges_are_covered() {
     super::add_executable_candidate(&mut candidates, Some(std::env::current_exe().unwrap()));
     assert_eq!(candidates.len(), 1);
     let ffmpeg = find_ffmpeg().unwrap();
-    std::env::set_var("OPEN_QUARTZ_FFMPEG_PATH", &ffmpeg);
-    assert_eq!(find_ffmpeg().unwrap(), ffmpeg);
-    std::env::remove_var("OPEN_QUARTZ_FFMPEG_PATH");
     let invalid = std::env::temp_dir().join("open-quartz-invalid-thumbnail.txt");
     std::fs::write(&invalid, "not a video").unwrap();
     assert!(read_video_thumbnail(&invalid.to_string_lossy()).is_err());
@@ -268,6 +265,8 @@ fn native_file_decoder_runs_and_handles_upload_pause_resume() {
                     NativeVideoFrame::D3d12(frame) => {
                         assert_eq!((frame.width, frame.height), (width, height));
                     }
+                    #[cfg(target_os = "macos")]
+                    NativeVideoFrame::VideoToolbox(frame) => assert_eq!((frame.width(), frame.height()), (width, height)),
                 }
                 frames += 1;
                 Ok(())
@@ -313,6 +312,55 @@ fn native_file_decoder_runs_and_handles_upload_pause_resume() {
 }
 
 #[test]
+fn initial_preview_decodes_one_real_frame_without_advancing_playback() {
+    let ffmpeg = find_ffmpeg().unwrap();
+    let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("open-quartz-preview-{suffix}.mp4"));
+    assert!(Command::new(&ffmpeg).args([
+        "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+        "color=c=red:s=16x16:r=10", "-t", "0.4", "-pix_fmt", "yuv420p", "-y",
+    ]).arg(&path).status().unwrap().success());
+    let mut source = NativeVideoSource::open_preview(NativeVideoConfig {
+        kind: NativeVideoSourceKind::File,
+        source: path.to_string_lossy().into_owned(),
+        looping: true,
+        playback_rate: 1.0,
+    }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while source.is_active() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!source.is_active(), "one-frame preview decoder kept running");
+    assert_eq!(source.metrics().decoded_frames, 1);
+    assert!(source.upload_latest(&mut |frame, width, height| {
+        assert_eq!((width, height), (16, 16));
+        match frame {
+            NativeVideoFrame::Rgba(rgba) => assert!(rgba.chunks_exact(4)
+                .all(|pixel| pixel[0] > 240 && pixel[1] < 10 && pixel[2] < 10 && pixel[3] == 255)),
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
+            NativeVideoFrame::D3d12(frame) => assert_eq!((frame.width, frame.height), (width, height)),
+            #[cfg(target_os = "macos")]
+            NativeVideoFrame::VideoToolbox(frame) => assert_eq!((frame.width(), frame.height()), (width, height)),
+        }
+        Ok(())
+    }).unwrap());
+    assert!(!source.upload_latest(&mut |_, _, _| panic!("preview uploaded twice")).unwrap());
+    source.pause();
+    assert_eq!(source.position_seconds, 0.0, "preview consumed the start of playback");
+    source.resume().unwrap();
+    assert_eq!(source.position_seconds, 0.0, "explicit Play skipped the first frame");
+    assert!(!source.preview_only);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while source.metrics().decoded_frames < 2 && Instant::now() < deadline {
+        source.upload_latest(&mut |_, _, _| Ok(())).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(source.metrics().decoded_frames >= 2, "explicit Play stayed in preview mode");
+    drop(source);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn decoder_spawn_and_resume_errors_are_propagated() {
     let mut source = NativeVideoSource {
         ffmpeg: std::path::PathBuf::from("definitely-missing-ffmpeg"),
@@ -327,6 +375,8 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
             rgba: Vec::new(),
             #[cfg(all(windows, feature = "native-video-d3d12"))]
             d3d12: None,
+            #[cfg(target_os = "macos")]
+            videotoolbox: None,
         })),
         alive: Arc::new(AtomicBool::new(false)),
         decoded_frames: Arc::new(AtomicU64::new(0)),
@@ -334,8 +384,15 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
         cpu_copy_bytes: 0,
         child: None,
         reader: None,
+        stderr_reader: None,
         position_seconds: 0.0,
         uploaded_generation: 0,
+        preview_only: false,
+        decoder_error: Arc::new(Mutex::new(None)),
+        #[cfg(target_os = "macos")]
+        hardware_position_ns: Arc::new(AtomicU64::new(0)),
+        #[cfg(target_os = "macos")]
+        decoder_cancelled: Arc::new(AtomicBool::new(false)),
         info: super::NativeVideoInfo {
             width: 1,
             height: 1,
@@ -343,6 +400,7 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
             decoder: "test".to_owned(),
             d3d12_eligible: false,
             d3d12_detach_required: false,
+            fallback_reason: None,
         },
     };
     source.slot.lock().unwrap().generation = 1;
@@ -369,6 +427,27 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
         .store(false, std::sync::atomic::Ordering::Release);
     assert!(source.start_decoder().is_err());
     source.pause();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("oq-failing-decoder-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path, "#!/bin/sh\nprintf x\necho decode-failed >&2\nexit 9\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        source.ffmpeg = path.clone();
+        source.config.source = "0".to_owned();
+        source.start_decoder().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            match source.upload_latest(&mut |_, _, _| Ok(())) {
+                Err(error) => break error,
+                Ok(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                Ok(_) => panic!("decoder failure was not reported"),
+            }
+        };
+        assert!(error.contains("truncated") && error.contains("decode-failed"), "{error}");
+        source.pause();
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[cfg(unix)]
@@ -383,6 +462,8 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
     let slot = Arc::new(Mutex::new(super::FrameSlot {
         generation: 0,
         rgba: Vec::new(),
+        #[cfg(target_os = "macos")]
+        videotoolbox: None,
     }));
     let poisoned = slot.clone();
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -395,6 +476,7 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
         slot,
         alive.clone(),
         Arc::new(AtomicU64::new(0)),
+        Arc::new(Mutex::new(None)),
         4,
         Duration::ZERO,
     );
@@ -413,9 +495,12 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
         Arc::new(Mutex::new(super::FrameSlot {
             generation: 0,
             rgba: Vec::new(),
+            #[cfg(target_os = "macos")]
+            videotoolbox: None,
         })),
         alive,
         decoded.clone(),
+        Arc::new(Mutex::new(None)),
         4,
         Duration::ZERO,
     );

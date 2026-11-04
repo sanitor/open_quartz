@@ -3796,7 +3796,10 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
+ "objc2 0.6.5",
+ "objc2-metal 0.3.2",
  "open_quartz_schema",
+ "oq-media",
  "ort",
  "regex",
  "serde",
@@ -3889,6 +3892,13 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "oq-media"
+version = "0.1.0"
+dependencies = [
+ "ffmpeg-next",
+]
 
 [[package]]
 name = "orbclient"

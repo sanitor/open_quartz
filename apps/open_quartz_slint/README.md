@@ -191,6 +191,37 @@ denied. Sampling applies each source node's Linear/Nearest filter and Clamp/Repe
 Mirror wrap. Only RGBA8 host preview outputs can be imported. Mobile gestures and
 mobile camera/file permission adapters are deferred with Phase 6.
 
+Choosing a video file while stopped or paused decodes one real frame for the node
+thumbnail and selected Inspector preview. Source replacement updates the preview
+even when dimensions match; it preserves the UI playback state. This does not
+execute the graph or advance the starting playback position. Explicit Play starts
+normal decoding. Preview polling ends on success, error, timeout or source removal.
+A standalone external `sampler2D` source can be the graph's terminal texture output:
+Video Play does not require adding a Renderer first. An explicit Renderer still
+takes precedence when present. Native Choose File acceptance with a real 1080p
+H.264 Baseline MP4 covers a conflicting container BT.709 / SPS BT.470BG source,
+thumbnail and Inspector preview, standalone Play/Pause/Resume, and user confirmation.
+
+On macOS, H.264/HEVC file video first uses `oq-media`'s in-process
+VideoToolbox backend. Retained CVPixelBuffer planes are imported through Metal
+into the shared wgpu device and converted to SDR sRGB RGBA on the GPU, without
+CPU frame transfer. The bundled, checksum-pinned LGPL-only FFmpeg 8.1.1 SDK
+includes its corresponding source, hardware-required patch and build options.
+Backend failures can use the existing software path; unsupported presentation
+semantics fail explicitly instead. NV12/P010, full/limited-range GPU colors and
+real-window stopped/Play/Pause/Resume/Stop behavior have been exercised on Apple
+Silicon, including a relocated production package. BT.470BG/PAL primaries are
+preserved separately from BT.601 YUV coefficients and converted to BT.709 in
+linear light before sRGB output. HDR, other primaries, rotation/crop and non-square
+pixels remain unsupported by this path. Windows,
+Linux and cameras retain their prior backends. Device-specific 8K measurements
+and their limits are recorded in the [oq-media README](../../crates/oq-media/README.md#8k-性能与-opengl-兼容慢路径); no cross-platform performance guarantee is made.
+
+For the small shared-GPU video demo, prepare the runtime first, then run
+`cargo run --manifest-path apps/open_quartz_slint/Cargo.toml --example video_preview -- VIDEO`.
+It exposes explicit Play/Pause/Stop controls and decoder/CPU-upload metrics;
+it is an integration example, not a stabilized standalone player-component API.
+
 Renderer controls select an explicit output and reuse its shared texture in the
 normal preview or **Fullscreen**; **Close · Esc** returns without readback or a
 second decoder. PNG capture requests full-resolution readback only on user action.

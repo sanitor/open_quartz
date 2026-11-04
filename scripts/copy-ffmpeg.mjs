@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import installer from '@ffmpeg-installer/ffmpeg';
+import { prepareMediaSdk } from './prepare-media-sdk.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeDir = resolve(root, 'src-tauri', 'runtime');
@@ -81,4 +82,5 @@ if (process.platform === 'win32' && process.arch === 'x64') {
     'utf8',
   );
   console.log(`[copy-ffmpeg] copied ${installer.path} to ${target}`);
+  if (process.platform === 'darwin') await prepareMediaSdk();
 }

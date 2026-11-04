@@ -218,6 +218,10 @@ impl NativeHost {
             .map_err(|error| format!("Cannot find a native GPU adapter: {error}"))?;
         let adapter_features = adapter.features();
         let mut required_features = wgpu::Features::empty();
+        #[cfg(target_os = "macos")]
+        if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        }
         if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
             required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
         }
@@ -270,6 +274,8 @@ impl NativeHost {
                     wgpu::Features::TEXTURE_FORMAT_NV12 | wgpu::Features::TEXTURE_FORMAT_P010,
                 ) {
                 "d3d12va-yuv-detached-gpu-copy".to_owned()
+            } else if cfg!(target_os = "macos") {
+                "negotiated-per-source-videotoolbox-metal-or-cpu".to_owned()
             } else {
                 "cpu-copy".to_owned()
             },
@@ -473,10 +479,32 @@ impl NativeHost {
         node_id: &str,
         config: NativeVideoConfig,
     ) -> Result<NativeVideoInfo, String> {
+        self.attach_video_source(node_id, config, false)
+    }
+
+    /// Prepare a single decoded source frame without starting engine playback.
+    pub fn attach_video_preview(
+        &mut self,
+        node_id: &str,
+        config: NativeVideoConfig,
+    ) -> Result<NativeVideoInfo, String> {
+        self.attach_video_source(node_id, config, true)
+    }
+
+    fn attach_video_source(
+        &mut self,
+        node_id: &str,
+        config: NativeVideoConfig,
+        preview_only: bool,
+    ) -> Result<NativeVideoInfo, String> {
         self.runtime
             .node_generation(node_id)
             .map_err(runtime_error)?;
-        let source = NativeVideoSource::open(config)?;
+        let source = if preview_only {
+            NativeVideoSource::open_preview(config)?
+        } else {
+            NativeVideoSource::open(config)?
+        };
         let info = source.info().clone();
         self.videos.insert(node_id.to_owned(), source);
         self.sync_video_nodes()?;
@@ -504,6 +532,10 @@ impl NativeHost {
             let uploaded = source.upload_latest(&mut |frame, width, height| match frame {
                 NativeVideoFrame::Rgba(rgba) => executor
                     .upload_rgba(node_id, rgba, width, height)
+                    .map_err(|error| error.to_string()),
+                #[cfg(target_os = "macos")]
+                NativeVideoFrame::VideoToolbox(frame) => executor
+                    .upload_videotoolbox(node_id, frame)
                     .map_err(|error| error.to_string()),
                 #[cfg(all(windows, feature = "native-video-d3d12"))]
                 NativeVideoFrame::D3d12(frame) => executor

@@ -1,0 +1,16 @@
+--- a/libavcodec/videotoolbox.c
++++ b/libavcodec/videotoolbox.c
+@@ -820,5 +820,5 @@
+ #if TARGET_OS_IPHONE
+     CFDictionarySetValue(buffer_attributes, kCVPixelBufferOpenGLESCompatibilityKey, kCFBooleanTrue);
+ #else
+-    CFDictionarySetValue(buffer_attributes, kCVPixelBufferIOSurfaceOpenGLTextureCompatibilityKey, kCFBooleanTrue);
++    CFDictionarySetValue(buffer_attributes, kCVPixelBufferMetalCompatibilityKey, kCFBooleanTrue);
+ #endif
+@@ -845,5 +845,3 @@
+     CFDictionarySetValue(config_info,
+-                         codec_type == kCMVideoCodecType_HEVC ?
+-                            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder :
+-                            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
++                         kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                          kCFBooleanTrue);

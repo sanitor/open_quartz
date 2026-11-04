@@ -29,6 +29,8 @@ pub enum NativeVideoFrame<'a> {
     Rgba(&'a [u8]),
     #[cfg(all(windows, feature = "native-video-d3d12"))]
     D3d12(&'a D3d12VideoFrame),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(&'a oq_media::VideoToolboxFrame),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -57,6 +59,7 @@ pub struct NativeVideoInfo {
     d3d12_eligible: bool,
     #[serde(skip)]
     d3d12_detach_required: bool,
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -65,6 +68,7 @@ pub struct NativeVideoMetrics {
     pub decoded_frames: u64,
     pub uploaded_frames: u64,
     pub cpu_copy_bytes: u64,
+    pub hardware_decode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -78,6 +82,8 @@ struct FrameSlot {
     rgba: Vec<u8>,
     #[cfg(all(windows, feature = "native-video-d3d12"))]
     d3d12: Option<D3d12VideoFrame>,
+    #[cfg(target_os = "macos")]
+    videotoolbox: Option<oq_media::VideoToolboxFrame>,
 }
 
 pub struct NativeVideoSource {
@@ -91,12 +97,28 @@ pub struct NativeVideoSource {
     cpu_copy_bytes: u64,
     child: Option<Child>,
     reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<Vec<u8>>>,
     position_seconds: f64,
     uploaded_generation: u64,
+    preview_only: bool,
+    decoder_error: Arc<Mutex<Option<String>>>,
+    #[cfg(target_os = "macos")]
+    hardware_position_ns: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
+    decoder_cancelled: Arc<AtomicBool>,
 }
 
 impl NativeVideoSource {
     pub fn open(config: NativeVideoConfig) -> Result<Self, String> {
+        Self::open_with_preview(config, false)
+    }
+
+    /// Decode one real frame without consuming the source's playback position.
+    pub fn open_preview(config: NativeVideoConfig) -> Result<Self, String> {
+        Self::open_with_preview(config, true)
+    }
+
+    fn open_with_preview(config: NativeVideoConfig, preview_only: bool) -> Result<Self, String> {
         if !config.playback_rate.is_finite() || !(0.1..=4.0).contains(&config.playback_rate) {
             return Err("Video playback rate must be between 0.1 and 4.0".to_owned());
         }
@@ -113,6 +135,7 @@ impl NativeVideoSource {
                 decoder: "test".to_owned(),
                 d3d12_eligible: false,
                 d3d12_detach_required: false,
+                fallback_reason: None,
             }
         } else {
             probe_video(&ffmpeg, &config)?
@@ -127,6 +150,8 @@ impl NativeVideoSource {
                 rgba: Vec::new(),
                 #[cfg(all(windows, feature = "native-video-d3d12"))]
                 d3d12: None,
+                #[cfg(target_os = "macos")]
+                videotoolbox: None,
             })),
             alive: Arc::new(AtomicBool::new(false)),
             decoded_frames: Arc::new(AtomicU64::new(0)),
@@ -134,8 +159,15 @@ impl NativeVideoSource {
             cpu_copy_bytes: 0,
             child: None,
             reader: None,
+            stderr_reader: None,
             position_seconds: 0.0,
             uploaded_generation: 0,
+            preview_only,
+            decoder_error: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            hardware_position_ns: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            decoder_cancelled: Arc::new(AtomicBool::new(false)),
             info,
         };
         source.start_decoder()?;
@@ -154,6 +186,25 @@ impl NativeVideoSource {
             u32,
         ) -> Result<(), String>,
     ) -> Result<bool, String> {
+        if !self.alive.load(Ordering::Acquire) {
+            if let Some(child) = self.child.as_mut() {
+                if let Some(status) = child.try_wait().map_err(|e| format!("Cannot check FFmpeg decoder: {e}"))? {
+                    let stderr = self.stderr_reader.take().and_then(|reader| reader.join().ok()).unwrap_or_default();
+                    self.child = None;
+                    if !status.success() {
+                        let detail = String::from_utf8_lossy(&stderr);
+                        let message = format!("FFmpeg video decoder exited with {status}: {}", detail.trim());
+                        let mut error = self.decoder_error.lock().map_err(|_| "Native video error lock is poisoned")?;
+                        if let Some(previous) = error.take() { *error = Some(format!("{previous}; {message}")); } else { *error = Some(message); }
+                    }
+                }
+            }
+        }
+        if self.child.is_none() {
+            if let Some(error) = self.decoder_error.lock().map_err(|_| "Native video error lock is poisoned")?.take() {
+                return Err(error);
+            }
+        }
         let slot = match self.slot.lock() {
             Ok(slot) => slot,
             Err(_) => return Err("Native video frame lock is poisoned".to_owned()),
@@ -170,7 +221,10 @@ impl NativeVideoSource {
                 .as_ref()
                 .map(NativeVideoFrame::D3d12)
                 .unwrap_or_else(|| NativeVideoFrame::Rgba(&slot.rgba));
-            #[cfg(not(all(windows, feature = "native-video-d3d12")))]
+            #[cfg(target_os = "macos")]
+            let frame = slot.videotoolbox.as_ref().map(NativeVideoFrame::VideoToolbox)
+                .unwrap_or_else(|| NativeVideoFrame::Rgba(&slot.rgba));
+            #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
             let frame = NativeVideoFrame::Rgba(&slot.rgba);
             upload(frame, self.info.width, self.info.height)?;
         }
@@ -191,6 +245,7 @@ impl NativeVideoSource {
             decoded_frames: self.decoded_frames.load(Ordering::Acquire),
             uploaded_frames: self.uploaded_frames,
             cpu_copy_bytes: self.cpu_copy_bytes,
+            hardware_decode: self.info.decoder == "ffmpeg-videotoolbox" || self.info.decoder == "ffmpeg-d3d12va",
         }
     }
 
@@ -203,8 +258,14 @@ impl NativeVideoSource {
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
-        if self.alive.load(Ordering::Acquire) {
+        if self.alive.load(Ordering::Acquire) && !self.preview_only {
             return Ok(());
+        }
+        if self.preview_only {
+            // Preview frames do not advance position_seconds, so the first
+            // explicit Play restarts decoding at the original position.
+            self.stop_decoder();
+            self.preview_only = false;
         }
         self.start_decoder()
     }
@@ -212,6 +273,22 @@ impl NativeVideoSource {
     fn start_decoder(&mut self) -> Result<(), String> {
         self.alive.store(true, Ordering::Release);
         self.decoded_frames.store(0, Ordering::Release);
+        #[cfg(target_os = "macos")]
+        if self.config.kind == NativeVideoSourceKind::File {
+            match self.start_videotoolbox_decoder() {
+                Ok(()) => { self.info.decoder = "ffmpeg-videotoolbox".to_owned(); self.info.fallback_reason = None; return Ok(()); }
+                Err(error) if error.kind == oq_media::ErrorKind::UnsupportedContent => {
+                    self.alive.store(false, Ordering::Release);
+                    return Err(error.to_string());
+                }
+                Err(error) => {
+                    log::warn!("VideoToolbox unavailable; falling back to FFmpeg process: {error}");
+                    self.info.decoder = "ffmpeg-native".to_owned();
+                    self.info.fallback_reason = Some(error.to_string());
+                    self.alive.store(true, Ordering::Release);
+                }
+            }
+        }
         #[cfg(all(windows, feature = "native-video-d3d12"))]
         if self.config.kind == NativeVideoSourceKind::File && self.info.d3d12_eligible {
             self.info.decoder = "ffmpeg-d3d12va".to_owned();
@@ -224,16 +301,20 @@ impl NativeVideoSource {
                 }
             }
         }
+        *self.decoder_error.lock().map_err(|_| "Native video error lock is poisoned")? = None;
         let mut command = Command::new(&self.ffmpeg);
-        command.args(["-hide_banner", "-loglevel", "error"]);
+        command.args(["-hide_banner", "-loglevel", "error", "-xerror"]);
         append_input_args(&mut command, &self.config, self.position_seconds);
+        if self.preview_only {
+            command.args(["-frames:v", "1"]);
+        }
         command.args([
             "-an", "-sn", "-dn", "-f", "rawvideo", "-pix_fmt", "rgba", "-",
         ]);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         hide_console_window(&mut command);
         let mut child = command
             .spawn()
@@ -242,9 +323,13 @@ impl NativeVideoSource {
             .stdout
             .take()
             .expect("piped FFmpeg stdout is always available");
+        let stderr = child.stderr.take().expect("piped FFmpeg stderr is always available");
+        let stderr_reader = std::thread::Builder::new().name("open-quartz-video-stderr".into()).spawn(move || bounded_stderr(stderr))
+            .map_err(|error| { let _ = child.kill(); let _ = child.wait(); format!("Cannot start FFmpeg stderr reader: {error}") })?;
         let slot = self.slot.clone();
         let alive = self.alive.clone();
         let decoded_frames = self.decoded_frames.clone();
+        let decoder_error = self.decoder_error.clone();
         let frame_size = self.info.width as usize * self.info.height as usize * 4;
         let frame_interval =
             Duration::from_secs_f64(1.0 / (self.info.fps * self.config.playback_rate));
@@ -260,6 +345,7 @@ impl NativeVideoSource {
                     slot,
                     alive,
                     decoded_frames,
+                    decoder_error,
                     frame_size,
                     frame_interval,
                 )
@@ -272,11 +358,16 @@ impl NativeVideoSource {
                 slot,
                 alive,
                 decoded_frames,
+                decoder_error,
                 frame_size,
                 frame_interval,
             )
         });
-        let reader = reader_result.map_err(reader_spawn_error)?;
+        let reader = match reader_result {
+            Ok(reader) => reader,
+            Err(error) => { let _ = child.kill(); let _ = child.wait(); let _ = stderr_reader.join(); self.alive.store(false, Ordering::Release); return Err(reader_spawn_error(error)); }
+        };
+        self.stderr_reader = Some(stderr_reader);
         self.child = Some(child);
         self.reader = Some(reader);
         Ok(())
@@ -287,6 +378,7 @@ impl NativeVideoSource {
         let config = self.config.clone();
         let position = self.position_seconds;
         let info = self.info.clone();
+        let preview_only = self.preview_only;
         let slot = self.slot.clone();
         let alive = self.alive.clone();
         let decoded_frames = self.decoded_frames.clone();
@@ -297,6 +389,7 @@ impl NativeVideoSource {
                 let result = decode_d3d12_frames(
                     &config,
                     position,
+                    preview_only,
                     &info,
                     &slot,
                     &alive,
@@ -327,8 +420,96 @@ impl NativeVideoSource {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn start_videotoolbox_decoder(&mut self) -> Result<(), oq_media::MediaError> {
+        let config = self.config.clone();
+        let position = self.position_seconds;
+        let preview = self.preview_only;
+        let fps = self.info.fps;
+        let slot = self.slot.clone();
+        let alive = self.alive.clone();
+        let decoded = self.decoded_frames.clone();
+        let failure = self.decoder_error.clone();
+        let position_ns = self.hardware_position_ns.clone();
+        self.decoder_cancelled.store(false, Ordering::Release);
+        let cancelled = self.decoder_cancelled.clone();
+        *failure.lock().map_err(|_| "Native video error lock is poisoned")? = None;
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::Builder::new().name("open-quartz-videotoolbox".into()).spawn(move || {
+            let setup = (|| {
+                let mut session = oq_media::Session::open_with_cancel(&config.source, cancelled)?;
+                let first = loop {
+                    let frame = session.next_frame()?.ok_or("Video contains no frame at playback position")?;
+                    if frame.frame.pts_ns().map_or(true, |pts| pts as f64 / 1e9 >= position) { break frame; }
+                    if !alive.load(Ordering::Acquire) { return Err("Video decoding cancelled".into()); }
+                };
+                Ok::<_, oq_media::MediaError>((session, first))
+            })();
+            let (mut session, first) = match setup {
+                Ok(value) => { if ready_tx.send(Ok(())).is_err() { return; } value }
+                Err(error) => { let _ = ready_tx.send(Err(error)); alive.store(false, Ordering::Release); return; }
+            };
+            let result = (|| {
+                let mut next = Some(first);
+                let mut base_pts = None;
+                let mut base_time = Instant::now();
+                let mut last_pts = None;
+                let interval = Duration::from_secs_f64(1.0 / (config.playback_rate * fps));
+                while alive.load(Ordering::Acquire) {
+                    let lease = match next.take() {
+                        Some(frame) => frame,
+                        None => match session.next_frame()? {
+                            Some(frame) => frame,
+                            None if config.looping && !preview => { session.reset()?; base_pts = None; last_pts = None; base_time = Instant::now(); continue; }
+                            None => break,
+                        },
+                    };
+                    let pts = lease.frame.pts_ns();
+                    if let (Some(previous), Some(current)) = (last_pts, pts) {
+                        if current < previous { return Err("VideoToolbox produced non-monotonic PTS".to_owned()); }
+                    }
+                    if let Some(pts) = pts {
+                        let origin = *base_pts.get_or_insert(pts);
+                        let seconds = (pts.saturating_sub(origin).max(0) as f64 / 1e9) / config.playback_rate;
+                        let target = base_time + Duration::from_secs_f64(seconds);
+                        while alive.load(Ordering::Acquire) && Instant::now() < target {
+                            std::thread::sleep(target.saturating_duration_since(Instant::now()).min(Duration::from_millis(10)));
+                        }
+                        last_pts = Some(pts);
+                    } else if decoded.load(Ordering::Acquire) > 0 {
+                        std::thread::sleep(interval.min(Duration::from_millis(50)));
+                    }
+                    if !alive.load(Ordering::Acquire) { break; }
+                    let mut current = slot.lock().map_err(|_| "Native video frame lock is poisoned")?;
+                    current.rgba.clear();
+                    current.videotoolbox = Some(lease.frame);
+                    current.generation = current.generation.saturating_add(1);
+                    drop(current);
+                    decoded.fetch_add(1, Ordering::AcqRel);
+                    if !preview { if let Some(pts) = pts { position_ns.store(pts.max(0) as u64, Ordering::Release); } }
+                    if preview { break; }
+                }
+                Ok::<(), String>(())
+            })();
+            if let Err(error) = result { if let Ok(mut value) = failure.lock() { if alive.load(Ordering::Acquire) { *value = Some(error); } } }
+            alive.store(false, Ordering::Release);
+        }).map_err(|error| format!("Cannot start VideoToolbox decoder thread: {error}"))?;
+        match ready_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(())) => { self.reader = Some(reader); Ok(()) }
+            Ok(Err(error)) => { let _ = reader.join(); Err(error) }
+            Err(error) => {
+                self.alive.store(false, Ordering::Release);
+                self.decoder_cancelled.store(true, Ordering::Release);
+                let _ = reader.join();
+                Err(format!("VideoToolbox startup failed: {error}").into())
+            }
+        }
+    }
+
     fn stop_decoder(&mut self) {
         self.alive.store(false, Ordering::Release);
+        #[cfg(target_os = "macos")]
+        self.decoder_cancelled.store(true, Ordering::Release);
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
@@ -337,7 +518,13 @@ impl NativeVideoSource {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        if self.config.kind == NativeVideoSourceKind::File {
+        if let Some(reader) = self.stderr_reader.take() { let _ = reader.join(); }
+        #[cfg(target_os = "macos")]
+        if self.info.decoder == "ffmpeg-videotoolbox" {
+            if !self.preview_only { self.position_seconds = self.hardware_position_ns.load(Ordering::Acquire) as f64 / 1e9; }
+            return;
+        }
+        if self.config.kind == NativeVideoSourceKind::File && !self.preview_only {
             self.position_seconds +=
                 self.decoded_frames.swap(0, Ordering::AcqRel) as f64 / self.info.fps;
         }
@@ -348,24 +535,59 @@ fn reader_spawn_error(error: std::io::Error) -> String {
     format!("Cannot start video frame reader: {error}")
 }
 
+fn bounded_stderr(mut stderr: std::process::ChildStderr) -> Vec<u8> {
+    const LIMIT: usize = 8192;
+    let mut last = std::collections::VecDeque::with_capacity(LIMIT);
+    let mut chunk = [0; 1024];
+    loop {
+        match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let excess = (last.len() + n).saturating_sub(LIMIT);
+                last.drain(..excess);
+                last.extend(&chunk[..n]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    last.into_iter().collect()
+}
+
 fn read_rgba_frames(
     mut stdout: std::process::ChildStdout,
     slot: Arc<Mutex<FrameSlot>>,
     alive: Arc<AtomicBool>,
     decoded_frames: Arc<AtomicU64>,
+    decoder_error: Arc<Mutex<Option<String>>>,
     frame_size: usize,
     frame_interval: Duration,
 ) {
     let mut frame = vec![0; frame_size];
     while alive.load(Ordering::Acquire) {
         let started = Instant::now();
-        if stdout.read_exact(&mut frame).is_err() {
+        let mut filled = 0;
+        while filled < frame_size && alive.load(Ordering::Acquire) {
+            match stdout.read(&mut frame[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    if alive.load(Ordering::Acquire) { if let Ok(mut slot) = decoder_error.lock() { *slot = Some(format!("FFmpeg video frame read failed: {error}")); } }
+                    break;
+                }
+            }
+        }
+        if filled != frame_size {
+            if filled > 0 && alive.load(Ordering::Acquire) { if let Ok(mut slot) = decoder_error.lock() { *slot = Some(format!("FFmpeg returned a truncated video frame ({filled}/{frame_size} bytes)")); } }
             break;
         }
         let Ok(mut current) = slot.lock() else {
             break;
         };
         std::mem::swap(&mut current.rgba, &mut frame);
+        #[cfg(target_os = "macos")]
+        { current.videotoolbox = None; }
         #[cfg(all(windows, feature = "native-video-d3d12"))]
         {
             current.d3d12 = None;
@@ -453,6 +675,7 @@ fn validate_monotonic_pts(last_pts: &Cell<Option<i64>>, pts: Option<i64>) -> Res
 fn decode_d3d12_frames(
     config: &NativeVideoConfig,
     initial_position: f64,
+    preview_only: bool,
     info: &NativeVideoInfo,
     slot: &Arc<Mutex<FrameSlot>>,
     alive: &AtomicBool,
@@ -554,6 +777,10 @@ fn decode_d3d12_frames(
         current.generation = current.generation.saturating_add(1);
         drop(current);
         decoded_frames.fetch_add(1, Ordering::AcqRel);
+        if preview_only {
+            alive.store(false, Ordering::Release);
+            return Ok(());
+        }
         while alive.load(Ordering::Acquire) {
             let consumed = slot
                 .lock()
@@ -589,6 +816,7 @@ fn decode_d3d12_frames(
                 .map_err(|error| format!("D3D12VA packet decode failed: {error}"))?;
             while decoder.receive_frame(&mut decoded).is_ok() {
                 publish_frame(&mut decoded)?;
+                if preview_only { return Ok(()); }
             }
         }
         if !alive.load(Ordering::Acquire) {
@@ -599,6 +827,7 @@ fn decode_d3d12_frames(
             .map_err(|error| format!("D3D12VA decoder drain failed: {error}"))?;
         while decoder.receive_frame(&mut decoded).is_ok() {
             publish_frame(&mut decoded)?;
+            if preview_only { return Ok(()); }
         }
         if !config.looping {
             break;
@@ -722,6 +951,10 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .lines()
         .find(|line| line.contains("Video:"))
         .ok_or_else(|| format!("FFmpeg found no video stream in {}", config.source))?;
+    #[cfg(target_os = "macos")]
+    if video_line.contains("smpte2084") || video_line.contains("arib-std-b67") {
+        return Err("HDR transfer is unsupported without tone mapping".to_owned());
+    }
     let size = Regex::new(r"(?:^|\s)(\d{2,5})x(\d{2,5})(?:[\s,]|$)")
         .expect("valid video size regex")
         .captures(video_line)
@@ -745,6 +978,7 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         fps,
         decoder: "ffmpeg-native".to_owned(),
         d3d12_eligible,
+        fallback_reason: None,
         d3d12_detach_required,
     })
 }

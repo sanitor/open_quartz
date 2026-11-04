@@ -105,8 +105,20 @@ impl RenderBridge {
         .map_err(|error| {
             format!("Cannot initialize native rendering: GPU adapter request failed: {error}")
         })?;
+        let mut required_features = wgpu::Features::empty();
+        #[cfg(target_os = "macos")]
+        if adapter.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        }
+        #[cfg(windows)]
+        {
+            required_features |= adapter.features() & wgpu::Features::TEXTURE_FORMAT_NV12;
+            let p010 = wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+            if adapter.features().contains(p010) { required_features |= p010; }
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("open-quartz-slint-shared-device"),
+            required_features,
             ..Default::default()
         }))
         .map_err(|error| {
@@ -308,6 +320,7 @@ fn render_worker(
     let mut onnx = OnnxRuntime::default();
     let mut image_keys = BTreeMap::<String, u64>::new();
     let mut video_configs = BTreeMap::<String, NativeVideoConfig>::new();
+    let mut video_pipelines = BTreeMap::<String, String>::new();
     let mut current_graph: Option<String> = None;
     let mut stopped = true;
     let mut ready_to_start = false;
@@ -315,11 +328,12 @@ fn render_worker(
     let mut preview_renderer: Option<String> = None;
     let mut preview_nodes = Vec::<String>::new();
     let mut preview_tick = Instant::now();
+    let mut pending_video_previews = BTreeMap::<String, Instant>::new();
     loop {
         if onnx.reap_workers() {
             publish_onnx(&updates, generation, &onnx);
         }
-        let command = if running || onnx.is_loading() {
+        let command = if running || onnx.is_loading() || !pending_video_previews.is_empty() {
             match receiver.recv_timeout(Duration::from_millis(16)) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -337,6 +351,7 @@ fn render_worker(
                 let _ = host.pause();
                 playback_requested = false;
                 running = false;
+                pending_video_previews.clear();
             }
             Some(Command::SetGraph {
                 generation: next_generation,
@@ -352,6 +367,7 @@ fn render_worker(
                 stopped = false;
                 ready_to_start = !play;
                 playback_requested = play;
+                pending_video_previews.clear();
                 preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz_sdk::NodeType::Shader | open_quartz_sdk::NodeType::Constant | open_quartz_sdk::NodeType::Renderer)
                         || node.data.outputs.iter().any(|port| port.data_type == open_quartz_sdk::DataType::Sampler2d)
@@ -376,13 +392,28 @@ fn render_worker(
                     {
                         host.detach_video(&node_id)?;
                         video_configs.remove(&node_id);
+                        video_pipelines.remove(&node_id);
                     }
                     let graph_json = serde_json::to_string(&graph)
                         .map_err(|error| format!("Cannot serialize the SDK graph: {error}"))?;
                     host.set_graph(&graph_json)?;
                     for (node_id, config) in next_video_configs {
-                        if video_configs.get(&node_id) != Some(&config) {
-                            host.attach_video(&node_id, config.clone())?;
+                        if video_configs.get(&node_id) != Some(&config)
+                            || (!play && !host.has_output_texture(&node_id))
+                        {
+                            let info = if play {
+                                host.attach_video(&node_id, config.clone())?
+                            } else {
+                                let info = host.attach_video_preview(&node_id, config.clone())?;
+                                pending_video_previews.insert(node_id.clone(), Instant::now());
+                                info
+                            };
+                            let path = match &info.fallback_reason {
+                                Some(reason) => format!("{}: {} (software fallback: {reason})", node_id, info.decoder),
+                                None => format!("{}: {}", node_id, info.decoder),
+                            };
+                            eprintln!("[video] {path}");
+                            video_pipelines.insert(node_id.clone(), path);
                             video_configs.insert(node_id, config);
                         }
                     }
@@ -424,10 +455,14 @@ fn render_worker(
                         } else {
                             format!("{description} · NativeHost graph ready; press Play to render")
                         };
+                        let status = if video_pipelines.is_empty() { status } else {
+                            format!("{status} · {}", video_pipelines.values().cloned().collect::<Vec<_>>().join("; "))
+                        };
                         publish_status(&updates, generation, status, true);
                     }
                     Err(error) => {
                         render_failed = true;
+                        pending_video_previews.clear();
                         publish_failure(&updates, generation, "NativeHost graph initialization failed", &error);
                     }
                 }
@@ -519,7 +554,21 @@ fn render_worker(
                             Ok(())
                         }
                     }
-                    "stop" => host.stop(),
+                    "stop" => (|| {
+                        host.stop()?;
+                        // Stop may race the initial decode. Keep any real frame
+                        // already decoded; otherwise request just that preview again.
+                        host.upload_video_frames()?;
+                        for (node_id, started) in &mut pending_video_previews {
+                            if !host.has_output_texture(node_id) {
+                                if let Some(config) = video_configs.get(node_id) {
+                                    host.attach_video_preview(node_id, config.clone())?;
+                                    *started = Instant::now();
+                                }
+                            }
+                        }
+                        Ok(())
+                    })(),
                     _ if running => Ok(()),
                     _ if stopped => (|| {
                         let graph_json = current_graph
@@ -589,6 +638,34 @@ fn render_worker(
             Some(Command::LoadOnnx { .. } | Command::UnloadOnnx { .. }) => {}
             None => {}
         }
+        // A source preview uploads decoded pixels only. It must never call
+        // render_next/start_playback or consume the graph's first frame work.
+        if !running && !render_failed && !pending_video_previews.is_empty() {
+            let result = host.upload_video_frames().and_then(|()| {
+                let mut ready = false;
+                pending_video_previews.retain(|id, _| {
+                    let pending = !host.has_output_texture(id);
+                    ready |= !pending;
+                    pending
+                });
+                if ready {
+                    preview_tick = Instant::now() - Duration::from_millis(100);
+                }
+                if let Some((id, _)) = pending_video_previews.iter()
+                    .find(|(_, started)| started.elapsed() >= Duration::from_secs(10))
+                {
+                    return Err(format!("Video node {id} did not decode a preview frame within 10 seconds"));
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                let _ = host.pause();
+                pending_video_previews.clear();
+                publish_status(&updates, generation, format!("Video preview failed: {error}"), false);
+            }
+        } else if running {
+            pending_video_previews.clear();
+        }
         if !render_failed && preview_tick.elapsed() >= Duration::from_millis(100) {
             let previews = preview_nodes.iter().filter_map(|id| {
                 host.preview_source(id).ok().map(|output| (id.clone(), (*output.texture).clone()))
@@ -597,6 +674,14 @@ fn render_worker(
                 let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
                 if update.generation != generation { *update = RenderUpdate::new(generation); }
                 update.previews = Some(previews);
+                if !running {
+                    if let Some(output) = preview_renderer.as_deref()
+                        .and_then(|id| host.preview_source(id).ok())
+                    {
+                        update.texture = Some((*output.texture).clone());
+                        update.clear_image = false;
+                    }
+                }
             }
             preview_tick = Instant::now();
         }
@@ -776,5 +861,166 @@ mod tests {
         let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("press Play")));
         assert!(update.texture.is_none());
         assert!(update.clear_image);
+    }
+    fn standalone_video_graph(path: &std::path::Path) -> Graph {
+        let sdk = open_quartz_sdk::OpenQuartz::new(open_quartz_sdk::Environment::headless());
+        let mut project = sdk.create_project("Standalone video");
+        let (video, _) = project.create_graph_node(open_quartz_sdk::NodeFactoryRequest::Input {
+            position: None, data_type: open_quartz_sdk::DataType::Sampler2d,
+            input_mode: Some(open_quartz_sdk::InputMode::Video),
+        }, project.graph_revision()).unwrap();
+        let mut graph = project.graph_snapshot();
+        let node = graph.nodes.iter_mut().find(|node| node.id == video.id).unwrap();
+        node.data.video_source_type = Some(open_quartz_sdk::VideoSourceType::File);
+        node.data.video_file_path = Some(path.to_string_lossy().into_owned());
+        graph
+    }
+
+    #[test]
+    fn video_without_renderer_keeps_preview_and_advances_on_play() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let path = std::env::temp_dir().join(format!("oq-standalone-{}.mp4",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let ffmpeg = open_quartz_execution::native_video::find_ffmpeg().unwrap();
+        assert!(std::process::Command::new(ffmpeg).args([
+            "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=size=64x64:rate=10:duration=2", "-pix_fmt", "yuv420p", "-y",
+        ]).arg(&path).status().unwrap().success());
+        let graph = standalone_video_graph(&path);
+        let video = graph.nodes[0].id.clone();
+        let (mut bridge, _) = RenderBridge::initialize().unwrap();
+        bridge.set_graph(graph, BTreeMap::new(), false).unwrap();
+        let wait_for = |playing: bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(update) = bridge.take_update() {
+                    assert!(update.node_error.is_none(), "{:?}", update.node_error);
+                    assert!(!update.status.as_ref().is_some_and(|status| status.contains("failed") || status.contains("stopped:")), "{:?}", update.status);
+                    if (playing && update.texture.is_some()) || (!playing && update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video))) { return; }
+                }
+                assert!(Instant::now() < deadline, "standalone video produced no output");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        wait_for(false);
+        let capture = path.with_extension("png");
+        bridge.capture_png(video.clone(), capture.clone()).unwrap().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let first = image::open(&capture).unwrap().to_rgba8();
+        bridge.set_playback("play").unwrap();
+        wait_for(true);
+        thread::sleep(Duration::from_millis(600));
+        bridge.capture_png(video, capture.clone()).unwrap().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let later = image::open(&capture).unwrap().to_rgba8();
+        assert_eq!(later.dimensions(), (64, 64));
+        assert_ne!(first, later, "Play kept the stopped thumbnail instead of advancing video");
+        drop(bridge);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(capture).unwrap();
+    }
+
+    #[test]
+    fn choosing_video_previews_decoded_pixels_while_stopped_or_paused() {
+        use open_quartz_sdk::{DataType, Environment, GraphCommand, InputMode,
+            NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey, VideoSourceType};
+        use std::process::Command as ProcessCommand;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let directory = std::env::temp_dir().join(format!("open-quartz-video-preview-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let ffmpeg = open_quartz_execution::native_video::find_ffmpeg().unwrap();
+        let red = directory.join("red.mp4");
+        let blue = directory.join("blue.mp4");
+        for (path, color) in [(&red, "red"), (&blue, "blue")] {
+            assert!(ProcessCommand::new(&ffmpeg).args([
+                "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                &format!("color=c={color}:s=16x16:r=10"), "-t", "0.4",
+                "-pix_fmt", "yuv420p", "-y",
+            ]).arg(path).status().unwrap().success());
+        }
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sdk.create_project("Stopped video preview");
+        let (video, _) = project.create_graph_node(NodeFactoryRequest::Input {
+            position: None, data_type: DataType::Sampler2d, input_mode: Some(InputMode::Video),
+        }, project.graph_revision()).unwrap();
+        let (renderer, _) = project.create_graph_node(NodeFactoryRequest::Renderer {
+            position: None,
+        }, project.graph_revision()).unwrap();
+        project.apply_graph_command(GraphCommand::Connect {
+            source: PortKey::new(NodeId::new(&video.id), PortId::new(&video.data.outputs[0].id)),
+            target: PortKey::new(NodeId::new(&renderer.id), PortId::new(&renderer.data.inputs[0].id)),
+        }, project.graph_revision()).unwrap();
+        let (mut bridge, _configuration) = RenderBridge::initialize().unwrap();
+        let wait_for = |bridge: &RenderBridge, playing: bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(update) = bridge.take_update() {
+                    assert!(update.node_error.is_none(), "{:?}", update.node_error);
+                    if playing {
+                        if update.texture.is_some() { break; }
+                    } else {
+                        assert!(update.texture.is_none(), "preview started graph playback");
+                        if update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)) {
+                            break;
+                        }
+                    }
+                }
+                assert!(Instant::now() < deadline, "decoded preview did not arrive");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let capture = directory.join("preview.png");
+        // Replace equal-sized files in the same node, then choose again while paused.
+        for (index, (path, channel)) in [(&red, 0), (&blue, 2), (&red, 0)].into_iter().enumerate() {
+            let mut graph = project.graph_snapshot();
+            let node = graph.nodes.iter_mut().find(|node| node.id == video.id).unwrap();
+            node.data.video_source_type = Some(VideoSourceType::File);
+            node.data.video_file_path = Some(path.to_string_lossy().into_owned());
+            bridge.set_graph(graph.clone(), BTreeMap::new(), false).unwrap();
+            if index == 0 {
+                // An edit with unchanged video config can arrive before decoding finishes.
+                bridge.set_graph(graph, BTreeMap::new(), false).unwrap();
+                bridge.set_playback("stop").unwrap();
+            } else if index == 2 {
+                bridge.set_playback("pause").unwrap();
+            }
+            wait_for(&bridge, false);
+            // The source stays at its initial frame even after the decoder has had time to run.
+            thread::sleep(Duration::from_millis(150));
+            bridge.capture_png(video.id.clone(), capture.clone()).unwrap()
+                .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            let pixels = image::open(&capture).unwrap().to_rgba8();
+            assert_eq!(pixels.dimensions(), (16, 16));
+            assert!(pixels.pixels().all(|pixel| pixel[channel] > 240
+                && pixel[(channel + 1) % 3] < 10 && pixel[(channel + 2) % 3] < 10));
+            if let Some(update) = bridge.take_update() {
+                assert!(update.texture.is_none(), "choosing a file resumed playback");
+            }
+            if index == 1 {
+                bridge.set_playback("play").unwrap();
+                wait_for(&bridge, true);
+                bridge.set_playback("pause").unwrap();
+            }
+        }
+        let mut invalid = project.graph_snapshot();
+        let node = invalid.nodes.iter_mut().find(|node| node.id == video.id).unwrap();
+        node.data.video_source_type = Some(VideoSourceType::File);
+        node.data.video_file_path = Some(directory.join("missing.mp4").to_string_lossy().into_owned());
+        let mut removed = project.graph_snapshot();
+        removed.nodes.retain(|node| node.id != video.id);
+        removed.edges.clear();
+        for (graph, failed) in [(invalid, true), (removed, false)] {
+            bridge.set_graph(graph, BTreeMap::new(), false).unwrap();
+            // A capture of a nonexistent output is a command barrier without producing pixels.
+            assert!(bridge.capture_png("missing-output".into(), capture.clone()).unwrap()
+                .recv_timeout(Duration::from_secs(5)).unwrap().is_err());
+            let update = bridge.take_update().unwrap();
+            assert_eq!(update.status.as_deref().unwrap().contains("failed"), failed);
+            assert!(!update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)));
+            thread::sleep(Duration::from_millis(250));
+            assert!(bridge.take_update().is_none(), "worker kept polling an errored or removed video");
+        }
+        drop(bridge);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

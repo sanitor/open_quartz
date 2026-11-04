@@ -57,6 +57,8 @@ Slint AppWindow / GraphView / Inspector
 - `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
 - Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。
 
+媒体子系统架构与实现边界见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md)：独立 `oq-media` 已落地 macOS VideoToolbox 硬解、保留原生帧及 CoreVideo/Metal GPU 消费；完整跨平台会话、编码、独立 Slint 播放器组件仍为提案，未迁移 Slint Web。
+
 ### 0.2 打包与启动资源约定
 
 `dist-desktop/` 输出按版本、平台和 host architecture 区分：macOS arm64/x64

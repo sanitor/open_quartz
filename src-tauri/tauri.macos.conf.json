@@ -2,7 +2,16 @@
   "bundle": {
     "resources": {
       "runtime/ffmpeg": "runtime/ffmpeg",
-      "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt"
+      "runtime/FFMPEG-NOTICE.txt": "runtime/FFMPEG-NOTICE.txt",
+      "runtime/ffmpeg-media/lib/libavcodec.62.dylib": "runtime/libavcodec.62.dylib",
+      "runtime/ffmpeg-media/lib/libavformat.62.dylib": "runtime/libavformat.62.dylib",
+      "runtime/ffmpeg-media/lib/libavutil.60.dylib": "runtime/libavutil.60.dylib",
+      "runtime/ffmpeg-media/lib/libswscale.9.dylib": "runtime/libswscale.9.dylib",
+      "runtime/ffmpeg-media/COPYING.LGPLv2.1": "runtime/COPYING.LGPLv2.1",
+      "runtime/ffmpeg-media/FFMPEG-MEDIA-NOTICE.txt": "runtime/FFMPEG-MEDIA-NOTICE.txt",
+      "runtime/ffmpeg-media/BUILD-CONFIG.txt": "runtime/BUILD-CONFIG.txt",
+      "runtime/ffmpeg-media/ffmpeg-8.1.1.tar.xz": "runtime/ffmpeg-8.1.1.tar.xz",
+      "runtime/ffmpeg-media/ffmpeg-videotoolbox-hardware.patch": "runtime/ffmpeg-videotoolbox-hardware.patch"
     }
   }
 }

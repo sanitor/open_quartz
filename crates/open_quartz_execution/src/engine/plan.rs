@@ -160,10 +160,12 @@ pub fn build_execution_plan_with_options(
         nodes
             .iter()
             .filter(|node| {
-                matches!(
+                (matches!(
                     node.data.node_type,
                     NodeType::Shader | NodeType::Constant | NodeType::Renderer | NodeType::Onnx
-                ) && !edges.iter().any(|edge| edge.source == node.id)
+                ) || (node.data.node_type == NodeType::Input
+                    && node.data.outputs.iter().any(|port| port.data_type == DataType::Sampler2d)))
+                    && !edges.iter().any(|edge| edge.source == node.id)
             })
             .map(|node| node.id.clone())
             .collect()

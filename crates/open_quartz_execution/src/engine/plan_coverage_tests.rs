@@ -74,6 +74,24 @@ fn plan_helpers_cover_defaults_targets_all_types_and_public_builder() {
 }
 
 #[test]
+fn terminal_external_texture_inputs_are_outputs_but_scalars_are_not() {
+    let mut video = node("video", "input");
+    video.data.input_mode = Some(InputMode::Video);
+    video.data.outputs = serde_json::from_value(json!([
+        {"id":"out","label":"fragColor","dataType":"sampler2D","direction":"output"}
+    ])).unwrap();
+    assert_eq!(build_execution_plan(&[video.clone()], &[]).output_nodes, ["video"]);
+    let scalar = node("scalar", "input");
+    assert!(build_execution_plan(&[scalar], &[]).output_nodes.is_empty());
+    let shader = node("shader", "shader");
+    let edges: Vec<Edge> = serde_json::from_value(json!([
+        {"id":"e","source":"video","sourceHandle":"out","target":"shader","targetHandle":"in"}
+    ])).unwrap();
+    assert_eq!(build_execution_plan(&[video.clone(), shader], &edges).output_nodes, ["shader"]);
+    assert_eq!(build_execution_plan(&[video, node("renderer", "renderer")], &[]).output_nodes, ["renderer"]);
+}
+
+#[test]
 fn plan_covers_builtin_video_renderer_cycle_and_unmatched_edge_paths() {
     let mut video = node("video", "input");
     video.data.input_mode = Some(InputMode::Video);

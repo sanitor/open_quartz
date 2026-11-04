@@ -196,6 +196,30 @@ impl GpuExecutor {
             .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn upload_videotoolbox(
+        &mut self,
+        node_id: &str,
+        frame: &oq_media::VideoToolboxFrame,
+    ) -> Result<(), GpuExecutionError> {
+        let (width, height) = (frame.width(), frame.height());
+        let limit = self.backend.device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > limit || height > limit {
+            return Err(GpuExecutionError::for_node(node_id, "invalid video dimensions"));
+        }
+        let recreate = self.textures.get(node_id).is_none_or(|texture| {
+            texture.width != width || texture.height != height
+                || texture.format != TextureFormat::Rgba8Unorm
+        });
+        if recreate {
+            self.textures.insert(node_id.to_owned(),
+                self.backend.create_texture(width, height, TextureFormat::Rgba8Unorm));
+        }
+        let texture = self.textures.get(node_id).expect("texture was inserted above");
+        self.backend.upload_videotoolbox(frame, texture)
+            .map_err(|message| GpuExecutionError::for_node(node_id, message))
+    }
+
     #[cfg(windows)]
     pub fn upload_d3d12_yuv(
         &mut self,

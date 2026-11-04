@@ -7,6 +7,8 @@ pub mod presenter;
 pub mod preview;
 pub mod readback;
 pub mod target;
+#[cfg(target_os = "macos")]
+pub mod videotoolbox;
 
 pub use backend::{GpuBackend, TextureHandle, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
 #[cfg(windows)]

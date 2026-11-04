@@ -1,2 +1,3 @@
 [env]
-FFMPEG_DIR = { value = "src-tauri/runtime/ffmpeg-shared", relative = true }
+PKG_CONFIG_PATH = { value = "src-tauri/runtime/ffmpeg-media/lib/pkgconfig", relative = true }
+DYLD_LIBRARY_PATH = { value = "src-tauri/runtime/ffmpeg-media/lib", relative = true }

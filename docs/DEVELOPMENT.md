@@ -8,6 +8,7 @@ Web 独立使用 `npm run dev:web`、`npm run build:web`、`npm run preview:web`
 
 macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相机、Windows/Linux 验收和移动端按用户决定延后。详细阶段证据与已知启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md#810-phase-7切换)。下文保留历史 Web/Tauri 单元测试规划，旧 TypeScript engine 路径、工具和 CI 示例不代表当前实现；当前入口以 `package.json` 和 `.github/workflows/` 为准。
 
+媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:runtime` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
 ### 可复用 Slint 编辑器
 

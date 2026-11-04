@@ -1,0 +1,19 @@
+[package]
+name = "oq-media"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.92"
+publish = false
+description = "Framework-independent media frames and native VideoToolbox decoding"
+
+[features]
+default = []
+videotoolbox = ["dep:ffmpeg-next"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format"] }
+
+[[example]]
+name = "decode"
+required-features = ["videotoolbox"]

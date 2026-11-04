@@ -105,6 +105,15 @@ async function prepareRuntime() {
   await copyRequired(join(helperRuntime, ffmpeg), join(runtime, ffmpeg));
   if (platform !== 'win32') await chmod(join(runtime, ffmpeg), 0o755);
   await copyRequired(join(helperRuntime, 'FFMPEG-NOTICE.txt'), join(runtime, 'FFMPEG-NOTICE.txt'));
+  if (platform === 'darwin') {
+    const sdk = join(helperRuntime, 'ffmpeg-media');
+    for (const file of ['libavcodec.62.dylib', 'libavformat.62.dylib', 'libavutil.60.dylib', 'libswscale.9.dylib']) {
+      await copyRequired(join(sdk, 'lib', file), join(runtime, file));
+    }
+    for (const file of ['COPYING.LGPLv2.1', 'FFMPEG-MEDIA-NOTICE.txt', 'BUILD-CONFIG.txt', 'ffmpeg-8.1.1.tar.xz', 'ffmpeg-videotoolbox-hardware.patch']) {
+      await copyRequired(join(sdk, file), join(runtime, file));
+    }
+  }
   if (platform === 'win32') {
     for (const name of await readdir(join(helperRuntime, 'ffmpeg-shared', 'bin'))) {
       if (name.toLowerCase().endsWith('.dll')) {
@@ -190,6 +199,11 @@ function nativeEnv() {
   // Do not let Cargo put a host-target build in a nested cross-target directory.
   delete env.CARGO_BUILD_TARGET;
   if (platform === 'win32') env.FFMPEG_DIR = join(helperRuntime, 'ffmpeg-shared');
+  if (platform === 'darwin') {
+    delete env.FFMPEG_DIR;
+    env.PKG_CONFIG_PATH = join(helperRuntime, 'ffmpeg-media', 'lib', 'pkgconfig');
+    env.DYLD_LIBRARY_PATH = runtime;
+  }
   return env;
 }
 async function installRuntime(directory) {
@@ -206,6 +220,8 @@ async function verifyStartup(binary) {
   const env = { ...process.env };
   delete env.ORT_DYLIB_PATH;
   delete env.OPEN_QUARTZ_FFMPEG_PATH;
+  delete env.DYLD_LIBRARY_PATH;
+  delete env.DYLD_FALLBACK_LIBRARY_PATH;
   await run(binary, ['--help'], { env });
 }
 async function packageDesktop(binary) {
