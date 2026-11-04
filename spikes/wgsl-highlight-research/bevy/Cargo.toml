@@ -1,0 +1,20 @@
+[package]
+name = "open-quartz-highlight-research-maintained"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["maintained"]
+maintained = []
+
+[[bin]]
+name = "highlight-probe"
+path = "../grammar_probe.rs"
+
+[dependencies]
+tree-sitter = "=0.25.10"
+tree-sitter-wgsl-bevy = "=0.1.4"
+serde_json = "1"
+
+[workspace]

@@ -143,6 +143,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Test reusable code editor
+        run: npm run test:editor
+
       - name: Test native desktop (Linux virtual display)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:desktop

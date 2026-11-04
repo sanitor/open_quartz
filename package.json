@@ -9,6 +9,8 @@
     "prepare:desktop": "node scripts/desktop.mjs prepare",
     "test:desktop": "node scripts/desktop.mjs test",
     "test:desktop:ui": "node scripts/desktop.mjs test-ui",
+    "dev:editor": "cargo run --manifest-path crates/slint_code_editor/Cargo.toml --example editor",
+    "test:editor": "cargo test --manifest-path crates/slint_code_editor/Cargo.toml --locked",
     "test:desktop:shaders": "node scripts/desktop.mjs test-ui-shaders",
     "report:desktop:ui": "node scripts/slint-ui-report.mjs",
     "dev:desktop:ui": "node scripts/desktop.mjs dev-ui",

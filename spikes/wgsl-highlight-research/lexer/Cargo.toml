@@ -1,0 +1,17 @@
+[package]
+name = "open-quartz-highlight-lexer-research"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+wgsl-parse = { version = "=0.3.2", default-features = false }
+logos = "=0.16.1"
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
+serde_json = "1"
+
+[[bin]]
+name = "highlight-probe"
+path = "../lexer_probe.rs"
+
+[workspace]

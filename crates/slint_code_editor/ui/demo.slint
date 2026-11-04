@@ -1,0 +1,29 @@
+import { CodeEditor, CodeEditorBridge } from "code_editor.slint";
+import { Button, CheckBox } from "std-widgets.slint";
+export { CodeEditorBridge }
+export component EditorDemo inherits Window {
+    title: "Slint Code Editor";
+    width: 900px;
+    height: 640px;
+    in-out property <string> source: "// 中文 🙂 — WGSL\n@fragment fn main() -> @location(0) vec4f {\n    let value = 0x1.fp+2;\n    return vec4f(value);\n}\n";
+    in-out property <string> json: "{\n  \"name\": \"独立编辑器 🙂\",\n  \"enabled\": true,\n  \"values\": [1, 2.5, null]\n}\n";
+    in-out property <string> language: "wgsl";
+    in-out property <bool> readonly;
+    in-out property <bool> dark;
+    in-out property <bool> custom;
+    callback configure-provider(int, bool);
+    VerticalLayout {
+        HorizontalLayout {
+            height: 32px;
+            Button { text: "WGSL"; clicked => { root.language = "wgsl"; } }
+            Button { text: "Plain"; clicked => { root.language = "plain"; } }
+            CheckBox { text: "Read only"; checked <=> root.readonly; }
+            CheckBox { text: "Dark"; checked <=> root.dark; }
+            CheckBox { text: "Custom JSON"; checked <=> root.custom; toggled => { root.configure-provider(right.document-handle, self.checked); right.refresh(); } }
+        }
+        HorizontalLayout {
+            left := CodeEditor { text <=> root.source; language: root.language; dark: root.dark; read-only: root.readonly; label: "WGSL source"; }
+            right := CodeEditor { text <=> root.json; language: "json"; dark: root.dark; label: "JSON source"; }
+        }
+    }
+}

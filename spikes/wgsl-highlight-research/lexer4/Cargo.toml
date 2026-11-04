@@ -1,0 +1,21 @@
+[package]
+name = "open-quartz-highlight-lexer-research-v4"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "lexer-probe-v4"
+path = "../lexer_probe.rs"
+
+[dependencies]
+wgsl-parse = { version = "=0.4.0", default-features = false }
+logos = "=0.16.1"
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
+serde_json = "1"
+
+[workspace]
+
+# Pin the transitive crate: newer 0.4.x releases require Rust 1.97.1.
+[dependencies.wgsl-types]
+version = "=0.4.0"

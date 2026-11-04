@@ -1,0 +1,186 @@
+import { Button, LineEdit, SpinBox } from "std-widgets.slint";
+
+export global CodeEditorBridge {
+    in-out property <int> tick;
+    in-out property <bool> ready;
+    callback create(string) -> [int];
+    callback replace(int, string);
+    callback text(int) -> string;
+    pure callback frame(int, float, float, float, string, bool, bool, float, float, bool) -> image;
+    callback command(int, string, string, bool, bool, bool, bool) -> bool;
+    callback pointer(int, int, float, float) -> string;
+    callback scroll(int, float, float);
+    callback select(int, int, int);
+    callback find(int, string, bool) -> int;
+    callback goto-line(int, int);
+    callback replace-matches(int, string, string, bool) -> string;
+    callback focus(int, bool);
+    callback error(int) -> string;
+    callback read-only(int, bool);
+}
+
+// UI and editing controller use only public Slint and cosmic-text APIs.
+// Host calls install_editor!(window, CodeEditorBridge) once per window.
+export component CodeEditor inherits Rectangle {
+    in-out property <string> text;
+    in property <string> language: "plain";
+    in property <bool> read-only: false;
+    in property <bool> enabled: true;
+    in property <string> label: "Code source";
+    in property <bool> dark: false;
+    in-out property <string> find-query;
+    in property <bool> show-toolbar: true;
+    callback edited(string);
+    private property <[int]> document-lease;
+    private property <int> document-id: root.document-lease.length > 0 ? root.document-lease[0] : -1;
+    out property <int> document-handle: root.document-id;
+    private property <int> revision;
+    private property <int> tick: CodeEditorBridge.tick;
+    private property <bool> ready: CodeEditorBridge.ready;
+    private property <int> matches;
+    private property <string> replacement;
+    private property <int> goto-line: 1;
+    private property <string> error;
+    border-width: 1px;
+    border-color: #dddde2;
+    background: white;
+    clip: true;
+    init => { if root.ready && root.document-id < 0 { root.document-lease = CodeEditorBridge.create(root.text); } }
+    changed ready => { if root.ready && root.document-id < 0 { root.document-lease = CodeEditorBridge.create(root.text); } }
+    changed text => {
+        if root.document-id >= 0 {
+            CodeEditorBridge.replace(root.document-id, root.text);
+            root.matches = CodeEditorBridge.find(root.document-id, root.find-query, false);
+            root.revision += 1;
+        }
+    }
+    changed read-only => { CodeEditorBridge.read-only(root.document-id, root.read-only || !root.enabled); }
+    changed enabled => { CodeEditorBridge.read-only(root.document-id, root.read-only || !root.enabled); }
+    changed tick => {
+        if root.document-id >= 0 {
+            if root.text != CodeEditorBridge.text(root.document-id) {
+                root.text = CodeEditorBridge.text(root.document-id);
+                root.edited(root.text);
+            }
+            root.revision += 1;
+        }
+    }
+    public function focus-editor() { input.focus(); }
+    public function select-all() { CodeEditorBridge.select(root.document-id, 0, -1); root.revision += 1; }
+    public function set-selection-offsets(anchor: int, head: int) { CodeEditorBridge.select(root.document-id, anchor, head); root.revision += 1; }
+    public function refresh() { root.revision += 1; }
+    function update-text(value: string) {
+        if root.text != value { CodeEditorBridge.replace(root.document-id, value); root.text = value; root.edited(value); }
+        root.error = CodeEditorBridge.error(root.document-id);
+        root.matches = CodeEditorBridge.find(root.document-id, root.find-query, false);
+        root.revision += 1;
+    }
+    function run-command(key: string, shift: bool) {
+        CodeEditorBridge.read-only(root.document-id, root.read-only || !root.enabled);
+        CodeEditorBridge.command(root.document-id, key, "", shift, true, false, true);
+        root.update-text(CodeEditorBridge.text(root.document-id));
+        input.focus();
+    }
+    VerticalLayout {
+        spacing: 0px;
+        if root.show-toolbar: VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                height: 28px;
+                spacing: 3px;
+                SpinBox { value <=> root.goto-line; minimum: 1; maximum: 1000000; width: 74px; }
+                Button { text: "Go"; enabled: root.enabled; clicked => { CodeEditorBridge.goto-line(root.document-id, root.goto-line); root.revision += 1; input.focus(); } }
+                Text { text: root.find-query == "" ? "" : root.matches + " matches"; vertical-alignment: center; horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                height: 28px;
+                spacing: 3px;
+                LineEdit {
+                    text <=> root.find-query;
+                    placeholder-text: "Find";
+                    enabled: root.enabled;
+                    min-width: 0px;
+                    edited => { root.matches = CodeEditorBridge.find(root.document-id, self.text, false); root.revision += 1; }
+                    accepted => { root.matches = CodeEditorBridge.find(root.document-id, self.text, true); root.revision += 1; input.focus(); }
+                }
+                Button {
+                    text: "Next";
+                    enabled: root.enabled && root.find-query != "";
+                    clicked => { root.matches = CodeEditorBridge.find(root.document-id, root.find-query, true); root.revision += 1; input.focus(); }
+                }
+            }
+            HorizontalLayout {
+                height: 28px;
+                spacing: 3px;
+                LineEdit { text <=> root.replacement; placeholder-text: "Replace"; enabled: root.enabled && !root.read-only; min-width: 0px; }
+                Button { text: "Replace"; enabled: root.enabled && !root.read-only && root.find-query != ""; clicked => { root.update-text(CodeEditorBridge.replace-matches(root.document-id, root.find-query, root.replacement, false)); input.focus(); } }
+                Button { text: "All"; enabled: root.enabled && !root.read-only && root.find-query != ""; clicked => { root.update-text(CodeEditorBridge.replace-matches(root.document-id, root.find-query, root.replacement, true)); input.focus(); } }
+            }
+        }
+        surface := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            Image {
+                preferred-width: 0px;
+                preferred-height: 0px;
+                width: parent.width;
+                height: parent.height;
+                image-fit: fill;
+                source: {
+                    root.revision;
+                    CodeEditorBridge.frame(root.document-id, surface.width / 1px, surface.height / 1px, 1, root.language, root.read-only || !root.enabled, input.has-focus && root.enabled, surface.absolute-position.x / 1px, surface.absolute-position.y / 1px, root.dark)
+                }
+            }
+            input := FocusScope {
+                enabled: root.enabled;
+                accessible-role: text-input;
+                accessible-label: root.label;
+                accessible-value: root.text;
+                accessible-read-only: root.read-only;
+                focus-gained => { CodeEditorBridge.read-only(root.document-id, root.read-only || !root.enabled); CodeEditorBridge.focus(root.document-id, true); root.revision += 1; }
+                focus-lost => { CodeEditorBridge.focus(root.document-id, false); root.revision += 1; }
+                accessible-action-default => { self.focus(); }
+                accessible-action-set-value(value) => {
+                    if !root.read-only && root.enabled { root.update-text(value); }
+                }
+                accessible-action-set-selection-offsets(anchor, head) => { root.set-selection-offsets(anchor, head); }
+                key-pressed(event) => {
+                    CodeEditorBridge.read-only(root.document-id, root.read-only || !root.enabled);
+                    if CodeEditorBridge.command(root.document-id, event.text, "", event.modifiers.shift, event.modifiers.control, event.modifiers.alt, event.modifiers.meta) {
+                        root.update-text(CodeEditorBridge.text(root.document-id));
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            context-menu := ContextMenuArea {
+                Menu {
+                    MenuItem { title: "Undo"; enabled: root.enabled && !root.read-only; activated => { root.run-command("z",false); } }
+                    MenuItem { title: "Redo"; enabled: root.enabled && !root.read-only; activated => { root.run-command("z",true); } }
+                    MenuSeparator {}
+                    MenuItem { title: "Cut"; enabled: root.enabled && !root.read-only; activated => { root.run-command("x",false); } }
+                    MenuItem { title: "Copy"; enabled: root.enabled; activated => { root.run-command("c",false); } }
+                    MenuItem { title: "Paste"; enabled: root.enabled && !root.read-only; activated => { root.run-command("v",false); } }
+                    MenuSeparator {}
+                    MenuItem { title: "Select all"; enabled: root.enabled; activated => { root.run-command("a",false); } }
+                }
+                TouchArea {
+                    enabled: root.enabled;
+                    mouse-cursor: MouseCursor.text;
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                            input.focus();
+                            root.update-text(CodeEditorBridge.pointer(root.document-id, 0, self.mouse-x / 1px, self.mouse-y / 1px));
+                        } else if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                            context-menu.show({x:self.mouse-x,y:self.mouse-y});
+                        }
+                    }
+                    moved => { root.update-text(CodeEditorBridge.pointer(root.document-id, 1, self.mouse-x / 1px, self.mouse-y / 1px)); }
+                    double-clicked => { root.update-text(CodeEditorBridge.pointer(root.document-id, 2, self.mouse-x / 1px, self.mouse-y / 1px)); }
+                    scroll-event(event) => { CodeEditorBridge.scroll(root.document-id, event.delta-x / 1px, event.delta-y / 1px); root.revision += 1; return accept; }
+                }
+            }
+        }
+        if root.error != "": Text { text: root.error; color: #c03030; wrap: word-wrap; }
+    }
+}
