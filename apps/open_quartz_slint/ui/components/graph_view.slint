@@ -128,6 +128,7 @@ export component GraphView inherits Rectangle {
     in property <bool> can-undo;
     in property <bool> can-redo;
     callback port-selected(string, string, bool);
+    callback port-dropped(string, string, bool, float, float, float);
     callback edge-selected(string);
     callback reconnect-edge();
     callback delete-edge();
@@ -151,6 +152,13 @@ export component GraphView inherits Rectangle {
     private property <length> saved-world-x;
     private property <length> saved-world-y;
     private property <bool> preserve-view;
+    private property <bool> port-drag-armed;
+    private property <bool> port-dragging;
+    private property <bool> port-drag-output;
+    private property <length> port-start-x;
+    private property <length> port-start-y;
+    private property <length> port-end-x;
+    private property <length> port-end-y;
 
     private property <float> manual-zoom: 1;
     private property <bool> fitting: false;
@@ -213,7 +221,7 @@ export component GraphView inherits Rectangle {
     changed zoom => { zoom-readout.text = round(root.zoom * 100) + "%"; }
 
     function set-zoom(value: float) {
-        if (root.drag-node-index >= 0) { return; }
+        if (root.drag-node-index >= 0 || root.port-drag-armed) { return; }
         // Preserve the graph point under the viewport center, clamping at its bounds.
         let graph-x = (scroll.visible-width / 2 - scroll.content-x - root.canvas-offset-x) / root.zoom;
         let graph-y = (scroll.visible-height / 2 - scroll.content-y - root.canvas-offset-y) / root.zoom;
@@ -281,6 +289,8 @@ export component GraphView inherits Rectangle {
                 root.drag-node-index = -1;
                 root.drag-offset-x = 0px;
                 root.drag-offset-y = 0px;
+                root.port-drag-armed = false;
+                root.port-dragging = false;
                 if (!root.busy && root.connection-active) { root.cancel-connection(); }
                 return accept;
             }
@@ -382,6 +392,20 @@ export component GraphView inherits Rectangle {
                         control-2-y: (edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
                         x: (edge.target-x + root.origin-x + (edge.target-index == root.drag-node-index ? root.drag-offset-x / 1px : 0)) * root.zoom + root.canvas-offset-x / 1px;
                         y: (edge.target-y + root.origin-y + (edge.target-index == root.drag-node-index ? root.drag-offset-y / 1px : 0)) * root.zoom + root.canvas-offset-y / 1px;
+                    }
+                }
+
+                if root.port-dragging: Path {
+                    width: canvas.width; height: canvas.height;
+                    fit: preserve;
+                    stroke: Theme.accent; stroke-width: 2px;
+                    MoveTo { x: root.port-start-x / 1px; y: root.port-start-y / 1px; }
+                    CubicTo {
+                        control-1-x: root.port-start-x / 1px + (root.port-drag-output ? 48 : -48) * root.zoom;
+                        control-1-y: root.port-start-y / 1px;
+                        control-2-x: root.port-end-x / 1px + (root.port-drag-output ? -48 : 48) * root.zoom;
+                        control-2-y: root.port-end-y / 1px;
+                        x: root.port-end-x / 1px; y: root.port-end-y / 1px;
                     }
                 }
 
@@ -542,22 +566,58 @@ export component GraphView inherits Rectangle {
                         }
                         for port[port-index] in node.ports: port-area := TouchArea {
                             private property <color> port-color: port.output ? root.output-color(port.data-type) : #8e8e93;
-                            x: node.kind == "Math" && port.output ? parent.width / 2 : 0px;
+                            private property <bool> dragged;
+                            x: (node.kind == "Math" && port.output ? parent.width / 2 : 0px) - 6px * root.zoom;
                             y: (port.y * 1px - 11px) * root.zoom;
-                            width: node.kind == "Math" ? parent.width / 2 : parent.width;
+                            width: (node.kind == "Math" ? parent.width / 2 : parent.width) + 12px * root.zoom;
                             height: 22px * root.zoom;
                             enabled: !root.busy;
                             accessible-role: button;
                             accessible-label: (port.output ? "Output " : "Input ") + node.label + " " + port.label;
-                            clicked => { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); }
-                            accessible-action-default => { self.clicked(); }
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.cancel {
+                                    root.port-drag-armed = false;
+                                    root.port-dragging = false;
+                                    self.dragged = true;
+                                } else if event.button == PointerEventButton.left {
+                                    if event.kind == PointerEventKind.down {
+                                        graph-focus.focus();
+                                        self.dragged = false;
+                                        root.port-drag-armed = true;
+                                        root.port-drag-output = port.output;
+                                        root.port-start-x = root.canvas-offset-x + (node.x + root.origin-x + (port.output ? node.width : 0)) * root.zoom * 1px;
+                                        root.port-start-y = root.canvas-offset-y + (node.y + root.origin-y + port.y) * root.zoom * 1px;
+                                        root.port-end-x = root.port-start-x;
+                                        root.port-end-y = root.port-start-y;
+                                    } else if event.kind == PointerEventKind.up {
+                                        let commit = root.port-drag-armed && self.dragged;
+                                        let x = (self.absolute-position.x + self.mouse-x - canvas.absolute-position.x - root.canvas-offset-x) / 1px / root.zoom - root.origin-x;
+                                        let y = (self.absolute-position.y + self.mouse-y - canvas.absolute-position.y - root.canvas-offset-y) / 1px / root.zoom - root.origin-y;
+                                        root.port-drag-armed = false;
+                                        root.port-dragging = false;
+                                        if commit { root.port-dropped(node.node-id, port.port-id, port.output, x, y, 6 / root.zoom); }
+                                    }
+                                }
+                            }
+                            moved => {
+                                if self.pressed && root.port-drag-armed {
+                                    if Math.abs(self.mouse-x - self.pressed-x) >= 3px || Math.abs(self.mouse-y - self.pressed-y) >= 3px {
+                                        self.dragged = true;
+                                        root.port-dragging = true;
+                                    }
+                                    root.port-end-x = self.absolute-position.x + self.mouse-x - canvas.absolute-position.x;
+                                    root.port-end-y = self.absolute-position.y + self.mouse-y - canvas.absolute-position.y;
+                                }
+                            }
+                            clicked => { if !self.dragged { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); } }
+                            accessible-action-default => { graph-focus.focus(); root.port-selected(node.node-id, port.port-id, port.output); }
                             if node.kind != "Math" && port.output && port-index > 0 && !node.ports[port-index - 1].output: Rectangle {
-                                x: 12px * root.zoom; y: -3px * root.zoom;
-                                width: parent.width - 24px * root.zoom; height: 1px * root.zoom;
+                                x: 18px * root.zoom; y: -3px * root.zoom;
+                                width: parent.width - 36px * root.zoom; height: 1px * root.zoom;
                                 background: #f0f0f0;
                             }
                             Rectangle {
-                                x: port.output ? parent.width - 6px * root.zoom : -6px * root.zoom;
+                                x: port.output ? parent.width - 12px * root.zoom : 0px;
                                 y: 5px * root.zoom; width: 12px * root.zoom; height: 12px * root.zoom;
                                 border-radius: 6px * root.zoom;
                                 border-width: 2px * root.zoom;
@@ -565,9 +625,9 @@ export component GraphView inherits Rectangle {
                                 background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port.output || port.connected ? port-area.port-color : white;
                             }
                             if root.zoom >= 0.25: Text {
-                                x: port.output && node.kind != "Math" ? parent.width / 2 : 14px * root.zoom;
+                                x: port.output && node.kind != "Math" ? parent.width / 2 : 20px * root.zoom;
                                 y: 0px; height: parent.height;
-                                width: node.kind == "Math" ? parent.width - 28px * root.zoom : parent.width / 2 - 14px * root.zoom;
+                                width: node.kind == "Math" ? parent.width - 40px * root.zoom : parent.width / 2 - 20px * root.zoom;
                                 text: port.label;
                                 color: port-area.has-hover ? Theme.accent : Theme.foreground;
                                 font-size: (node.kind == "Math" ? 10px : 11px) * root.zoom;
@@ -576,8 +636,8 @@ export component GraphView inherits Rectangle {
                                 overflow: elide;
                             }
                             if root.zoom >= 0.25 && node.kind != "Math": Text {
-                                x: port.output ? 14px * root.zoom : parent.width / 2;
-                                width: parent.width / 2 - 14px * root.zoom; height: parent.height;
+                                x: port.output ? 20px * root.zoom : parent.width / 2;
+                                width: parent.width / 2 - 20px * root.zoom; height: parent.height;
                                 text: port.data-type;
                                 color: #aeaeb2;
                                 font-size: 9px * root.zoom;

@@ -146,17 +146,11 @@ export component Inspector inherits Rectangle {
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in property <bool> shader-read-only: false;
-    in property <[string]> shader-line-numbers;
-    in property <[int]> shader-line-offsets;
-    in property <[int]> shader-find-offsets;
-    in property <[int]> shader-find-lengths;
-    in-out property <string> shader-find-query;
     in-out property <bool> auto-size;
     in-out property <int> output-width;
     in-out property <int> output-height;
     callback label-draft-changed(string);
     callback shader-draft-changed(string);
-    callback shader-find-requested(string);
     callback output-size-draft-changed(int, int, bool);
     callback uniform-draft-changed(string, string);
     callback apply-label();
@@ -292,17 +286,13 @@ export component Inspector inherits Rectangle {
                     title: "SHADER EDITOR";
                     CodeEditor {
                         text <=> root.shader-code;
+                        language: "wgsl";
+                        label: "Shader source";
                         read-only: root.shader-read-only;
                         enabled: !root.project-busy;
-                        line-numbers: root.shader-line-numbers;
-                        line-offsets: root.shader-line-offsets;
-                        find-offsets: root.shader-find-offsets;
-                        find-lengths: root.shader-find-lengths;
-                        find-query <=> root.shader-find-query;
                         preferred-height: 220px;
                         max-height: 320px;
                         edited => { root.shader-draft-changed(self.text); }
-                        find-requested(query) => { root.shader-find-requested(query); }
                     }
                 }
                 // Validation remains visible even with the editor collapsed.

@@ -50,7 +50,7 @@ Slint AppWindow / GraphView / Inspector
 - NativeHost 与 Slint 使用同一组 wgpu 30 Device/Queue；Renderer 正常呈现直接导入纹理。只有显式 PNG 截图执行 readback/编码，不把 PNG/base64 当实时预览。
 - Image/Framebuffer 解码、项目 I/O、模型读取/下载不阻塞 UI；ONNX 会话由 NativeHost 管理。Video file/camera 配置持久化并由 host 对齐，缺失资源/权限/推理失败显示真实错误。
 - GraphView 将 Shader、Constant、Renderer 和 sampler 输出节点的实际共享 GPU 纹理导入原生卡片，显示分辨率并允许收起预览；实时预览不经过 PNG/base64，Renderer 侧栏复用 GPU 输出纹理。
-- 原生 Shader 编辑器由 Slint 多行 `TextInput` 与固定行号栏组成；Rust 提供 UTF-8 字节安全的行号、跳转、Find/Next 匹配范围，源码仍显式 Apply。Slint 1.18 没有可编辑 per-token 富文本，故不提供语法着色或补全。
+- 原生 Shader 编辑器使用独立 `crates/slint_code_editor`：cosmic-text 排版/编辑与 Slint 公开 UI API，提供 WGSL/JSON/plain 高亮、行号、导航、查找替换和本地历史，源码仍显式 Apply。系统 IME、完整辅助技术和 Windows/Linux 输入验收仍有缺口。
 - GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 NativeHost / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
 - 原生 Shader 菜单包含 7 个分类、34 个预设。AppKit 实际打开并取消了 FILE → Open 与 Save As 对话框；GUI 键盘验收边界见原生 app README。
 - Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。

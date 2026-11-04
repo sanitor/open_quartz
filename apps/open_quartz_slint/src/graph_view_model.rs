@@ -167,6 +167,63 @@ impl GraphViewModel {
     }
 }
 
+/// Resolve a captured port drag on release. The originating TouchArea owns
+/// pointer capture, so the destination never receives a click or pointer-up.
+/// Coordinates and slop are in graph/world units, independent of pan/zoom.
+pub fn port_at(
+    nodes: &dyn slint::Model<Data = GraphNode>,
+    x: f32,
+    y: f32,
+    slop: f32,
+) -> Option<(String, String, bool)> {
+    use slint::Model;
+    if !x.is_finite() || !y.is_finite() || !slop.is_finite() || slop < 0.0 {
+        return None;
+    }
+    // Later nodes paint over earlier nodes. Do not connect through their body.
+    for index in (0..nodes.row_count()).rev() {
+        let Some(node) = nodes.row_data(index) else {
+            continue;
+        };
+        if x < node.x - slop
+            || x > node.x + node.width + slop
+            || y < node.y
+            || y > node.y + node.height
+        {
+            continue;
+        }
+        let mut hit = None;
+        let mut nearest = f32::INFINITY;
+        for port in node.ports.iter() {
+            let left = if node.kind == "Math" && port.output {
+                node.width / 2.0
+            } else {
+                0.0
+            };
+            let right = if node.kind == "Math" && !port.output {
+                node.width / 2.0
+            } else {
+                node.width
+            };
+            let distance = (y - node.y - port.y).abs();
+            if x >= node.x + left - slop
+                && x <= node.x + right + slop
+                && distance <= 11.0 + slop
+                && distance < nearest
+            {
+                nearest = distance;
+                hit = Some((
+                    node.node_id.to_string(),
+                    port.port_id.to_string(),
+                    port.output,
+                ));
+            }
+        }
+        return hit;
+    }
+    None
+}
+
 fn node_width(node: &ProjectNode) -> f32 {
     if node.node_type == NodeType::Math {
         120.0
@@ -285,6 +342,23 @@ mod tests {
         Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey,
         Position,
     };
+
+    #[test]
+    fn drag_port_hit_testing_uses_world_geometry_and_frontmost_node() {
+        let make = |id:&str,x:f32,y:f32| GraphNode {
+            node_id:id.into(), x, y, width:200.0, height:150.0,
+            ports:ModelRc::new(VecModel::from(vec![GraphPort{port_id:"input".into(),y:41.0,..Default::default()},GraphPort{port_id:"output".into(),y:67.0,output:true,..Default::default()}])),
+            ..Default::default()
+        };
+        let nodes=VecModel::from(vec![make("back",-300.0,-100.0),make("front",-250.0,-50.0)]);
+        assert_eq!(port_at(&nodes,-303.0,-59.0,6.0),Some(("back".into(),"input".into(),false)));
+        assert_eq!(port_at(&nodes,-200.0,-9.0,0.0),Some(("front".into(),"input".into(),false)));
+        assert_eq!(port_at(&nodes,-200.0,17.0,0.0),Some(("front".into(),"output".into(),true)));
+        assert_eq!(port_at(&nodes,-200.0,17.0,40.0),Some(("front".into(),"output".into(),true)));
+        assert_eq!(port_at(&nodes,-200.0,-49.0,6.0),None);
+        assert_eq!(port_at(&nodes,500.0,500.0,6.0),None);
+        assert_eq!(port_at(&nodes,f32::NAN,0.0,6.0),None);
+    }
     use slint::Model;
 
     #[test]

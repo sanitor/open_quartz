@@ -17,6 +17,7 @@ open_quartz_sdk = { path = "../../crates/open_quartz_sdk" }
 open_quartz_execution = { path = "../../crates/open_quartz_execution" }
 open_quartz_native_host = { path = "../../crates/open_quartz_native_host" }
 open_quartz_host_api = { path = "../../crates/open_quartz_host_api" }
+slint_code_editor = { path = "../../crates/slint_code_editor" }
 directories = "6"
 pollster = "0.4"
 base64 = "0.22"

@@ -4,7 +4,8 @@ import { Theme } from "theme.slint";
 import { TopBar, FactoryEntry, FactoryGroup } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
 import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow } from "components/inspector.slint";
-export { GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow, FactoryEntry, FactoryGroup }
+import { CodeEditorBridge } from "code_editor.slint";
+export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow, FactoryEntry, FactoryGroup }
 
 export component AppWindow inherits Window {
     title: root.project-name + " — OpenQuartz";
@@ -44,12 +45,6 @@ export component AppWindow inherits Window {
     in property <float> graph-content-width;
     in property <float> graph-content-height;
     in property <bool> inspector-shader-read-only;
-    in property <[string]> inspector-shader-line-numbers;
-    in property <[int]> inspector-shader-line-offsets;
-    in property <[int]> inspector-shader-find-offsets;
-    in property <[int]> inspector-shader-find-lengths;
-    in-out property <string> inspector-shader-find-query;
-    callback inspector-shader-find-requested(string);
     in property <float> graph-origin-x;
     in property <float> graph-origin-y;
     in property <bool> busy;
@@ -121,6 +116,7 @@ export component AppWindow inherits Window {
     in property <bool> can-undo;
     in property <bool> can-redo;
     callback graph-port-selected(string, string, bool);
+    callback graph-port-dropped(string, string, bool, float, float, float);
     callback graph-edge-selected(string);
     callback graph-reconnect-edge();
     callback graph-delete-edge();
@@ -200,6 +196,7 @@ export component AppWindow inherits Window {
                 can-undo: root.can-undo;
                 can-redo: root.can-redo;
                 port-selected(node-id, port-id, output) => { root.graph-port-selected(node-id, port-id, output); }
+                port-dropped(node-id, port-id, output, x, y, slop) => { root.graph-port-dropped(node-id, port-id, output, x, y, slop); }
                 edge-selected(edge-id) => { root.graph-edge-selected(edge-id); }
                 reconnect-edge => { root.graph-reconnect-edge(); }
                 delete-edge => { root.graph-delete-edge(); }
@@ -229,12 +226,6 @@ export component AppWindow inherits Window {
                     has-selection: root.inspector-has-selection;
                     node-type: root.inspector-node-type;
                     shader-read-only: root.inspector-shader-read-only;
-                    shader-line-numbers: root.inspector-shader-line-numbers;
-                    shader-line-offsets: root.inspector-shader-line-offsets;
-                    shader-find-offsets: root.inspector-shader-find-offsets;
-                    shader-find-lengths: root.inspector-shader-find-lengths;
-                    shader-find-query <=> root.inspector-shader-find-query;
-                    shader-find-requested(query) => { root.inspector-shader-find-requested(query); }
                     selection-message: root.inspector-selection-message;
                     project-busy: root.busy;
                     is-shader: root.inspector-is-shader;

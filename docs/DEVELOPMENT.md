@@ -8,6 +8,22 @@ Web 独立使用 `npm run dev:web`、`npm run build:web`、`npm run preview:web`
 
 macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相机、Windows/Linux 验收和移动端按用户决定延后。详细阶段证据与已知启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md#810-phase-7切换)。下文保留历史 Web/Tauri 单元测试规划，旧 TypeScript engine 路径、工具和 CI 示例不代表当前实现；当前入口以 `package.json` 和 `.github/workflows/` 为准。
 
+
+### 可复用 Slint 编辑器
+
+`crates/slint_code_editor` 是本仓孵化的独立 Cargo workspace，不依赖 OpenQuartz。`npm run dev:editor` 启动 WGSL/JSON 双实例示例，`npm run test:editor` 运行组件测试。OpenQuartz 通过 path dependency 消费组件；后续拆仓不需要迁移应用的 graph/SDK/GPU 代码。
+
+组件使用说明随包放置：[简体中文](../crates/slint_code_editor/README.zh-CN.md) / [English](../crates/slint_code_editor/README.md)，包含独立应用接入、Slint 属性/回调/函数参考及当前支持边界。
+
+消费者的 `slint-build` include paths 添加该包的 `ui/`，在 `.slint` 中导入 `CodeEditor` 并向根编译单元导出 `CodeEditorBridge`。Rust 在窗口创建后、显示前调用 `slint_code_editor::install_editor!(window, CodeEditorBridge)` 一次。宏返回该窗口的 `Rc<RefCell<Runtime>>`；自定义高亮可通过组件的 `document-handle` 与 `Runtime::document_mut(...).set_provider(...)` 接入，再调用组件 `refresh()`。provider 返回有序、不重叠、非空且位于 UTF-8 字符边界的 `Highlight` 区间；不合法输出会明确触发契约断言，不视为编译诊断。示例含真实 custom provider 开关。
+
+公共 UI 属性：`text`、`language`（`plain`/`wgsl`/`json`）、`dark`、`read-only`、`enabled`、`label`、`find-query`、`show-toolbar`；动作有 `focus-editor`、`select-all`、`set-selection-offsets`、`refresh`，用户文本修改发出 `edited(string)`。程序替换全文建立新文档并清空文本历史；样式切换不进入历史。组件通过 model lease 在动态销毁时释放文档。
+
+运行时使用公开 `slint::winit_030` 接收桌面 IME 事件；`on_winit_window_event` 每窗口只有一个过滤器槽位，宿主不能再无协调地覆盖它。`Image` 是 cosmic-text 同一编辑排版的输出，不是叠在另一份 TextInput 上的镜像。当前 no-wrap，滚轮支持横纵滚动；原有 CRLF 保留，新 Enter 使用 LF；内置词法器全量同步重扫，不声称大文档/长行端到端低延迟。
+
+本轮 macOS 验证不等于跨平台发布验收。真实输入法候选操作尚未验证；读屏器完整 caret/selection/text-run 报告缺少 Slint 公开接口，现有 accessible value/set-value/selection-action 不等于完整文本无障碍。详细证据见 [研究与实现记录](WGSL_SYNTAX_HIGHLIGHT_RESEARCH.md#11-本仓组件实现与验证)。
+
+
 ## 单元测试计划
 
 ### 1. 目标

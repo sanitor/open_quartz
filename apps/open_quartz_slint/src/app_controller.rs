@@ -32,7 +32,6 @@ struct InspectorDraft {
     node_id: String,
     label: String,
     shader_code: String,
-    shader_find_query: String,
     auto_size: bool,
     output_width: i32,
     output_height: i32,
@@ -47,7 +46,6 @@ impl InspectorDraft {
             node_id: node.id.clone(),
             label: node.data.label.clone(),
             shader_code: node.data.shader_code.clone(),
-            shader_find_query: String::new(),
             auto_size: node.data.auto_size != Some(false),
             output_width: node.data.width.unwrap_or(512).clamp(1, 8192) as i32,
             output_height: node.data.height.unwrap_or(512).clamp(1, 8192) as i32,
@@ -613,14 +611,9 @@ impl AppController {
                     if let Some(draft) = controller.inspector_draft.as_mut() {
                         draft.shader_code = text.to_string();
                     }
-                    controller.publish_shader_editor_metadata();
                     controller.publish_inspector_dirty();
                 }
             }
-        });
-        let weak = Rc::downgrade(&controller);
-        window.on_inspector_shader_find_requested(move |query| {
-            if let Some(controller) = weak.upgrade() { controller.borrow_mut().publish_shader_find_offsets(query.as_str()); }
         });
         let weak = Rc::downgrade(&controller);
         window.on_inspector_output_size_draft_changed(move |width, height, auto_size| {
@@ -742,6 +735,12 @@ impl AppController {
                 controller
                     .borrow_mut()
                     .select_port(node_id.as_str(), port_id.as_str(), output);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_graph_port_dropped(move |node_id, port_id, output, x, y, slop| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().drop_port(node_id.as_str(), port_id.as_str(), output, x, y, slop);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -1859,20 +1858,6 @@ impl AppController {
         window.invoke_graph_end_projection();
         Some(stats)
     }
-    fn publish_shader_editor_metadata(&self) {
-        let Some(window) = self.window.upgrade() else { return; };
-        let Some(draft) = self.inspector_draft.as_ref() else { return; };
-        let metadata = crate::code_editor::metadata(&draft.shader_code, &draft.shader_find_query);
-        window.set_inspector_shader_line_numbers(slint::ModelRc::new(slint::VecModel::from(metadata.line_numbers.into_iter().map(Into::into).collect::<Vec<slint::SharedString>>())));
-        window.set_inspector_shader_line_offsets(slint::ModelRc::new(slint::VecModel::from(metadata.line_offsets)));
-        window.set_inspector_shader_find_offsets(slint::ModelRc::new(slint::VecModel::from(metadata.find_offsets)));
-        window.set_inspector_shader_find_lengths(slint::ModelRc::new(slint::VecModel::from(metadata.find_lengths)));
-    }
-
-    fn publish_shader_find_offsets(&mut self, query: &str) {
-        if let Some(draft) = self.inspector_draft.as_mut() { draft.shader_find_query = query.to_owned(); }
-        self.publish_shader_editor_metadata();
-    }
 
     fn select_node(&mut self, node_id: &str, additive: bool) {
         if self.edits_blocked() {
@@ -2121,8 +2106,6 @@ impl AppController {
             node.node_type,
             NodeType::Shader | NodeType::Constant
         ));
-        self.publish_shader_editor_metadata();
-        window.set_inspector_shader_find_query(draft.shader_find_query.as_str().into());
         window.set_inspector_node_label(draft.label.as_str().into());
         window.set_inspector_shader_code(draft.shader_code.as_str().into());
         window.set_inspector_auto_size(draft.auto_size);
@@ -2482,6 +2465,55 @@ impl AppController {
             );
             window.set_can_undo(!self.undo_edits.is_empty());
             window.set_can_redo(!self.redo_edits.is_empty());
+        }
+    }
+
+    fn drop_port(&mut self, node_id: &str, port_id: &str, output: bool, x: f32, y: f32, slop: f32) {
+        if self.edits_blocked() {
+            return;
+        }
+        let Some((other_node, other_port, other_output)) =
+            crate::graph_view_model::port_at(self.graph_nodes.as_ref(), x, y, slop)
+        else {
+            self.set_edit_status("Connection drag cancelled; drop on an opposite port.");
+            return;
+        };
+        if other_output == output {
+            self.set_edit_status(
+                "Cannot connect ports with the same direction; project unchanged.",
+            );
+            return;
+        }
+        let (source, target) = if output {
+            (
+                PortKey::new(NodeId::new(node_id), PortId::new(port_id)),
+                PortKey::new(NodeId::new(&other_node), PortId::new(&other_port)),
+            )
+        } else {
+            (
+                PortKey::new(NodeId::new(&other_node), PortId::new(&other_port)),
+                PortKey::new(NodeId::new(node_id), PortId::new(port_id)),
+            )
+        };
+        let edge_id = self
+            .pending_connection
+            .as_ref()
+            .and_then(|p| p.edge_id.as_deref());
+        match commit_connection(Arc::make_mut(&mut self.project), source, target, edge_id) {
+            Ok(changed) => {
+                self.pending_connection = None;
+                self.selected_edge_id = None;
+                if changed {
+                    self.finish_topology_edit("Connection applied through the SDK.");
+                } else {
+                    self.publish_edit_state();
+                    self.set_edit_status("Connection unchanged; no revision created.");
+                }
+            }
+            Err(error) => self.set_edit_status(&format!(
+                "Cannot connect; project unchanged: {}",
+                error.to_json()
+            )),
         }
     }
 

@@ -14,7 +14,7 @@
 |---|---|
 | Slint 能否覆盖五个原生平台 | 框架支持五平台；本轮完成 macOS，Windows/Linux 验收与 Android/iOS 明确延后 |
 | 能否消除 WebView 纹理传输 | 桌面 Slint 与 NativeHost 共享 `wgpu::Device/Queue` 并直接导入纹理；已有 macOS 单切片记录不代表所有平台/新包已验收 |
-| 是否有现成 WGSL 编辑器 | **没有**：Slint 1.18 没有可编辑富文本/span API；当前实现使用原生 `TextInput` 组合补齐行号、导航和查找，但不提供 per-token 高亮 |
+| 是否有现成 WGSL 编辑器 | 没有直接依赖的成熟 Slint 组件；本仓已实现 `crates/slint_code_editor`，组合公开 UI API 与 cosmic-text 排版/编辑，提供实时高亮；完整 AT 和平台 IME 验收仍有缺口 |
 | 是否有现成节点图 | **没有**：需要基于 Slint 图元重写，触摸、连线、缩放都要自己做 |
 | Web 是否保留 | **独立保留** React/Web，显式 `dev:web/build:web/preview:web`；不做 Slint WASM port |
 | 当前默认桌面 | **Slint**；Tauri 降为一个版本的显式 fallback，不删除其 WebView/TextureStream 实现 |
@@ -134,7 +134,7 @@ flowchart TD
 | 文件对话框 | `@tauri-apps/plugin-dialog` + HTML file input | `rfd`（桌面）或平台 document picker（移动端） |
 | 窗口 | `getCurrentWindow()` 拖动/最小化/最大化/关闭 | Slint `Window` / 平台窗口适配 |
 | 节点图 | React Flow | Slint 自绘 GraphView |
-| 编辑器 | CodeMirror 6 | 原生 `TextInput` 组合：行号、goto/find/next、独立滚动；无语法高亮 |
+| 编辑器 | CodeMirror 6 | 本仓独立 CodeEditor：cosmic-text + Slint Image/FocusScope/TouchArea，实时高亮、行号、goto/find/replace、编辑历史；不依赖 Slint fork |
 | 状态 | Zustand + Immer + React hooks | Rust `AppController` + Slint models/properties |
 | 屏幕保护 | Tauri `.scr` host + WebView | 保留独立 `.scr` host；UI 只调用导出服务 |
 | 打包 | Tauri/npm | Cargo + Android/iOS 工程 + 平台资源 |
@@ -570,18 +570,18 @@ A 的验收：
 - 提交/lint 防抖；
 - 预置 Shader 只读。
 
-原生 Slint 路径的实际实现是 `CodeEditor` 组件：
+原生路径现已迁移到本仓独立的 `crates/slint_code_editor`：
 
-- 真正可编辑的原生多行 `TextInput`，保留平台光标、选区、IME、剪贴板、Unicode 和只读语义；
-- Rust `code_editor::metadata` 生成 UTF-8 字节安全的行号、行起点、匹配起点和匹配长度；
-- goto-line、Find/Next、实时匹配数量，以及可独立横向/纵向滚动的代码区；
-- 预置 Shader 只读，Apply 保持在侧栏滚动区之外；
-- 不提供语法高亮、补全或输入时 GPU lint。Slint 1.18 没有不会破坏光标/选区的 editable span API。
+- cosmic-text 拥有单一文档、选区和排版；组件管理编辑历史，颜色属于派生属性；Slint Image 只显示该排版结果，不叠加透明 TextInput。
+- WGSL/JSON/Plain 适配器、独立颜色主题和宿主自定义高亮回调；行号使用实际 layout run 几何，键盘/鼠标命中使用同一字形布局。
+- goto-line、Find/Next、替换/全部替换、滚轮横纵滚动、独立文本 Undo/Redo 和系统剪贴板；预设只读，Apply 仍位于侧栏滚动区外。
+- UI 通过公开 winit 事件接收 preedit/commit，候选框位置来自编辑光标；真实输入法与三平台验收未完成。Slint 1.18.1 无公开自定义文本 run/光标选区报告 API，完整无障碍不是已交付能力。
+- 详细运行证据和限制见 [组件研究与实现记录](WGSL_SYNTAX_HIGHLIGHT_RESEARCH.md#11-本仓组件实现与验证)。
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| A. 原生 `TextInput` 组合 | 原生输入、IME、选区和剪贴板；实现成本可控 | 无 per-token 高亮和补全 | **当前采用** |
-| B. 自研完整富文本编辑器 | 可实现高亮/折叠 | 光标、选区、IME、撤销、无障碍成本极高 | 后续独立评估 |
+| A. 原生 `TextInput` 组合 | 平台输入、IME、选区和剪贴板 | 无 per-token 高亮 | 已被独立组件替换 |
+| B. Slint 组合 + cosmic-text 编辑面 | 实时高亮；复用字形排版、编辑与命中 | 平台输入适配、完整 AT 和性能仍需验收 | **本仓当前采用，尚不满足公共发布门槛** |
 | C. 桌面 WebView + CodeMirror | 体验最好 | 五平台分叉，违背纯原生目标 | 仅作 fallback |
 | D. 等 Slint 上游富文本编辑 | 无自研成本 | 时间不可控 | 跟踪上游 issue |
 
@@ -589,9 +589,9 @@ GPU 编译失败不伪装成成功输出：`NativeHost` 保留结构化 `SdkErro
 
 #### 7.3.1 macOS 原生编辑体验评估
 
-- 已验证：原生窗口中的代码区、行号、UTF-8 查找元数据、只读预置和固定 Apply；真实 GPU smoke 覆盖 Unicode 草稿、匹配数量变化和 Undo 后纹理恢复。
-- 800×540 窄窗口下，编辑器工具条拆成两行，代码区仍有行号、横向/纵向滚动和固定 Apply。
-- 语法高亮、补全、折叠、行内 lint 和 IME 组合输入不作当前验收承诺；自动化 provider 不能可靠地把任意键盘事件送入 TextInput，但实现仍使用平台原生输入控件。
+- 本轮独立示例实跑覆盖 WGSL/JSON 双实例、高亮、主题/语言切换、真实 Slint key 事件编辑、只读切换和单步 Undo/Redo；应用交互验收增加源码区多色像素检查，避免只有语义值正确而画面空白。
+- 应用 17 项交互、34 项 catalog Shader 场景通过，包含源码/只读身份、Apply、GPU 输出和保存重启。这里的 key 事件由 MCP 注入 Slint，不是系统 IME 测试。
+- 旧 TextInput 的窄窗口和平台输入记录不能自动作为新编辑面的证明。系统输入法、完整 AT 和 Windows/Linux 验收仍未完成。
 - AppKit accessibility 已打开并取消 FILE → Open 和 Save As 原生对话框；详情以 `apps/open_quartz_slint/README.md` 当前验收记录为准。
 
 ### 7.4 预览与输出

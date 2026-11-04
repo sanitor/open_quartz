@@ -6,7 +6,6 @@ mod inspector_onnx;
 mod onnx_runtime;
 mod render_bridge;
 mod shader_catalog;
-mod code_editor;
 mod services {
     pub mod desktop_export;
     pub mod file_service;
@@ -47,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let window = AppWindow::new()?;
+    slint_code_editor::install_editor!(window, CodeEditorBridge);
     let controller = AppController::new(
         &window,
         renderer,

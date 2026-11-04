@@ -288,8 +288,33 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       assert.equal(nodeState(await header(shaderId)).label, PERSISTED_SHADER_LABEL);
       await client.setValue(await find('Shader source'), BLUE_SHADER_SOURCE);
       assert.equal((await client.properties(await find('Shader source'))).accessibleValue, BLUE_SHADER_SOURCE);
+      const source = await find('Shader source');
+      await client.activate(source);
+      const primary = process.platform === 'darwin' ? '\u0017' : '\u0011';
+      await client.key(primary, 'Press');
+      try { await client.key('a'); } finally { await client.key(primary, 'Release'); }
+      await client.key('/');
+      assert.equal((await client.properties(source)).accessibleValue, '/', 'Real editor key input must replace the selected source');
+      await client.key(primary, 'Press');
+      try { await client.key('z'); } finally { await client.key(primary, 'Release'); }
+      assert.equal((await client.properties(source)).accessibleValue, BLUE_SHADER_SOURCE, 'One editor undo must restore source without changing graph history');
       await status({ 'Inspector dirty': 'true' });
-      await capture('09-shader-draft');
+      const png = await capture('09-shader-draft');
+      const image = decodePng(png);
+      const surface = await find('Shader source');
+      const window = await client.windowProperties();
+      const scale = image.width / (window.size.width / window.scaleFactor);
+      const hues = new Set();
+      for (let y = Math.ceil(surface.absolutePosition.y * scale); y < Math.min(image.height, (surface.absolutePosition.y + surface.size.height) * scale); y++) {
+        for (let x = Math.ceil(surface.absolutePosition.x * scale); x < Math.min(image.width, (surface.absolutePosition.x + surface.size.width) * scale); x++) {
+          const offset = (y * image.width + x) * image.channels;
+          const [r, g, b] = image.pixels.subarray(offset, offset + 3);
+          if (Math.max(r, g, b) - Math.min(r, g, b) > 50) {
+            hues.add(r > g && b > g ? 'purple' : g > r && g > b ? 'green' : b > r && b > g ? 'blue' : r > b && r > g ? 'warm' : 'other');
+          }
+        }
+      }
+      assert.ok(hues.size >= 3, `Editable source must visibly render multiple syntax classes, observed ${[...hues]}`);
       await activate('Apply shader');
       await status({ 'Inspector dirty': 'false', 'IO status': 'Shader source applied through the SDK.' });
       await stopped(1, 0);
@@ -329,8 +354,33 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       const inputs = await client.byLabel(new RegExp(`^Input ${escapeRegex(rendererLabel)} `), { role: 'Button' });
       assert.equal(outputs.length, 1, 'Blue Shader should have exactly one output');
       assert.equal(inputs.length, 1, 'Renderer should have exactly one input');
-      await client.click(outputs[0]);
-      await client.click(inputs[0]);
+      const circle = async (label) => {
+        const port = await client.find({ label, role: 'Button' });
+        const tree = await client.tree({ root: port.handle, maxElements: 20 });
+        const dots = tree.elements.filter((e) => e.typeNamesAndIds?.some((t) => t.typeName === 'Rectangle') && e.size.width > 0 && Math.abs(e.size.width - e.size.height) < 0.01 && e.size.height < port.size.height);
+        assert.equal(dots.length, 1, `Expected one port circle for ${label}`);
+        return dots[0];
+      };
+      await client.drag(await circle(outputs[0].accessibleLabel), center(outputs[0]));
+      await stopped(2, 0);
+      // Releasing on blank canvas must not create an edge or move either node.
+      await client.drag(await circle(outputs[0].accessibleLabel), { x: graphPosition.x + 12, y: graphPosition.y + 12 });
+      await stopped(2, 0);
+      await client.drag(await circle(outputs[0].accessibleLabel), center(await circle(inputs[0].accessibleLabel)));
+      await stopped(2, 1);
+      await activate('UNDO');
+      await stopped(2, 0);
+      await activate('Zoom out');
+      await activate('Zoom out');
+      // Support starting from the input as well; one drag is one history entry.
+      await client.drag(await circle(inputs[0].accessibleLabel), center(await circle(outputs[0].accessibleLabel)));
+      await stopped(2, 1);
+      await activate('UNDO');
+      await stopped(2, 0);
+      await activate('Fit graph in view');
+      // Keep the existing click-to-connect route covered alongside dragging.
+      await client.click(await client.find({ label: outputs[0].accessibleLabel }));
+      await client.click(await client.find({ label: inputs[0].accessibleLabel }));
       const observed = await stopped(2, 1);
       assert.equal(observed['Renderer image'], 'unavailable', 'Stopped graph must not start producing renderer frames');
       assert.equal((await client.byLabel(/^Select connection /, { role: 'Button' })).length, 1);

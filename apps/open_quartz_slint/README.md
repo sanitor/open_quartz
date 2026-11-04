@@ -110,8 +110,12 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   bounds change. A lone node stays at its drop position instead of recentering;
   explicit **Fit View** still centers the graph. Pointer smoke covers positive
   and negative drags, Undo, zoomed dragging and dragging after Fit.
-- Click an **output**, then an **input** to connect. The SDK replaces any existing
-  edge on that input atomically. Click a **connected input** or a link's midpoint
+- Drag between an **output** and an **input** to connect in either direction;
+  the wire follows the pointer and commits once on release. The full port circle
+  is interactive, including outside the node border. Blank/same-direction drops
+  cancel without an edit; Escape cancels the gesture. Click an **output**, then
+  an **input** remains available. The SDK replaces any existing input edge atomically.
+  Click a **connected input** or a link's midpoint
   marker to select its edge, then use **Delete edge** or **Reconnect**. Reconnect
   keeps the old edge until a valid input is chosen; choosing another output first
   also changes the source. **Cancel** never mutates the project. SDK type/cycle
@@ -229,10 +233,14 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
 - Edit the name in the sidebar header and press Enter or **Apply**. Its trash icon
   deletes the node. Shader/Constant nodes also expose **Auto size**, width/height
   (1–8192), and **Apply output size**. Auto size delegates resolution to the engine.
-- Shader nodes expose a native multiline TextInput editor with UTF-8-safe line
-  numbers, goto-line and find/next navigation, plus an **Apply shader** action.
-  Built-in implementations are not source-editable. There is no syntax
-  highlighting, inline GPU linter, or debounced auto-apply.
+- Shader nodes use the reusable `crates/slint_code_editor` component, with a
+  cosmic-text document/layout, live WGSL colors, line numbers, goto-line,
+  find/next, replace/all, mouse/keyboard selection and document undo/redo.
+  Built-in implementations remain read-only; **Apply shader** remains explicit.
+  No inline GPU linter, completion or debounced auto-apply is provided.
+  Desktop IME events use public Slint/winit APIs; real input-method acceptance
+  remains unverified. Public Slint APIs cannot report custom caret/selection
+  geometry to screen readers, so this is not full text accessibility parity.
 - All fields are session-local drafts until their respective Apply action. Name,
   uniform values, Sampling, Framebuffer/Video configuration, output size, and WGSL
   source are independent groups, so applying one preserves drafts in every other group.
