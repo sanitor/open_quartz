@@ -10,6 +10,8 @@ macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相
 
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:runtime` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
+跨平台硬件推理系统的目标分层、设备缓冲契约、执行方案策略与迁移验收见 [推理架构设计](INFERENCE_ARCHITECTURE.md)。当前 ONNX/ORT 读回路径与计划架构明确区分；Core ML、Windows 设备驻留和零 CPU 图像传输在通过各自平台门槛前不视为已实现。
+
 ### 可复用 Slint 编辑器
 
 `crates/slint_code_editor` 是本仓孵化的独立 Cargo workspace，不依赖 OpenQuartz。`npm run dev:editor` 启动 WGSL/JSON 双实例示例，`npm run test:editor` 运行组件测试。OpenQuartz 通过 path dependency 消费组件；后续拆仓不需要迁移应用的 graph/SDK/GPU 代码。

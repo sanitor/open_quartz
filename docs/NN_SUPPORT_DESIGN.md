@@ -3,7 +3,8 @@
 > Version: 2.0 (2026-07-15)
 > 目的：分析 chaiNNer 的设计与实现，对比 OpenQuartz 现状，规划 NN/ONNX 支持的扩展路径。
 
----
+
+> 历史研究稿，基于早期 Web/wasm-pack ONNX 架构（2026-07-15）；其中“当前架构”和尚未实施的路线图不代表现在的产品状态。现行跨平台硬件推理目标与迁移门槛以[推理架构设计](INFERENCE_ARCHITECTURE.md)为准。
 
 ## 1. chaiNNer 架构概览
 

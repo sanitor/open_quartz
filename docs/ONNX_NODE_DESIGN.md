@@ -4,6 +4,7 @@
 > Author: caozs
 > Scope: 为 OpenQuartz 引入 `onnx` 节点，支持在 WebGL/WebGPU 有向无环图中嵌入 ONNX 推理，并落地 `yolo-detector` 为示例节点 crate（sampler2D → roi + sampler2D overlay）。
 
+> 历史 Web/WASM ONNX 节点提案（2026-07-08），并非当前可调用接口或实施承诺。通用跨平台推理和设备缓冲架构以[推理架构设计](INFERENCE_ARCHITECTURE.md)为准。
 ---
 
 ## 1. 目标与非目标
