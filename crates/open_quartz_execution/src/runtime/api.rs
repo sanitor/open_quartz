@@ -29,10 +29,6 @@ pub struct RuntimeFrameInput {
     pub resolution: [f32; 3],
 }
 
-pub trait FramePacer {
-    fn pacing_timestamp_ns(&mut self) -> Result<u64, SdkError>;
-}
-
 pub trait HostBackend: Send {
     fn capabilities(&self) -> RuntimeCapabilities;
     fn register_resource(
@@ -129,11 +125,7 @@ impl Runtime {
     }
 
     pub fn set_graph(&mut self, graph: &Graph) -> Result<u32, SdkError> {
-        let json = serde_json::to_string(graph).expect("Graph serialization is infallible");
-        let revision = self
-            .engine
-            .set_graph_json(&json)
-            .map_err(decode_engine_error)?;
+        let revision = self.engine.set_graph(graph.clone())?;
         self.output_contracts = graph
             .nodes
             .iter()

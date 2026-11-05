@@ -26,7 +26,7 @@ fn configured_model_runs_through_native_host_and_exits_cleanly() {
         return;
     }
     std::env::set_var("ORT_DYLIB_PATH", runtime);
-    let (mut host, _) = pollster::block_on(NativeHost::new()).unwrap();
+    let (mut host, _) = pollster::block_on(ExecutionRuntime::new()).unwrap();
     let mut graph = serde_json::json!({"nodes":[
         {"id":"image","type":"input","position":{"x":0,"y":0},"data":{"type":"input","label":"Image","shaderCode":"","inputs":[],"outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],"uniforms":{},"inputMode":"image","inputDataType":"sampler2D"}},
         {"id":"onnx","type":"onnx","position":{"x":1,"y":0},"data":{"type":"onnx","label":"Image identity","shaderCode":"","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],"uniforms":{}}},
@@ -42,7 +42,7 @@ fn configured_model_runs_through_native_host_and_exits_cleanly() {
     host.upload_image("image", &pixels, 2, 2).unwrap();
     let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../open_quartz/tests/data/image_identity.onnx");
-    let prepared = crate::models::PreparedOnnxModel::open(
+    let prepared = crate::resources::models::PreparedOnnxModel::open(
         &model,
         NativeOnnxConfig {
             model_id: "image-identity".into(),
@@ -76,7 +76,7 @@ fn configured_model_runs_through_native_host_and_exits_cleanly() {
 
 #[test]
 fn unloaded_and_superseded_completions_cannot_restore_textures_or_clear_current_work() {
-    let (mut host, _) = pollster::block_on(NativeHost::new()).unwrap();
+    let (mut host, _) = pollster::block_on(ExecutionRuntime::new()).unwrap();
     let mut graph = serde_json::json!({"nodes":[{"id":"onnx","type":"onnx","position":{"x":0,"y":0},"data":{"type":"onnx","label":"Model","shaderCode":"","inputs":[],"outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],"uniforms":{}}}],"edges":[]});
     host.set_graph(&graph.to_string()).unwrap();
     let revision = host.runtime.revision();

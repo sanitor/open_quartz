@@ -119,6 +119,7 @@ export component GraphView inherits Rectangle {
     in property <float> origin-x;
     in property <float> origin-y;
     in property <bool> busy;
+    in property <string> render-fps: "0.0";
     callback node-selected(string, bool);
     callback node-moved(string, float, float);
     in property <string> selected-edge-id;
@@ -562,7 +563,7 @@ export component GraphView inherits Rectangle {
                             border-color: #e8e8ed; border-width: 1px * root.zoom;
                             Image { width: parent.width; height: parent.height; source: node.preview; image-fit: contain; }
                             if !node.has-preview: Text { width: parent.width; height: parent.height; text: node.status == "error" ? "Output unavailable" : "No output"; font-size: 10px * root.zoom; color: #aeaeb2; horizontal-alignment: center; vertical-alignment: center; }
-                            Text { y: parent.height + 3px * root.zoom; width: parent.width; text: node.resolution; font-size: 9px * root.zoom; color: #aeaeb2; horizontal-alignment: center; }
+                            Text { y: parent.height + 3px * root.zoom; width: parent.width; text: node.resolution + (node.kind == "Renderer" ? " · " + (node.has-preview ? root.render-fps : "0.0") + " FPS" : ""); font-size: 9px * root.zoom; color: #aeaeb2; horizontal-alignment: center; }
                         }
                         for port[port-index] in node.ports: port-area := TouchArea {
                             private property <color> port-color: port.output ? root.output-color(port.data-type) : #8e8e93;

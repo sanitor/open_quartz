@@ -11,19 +11,3 @@ pub trait GpuFacade {
         commands: &[ExecutionCommand],
     ) -> Result<(), SdkError>;
 }
-
-/// Media lifecycle port. Platform decoders remain behind this contract.
-pub trait MediaFacade: Send {
-    fn pause(&mut self) -> Result<(), SdkError>;
-    fn resume(&mut self) -> Result<(), SdkError>;
-}
-
-/// Inference lifecycle port. Requests and completions use Runtime-owned stamps.
-pub trait InferenceFacade: Send {
-    fn cancel_node(&mut self, node_id: &str, generation: u32) -> Result<(), SdkError>;
-}
-
-/// Presentation lifecycle port. Concrete window and stream objects remain platform-owned.
-pub trait PresentationFacade: Send {
-    fn remove_output(&mut self, node_id: &str) -> Result<(), SdkError>;
-}

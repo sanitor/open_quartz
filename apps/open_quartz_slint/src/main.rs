@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .select()?;
             (
                 Some(renderer),
-                "NativeHost initialized with the Slint GPU device and queue.".to_owned(),
+                "GPU renderer initialized.".to_owned(),
             )
         }
         Err(error) => {

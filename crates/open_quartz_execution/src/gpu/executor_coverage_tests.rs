@@ -176,7 +176,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
             .supported_features()
             .contains(wgpu::Features::FLOAT32_FILTERABLE)
         {
-            assert!(executor.create_node_resources(&float_plan).is_err());
+            assert!(executor.create_node_resources(&float_plan, 1, 1).is_err());
         }
         assert!(resources.matches(&plan.nodes[0]));
         let mut no_shader = plan.nodes[0].clone();
@@ -185,7 +185,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
         let mut no_target = plan.nodes[0].clone();
         no_target.target = None;
         assert!(!resources.matches(&no_target));
-        assert!(executor.create_node_resources(&no_target).is_err());
+        assert!(executor.create_node_resources(&no_target, 1, 1).is_err());
 
         let mut external = plan.nodes[0].clone();
         external
@@ -194,7 +194,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
             .unwrap()
             .external_texture_bindings
             .insert("video".to_owned(), 0);
-        assert!(executor.create_node_resources(&external).is_err());
+        assert!(executor.create_node_resources(&external, 1, 1).is_err());
         let mut invalid = plan.clone();
         invalid.nodes[0]
             .validation_errors

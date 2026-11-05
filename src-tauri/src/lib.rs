@@ -35,7 +35,7 @@ async fn download_model(
     url: String,
     expected_size: u64,
 ) -> Result<String, String> {
-    let store = open_quartz_native_host::models::ModelStore::new(models_dir(&app)?);
+    let store = open_quartz_execution::resources::models::ModelStore::new(models_dir(&app)?);
     tokio::task::spawn_blocking(move || {
         let mut last_progress = 0_u64;
         store
@@ -65,13 +65,13 @@ async fn download_model(
 /// Read a previously downloaded model into memory (returns bytes).
 #[tauri::command]
 async fn read_model(app: AppHandle, model_id: String) -> Result<Vec<u8>, String> {
-    open_quartz_native_host::models::ModelStore::new(models_dir(&app)?).read_model(&model_id)
+    open_quartz_execution::resources::models::ModelStore::new(models_dir(&app)?).read_model(&model_id)
 }
 
 /// Check if a model is already downloaded.
 #[tauri::command]
 async fn is_model_downloaded(app: AppHandle, model_id: String) -> Result<bool, String> {
-    open_quartz_native_host::models::ModelStore::new(models_dir(&app)?).is_downloaded(&model_id)
+    open_quartz_execution::resources::models::ModelStore::new(models_dir(&app)?).is_downloaded(&model_id)
 }
 
 #[cfg(target_os = "windows")]

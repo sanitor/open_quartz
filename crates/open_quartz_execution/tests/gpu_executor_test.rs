@@ -368,7 +368,7 @@ fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
             ],
             "edges":[{"id":"e","source":"feedback","sourceHandle":"out","target":"renderer","targetHandle":"in"}]
         })).unwrap();
-        let mut runtime = open_quartz_execution::host::PlayerHost::new_native(
+        let mut runtime = open_quartz_execution::runtime::Runtime::new_native(
             open_quartz_execution::runtime::RuntimeCapabilities { data_paths: vec![] },
         );
         runtime.set_graph(&graph).unwrap();
@@ -400,5 +400,101 @@ fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
         assert_ne!(frames[1], frames[0]);
         assert_ne!(frames[2], frames[1]);
         assert!(frames.iter().all(|frame| frame.chunks_exact(4).all(|p| p[2] == 0 && p[3] == 255)));
+    });
+}
+
+#[test]
+fn native_runtime_auto_size_follows_live_sources_and_manual_filter_cascades() {
+    pollster::block_on(async {
+        let backend = request_backend().await;
+        for mode in ["image", "video"] {
+            let source = |id: &str, width: u32, height: u32| json!({
+                "id":id,"type":"input","position":{"x":0,"y":0},"data":{
+                    "type":"input","label":id,"shaderCode":"","inputs":[],
+                    "outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],
+                    "uniforms":{},"inputMode":mode,"inputDataType":"sampler2D",
+                    "imageWidth":width,"imageHeight":height
+                }
+            });
+            let filter = |id: &str, auto: bool, code: &str| json!({
+                "id":id,"type":"shader","position":{"x":1,"y":0},"data":{
+                    "type":"shader","label":id,"shaderCode":code,
+                    "inputs":[
+                        {"id":"first","label":"zImage","dataType":"sampler2D","direction":"input"},
+                        {"id":"second","label":"aImage","dataType":"sampler2D","direction":"input"}
+                    ],
+                    "outputs":[{"id":"out","label":"output","dataType":"sampler2D","direction":"output"}],
+                    "uniforms":{},"autoSize":auto,"width":320,"height":180
+                }
+            });
+            let renderer = |id: &str| json!({
+                "id":id,"type":"renderer","position":{"x":2,"y":0},"data":{
+                    "type":"renderer","label":id,"shaderCode":"",
+                    "inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],
+                    "outputs":[],"uniforms":{}
+                }
+            });
+            let edge = |id: &str, from: &str, to: &str, port: &str| json!({
+                "id":id,"source":from,"sourceHandle":"out","target":to,"targetHandle":port
+            });
+            // Green proves iResolution matches the real target, rather than stale graph metadata.
+            let auto_code = "@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { let pixel = textureSample(zImage, zImageSampler, uv); let correct = all(iResolution.xy == vec2f(textureDimensions(zImage))); return vec4f(pixel.r, select(0.0, 1.0, correct), 0.0, 1.0); }";
+            let manual_code = "@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { let pixel = textureSample(zImage, zImageSampler, uv); let correct = all(iResolution.xy == vec2f(320.0, 180.0)); return vec4f(pixel.r, pixel.g * select(0.0, 1.0, correct), 0.0, 1.0); }";
+            let cascade_code = "@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { let pixel = textureSample(zImage, zImageSampler, uv); let correct = all(iResolution.xy == vec2f(textureDimensions(zImage))); return vec4f(pixel.r, pixel.g * select(0.0, 1.0, correct), 0.0, 1.0); }";
+            let graph: open_quartz_schema::Graph = serde_json::from_value(json!({
+                "nodes":[
+                    source("unrelated", 7, 9), source("source", 11, 13),
+                    filter("auto", true, auto_code), filter("manual", false, manual_code),
+                    filter("cascade", true, cascade_code),
+                    renderer("direct-renderer"), renderer("auto-renderer"), renderer("cascade-renderer")
+                ],
+                "edges":[
+                    edge("source-auto", "source", "auto", "first"),
+                    edge("other-auto", "unrelated", "auto", "second"),
+                    edge("auto-manual", "auto", "manual", "first"),
+                    edge("other-manual", "unrelated", "manual", "second"),
+                    edge("manual-cascade", "manual", "cascade", "first"),
+                    edge("other-cascade", "unrelated", "cascade", "second"),
+                    edge("direct-output", "source", "direct-renderer", "in"),
+                    edge("auto-output", "auto", "auto-renderer", "in"),
+                    edge("cascade-output", "cascade", "cascade-renderer", "in")
+                ]
+            })).unwrap();
+            let mut runtime = open_quartz_execution::runtime::Runtime::new_native(
+                open_quartz_execution::runtime::RuntimeCapabilities { data_paths: vec![] },
+            );
+            runtime.set_graph(&graph).unwrap();
+            runtime.play(0).unwrap();
+            let mut executor = GpuExecutor::new(backend.clone());
+            executor.upload_rgba("unrelated", &vec![0; 7 * 9 * 4], 7, 9).unwrap();
+            let mut manual_texture = None;
+            for (number, (width, height)) in [(1920, 1080), (640, 360)].into_iter().enumerate() {
+                executor.upload_rgba("source", &[64, 0, 0, 255].repeat((width * height) as usize), width, height).unwrap();
+                runtime.mark_dirty("source").unwrap();
+                runtime.advance(&open_quartz_execution::runtime::RuntimeFrameInput {
+                    now_ns: number as u64 * 16_666_667,
+                    date: [0.0; 4], mouse: [0.0; 4], resolution: [7.0, 9.0, 1.0],
+                }).unwrap();
+                let commands = runtime.drain_commands();
+                executor.execute_commands(runtime.execution_plan().unwrap(), &commands).unwrap();
+                for id in ["direct-renderer", "auto", "auto-renderer"] {
+                    let output = executor.output_handle(id).unwrap();
+                    assert_eq!((output.width, output.height), (width, height), "{mode} {id}");
+                }
+                for id in ["manual", "cascade", "cascade-renderer"] {
+                    let output = executor.output_handle(id).unwrap();
+                    assert_eq!((output.width, output.height), (320, 180), "{mode} {id}");
+                }
+                for id in ["auto-renderer", "cascade-renderer"] {
+                    let rgba = executor.read_output_rgba(id).await.unwrap();
+                    assert!(rgba.chunks_exact(4).all(|pixel| pixel == [64, 255, 0, 255]), "{mode} {id}: {:?}", &rgba[..4]);
+                }
+                let output = executor.output_handle("manual").unwrap();
+                if let Some(previous) = &manual_texture {
+                    assert!(Arc::ptr_eq(previous, &output.texture), "manual targets must not resize");
+                }
+                manual_texture = Some(output.texture);
+            }
+        }
     });
 }

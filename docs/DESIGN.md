@@ -41,24 +41,38 @@
 Slint AppWindow / GraphView / Inspector
   -> Rust AppController -> open_quartz_sdk::Project / Graph commands / history
   -> ProjectIo worker   -> project/resource/model I/O + Windows screen saver export
-  -> RenderBridge      -> open_quartz_native_host::NativeHost
-                         -> shared Rust Runtime / GPU executor / native ONNX / FFmpeg
+  -> RenderBridge      -> open_quartz_execution::runtime::ExecutionRuntime
+                         -> Runtime 状态/时钟/图计划 + GPU/视频/推理资源
                          -> shared wgpu Device/Queue -> Slint texture Image import
 ```
 
-- SDK、domain、graph/history、execution、host API 分别属于现有 Rust crate 边界；Slint 只投影 UI，不在 UI 中重建 graph/inference policy。
-- NativeHost 与 Slint 使用同一组 wgpu 30 Device/Queue；Renderer 正常呈现直接导入纹理。只有显式 PNG 截图执行 readback/编码，不把 PNG/base64 当实时预览。
-- Image/Framebuffer 解码、项目 I/O、模型读取/下载不阻塞 UI；ONNX 会话由 NativeHost 管理。Video file/camera 配置持久化并由 host 对齐，缺失资源/权限/推理失败显示真实错误。
+- SDK 拥有项目、graph/history；execution 拥有播放和执行。Slint 只投影 UI，`RenderBridge` 只管理执行线程、命令与 UI 更新，不在 UI 中重建 graph/inference policy。
+- `ExecutionRuntime` 是原生应用直接使用的执行对象，位于 execution 的 runtime 模块；它与 Slint 使用同一组 wgpu 30 Device/Queue，持有 GPU executor、视频源、推理会话和异步任务。输出直接导入纹理，只有显式截图执行 readback。
+- `Runtime` 保留时钟、revision/generation、dirty、输出订阅及异步完成等共享状态规则，由 `ExecutionRuntime` 直接组合；删除只有转发的 `PlayerHost`，不再通过独立 host crate 接入 execution。浏览器和 headless SDK 可以直接组合相同 Runtime 规则与各自设备实现。
+- 文件/模型下载、缓存与校验放在 execution 的 `resources::models` 服务模块，由 I/O/model worker 调用，不进入渲染循环。准备好的会话只有通过 request ticket 校验后才交给执行对象；迟到完成不能复活旧节点。项目和 Image/Framebuffer 文件处理继续留在应用 I/O worker。
 - GraphView 将 Shader、Constant、Renderer 和 sampler 输出节点的实际共享 GPU 纹理导入原生卡片，显示分辨率并允许收起预览；实时预览不经过 PNG/base64，Renderer 侧栏复用 GPU 输出纹理。
 - 原生 Shader 编辑器使用独立 `crates/slint_code_editor`：cosmic-text 排版/编辑与 Slint 公开 UI API，提供 WGSL/JSON/plain 高亮、行号、导航、查找替换和本地历史，源码仍显式 Apply。系统 IME、完整辅助技术和 Windows/Linux 输入验收仍有缺口。
-- GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 NativeHost / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
+- GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 execution / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
 - 原生 Shader 菜单包含 7 个分类、34 个预设。AppKit 实际打开并取消了 FILE → Open 与 Save As 对话框；GUI 键盘验收边界见原生 app README。
 - Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。
 - `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
 - Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。
+- 图更新从 Slint 到 execution 使用类型化 `Graph`，JSON 编解码留在 WASM/Tauri IPC 边界。Slint 每次 SetGraph 只生成一次资源计划，视频配置与 ONNX 同步共用 intents；保留 generation/ticket、取消、暂停预览、Stop/Play 与 GPU 帧 lease 的行为。
 
 媒体子系统架构与实现边界见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md)：独立 `oq-media` 已落地 macOS VideoToolbox 硬解、保留原生帧及 CoreVideo/Metal GPU 消费；完整跨平台会话、编码、独立 Slint 播放器组件仍为提案，未迁移 Slint Web。
 通用原生推理后端、统一设备资源契约及分阶段迁移方案见[推理架构设计](INFERENCE_ARCHITECTURE.md)。该方案明确区别当前 ORT CPU/DirectML 输入输出搬运与尚未实现的平台硬件驻留目标。
+
+执行层收敛实施约定：
+
+- 删除 `open_quartz_native_host` crate，将其执行实现迁入 `execution::runtime`，将模型服务迁入 `execution::resources`；不保留同名兼容转发 crate 或 `PlayerHost` 包装。
+- Slint/Tauri 改用同一个 `ExecutionRuntime`；屏保和 WASM 直接使用 `Runtime`，保留各自的窗口 Surface/浏览器资源适配。TypeScript 内部 transport 接口不是 Rust 执行层，本次不重写其通信协议。
+- 原生模块以 `cfg(not(target_arch = "wasm32"))` 隔离，下载/哈希等原生依赖按目标声明，WASM 构建不引入 blocking HTTP。GPU、媒体和推理仍各自管理底层资源；收敛执行所有权不要求把实现塞进一个文件。
+- execution 不反向依赖 UI、SDK 或 host API，资源意图规划继续由已有 host API 提供，避免 crate 循环。资源规划的一次 `Graph → Value → HostGraphSnapshot` 转换可另行收敛，本次不复制资源策略。
+- `RenderBridge` 的 worker 与共享设备边界保留；模型 worker Drop 设置取消标记，不能用阻塞 join 等待不可中断的构建/网络读取。执行对象退出继续清理 GPU/视频/推理任务。
+- 回归覆盖原生图输出、视频预览与替换、ONNX 取消和过期完成、AutoSize/计时/FPS、真实窗口交互，以及保留的 Tauri/WASM 编译和 crate 依赖边界。Windows/Linux 实机结果需独立记录。
+- 原有 coverage 集成测试重复入口属于当前覆盖率机制，除已删除转发层对应的测试外不在本轮调整。SDK 100% 统计范围保留原口径：原 native_host 中未纳入该门槛的执行/模型服务文件迁入 execution 后仍由真实 GPU/模型/缓存/生命周期测试单独验证，覆盖率脚本明确列出该范围；不降低 SDK 阈值。
+- 本轮 macOS 回归：工作区 305 项测试、Slint 72 项测试、真实窗口交互 18/18、catalog Shader 像素用例 34/34、Rust 依赖边界及 WASM 编译通过；release 原生包构建、签名和启动自检通过。独立 execution 探针验证 2×2 ORT CPU 输出精确 RGBA、暂停/恢复/停止/卸载，以及 128×72 VideoToolbox 硬解蓝色像素、预览/播放/分离与正常退出。Windows/Linux 实机未执行。一次 Shader 自动化读取被图片上传销毁的旧节点句柄失败，改用单次 UI 树快照后全量重跑通过；像素断言未放宽。
+
 
 ### 0.2 打包与启动资源约定
 
@@ -222,7 +236,7 @@ flowchart TB
         BHost[BrowserHost / DOM media]
         Worker[BrowserRuntimeWorker]
         WasmPlayer[WasmBrowserPlayerContract]
-        RustPlayer[Rust PlayerHost / Runtime / Engine]
+        RustPlayer[Rust Runtime / Engine]
         RustGpu[Rust GpuExecutor / wgpu WebGPU]
         OrtWeb[BrowserInferenceProvider / ORT-Web]
         BHost <-->|postMessage| Worker
@@ -235,18 +249,17 @@ flowchart TB
     subgraph Native[Tauri production]
         NHost[NativeHost]
         Tauri[Tauri command / event shell]
-        NPlayer[NativePlayerHost]
-        NRuntime[Rust PlayerHost / Runtime]
+        NRuntime[execution::ExecutionRuntime]
         NGpu[GpuExecutor]
         NMedia[Native video / FFmpeg]
         NOnnx[ORT / DirectML]
         NPresent[DXGI / TextureStream / readback]
         NHost <-->|invoke / listen| Tauri
-        Tauri --> NPlayer --> NRuntime
-        NPlayer --> NGpu
-        NPlayer --> NMedia
-        NPlayer --> NOnnx
-        NPlayer --> NPresent
+        Tauri --> NRuntime
+        NRuntime --> NGpu
+        NRuntime --> NMedia
+        NRuntime --> NOnnx
+        NRuntime --> NPresent
     end
 
     TSApi --> BHost
@@ -887,7 +900,7 @@ Dedicated Worker
   BrowserRuntimeWorker
     -> WasmBrowserPlayerContract
       ⇅ wasm-bindgen
-Rust BrowserPlayerBinding -> PlayerHost -> Runtime/Engine/GpuExecutor
+Rust BrowserPlayerBinding -> Runtime/Engine/GpuExecutor
 ```
 
 Main thread 请求仍包括 `initialize/play/update-graph/pause/resume/stop/set-preview/capture/close`；custom ONNX model 通过 transferable `ArrayBuffer` 注册。视频不是 RPC payload：`BrowserHost` 通过 `requestVideoFrameCallback`/timer 创建 `ImageBitmap`，每节点最多一个 in-flight frame，并使用 transferable postMessage。
@@ -910,7 +923,7 @@ sequenceDiagram
     participant UI as TS Player
     participant Host as NativeHost
     participant Cmd as Tauri commands/events
-    participant Core as NativePlayerHost + Rust Runtime
+    participant Core as execution::ExecutionRuntime
     participant GPU as GpuExecutor / presenter
 
     UI->>Host: play/apply/output/capture
@@ -926,7 +939,7 @@ sequenceDiagram
 
 主要 command family 仍是 lifecycle、graph、image/video/ONNX resource、output readback、shared texture lease 和 diagnostics。Windows presentation 主路径为 DXGI shared texture → WebView2 TextureStream → adapter-owned `HTMLVideoElement`；失败时使用 bounded binary RGBA readback。高频 pixels 不经过 JSON event。
 
-`NativeHost` 是 SDK internal transport，不是 public runtime。Tauri `NativePlayerHost` 仍负责 platform provider composition，但 lifecycle/clock/revision/generation/dirty/output policy 使用共享 Rust Runtime/Player 语义。
+TypeScript `NativeHost` 是 SDK internal IPC transport，不是 Rust 执行层。Tauri command 调用 execution 内的 `ExecutionRuntime`，后者直接组合 `Runtime` 状态规则与 GPU/媒体/推理资源；不存在单独的 Rust NativeHost crate 或 PlayerHost 转发。
 
 ### 5.3 Java SDK：public facade 与 JNI 当前完成度
 
@@ -1087,11 +1100,11 @@ flowchart LR
 |---|---|---|
 | public IDs/Graph/ProjectFile/error | `open_quartz_schema` | public value layer |
 | `OpenQuartz/Project/Player/Resource/Output` | `open_quartz::sdk`，crate root re-export | Rust SDK user |
-| `Runtime/Engine/ExecutionPlan` | `open_quartz` hidden modules | Rust Player/host integration |
-| Browser wgpu environment | `open_quartz::wasm_environment` | Worker Rust BrowserPlayer |
-| `GpuExecutor/GpuBackend` | `open_quartz::gpu` hidden module | Browser/native Player host |
+| `Runtime/Engine/ExecutionPlan` | `open_quartz_execution` | Rust SDK / execution |
+| Browser wgpu environment | `open_quartz_execution::wasm_environment` | Worker Rust BrowserPlayer |
+| `GpuExecutor/GpuBackend` | `open_quartz_execution::gpu` | Browser execution / ExecutionRuntime |
 | ORT-Web session | TypeScript SDK internal provider | Browser Worker |
-| Native ORT/video/presenter | core primitives + Tauri/native host | NativePlayerHost |
+| Native ORT/video/presenter | `open_quartz_execution::runtime` + GPU/媒体/推理模块 | ExecutionRuntime |
 | JNI aggregate handles/C ABI | `open_quartz_bindings` | Java SDK internal |
 
 Binding 只能投影 public/domain/runtime methods；不得反向塑造 Rust public business API。
@@ -1618,8 +1631,8 @@ npm run check:public-proxy
 | Java public/internal SDK | `java/sdk/src/main/java/com/sanitor/openquartz` |
 | Java/Rust JNI binding | `crates/open_quartz_bindings` |
 | Tauri command registration | `src-tauri/src/lib.rs` |
-| Native host/render/events | `src-tauri/src/native_runtime.rs` |
-| Native video | `src-tauri/src/native_video.rs`、`crates/open_quartz/src/native_video.rs` |
+| Tauri commands/events / execution | `src-tauri/src/native_runtime.rs`、`crates/open_quartz_execution/src/runtime/execution.rs` |
+| Native video | `crates/open_quartz_execution/src/native_video.rs`、`crates/oq-media` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
 | Rust schema crate | `crates/open_quartz_schema` |
 | Rust public object/core crate | `crates/open_quartz_sdk/src`、`crates/open_quartz/src/lib.rs` |

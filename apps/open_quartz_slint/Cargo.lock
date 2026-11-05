@@ -3801,9 +3801,12 @@ dependencies = [
  "open_quartz_schema",
  "oq-media",
  "ort",
+ "pollster",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3819,21 +3822,6 @@ dependencies = [
  "open_quartz_schema",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "open_quartz_native_host"
-version = "0.20.0"
-dependencies = [
- "log",
- "open_quartz_execution",
- "open_quartz_schema",
- "pollster",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "wgpu",
 ]
 
 [[package]]
@@ -3875,7 +3863,6 @@ dependencies = [
  "image",
  "open_quartz_execution",
  "open_quartz_host_api",
- "open_quartz_native_host",
  "open_quartz_screensaver",
  "open_quartz_sdk",
  "pollster",

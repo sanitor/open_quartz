@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use open_quartz_execution::gpu::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
-use open_quartz_execution::host::PlayerHost;
+use open_quartz_execution::runtime::Runtime;
 use open_quartz_execution::native_video::{
     NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
 };
@@ -80,7 +80,7 @@ pub fn run(
 }
 
 struct NativeRenderer {
-    runtime: PlayerHost,
+    runtime: Runtime,
     executor: GpuExecutor,
     renderer_node_id: String,
     surface: wgpu::Surface<'static>,
@@ -153,7 +153,7 @@ impl NativeRenderer {
         let (present_bind_group_layout, present_pipeline) =
             create_present_pipeline(&backend, surface_config.format);
         let mut executor = GpuExecutor::new(backend);
-        let mut runtime = PlayerHost::new_native(RuntimeCapabilities {
+        let mut runtime = Runtime::new_native(RuntimeCapabilities {
             data_paths: vec![DataPathMode::CpuCopy],
         });
         runtime.set_graph(&graph).map_err(|error| error.to_json())?;

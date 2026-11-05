@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn cancelled_or_replaced_load_cannot_change_a_new_project_with_the_same_node_id() {
-    let (mut host, _) = pollster::block_on(NativeHost::new()).unwrap();
+    let (mut host, _) = pollster::block_on(ExecutionRuntime::new()).unwrap();
     let mut runtime = OnnxRuntime::default();
     let cancelled = Arc::new(AtomicBool::new(false));
     runtime
@@ -36,7 +36,7 @@ fn cancelled_or_replaced_load_cannot_change_a_new_project_with_the_same_node_id(
         .requests
         .insert("model".into(), (8, Arc::new(AtomicBool::new(false))));
     runtime.states.get_mut("model").unwrap().loading = true;
-    runtime.sync(&Graph::default(), &mut host, true).unwrap();
+    runtime.sync(&[], &mut host, true);
     runtime
         .requests
         .insert("model".into(), (9, Arc::new(AtomicBool::new(false))));

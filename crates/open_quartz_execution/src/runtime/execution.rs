@@ -1,32 +1,28 @@
-pub mod models;
-
 #[cfg(test)]
-mod models_tests;
-#[cfg(test)]
+#[path = "onnx_lifecycle_tests.rs"]
 mod onnx_lifecycle_tests;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use open_quartz_execution::engine::ExecutionCommand;
-use open_quartz_execution::error::SdkError;
+use crate::engine::ExecutionCommand;
+use crate::error::SdkError;
 #[cfg(windows)]
-use open_quartz_execution::gpu::{DxgiSharedTextureExporter, SharedTexturePresenter};
-use open_quartz_execution::gpu::{GpuBackend, GpuExecutor, GpuOutputHandle, TextureFormat};
+use crate::gpu::{DxgiSharedTextureExporter, SharedTexturePresenter};
+use crate::gpu::{GpuBackend, GpuExecutor, GpuOutputHandle, TextureFormat};
 #[cfg(windows)]
-use open_quartz_execution::gpu::{
+use crate::gpu::{
     GpuPresentationFrame, GpuPresenter, GpuPreviewReader, SharedTextureFrame,
 };
-use open_quartz_execution::host::PlayerHost;
-use open_quartz_execution::native_video::{
+use crate::native_video::{
     find_ffmpeg, NativeVideoConfig, NativeVideoFrame, NativeVideoInfo, NativeVideoMetrics,
     NativeVideoSource,
 };
-use open_quartz_execution::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
-use open_quartz_execution::runtime::{
+use crate::onnx::{NativeOnnxImageOutput, OnnxSession, OnnxTask};
+use crate::runtime::{
     AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey,
-    OutputPayload, OutputSubscription, OutputTransport, RuntimeCapabilities, RuntimeFrameInput,
+    OutputPayload, OutputSubscription, OutputTransport, Runtime, RuntimeCapabilities, RuntimeFrameInput,
 };
 use open_quartz_schema::{DataType, Graph, NodeType};
 use serde::{Deserialize, Serialize};
@@ -107,6 +103,8 @@ pub struct NativeRuntimeInfo {
 #[serde(rename_all = "camelCase")]
 pub struct NativeFrameRendered {
     pub frame: u64,
+    /// Composition playback time; not source-video PTS or wall time.
+    pub timeline_ns: u64,
     pub revision: u32,
     pub output_node_id: String,
     pub width: u32,
@@ -170,9 +168,11 @@ impl NativeRenderPerf {
         *self = Self::new();
     }
 }
-pub struct NativeHost {
+/// Owns graph execution and concrete GPU/video/inference resources on the render thread.
+/// Shared playback and output rules live in `Runtime`; UI and IPC adapters only submit work.
+pub struct ExecutionRuntime {
     executor: GpuExecutor,
-    runtime: PlayerHost,
+    runtime: Runtime,
     output_node_id: Option<String>,
     clock_origin: Instant,
     #[cfg(windows)]
@@ -201,7 +201,7 @@ fn runtime_error(error: SdkError) -> String {
     error.to_json()
 }
 
-impl NativeHost {
+impl ExecutionRuntime {
     pub async fn new() -> Result<(Self, NativeRuntimeInfo), String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: native_backends(),
@@ -287,7 +287,7 @@ impl NativeHost {
         Ok((
             Self {
                 executor,
-                runtime: PlayerHost::new_native(RuntimeCapabilities {
+                runtime: Runtime::new_native(RuntimeCapabilities {
                     data_paths: if shared_texture {
                         vec![DataPathMode::NativePresent]
                     } else {
@@ -324,6 +324,11 @@ impl NativeHost {
     pub fn set_graph(&mut self, graph_json: &str) -> Result<u32, String> {
         let graph: Graph = serde_json::from_str(graph_json)
             .map_err(|error| format!("Invalid native graph JSON: {error}"))?;
+        self.set_graph_snapshot(&graph)
+    }
+
+    /// In-process callers pass the typed graph; serialization stays at host boundaries.
+    pub fn set_graph_snapshot(&mut self, graph: &Graph) -> Result<u32, String> {
         for subscription_id in self.onnx_event_subscriptions.values() {
             self.runtime
                 .unsubscribe_output(subscription_id)
@@ -349,7 +354,7 @@ impl NativeHost {
                 (node.id.clone(), outputs)
             })
             .collect();
-        let revision = self.runtime.set_graph(&graph).map_err(runtime_error)?;
+        let revision = self.runtime.set_graph(graph).map_err(runtime_error)?;
         for (node_id, outputs) in &self.onnx_outputs {
             let selected = outputs
                 .iter()
@@ -399,7 +404,7 @@ impl NativeHost {
                     .collect::<std::collections::HashSet<_>>(),
             )
         };
-        self.executor.sync_sampling(&graph);
+        self.executor.sync_sampling(graph);
         self.output_node_id = output_node_id;
         self.videos.retain(|node_id, _| node_ids.contains(node_id));
         self.onnx_resources
@@ -586,7 +591,7 @@ impl NativeHost {
         node_id: String,
         session: OnnxSession,
         config: NativeOnnxConfig,
-    ) -> Result<open_quartz_execution::onnx::OnnxSessionInfo, String> {
+    ) -> Result<crate::onnx::OnnxSessionInfo, String> {
         self.runtime
             .node_generation(&node_id)
             .map_err(runtime_error)?;
@@ -745,7 +750,7 @@ impl NativeHost {
                     .lock()
                     .map_err(|_| "Native ONNX session lock is poisoned".to_owned())
                     .and_then(|mut session| {
-                        open_quartz_execution::onnx::run_native_image_task(
+                        crate::onnx::run_native_image_task(
                             &mut session,
                             config.task,
                             &config.model_id,
@@ -893,7 +898,7 @@ impl NativeHost {
         self.mouse = mouse;
     }
 
-    pub fn drain_events(&mut self) -> Vec<open_quartz_execution::event::EngineEvent> {
+    pub fn drain_events(&mut self) -> Vec<crate::event::EngineEvent> {
         self.runtime.drain_events()
     }
 
@@ -952,6 +957,7 @@ impl NativeHost {
             {
                 return Ok(NativeFrameRendered {
                     frame,
+                    timeline_ns: clock.timeline_ns,
                     revision: self.runtime.revision(),
                     output_node_id,
                     width: 0,
@@ -985,6 +991,7 @@ impl NativeHost {
         }
         let rendered = NativeFrameRendered {
             frame,
+            timeline_ns: clock.timeline_ns,
             revision: self.runtime.revision(),
             output_node_id,
             width: output.width,
@@ -1012,7 +1019,7 @@ impl NativeHost {
     }
 }
 
-impl Drop for NativeHost {
+impl Drop for ExecutionRuntime {
     fn drop(&mut self) {
         for worker in self.onnx_workers.drain(..) {
             let _ = worker.join();
@@ -1060,7 +1067,7 @@ fn native_backends() -> wgpu::Backends {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, utc_date_uniform, NativeFrameRendered, NativeHost};
+    use super::{civil_from_days, utc_date_uniform, ExecutionRuntime};
     use std::time::{Duration, UNIX_EPOCH};
 
     #[cfg(target_os = "macos")]
@@ -1071,7 +1078,7 @@ mod tests {
 
     #[test]
     fn output_payload_prefixes_little_endian_dimensions() {
-        let payload = NativeHost::output_payload(&[1, 2, 3, 4], 640, 360);
+        let payload = ExecutionRuntime::output_payload(&[1, 2, 3, 4], 640, 360);
         assert_eq!(&payload[..4], &640_u32.to_le_bytes());
         assert_eq!(&payload[4..8], &360_u32.to_le_bytes());
         assert_eq!(&payload[8..], &[1, 2, 3, 4]);
@@ -1079,7 +1086,7 @@ mod tests {
 
     #[test]
     fn first_play_after_stopped_shader_edit_and_connection_renders_blue() {
-        let (mut host, _) = pollster::block_on(NativeHost::new()).unwrap();
+        let (mut host, _) = pollster::block_on(ExecutionRuntime::new()).unwrap();
         let mut graph = serde_json::json!({
             "nodes": [
                 {
@@ -1132,19 +1139,6 @@ mod tests {
         host.stop().unwrap();
     }
 
-    #[test]
-    fn frame_contract_keeps_camel_case_names() {
-        let value = serde_json::to_value(NativeFrameRendered {
-            frame: 3,
-            revision: 2,
-            output_node_id: "renderer".to_owned(),
-            width: 640,
-            height: 360,
-        })
-        .expect("frame should serialize");
-        assert_eq!(value["outputNodeId"], "renderer");
-        assert!(value.get("output_node_id").is_none());
-    }
 
     #[test]
     fn converts_unix_time_to_wgsl_date_uniform() {

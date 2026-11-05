@@ -36,6 +36,8 @@ export interface NativeOnnxSessionInfo {
 
 export interface NativeFrameRendered {
   frame: number;
+  /** Composition playback time in nanoseconds; excludes paused wall time. */
+  timelineNs: number;
   revision: number;
   outputNodeId: string;
   width: number;

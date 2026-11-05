@@ -25,6 +25,8 @@ pub struct TargetSpec {
     pub width: u32,
     pub height: u32,
     pub float: bool,
+    /// Auto-sized targets follow this connected sampler's current texture dimensions.
+    pub size_source: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,6 +83,7 @@ pub fn build_execution_plan_with_options(
         .collect::<HashMap<_, _>>();
     let (default_width, default_height) = default_size(nodes);
     let mut node_plans = Vec::new();
+    let mut output_sizes = HashMap::new();
 
     for node_id in &sorted_ids {
         let node = node_map
@@ -109,7 +112,24 @@ pub fn build_execution_plan_with_options(
             .filter(|port| !connected.contains(&port.label) && BUILTIN_UNIFORMS.contains(&port.label.as_str()))
             .map(|port| port.label.clone())
             .collect::<Vec<_>>();
-        let target = target_for(node, default_width, default_height);
+        let size_source = node.data.inputs.iter()
+            .filter(|port| matches!(port.data_type, DataType::Sampler2d | DataType::SamplerCube))
+            .find_map(|port| upstream.get(&port.label));
+        let mut target = target_for(node, default_width, default_height);
+        if let Some(target) = &mut target {
+            if node.data.auto_size != Some(false) {
+                target.size_source = size_source.cloned();
+                if let Some(&(width, height)) = size_source.and_then(|id| output_sizes.get(id.as_str())) {
+                    target.width = width;
+                    target.height = height;
+                }
+            }
+            output_sizes.insert(node.id.as_str(), (target.width, target.height));
+        } else if let Some(size) = source_size(node).or_else(|| {
+            size_source.and_then(|id| output_sizes.get(id.as_str()).copied())
+        }) {
+            output_sizes.insert(node.id.as_str(), size);
+        }
         let (shader, validation_errors, feedback) =
             if matches!(node.data.node_type, NodeType::Shader | NodeType::Constant) {
                 let video_inputs = if external_video_textures {
@@ -200,16 +220,20 @@ fn upstream_for(node: &ProjectNode, edges: &[Edge]) -> BTreeMap<String, String> 
 
 fn default_size(nodes: &[ProjectNode]) -> (u32, u32) {
     for node in nodes {
-        if node.data.input_mode == Some(InputMode::Framebuffer) {
-            if let (Some(width), Some(height)) = (node.data.fb_width, node.data.fb_height) {
-                return (width, height);
-            }
-        }
-        if let (Some(width), Some(height)) = (node.data.image_width, node.data.image_height) {
-            return (width, height);
+        if let Some(size) = source_size(node) {
+            return size;
         }
     }
     (512, 512)
+}
+
+fn source_size(node: &ProjectNode) -> Option<(u32, u32)> {
+    if node.data.input_mode == Some(InputMode::Framebuffer) {
+        if let (Some(width), Some(height)) = (node.data.fb_width, node.data.fb_height) {
+            return Some((width, height));
+        }
+    }
+    node.data.image_width.zip(node.data.image_height)
 }
 
 fn target_for(node: &ProjectNode, default_width: u32, default_height: u32) -> Option<TargetSpec> {
@@ -234,6 +258,7 @@ fn target_for(node: &ProjectNode, default_width: u32, default_height: u32) -> Op
         width,
         height,
         float,
+        size_source: None,
     })
 }
 

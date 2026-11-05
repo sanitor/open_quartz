@@ -35,6 +35,8 @@ export component AppWindow inherits Window {
     in property <[FactoryGroup]> factory-groups;
     in property <int> renderer-factory-index: -1;
     in property <string> playback-state: "stopped";
+    in property <string> playback-time: "00:00:00.0";
+    in property <string> render-fps: "0.0";
     callback project-action(string);
     callback rename-project(string);
     private property <length> sidebar-width: 320px;
@@ -165,6 +167,7 @@ export component AppWindow inherits Window {
             factory-groups: root.factory-groups;
             renderer-factory-index: root.renderer-factory-index;
             playback-state: root.playback-state;
+            playback-time: root.playback-time;
             native-runtime-available: root.native-runtime-available;
             screen-saver-available: root.screen-saver-available;
             export-selection-valid: root.renderer-index >= 0 && root.graph-selection-count <= 1;
@@ -183,6 +186,7 @@ export component AppWindow inherits Window {
                 nodes: root.graph-nodes;
                 edges: root.graph-edges;
                 content-width: root.graph-content-width;
+                render-fps: root.render-fps;
                 content-height: root.graph-content-height;
                 origin-x: root.graph-origin-x;
                 origin-y: root.graph-origin-y;
@@ -303,6 +307,7 @@ export component AppWindow inherits Window {
                         if root.preview-expanded: HorizontalLayout {
                             padding: 8px; spacing: 4px;
                             Text { text: root.inspector-node-label; color: Theme.secondary; font-size: 10px; horizontal-stretch: 1; overflow: elide; }
+                            if root.inspector-node-type == "Renderer": Text { text: "Render " + (root.has-renderer-image ? root.render-fps : "0.0") + " FPS"; color: Theme.secondary; font-size: 10px; }
                             Button { text: "Fullscreen"; accessible-label: "Fullscreen preview"; enabled: root.has-renderer-image; clicked => { root.preview-requested(true); } }
                         }
                         if root.preview-expanded: renderer-preview := Rectangle {
@@ -347,6 +352,7 @@ export component AppWindow inherits Window {
             spacing: 12px;
             HorizontalLayout {
                 Text { text: root.inspector-node-label + " · Preview"; color: white; font-size: 14px; horizontal-stretch: 1; }
+                Text { text: root.playback-time + " · Render " + root.render-fps + " FPS"; color: white; font-size: 12px; }
                 Button { text: "Close · Esc"; clicked => { root.preview-requested(false); } }
             }
             Image { source: root.renderer-image; image-fit: contain; horizontal-stretch: 1; vertical-stretch: 1; }

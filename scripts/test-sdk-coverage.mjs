@@ -1,8 +1,12 @@
 import { spawnSync } from 'node:child_process';
 
+// Preserve the SDK coverage scope: these native coordination/resource files were
+// previously in the separately tested native_host crate, outside this 100% gate.
+// Their GPU/model/cache/lifecycle tests now run as part of execution's test suite.
+const nativeIntegrationFiles = '/runtime/(execution|onnx_lifecycle_tests)\\.rs$|/resources/(models|models_tests)\\.rs$';
 const packages = [
   ['open_quartz_schema', 'coverage_tests\\.rs|/tests/'],
-  ['open_quartz_execution', '(/tests/|_coverage_tests\\.rs$)'],
+  ['open_quartz_execution', `(/tests/|_coverage_tests\\.rs$|${nativeIntegrationFiles})`],
   ['open_quartz_host_api', 'coverage_tests\\.rs|/tests/'],
   ['open_quartz_sdk', 'coverage_tests\\.rs|/tests/'],
   ['open_quartz', 'coverage_tests\\.rs|/tests/'],

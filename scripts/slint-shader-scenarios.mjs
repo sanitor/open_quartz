@@ -162,7 +162,14 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
     const position = { x: (scroll.absolutePosition?.x ?? 0) + 4, y: (scroll.absolutePosition?.y ?? 0) + scroll.size.height / 2 };
     await client.value(pointerScrollTool, { windowHandle: client.windowId, position, deltaX: 0, deltaY });
   };
-  const headers = () => client.byLabel(/^Select node /, { role: 'Button' });
+  const headers = async () => {
+    // Image uploads may replace node rows between query_handles and properties.
+    // Read node identity and properties in one UI-thread tree snapshot instead.
+    const tree = await client.tree();
+    assert.ok(!tree.truncated, 'Node inspection needs a complete UI tree snapshot');
+    return (tree.elements ?? []).filter((element) => element.accessibleRole === 'Button'
+      && /^Select node /.test(element.accessibleLabel ?? ''));
+  };
   const header = async (id) => {
     const matches = (await headers()).filter((element) => nodeState(element).id === id);
     assert.equal(matches.length, 1, `Expected exactly one UI node ${id}`);

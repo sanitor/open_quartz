@@ -7,6 +7,8 @@
 > 关系：[`DESIGN.md`](./DESIGN.md) 的当前桌面摘要、根 README 与 app README 已回写 Slint 入口；本文保留迁移设计及历史验证记录。
 >
 > 当前决定：本轮以 macOS 已完成的实现与验收收尾；真实相机、Windows/Linux 验收和 Android/iOS 延后。Tauri 保留一个版本作为显式 fallback；React/Web 独立保留，不迁移到 Slint WASM。以下多平台设计项作为后续方向，不是本轮验收承诺。
+>
+> 执行层收敛更新：原生应用直接使用 `open_quartz_execution::runtime::ExecutionRuntime`；已移除独立 `open_quartz_native_host` crate 和 Rust `PlayerHost` 转发层，模型 I/O 位于 `execution::resources::models`。本文 Phase 2/后续验收中的 NativeHost 名称保留当时历史口径，当前所有权以 [`DESIGN.md` §0.1](./DESIGN.md#01-当前桌面入口与所有权phase-57) 为准，不代表仍存在额外 host 层。
 
 ## 0. 结论摘要
 
@@ -145,7 +147,7 @@ flowchart TD
 |---|---:|---|
 | `src-tauri/src/native_runtime.rs` | 2,028 | 当前 native host 组合、GPU/视频/ONNX/presentation 入口，Tauri 耦合最重 |
 | `src-tauri/src/webview_texture_stream.rs` | 1,052 | Windows WebView2 TextureStream；Slint 路径不需要 |
-| `src-tauri/src/native_video.rs` | 915 | Tauri 侧视频/相机集成 |
+| `crates/open_quartz_execution/src/native_video.rs` | — | 已共享的视频/相机实现；未编译的 Tauri 旧副本已清理 |
 | `src-tauri/src/screen_saver.rs` | 756 | Windows screen saver host/导出 |
 | `crates/open_quartz_execution` | 约 12,100 | Runtime/Engine/GPU/ONNX/媒体核心，应尽量不动 |
 
@@ -218,10 +220,10 @@ apps/open_quartz_slint/
 └── tests/
 ```
 
-新增/抽取两个 Rust 边界：
+当前 Rust 边界：
 
-- `open_quartz_native_host`（建议新增）：把 `src-tauri/src/native_runtime.rs` 中与 Tauri 无关的 GPU/视频/ONNX/presentation 组合抽出来，Tauri 和 Slint 共用。**不能把 host 逻辑复制到新 app**。
-- `open_quartz_slint`（新 app）：只依赖 sdk/host/execution，不依赖 `tauri`、`wry`、`webview2-com`、`js-sys`。
+- `open_quartz_execution::runtime::ExecutionRuntime`：拥有 GPU/视频/ONNX/presentation 执行状态，Slint 与 Tauri 共用。模型下载、缓存和校验在同 crate 的 `resources::models` 模块；不再创建独立 host crate。
+- `open_quartz_slint`：只依赖 sdk/资源意图 API/execution，不依赖 `tauri`、`wry`、`webview2-com`、`js-sys`。线程桥接留在 RenderBridge，不复制执行逻辑。
 
 ### 3.3 单向数据流
 
@@ -637,7 +639,7 @@ GPU 编译失败不伪装成成功输出：`NativeHost` 保留结构化 `SdkErro
 
 ### 7.7 视频/相机
 
-当前 `src-tauri/native_video.rs` 和 DOM `<video>` 参与预览。Slint 没有 DOM video。
+原生视频/相机由共享 `open_quartz_execution::native_video` 管理，macOS 文件硬解已接入 `oq-media`；Web 仍使用 DOM `<video>`。Slint 消费共享 GPU 纹理。
 
 目标：
 
@@ -999,7 +1001,7 @@ Rust:
 | Tauri commands | `src-tauri/src/lib.rs` |
 | Native runtime | `src-tauri/src/native_runtime.rs` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
-| Native video | `src-tauri/src/native_video.rs` |
+| Native video | `crates/open_quartz_execution/src/native_video.rs`、`crates/oq-media` |
 | Screen saver | `src-tauri/src/screen_saver.rs`、`crates/open-quartz-screensaver-stub` |
 | GPU presenter | `crates/open_quartz_execution/src/gpu/presenter.rs` |
 | GPU preview/readback | `crates/open_quartz_execution/src/gpu/preview.rs`、`readback.rs` |
@@ -1016,7 +1018,7 @@ Rust:
 | AppController | `apps/open_quartz_slint/src/app_controller.rs` |
 | Graph projection | `apps/open_quartz_slint/src/graph_view_model.rs` |
 | Render bridge | `apps/open_quartz_slint/src/render_bridge.rs` |
-| Tauri-free host | `crates/open_quartz_native_host`（建议） |
+| 原生执行 / 模型资源服务 | `crates/open_quartz_execution/src/runtime/execution.rs`、`src/resources/models.rs` |
 | 平台服务 | `apps/open_quartz_slint/src/platform` |
 | 文件/模型/视频服务 | `apps/open_quartz_slint/src/services` |
 

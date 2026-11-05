@@ -19,12 +19,12 @@
 
 ## 2. 现状与问题
 
-当前原生实现位于 `crates/open_quartz_execution/src/onnx/session.rs`、`onnx/pipeline.rs` 与 `onnx/task.rs`；`NativeHost` 管图和资源会话，Slint/Tauri 是宿主。应保留模型缓存/哈希验证、异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。
+当前原生实现位于 `crates/open_quartz_execution/src/onnx/session.rs`、`onnx/pipeline.rs` 与 `onnx/task.rs`；`ExecutionRuntime` 管图和资源会话，Slint/Tauri 是宿主。应保留模型缓存/哈希验证、异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。
 
 目前设备路径是明确的：
 
 - `NativeOnnxProvider::default()` 是 CPU；macOS/Linux 只有 CPU 后端。Windows 可选择 DirectML，当前启用 CPU fallback。
-- `NativeHost::schedule_onnx()` 从 GPU 纹理执行同步 readback，把 `Vec<u8>` 捕获到 worker；CPU 预处理生成 `Vec<f32>`，ORT CPU 或 DirectML 执行，CPU 后处理生成 RGBA，再由 `drain_onnx_completions()` 上传 GPU。
+- `ExecutionRuntime::schedule_onnx()` 从 GPU 纹理执行同步 readback，把 `Vec<u8>` 捕获到 worker；CPU 预处理生成 `Vec<f32>`，ORT CPU 或 DirectML 执行，CPU 后处理生成 RGBA，再由 `drain_onnx_completions()` 上传 GPU。
 - `shared_onnx_wgpu_device` 明确为 `false`；`TensorRunner::run_f32(Vec<f32>, shape)` 不表达外部资源、设备归属或生命周期。
 - DirectML 执行结果被标记为配置的 `directml` 或 `directml+cpu`，但这不是逐算子执行位置的证明；部分算子可能回落到 CPU。
 - 浏览器已有各自的 ORT/WebGPU/WASM 路径；这说明跨端任务语义可复用，但不同运行时不因此具有可互操作的 buffer。
@@ -35,7 +35,7 @@
 
 ```mermaid
 flowchart TD
-    APP[Slint / Tauri / Browser host] --> GRAPH[Graph + NativeHost scheduler]
+    APP[Slint / Tauri / Browser host] --> GRAPH[Graph + ExecutionRuntime scheduler]
     GRAPH --> POLICY[Inference planner]
     POLICY --> PRE[Device preprocess / layout]
     POLICY --> BACKEND[Backend session]
@@ -57,7 +57,7 @@ apps / SDK / web schema
           ↓ model references, task and result contracts
 open_quartz_host_api       resource intents and graph policy
           ↓
-open_quartz_native_host    model stores, planning, scheduling, cancellation, frame stamps
+open_quartz_execution     runtime scheduling/cancellation/stamps + resources::models I/O
           ↓
 oq-inference              stable session/resource/capability contracts (proposed)
           ↓
@@ -68,11 +68,11 @@ open_quartz_execution GPU graph adapters and device-to-device interop
 
 Dependency rule: backend may depend on inference contracts and its platform runtime. Public graph/SDK/UI never depend on ORT/Core ML/DirectML concrete types. `open_quartz_execution` may provide wgpu import/export and GPU preprocess kernels; platform interop implementations may use wgpu HAL and native APIs behind cfg-gated private modules. `oq-media` remains independent and provides owned media `FrameLease`; it does not gain an ONNX or graph dependency.
 
-独立推理库采用 `oq-inference`（Rust `oq_inference`）作为提案名称，`oq` 仅表示出处；不依赖 OpenQuartz graph、schema、NativeHost、Slint 或 `oq-media`。宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制。平台后端不能反向依赖 `open_quartz_execution`；wgpu/HAL 互操作放在可选适配模块或后续有实际实现的 `oq-inference-wgpu` 包，由组合层连接两侧资源。首轮先提取一个实际可用核心和现有 ORT adapter，不预建空后端 crate。本文列出的新模块与类型均为提案，不是已存在 API。
+独立推理库采用 `oq-inference`（Rust `oq_inference`）作为提案名称，`oq` 仅表示出处；不依赖 OpenQuartz graph、schema、ExecutionRuntime、Slint 或 `oq-media`。宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制。平台后端不能反向依赖 `open_quartz_execution`；wgpu/HAL 互操作放在可选适配模块或后续有实际实现的 `oq-inference-wgpu` 包，由组合层连接两侧资源。首轮先提取一个实际可用核心和现有 ORT adapter，不预建空后端 crate。本文列出的新模块与类型均为提案，不是已存在 API。
 
-core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 `open_quartz_execution::FrameStamp` 的类型别名。示例中的 `FrameStamp` 仅表示这一跨平台请求戳概念；graph revision、node generation 和 NodeId 由 NativeHost 保存为 request ID→图上下文映射，不进入独立库依赖。库的错误类型也不依赖 SDK `SdkError`，在宿主边界转换。
+core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 `open_quartz_execution::FrameStamp` 的类型别名。示例中的 `FrameStamp` 仅表示这一跨平台请求戳概念；graph revision、node generation 和 NodeId 由 ExecutionRuntime 保存为 request ID→图上下文映射，不进入独立库依赖。库的错误类型也不依赖 SDK `SdkError`，在宿主边界转换。
 
-The model descriptor, task schema, and serialized project record **logical model identity and parameters**, not transient pointers, command queues, device addresses, or runtime session handles. The NativeHost resource store maps logical identity plus immutable model/version/configuration and selected execution plan to live sessions and caches.
+The model descriptor, task schema, and serialized project record **logical model identity and parameters**, not transient pointers, command queues, device addresses, or runtime session handles. The ExecutionRuntime resource store maps logical identity plus immutable model/version/configuration and selected execution plan to live sessions and caches.
 
 ## 4. Public contract
 
@@ -326,7 +326,7 @@ Performance comparisons pin model hash, artifact, input sequence, shape, precisi
 ### Phase D — Windows interop decision and backend
 
 - Benchmark ORT DirectML queue-sharing/device tensor support against WinML for target models and package requirements.
-- Implement same-device D3D12 resource and fence sharing only when NativeHost wgpu adapter identity and queue ownership are compatible; test adapter mismatch/device loss. Treat standalone DXGI shared presentation as a separate boundary.
+- Implement same-device D3D12 resource and fence sharing only when ExecutionRuntime wgpu adapter identity and queue ownership are compatible; test adapter mismatch/device loss. Treat standalone DXGI shared presentation as a separate boundary.
 - Expose fallback/strict policy explicitly. Keep current behavior until an acceptance-tested backend is selected.
 
 ### Phase E — Graph integration and product rollout

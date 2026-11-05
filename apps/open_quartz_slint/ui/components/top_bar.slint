@@ -64,6 +64,7 @@ export component TopBar inherits Rectangle {
     in property <bool> screen-saver-available;
     in property <bool> export-selection-valid;
     in property <string> playback-state: "playing";
+    in property <string> playback-time: "00:00:00.0";
     in property <[FactoryGroup]> factory-groups;
     in property <int> renderer-factory-index: -1;
     callback project-action(string);
@@ -133,6 +134,7 @@ export component TopBar inherits Rectangle {
         Divider {}
         ToolButton { text: "CLEAR"; glyph: "×"; enabled: !root.busy; clicked => { root.project-action("clear"); } }
         Rectangle { horizontal-stretch: 1; }
+        Text { text: root.playback-time; accessible-label: "Playback time " + root.playback-time; font-size: 11px; color: Theme.secondary; vertical-alignment: center; min-width: 78px; }
         ToolButton { text: root.playback-state == "playing" ? "PAUSE" : root.playback-state == "paused" ? "RESUME" : "PLAY"; glyph: root.playback-state == "playing" ? "Ⅱ" : "▶"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback(root.playback-state == "playing" ? "pause" : "play"); } }
         if root.playback-state != "stopped": ToolButton { text: "STOP"; glyph: "■"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
     }

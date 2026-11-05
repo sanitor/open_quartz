@@ -26,11 +26,11 @@
 | Rust `NativeVideoSource` 管理文件/摄像头、解码线程、暂停恢复和帧槽 | [native_video.rs](../crates/open_quartz_execution/src/native_video.rs) | 提取为媒体后端，不让 UI 拥有解码生命周期 |
 | Windows 有进程内 FFmpeg D3D12VA；初始化失败时回退到 FFmpeg 子进程 RGBA，运行中 decode 失败目前仅记录并停源 | 同上，`start_decoder` / `decode_d3d12_frames` | 复用基础但补齐可观察终态与恢复策略，不声称当前能自动处理中途故障 |
 | macOS/Linux 当前通过 FFmpeg 可执行文件输出 RGBA 管道，没有统一进程内硬解 | 同上，`append_input_args` | 新增平台库、打包与 GPU 适配是实际工作，不能只改选项 |
-| NativeHost 上传解码帧并标记节点 dirty | [NativeHost](../crates/open_quartz_native_host/src/lib.rs)，`upload_video_frames` | 图执行适配应留在宿主，解码核心不接收 NodeId |
-| Slint 与 NativeHost 共用 wgpu Device/Queue | [render_bridge.rs](../apps/open_quartz_slint/src/render_bridge.rs)，`initialize` | 保留共享设备设计；共享 UI/GPU 不意味着解码设备天然一致 |
+| ExecutionRuntime 上传解码帧并标记节点 dirty | [执行运行时](../crates/open_quartz_execution/src/runtime/execution.rs)，`upload_video_frames` | 图执行适配留在 execution，解码核心不接收 NodeId |
+| Slint 与 ExecutionRuntime 共用 wgpu Device/Queue | [render_bridge.rs](../apps/open_quartz_slint/src/render_bridge.rs)，`initialize` | 保留共享设备设计；共享 UI/GPU 不意味着解码设备天然一致 |
 | Windows 已管理解码 fence、NV12/P010、纹理子资源与必要的 GPU detach copy | [dxgi.rs](../crates/open_quartz_execution/src/gpu/dxgi.rs) | 新接口必须表达生命周期和同步，不能只传纹理指针 |
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
-| 既有 `media` 模块定义了外部帧/导入器接口 | [media/mod.rs](../crates/open_quartz_execution/src/media/mod.rs) | 可借鉴，但裸 `u64` handle、统一 `Send` 与缺失 release 契约不足以直接成为公共 API |
+| 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
 | FFmpeg 打包不同：Windows 固定 shared 9.0.2 snapshot；其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
 | BrowserHost 已在主线程用 HTMLVideoElement/getUserMedia 解码/采集，捕获 ImageBitmap 后转移给 Worker，再上传到 WASM/WebGPU 图 | [BrowserHost.ts](../src/sdk/internal/BrowserHost.ts)、[BrowserRuntimeWorker.ts](../src/sdk/BrowserRuntimeWorker.ts) | 先将现有路径适配为 browser session，保留一帧 in-flight ACK 背压；WebCodecs 是后续新增后端，不是修复“浏览器没有视频” |
 
@@ -380,18 +380,16 @@ controller 投影 `state`、`position`、可选 `duration`、`seekable`、`video
 ```text
 SDK Project（持久化 source 与选项）
   → HostResourceIntent
-  → NativeHost media registry：NodeId → MediaSession
+  → execution::ExecutionRuntime media registry：NodeId → MediaSession
   → shared video frame / graph input
   → Runtime dirty + 图执行
   → output lease
   → 节点/Inspector/fullscreen 的 Slint presenter
 ```
 
-`RenderBridge` 继续是 UI 与执行线程之间的窗口适配，不再包含 FFmpeg 解码策略或跨平台表面解析。`NativeHost` 负责节点资源对齐、graph dirty 与帧时钟；`media_core` 返回帧和状态，既不知道节点也不会发布 SDK command。
+`RenderBridge` 继续是 UI 与执行线程之间的窗口适配，不包含 FFmpeg 解码策略或跨平台表面解析。execution 内的 `ExecutionRuntime` 直接组合节点资源对齐、graph dirty、帧时钟与 GPU 执行；原独立 NativeHost crate 和 PlayerHost 转发层已移除。`media_core` 返回帧和状态，既不知道节点也不会发布 SDK command。
 
-现有 `NativeVideoSource` 的 public host API 可先包成兼容 facade，调用逐项迁移到新 session，不一次修改所有 UI/语言绑定。已有 `media/mod.rs` 的接口若有消费者，应先做兼容映射/弃用记录；只有核对全部调用并完成验收后才删，避免长期两套生产媒体所有权。
-
-提取顺序先把无依赖的媒体协议/ID/元数据/lease 接口归入 `media_core`，再由旧 API 映射到新实现。现有 `ImportedVideoFrame.texture: GpuOutputHandle` 是 execution/GPU 适配层类型，不整体搬进核心；兼容 wrapper 的 GPU 输出保持原调用者可用，由适配器做转换。`open_quartz_host_api` 需要暴露的媒体协议直接引用或 re-export 核心定义，不能再经 execution 绕回；任何旧句柄→新租约的映射同时转交实际 owner/release 责任。A 阶段验收包含 crate dependency graph 与“同一帧没有双 owner、同一类型没有重复定义”的接口检查。
+首轮已落实独立 `oq-media` 的 retained `FrameLease` 与 macOS VideoToolbox 后端，OpenQuartz `NativeVideoSource` 持有宿主节点和播放策略，GPU 导入仍是平台执行适配。旧 `open_quartz_execution::media` 外部帧 facade 完全没有生产消费者；核对仓内调用及重复模拟测试后，已随切换删除。避免执行层同时保留第二套 `ExternalVideoFrame`、同步和 importer 契约。未来跨平台抽取如需新公共协议，应由实际第二平台实现验证后再定义，不先留空抽象。
 
 前期 FFmpeg 子进程 fallback 可保留在 backend adapter，report `backend=ffmpeg-process / software / cpu-upload`。它是可观测迁移手段，不是让新接口把硬解承诺打折；`Require` 模式绝不走该 fallback。新平台 libav 路径通过后再逐平台移除子进程默认路径，CLI probe 也逐步用 libav stream info 替换正则解析 stderr。
 

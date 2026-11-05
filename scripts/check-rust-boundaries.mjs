@@ -63,7 +63,7 @@ fn main() {
     ['gpu', 'GpuExecutor'],
     ['runtime', 'Runtime'],
     ['event', 'EngineState'],
-    ['host', 'PlayerHost'],
+    ['runtime', 'ExecutionRuntime'],
     ['onnx', 'OnnxSession'],
     ['wgsl', 'CompileRequest'],
     ['graph', 'GraphRequest'],
@@ -153,6 +153,25 @@ fn main() {
 }
 `, true, hostDependency);
 
+  const executionDependency = `
+open_quartz_execution = { path = ${JSON.stringify(join(root, 'crates/open_quartz_execution'))} }
+`;
+  cargoCheck(`
+use open_quartz_execution::runtime::{ExecutionRuntime, Runtime};
+use open_quartz_execution::resources::models::{ModelStore, PreparedOnnxModel};
+
+fn main() {
+    let _ = ExecutionRuntime::from_shared_wgpu;
+    let _ = Runtime::new_native;
+    let _ = ModelStore::new;
+    let _ = PreparedOnnxModel::open;
+}
+`, true, executionDependency);
+  cargoCheck(`
+use open_quartz_execution::host::PlayerHost;
+fn main() { let _ = core::any::type_name::<PlayerHost>(); }
+`, false, executionDependency);
+
   const openQuartzManifest = readFileSync(join(root, 'crates/open_quartz/Cargo.toml'), 'utf8');
   if (openQuartzManifest.includes('host-internals')) {
     throw new Error('open_quartz still declares the obsolete host-internals pseudo-boundary');
@@ -162,7 +181,7 @@ fn main() {
     if (!sdkDeps.includes(required)) throw new Error(`open_quartz_sdk is missing ${required}`);
   }
   const executionDeps = cargoMetadata('open_quartz_execution');
-  for (const forbidden of ['open_quartz', 'open_quartz_sdk']) {
+  for (const forbidden of ['open_quartz', 'open_quartz_sdk', 'open_quartz_host_api', 'open_quartz_native_host']) {
     if (executionDeps.includes(forbidden)) {
       throw new Error(`open_quartz_execution must not depend on ${forbidden}`);
     }

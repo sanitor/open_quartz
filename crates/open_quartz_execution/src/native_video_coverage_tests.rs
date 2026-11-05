@@ -398,7 +398,9 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
             height: 1,
             fps: 30.0,
             decoder: "test".to_owned(),
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
             d3d12_eligible: false,
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
             d3d12_detach_required: false,
             fallback_reason: None,
         },

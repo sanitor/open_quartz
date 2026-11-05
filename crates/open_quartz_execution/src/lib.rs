@@ -3,12 +3,12 @@ pub mod engine;
 pub mod event;
 pub mod gpu;
 pub mod graph;
-pub mod host;
 mod logging;
-pub mod media;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_video;
 pub mod onnx;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod resources;
 pub mod runtime;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_environment;
@@ -52,9 +52,6 @@ mod coverage_gpu_shader;
 #[cfg(test)]
 #[path = "../tests/graph_test.rs"]
 mod coverage_graph;
-#[cfg(test)]
-#[path = "../tests/media_gpu_test.rs"]
-mod coverage_media_gpu;
 #[cfg(test)]
 #[path = "../tests/onnx_test.rs"]
 mod coverage_onnx;

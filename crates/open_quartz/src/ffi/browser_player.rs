@@ -4,7 +4,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use open_quartz_execution::engine::ExecutionCommand;
-use open_quartz_execution::host::PlayerHost;
+use open_quartz_execution::runtime::Runtime;
 use open_quartz_execution::runtime::{
     AsyncCompletionEnvelope, ContentStamp, DataPathMode, FrameStamp, OutputKey, OutputPayload,
     OutputState, OutputSubscription, RuntimeCapabilities, RuntimeFrameInput,
@@ -31,7 +31,7 @@ struct BrowserFrameResult {
 
 #[wasm_bindgen(js_name = BrowserPlayer)]
 pub struct BrowserPlayerBinding {
-    host: PlayerHost,
+    host: Runtime,
     gpu: BrowserGpuEnvironment,
     output_node_id: Option<String>,
 }
@@ -44,7 +44,7 @@ impl BrowserPlayerBinding {
             .await
             .map_err(|error| JsValue::from_str(&error.to_json()))?;
         Ok(Self {
-            host: PlayerHost::new_native(RuntimeCapabilities {
+            host: Runtime::new_native(RuntimeCapabilities {
                 data_paths: vec![DataPathMode::ExternalFrameNoCpuReadback],
             }),
             gpu,

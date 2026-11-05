@@ -2,7 +2,7 @@
 name = "open_quartz_execution"
 version = "0.20.0"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.92"
 license = "MIT"
 
 [features]
@@ -21,6 +21,9 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "webgpu",
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-20"] }
 log = "0.4"
+pollster = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-graphics = { package = "windows", version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
@@ -39,6 +42,7 @@ js-sys = "0.3"
 
 [dev-dependencies]
 pollster = "0.4"
+tempfile = "3"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

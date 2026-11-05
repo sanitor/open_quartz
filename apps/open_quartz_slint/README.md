@@ -124,7 +124,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   deletions, and whole-subgraph pastes. An identical connection is a no-op. A successful new edit clears redo;
   a failed edit does not. Opening a project resets the edit session; generated
   fixture construction is not exposed as user undo history. History is not saved.
-  Topology edits and their undo/redo refresh NativeHost; layout-only history does
+  Topology edits and their undo/redo refresh ExecutionRuntime; layout-only history does
   not restart rendering.
 - **− / +** change zoom by a factor of 1.25, with a manual range of **1%–200%**.
   **100%** resets scale while preserving the viewport center where bounds allow.
@@ -165,14 +165,19 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
 - A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
-  A separate render worker owns `open_quartz_native_host::NativeHost`; no execution
-  engine logic is reproduced in this crate.
+  A separate render worker owns `open_quartz_execution::runtime::ExecutionRuntime`;
+  it directly composes shared Runtime rules and GPU/video/inference resources.
+  The former native host crate and PlayerHost forwarding layer have been removed.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
-  into `NativeHost::from_shared_wgpu`, and passes the originals to Slint's
-  `WGPUConfiguration::Manual`. The host receives the SDK graph, advances playback,
+  into `ExecutionRuntime::from_shared_wgpu`, and passes the originals to Slint's
+  `WGPUConfiguration::Manual`. The runtime receives the SDK graph, advances playback,
   and provides its output texture. A Slint timer imports the latest texture using
   `slint::Image::try_from`; frames do not go through pixel readback or encoded URLs.
   Graph generations discard stale output after opening another project.
+- Model cache/download/checksum/session preparation lives in execution's
+  `resources::models` service module and runs on model workers. Ticket/generation
+  validation still precedes session attachment; the render loop performs no downloads.
+  Historical acceptance records below use the former NativeHost implementation name.
 - If GPU/host initialization fails, the shell attempts Slint's default UI backend
   and explicitly reports **Renderer not initialized**. It never synthesizes an
   output image. Host graph/render errors and texture import failures are displayed;
@@ -182,9 +187,9 @@ The app includes Sampling, Framebuffer, and Video configuration forms plus ONNX
 model loading and inference. Image inputs accept PNG/JPEG/BMP/WebP files; raw
 Framebuffer inputs accept binary files decoded using the applied format, dimensions,
 and optional row stride. Image/Framebuffer resources are embedded in the SDK project
-and decoded asynchronously after Open. NativeHost receives decoded RGBA textures;
+and decoded asynchronously after Open. ExecutionRuntime receives decoded RGBA textures;
 errors are reported instead of replaced with sample output. Video file paths and
-camera IDs are persisted and reconciled by NativeHost, with native camera enumeration,
+camera IDs are persisted and reconciled by ExecutionRuntime, with native camera enumeration,
 file selection, loop, and playback rate controls. Video files and cameras remain
 external resources and can fail if a file/device is missing or OS permission is
 denied. Sampling applies each source node's Linear/Nearest filter and Clamp/Repeat/
@@ -196,6 +201,16 @@ thumbnail and selected Inspector preview. Source replacement updates the preview
 even when dimensions match; it preserves the UI playback state. This does not
 execute the graph or advance the starting playback position. Explicit Play starts
 normal decoding. Preview polling ends on success, error, timeout or source removal.
+
+The toolbar shows composition playback time (`HH:MM:SS.t`) from ExecutionRuntime's
+actual runtime timeline, not a second UI wall clock. Pause freezes it, Resume
+continues, and Stop/New/Open reset it. Renderer cards, the Renderer Inspector
+preview and fullscreen show **Render FPS**: successful graph output ticks per
+wall-clock measurement window (500ms), published with the time at most every
+100ms. This is the graph render-loop rate, not unique source video FPS, GPU
+completion throughput, or monitor scan-out FPS. Paused/stopped render rate is
+zero; a static output may still be presented on successive render ticks.
+
 A standalone external `sampler2D` source can be the graph's terminal texture output:
 Video Play does not require adding a Renderer first. An explicit Renderer still
 takes precedence when present. Native Choose File acceptance with a real 1080p
@@ -262,8 +277,14 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   import updates SDK node data as one undoable edit; Save includes the embedded data
   URL, and Open revalidates and uploads it asynchronously.
 - Edit the name in the sidebar header and press Enter or **Apply**. Its trash icon
-  deletes the node. Shader/Constant nodes also expose **Auto size**, width/height
-  (1–8192), and **Apply output size**. Auto size delegates resolution to the engine.
+  deletes the node. Shader/Constant nodes expose **Auto size**, width/height
+  (1–8192), and **Apply output size**. Checked: follow the first connected sampler
+  input in declared port order, including the actual uploaded Image/Video texture
+  size and upstream Filter outputs; unrelated graph resources do not override it.
+  Unchecked: use the specified width/height. Live source replacements propagate
+  dimensions through automatic filters on the next executed frame, while manual
+  targets remain fixed. Builtin `iResolution` matches each allocated GPU target.
+  With no connected sampler, automatic targets retain the graph-default size.
 - Shader nodes use the reusable `crates/slint_code_editor` component, with a
   cosmic-text document/layout, live WGSL colors, line numbers, goto-line,
   find/next, replace/all, mouse/keyboard selection and document undo/redo.
@@ -406,9 +427,9 @@ Menus, toolbar buttons, Apply actions, ports, and node movement use simulated
 pointer input through the real Slint event loop. Node selection and editing
 use accessibility actions/values; this is not an OS keyboard/IME test.
 
-Local macOS/Apple M4 Pro acceptance passes all **17 UI checkpoints**, with
+Local macOS/Apple M4 Pro acceptance passes all **18 UI checkpoints**, with
 **36,100/36,100** blue pixels in the Renderer preview ROI and both node thumbnails
-available. The 70 application tests and 226 execution/NativeHost test results pass.
+available. The 72 application tests and 237 execution/NativeHost test results pass.
 The suite exposed and now guards two production fixes: the sidebar resize strip
 previously intercepted centered Apply clicks, and repeated stopped graph edits
 discarded pending static Shader work before the first Play. Crash/timeout reports
@@ -432,9 +453,21 @@ After an automation build, rerun without rebuilding using
 To convert an existing run without rerunning the application:
 `npm run report:desktop:ui -- test-results/slint-ui/<timestamp>`.
 The report distinguishes later cases that never ran from the failing case and an
-interrupted case without a final result. A startup failure leaves all 17 cases
+interrupted case without a final result. A startup failure leaves the cases
 unexecuted and displays the application error. Report regressions can be checked
 with `node --test scripts/slint-ui-report.test.mjs`.
+
+The `auto-size-playback-time-renderer-fps` interaction case loads real embedded
+non-square PNG inputs, including a differently sized unconnected image, and
+checks Filter→Renderer resolution through Auto→manual→Auto UI commits. It also
+checks positive render FPS and advancing time, frozen paused time, resumed time,
+zero paused FPS and reset time/FPS after Stop; screenshots retain actual GPU
+preview pixels. Run it with the ordinary `npm run test:desktop:ui` suite.
+Latest passing report: `test-results/slint-ui/interaction-2026-11-05T02-33-18-779Z/report.html`.
+The new case observes 96×48 → 320×180 → 96×48 output and verifies the actual
+blue preview pixels; render FPS assertions require a positive rate, not a
+machine-specific performance threshold.
+
 
 ### All catalog shaders with real image fixtures
 
@@ -460,7 +493,8 @@ independent frames 1–200 (8/255 tolerance), quantizing its seed and every feed
 step to the runtime's RGBA8 format. Pixelate uses binary-exact 8×4 blocks to avoid
 platform-dependent nearest-sampler ties after division.
 
-On macOS/Metal, all 34 Shader cases and all 17 ordinary interaction cases pass.
+On macOS/Metal, all 34 Shader cases passed their prior catalog acceptance;
+the latest ordinary interaction suite passes all 18 cases.
 Linux/macOS CI entries are configured; cross-platform CI results are not implied
 by this local acceptance.
 

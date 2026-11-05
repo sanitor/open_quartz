@@ -87,65 +87,7 @@ impl Engine {
                 .with_details(error.to_string())
                 .to_json()
         })?;
-        let changed_nodes = changed_node_ids(self.graph.as_ref(), &graph);
-        let removed_nodes = removed_node_ids(self.graph.as_ref(), &graph);
-        let changed_node_set = changed_nodes.iter().cloned().collect::<HashSet<_>>();
-
-        let nodes = graph.nodes.clone();
-        let edges = graph.edges.clone();
-        match self.inner.as_mut() {
-            Some(engine) => {
-                engine.replace_graph_preserving_state(nodes, edges, &changed_node_set);
-            }
-            None => {
-                self.inner = Some(ExecutionEngine::prepare_with_options(
-                    nodes,
-                    edges,
-                    self.external_video_textures,
-                ));
-            }
-        }
-
-        let released = removed_nodes
-            .iter()
-            .filter_map(|node_id| {
-                self.node_generations
-                    .remove(node_id)
-                    .map(|generation| (node_id.clone(), generation))
-            })
-            .collect::<Vec<_>>();
-        let invalidated = changed_nodes
-            .iter()
-            .map(|node_id| {
-                let generation = self
-                    .node_generations
-                    .entry(node_id.clone())
-                    .and_modify(|generation| *generation = generation.saturating_add(1))
-                    .or_insert(1);
-                (node_id.clone(), *generation)
-            })
-            .collect::<Vec<_>>();
-
-        self.graph = Some(graph);
-        self.revision = self.revision.saturating_add(1);
-        self.pending_commands.clear();
-        self.events.push_back(EngineEvent::GraphReady {
-            revision: self.revision,
-        });
-        for (node_id, generation) in released {
-            self.events.push_back(EngineEvent::ResourceReleased {
-                node_id,
-                generation,
-            });
-        }
-        for (node_id, generation) in invalidated {
-            self.events.push_back(EngineEvent::ResourceInvalidated {
-                node_id,
-                generation,
-            });
-        }
-        self.transition(EngineState::Ready);
-        Ok(self.revision)
+        self.set_graph(graph).map_err(|error| error.to_json())
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = markDirty))]
@@ -408,6 +350,68 @@ impl Engine {
 }
 
 impl Engine {
+    pub(crate) fn set_graph(&mut self, graph: Graph) -> Result<u32, SdkError> {
+        self.ensure_active()?;
+        let changed_nodes = changed_node_ids(self.graph.as_ref(), &graph);
+        let removed_nodes = removed_node_ids(self.graph.as_ref(), &graph);
+        let changed_node_set = changed_nodes.iter().cloned().collect::<HashSet<_>>();
+
+        let nodes = graph.nodes.clone();
+        let edges = graph.edges.clone();
+        match self.inner.as_mut() {
+            Some(engine) => {
+                engine.replace_graph_preserving_state(nodes, edges, &changed_node_set);
+            }
+            None => {
+                self.inner = Some(ExecutionEngine::prepare_with_options(
+                    nodes,
+                    edges,
+                    self.external_video_textures,
+                ));
+            }
+        }
+
+        let released = removed_nodes
+            .iter()
+            .filter_map(|node_id| {
+                self.node_generations
+                    .remove(node_id)
+                    .map(|generation| (node_id.clone(), generation))
+            })
+            .collect::<Vec<_>>();
+        let invalidated = changed_nodes
+            .iter()
+            .map(|node_id| {
+                let generation = self
+                    .node_generations
+                    .entry(node_id.clone())
+                    .and_modify(|generation| *generation = generation.saturating_add(1))
+                    .or_insert(1);
+                (node_id.clone(), *generation)
+            })
+            .collect::<Vec<_>>();
+
+        self.graph = Some(graph);
+        self.revision = self.revision.saturating_add(1);
+        self.pending_commands.clear();
+        self.events.push_back(EngineEvent::GraphReady {
+            revision: self.revision,
+        });
+        for (node_id, generation) in released {
+            self.events.push_back(EngineEvent::ResourceReleased {
+                node_id,
+                generation,
+            });
+        }
+        for (node_id, generation) in invalidated {
+            self.events.push_back(EngineEvent::ResourceInvalidated {
+                node_id,
+                generation,
+            });
+        }
+        self.transition(EngineState::Ready);
+        Ok(self.revision)
+    }
     pub fn new_native() -> Self {
         new_engine(false)
     }

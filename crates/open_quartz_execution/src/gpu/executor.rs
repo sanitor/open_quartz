@@ -62,6 +62,7 @@ struct NodeGpuResources {
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     uniform_buffers: HashMap<String, wgpu::Buffer>,
+    builtin_resolution: bool,
     targets: Vec<RenderTarget>,
     sampler: Arc<wgpu::Sampler>,
     output_index: usize,
@@ -76,8 +77,6 @@ impl NodeGpuResources {
             return false;
         };
         self.fragment_code == shader.full_fragment_code
-            && self.width == target.width
-            && self.height == target.height
             && self.format == target_format(target.float)
     }
 
@@ -396,15 +395,29 @@ impl GpuExecutor {
                     node.validation_errors[0].message.clone(),
                 ));
             }
-            if self
-                .nodes
-                .get(&node.id)
-                .is_some_and(|resources| resources.matches(node))
+            let target = node.target.as_ref().ok_or_else(|| {
+                GpuExecutionError::for_node(&node.id, "shader execution plan has no target")
+            })?;
+            let (width, height) = target.size_source.as_deref()
+                .and_then(|source| self.output_texture(source))
+                .map(|output| (output.width, output.height))
+                .unwrap_or((target.width, target.height));
+            if let Some(resources) = self.nodes.get_mut(&node.id)
+                .filter(|resources| resources.matches(node))
             {
-                continue;
+                resources.builtin_resolution = node.builtin_ports.iter().any(|name| name == "iResolution");
+                if resources.width != width || resources.height != height {
+                    resources.targets = (0..resources.targets.len())
+                        .map(|_| self.backend.create_target(width, height, resources.format))
+                        .collect();
+                    resources.width = width;
+                    resources.height = height;
+                    resources.output_index = 0;
+                }
+            } else {
+                let resources = self.create_node_resources(node, width, height)?;
+                self.nodes.insert(node.id.clone(), resources);
             }
-            let resources = self.create_node_resources(node)?;
-            self.nodes.insert(node.id.clone(), resources);
         }
         Ok(())
     }
@@ -518,6 +531,8 @@ impl GpuExecutor {
     fn create_node_resources(
         &self,
         plan: &NodeExecutionPlan,
+        width: u32,
+        height: u32,
     ) -> Result<NodeGpuResources, GpuExecutionError> {
         let shader = plan.shader.as_ref().expect("filtered shader plan");
         let target = plan.target.as_ref().ok_or_else(|| {
@@ -624,7 +639,7 @@ impl GpuExecutor {
         let targets = (0..target_count)
             .map(|_| {
                 self.backend
-                    .create_target(target.width, target.height, format)
+                    .create_target(width, height, format)
             })
             .collect();
         let sampler = Arc::new(
@@ -644,13 +659,14 @@ impl GpuExecutor {
 
         Ok(NodeGpuResources {
             fragment_code: shader.full_fragment_code.clone(),
-            width: target.width,
-            height: target.height,
+            width,
+            height,
             format,
             bindings: shader.bindings.clone(),
             bind_group_layout,
             pipeline,
             uniform_buffers,
+            builtin_resolution: plan.builtin_ports.iter().any(|name| name == "iResolution"),
             targets,
             sampler,
             output_index: 0,
@@ -701,6 +717,12 @@ impl GpuExecutor {
                 .find(|binding| binding.name == *name)
                 .and_then(|binding| binding.wgsl_type.as_deref())
                 .unwrap_or("f32");
+            let resolution = [resources.width as f32, resources.height as f32, 1.0];
+            let values = if resources.builtin_resolution && name == "iResolution" {
+                resolution.as_slice()
+            } else {
+                values.as_slice()
+            };
             let bytes = pack_uniform(wgsl_type, values);
             self.backend.queue.write_buffer(buffer, 0, &bytes);
         }

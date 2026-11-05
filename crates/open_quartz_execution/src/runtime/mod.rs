@@ -3,9 +3,17 @@ mod clock;
 mod contract;
 mod output;
 mod presentation;
+#[cfg(not(target_arch = "wasm32"))]
+mod execution;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution::{
+    ExecutionRuntime, NativeFrameRendered, NativeOnnxConfig, NativeOnnxLoadOptions,
+    NativeOutputEvent, NativeRuntimeInfo,
+};
 
 pub use api::Runtime;
-pub use api::{FramePacer, HostBackend, ResourceDescriptor, RuntimeFrameInput};
+pub use api::{HostBackend, ResourceDescriptor, RuntimeFrameInput};
 pub use clock::{ClockState, CompositionClock};
 pub use output::OutputRegistry;
 pub use presentation::{

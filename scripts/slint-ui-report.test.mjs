@@ -14,7 +14,7 @@ test('complete success lists every case and only its own screenshots', () => {
     steps, screenshots: ['C:\\artifacts\\11-playing-blue-preview.png'],
   });
   assert.equal(model.passed, true);
-  assert.deepEqual(model.counts, { passed: 17, failed: 0, incomplete: 0, not_run: 0 });
+  assert.deepEqual(model.counts, { passed: UI_CASES.length, failed: 0, incomplete: 0, not_run: 0 });
   assert.equal(model.cases[13].screenshots.length, 1);
   assert.equal(model.cases[0].screenshots.length, 0);
   assert.match(renderHtml(model), /href="11-playing-blue-preview.png"/);
@@ -26,7 +26,7 @@ test('failure preserves prior passes, marks later cases not run, and escapes err
     { name: UI_CASES[0].id, passed: true },
     { name: UI_CASES[1].id, passed: false, error },
   ] });
-  assert.deepEqual(model.counts, { passed: 1, failed: 1, incomplete: 0, not_run: 15 });
+  assert.deepEqual(model.counts, { passed: 1, failed: 1, incomplete: 0, not_run: UI_CASES.length - 2 });
   const html = renderHtml(model, ['failure.png', 'application-1.log']);
   assert.equal(html.includes(error), false);
   assert.match(html, /&lt;script&gt;alert\(&quot;unsafe&quot;\)&lt;\/script&gt;/);
@@ -37,10 +37,10 @@ test('failure preserves prior passes, marks later cases not run, and escapes err
 
 test('startup failure and interruption cannot become successful or skipped passes', () => {
   const startup = reportModel({ passed: false, error: 'Application crashed' });
-  assert.equal(startup.counts.not_run, 17);
+  assert.equal(startup.counts.not_run, UI_CASES.length);
   const aborted = reportModel({ passed: false }, { steps: [{ name: UI_CASES[0].id, startedAt }] });
   assert.equal(aborted.counts.incomplete, 1);
-  assert.equal(aborted.counts.not_run, 16);
+  assert.equal(aborted.counts.not_run, UI_CASES.length - 1);
   assert.equal(aborted.passed, false);
   assert.equal(reportModel({ passed: true }, { steps: [] }).passed, false);
 });
@@ -60,7 +60,7 @@ test('regeneration rejects stale scenario results after reusing a run directory'
     await writeFile(join(directory, 'result.json'), JSON.stringify({ passed: true, startedAt, steps: UI_CASES.map((entry) => ({ name: entry.id, passed: true })) }));
     const { path, model } = await regenerateReport(directory);
     assert.equal(model.counts.passed, 0);
-    assert.equal(model.counts.not_run, 17);
+    assert.equal(model.counts.not_run, UI_CASES.length);
     assert.match(await readFile(path, 'utf8'), /startup failed/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -77,7 +77,7 @@ test('a newer failed result supersedes an older embedded successful run', async 
     const { path, model } = await regenerateReport(directory);
     assert.equal(model.passed, false);
     assert.equal(model.counts.failed, 1);
-    assert.equal(model.counts.not_run, 16);
+    assert.equal(model.counts.not_run, UI_CASES.length - 1);
     const html = await readFile(path, 'utf8');
     assert.match(html, /new failure/);
     assert.equal(html.includes('src="failure.png"'), false);

@@ -138,3 +138,48 @@ fn plan_covers_builtin_video_renderer_cycle_and_unmatched_edge_paths() {
     );
     assert_eq!(order, ["known"]);
 }
+
+#[test]
+fn auto_targets_follow_declared_sampler_order_and_manual_cascades() {
+    let mut unrelated = node("unrelated", "input");
+    unrelated.data.image_width = Some(7);
+    unrelated.data.image_height = Some(9);
+    let mut image = node("image", "input");
+    image.data.image_width = Some(1920);
+    image.data.image_height = Some(1080);
+    let mut filter = node("auto", "shader");
+    filter.data.inputs = serde_json::from_value(json!([
+        {"id":"scalar","label":"factor","dataType":"float","direction":"input"},
+        {"id":"unconnected","label":"unused","dataType":"sampler2D","direction":"input"},
+        {"id":"first","label":"zImage","dataType":"sampler2D","direction":"input"},
+        {"id":"second","label":"aImage","dataType":"sampler2D","direction":"input"}
+    ])).unwrap();
+    let mut manual = filter.clone();
+    manual.id = "manual".into();
+    manual.data.auto_size = Some(false);
+    manual.data.width = Some(320);
+    manual.data.height = Some(180);
+    let mut cascade = filter.clone();
+    cascade.id = "cascade".into();
+    let unconnected = node("unconnected", "shader");
+    let edges: Vec<Edge> = serde_json::from_value(json!([
+        {"id":"scalar","source":"unrelated","sourceHandle":"out","target":"auto","targetHandle":"scalar"},
+        {"id":"first","source":"image","sourceHandle":"out","target":"auto","targetHandle":"first"},
+        {"id":"second","source":"unrelated","sourceHandle":"out","target":"auto","targetHandle":"second"},
+        {"id":"manual","source":"auto","sourceHandle":"out","target":"manual","targetHandle":"first"},
+        {"id":"cascade","source":"manual","sourceHandle":"out","target":"cascade","targetHandle":"first"}
+    ])).unwrap();
+    let plan = build_execution_plan_with_options(
+        &[unrelated, image, filter, manual, cascade, unconnected], &edges, false,
+    );
+    for (id, size, source) in [
+        ("auto", (1920, 1080), Some("image")),
+        ("manual", (320, 180), None),
+        ("cascade", (320, 180), Some("manual")),
+        ("unconnected", (7, 9), None),
+    ] {
+        let target = plan.nodes.iter().find(|node| node.id == id).unwrap().target.as_ref().unwrap();
+        assert_eq!((target.width, target.height), size, "{id}");
+        assert_eq!(target.size_source.as_deref(), source, "{id}");
+    }
+}

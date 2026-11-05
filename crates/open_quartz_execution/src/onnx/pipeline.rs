@@ -29,34 +29,10 @@ pub fn run_native_image_task(
     score_threshold: f32,
     iou_threshold: f32,
 ) -> Result<NativeOnnxImageOutput, String> {
-    match task {
-        OnnxTask::SuperResolution => {
-            run_super_resolution(session, model_id, source_rgba, source_width, source_height)
-        }
-        OnnxTask::BackgroundRemoval => {
-            run_background_removal(session, model_id, source_rgba, source_width, source_height)
-        }
-        OnnxTask::DepthEstimation => run_depth(session, source_rgba, source_width, source_height),
-        OnnxTask::Detection => run_detection(
-            session,
-            source_rgba,
-            source_width,
-            source_height,
-            target_size.max(1),
-            score_threshold,
-            iou_threshold,
-        ),
-        OnnxTask::Segmentation => run_segmentation(
-            session,
-            source_rgba,
-            source_width,
-            source_height,
-            target_size.max(1),
-        ),
-        OnnxTask::StyleTransfer | OnnxTask::Denoising | OnnxTask::Generic => {
-            run_generic(session, source_rgba, source_width, source_height)
-        }
-    }
+    run_native_image_task_with_runner(
+        session, task, model_id, source_rgba, source_width, source_height,
+        target_size, score_threshold, iou_threshold,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -23,7 +23,7 @@ fn composition_clock_freezes_pause_and_resets_stop_without_deadline_drift() {
     assert_eq!(clock.state().timeline_ns, 0);
     assert_eq!(clock.state().frame, 0);
 }
-use open_quartz_execution::host::PlayerHost;
+use open_quartz_execution::runtime::Runtime;
 
 use open_quartz_execution::runtime::{
     ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState,
@@ -92,7 +92,7 @@ fn state(generation: u64, value: f64) -> OutputState {
 
 #[test]
 fn latest_overwrites_pending_but_every_applies_backpressure() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities {
+    let mut runtime = Runtime::new(RuntimeCapabilities {
         data_paths: vec![DataPathMode::CpuCopy],
     });
     runtime.set_graph(&graph()).unwrap();
@@ -133,7 +133,7 @@ fn latest_overwrites_pending_but_every_applies_backpressure() {
 
 #[test]
 fn graph_change_invalidates_subscriptions_to_removed_ports() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("inspector", DeliveryPolicy::OnChange))
@@ -153,7 +153,7 @@ fn graph_change_invalidates_subscriptions_to_removed_ports() {
 
 #[test]
 fn math_result_is_published_using_its_real_port_id() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("math", DeliveryPolicy::OnChange))
@@ -179,7 +179,7 @@ fn math_result_is_published_using_its_real_port_id() {
 
 #[test]
 fn invalid_output_and_duplicate_subscription_are_rejected() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("same", DeliveryPolicy::Latest))
@@ -195,7 +195,7 @@ fn invalid_output_and_duplicate_subscription_are_rejected() {
 
 #[test]
 fn output_contract_changes_invalidate_subscriptions_and_reject_wrong_payloads() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("typed", DeliveryPolicy::Latest))
@@ -217,7 +217,7 @@ fn output_contract_changes_invalidate_subscriptions_and_reject_wrong_payloads() 
 
 #[test]
 fn draining_work_consumes_each_planned_batch_once() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime.play(100).unwrap();
     runtime

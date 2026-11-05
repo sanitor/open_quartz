@@ -4,12 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use open_quartz_execution::onnx::{
-    NativeOnnxOptions, NativeOnnxProvider, OnnxSession, OnnxSessionInfo,
-};
+use crate::onnx::{NativeOnnxOptions, NativeOnnxProvider, OnnxSession, OnnxSessionInfo};
 use sha2::{Digest, Sha256};
 
-use crate::{NativeHost, NativeOnnxConfig};
+use crate::runtime::{ExecutionRuntime, NativeOnnxConfig};
 
 /// Disk/HTTP policy shared by native shells. Call from a blocking resource worker.
 pub struct ModelStore {
@@ -227,7 +225,7 @@ impl PreparedOnnxModel {
         Ok(Self { session, config })
     }
 
-    pub fn attach(self, host: &mut NativeHost, node_id: String) -> Result<OnnxSessionInfo, String> {
-        host.load_onnx(node_id, self.session, self.config)
+    pub fn attach(self, runtime: &mut ExecutionRuntime, node_id: String) -> Result<OnnxSessionInfo, String> {
+        runtime.load_onnx(node_id, self.session, self.config)
     }
 }

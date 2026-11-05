@@ -11,12 +11,12 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 use open_quartz_host_api::{
-    plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentRequest,
-    HostResourceTarget, OnnxDownloadIntent,
+    plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentPlan,
+    HostResourceIntentRequest, HostResourceTarget, OnnxDownloadIntent,
 };
-use open_quartz_native_host::{
-    models::{ModelStore, PreparedOnnxModel},
-    NativeHost, NativeOnnxConfig, NativeOutputEvent,
+use open_quartz_execution::resources::models::{ModelStore, PreparedOnnxModel};
+use open_quartz_execution::runtime::{
+    ExecutionRuntime, NativeOnnxConfig, NativeOutputEvent,
 };
 use open_quartz_sdk::{Graph, OnnxTask};
 
@@ -78,7 +78,7 @@ pub struct OnnxRuntime {
 }
 
 impl OnnxRuntime {
-    pub fn clear(&mut self, host: &mut NativeHost) {
+    pub fn clear(&mut self, host: &mut ExecutionRuntime) {
         let ids: std::collections::BTreeSet<_> = self
             .states
             .keys()
@@ -94,11 +94,11 @@ impl OnnxRuntime {
     }
     pub fn sync(
         &mut self,
-        graph: &Graph,
-        host: &mut NativeHost,
+        intents: &[HostResourceIntent],
+        host: &mut ExecutionRuntime,
         reset: bool,
-    ) -> Result<(), String> {
-        let specs = model_specs(graph)?;
+    ) {
+        let specs = model_specs(intents);
         let removed: Vec<_> = self
             .states
             .keys()
@@ -118,7 +118,6 @@ impl OnnxRuntime {
             }
         }
         self.specs = specs;
-        Ok(())
     }
 
     pub fn load(
@@ -249,7 +248,7 @@ impl OnnxRuntime {
         changed
     }
 
-    pub fn receive(&mut self, message: ModelMessage, host: &mut NativeHost) -> bool {
+    pub fn receive(&mut self, message: ModelMessage, host: &mut ExecutionRuntime) -> bool {
         let (node_id, ticket) = match &message {
             ModelMessage::Progress {
                 node_id, ticket, ..
@@ -302,7 +301,7 @@ impl OnnxRuntime {
         false
     }
 
-    pub fn unload(&mut self, node_id: &str, host: &mut NativeHost) {
+    pub fn unload(&mut self, node_id: &str, host: &mut ExecutionRuntime) {
         self.cancel(node_id);
         host.unload_onnx(node_id);
         self.states.insert(
@@ -391,18 +390,20 @@ fn require_ort_library() -> Result<(), String> {
     Ok(())
 }
 
-fn model_specs(graph: &Graph) -> Result<BTreeMap<String, ModelSpec>, String> {
+pub(crate) fn host_resource_plan(graph: &Graph) -> Result<HostResourceIntentPlan, String> {
     let graph: HostGraphSnapshot =
         serde_json::from_value(serde_json::to_value(graph).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    let plan = plan_host_resource_intents(HostResourceIntentRequest {
+    plan_host_resource_intents(HostResourceIntentRequest {
         host: HostResourceTarget::Native,
         previous_graph: None,
         graph,
-    })?;
-    Ok(plan
-        .intents
-        .into_iter()
+    })
+}
+
+fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
+    intents
+        .iter()
         .filter_map(|intent| match intent {
             HostResourceIntent::LoadOnnx {
                 node_id,
@@ -415,21 +416,21 @@ fn model_specs(graph: &Graph) -> Result<BTreeMap<String, ModelSpec>, String> {
                 iou_threshold,
                 download,
             } => Some((
-                node_id,
+                node_id.clone(),
                 ModelSpec {
-                    key,
-                    model_id,
-                    task,
-                    path: model_path,
-                    target_size,
-                    score: score_threshold,
-                    iou: iou_threshold,
-                    download,
+                    key: key.clone(),
+                    model_id: model_id.clone(),
+                    task: *task,
+                    path: model_path.clone(),
+                    target_size: *target_size,
+                    score: *score_threshold,
+                    iou: *iou_threshold,
+                    download: download.clone(),
                 },
             )),
             _ => None,
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]

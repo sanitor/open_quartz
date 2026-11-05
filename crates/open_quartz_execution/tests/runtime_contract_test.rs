@@ -36,7 +36,7 @@ impl open_quartz_execution::runtime::HostBackend for RecordingBackend {
         Ok(())
     }
 }
-use open_quartz_execution::host::PlayerHost;
+use open_quartz_execution::runtime::Runtime;
 
 use open_quartz_execution::event::EngineState;
 use open_quartz_execution::runtime::{
@@ -199,7 +199,7 @@ fn public_surface_is_host_neutral_and_versioned() {
 
 #[test]
 fn direct_runtime_client_drives_the_same_public_lifecycle() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities {
+    let mut runtime = Runtime::new(RuntimeCapabilities {
         data_paths: vec![DataPathMode::CpuCopy],
     });
     assert_eq!(runtime.state(), EngineState::Empty);
@@ -244,7 +244,7 @@ fn direct_runtime_client_drives_the_same_public_lifecycle() {
 fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
     let registered = Arc::new(AtomicU64::new(0));
     let removed = Arc::new(AtomicU64::new(0));
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.attach_backend(Box::new(RecordingBackend {
         registered: registered.clone(),
         removed: removed.clone(),
@@ -269,7 +269,7 @@ fn direct_runtime_owns_resource_policy_and_forwards_only_handles_to_backend() {
 
 #[test]
 fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&serde_json::from_value(json!({
         "nodes": [
             {
@@ -384,7 +384,7 @@ impl HostBackend for FailingRemoveBackend {
 
 #[test]
 fn failed_backend_release_keeps_runtime_resource_owned() {
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.attach_backend(Box::new(FailingRemoveBackend));
     runtime
         .register_resource(
@@ -403,7 +403,7 @@ fn failed_backend_release_keeps_runtime_resource_owned() {
 #[test]
 fn canonical_runtime_is_send_and_selects_native_video_bindings() {
     fn assert_send<T: Send>() {}
-    assert_send::<PlayerHost>();
+    assert_send::<Runtime>();
 
     let graph: Graph = serde_json::from_value(json!({
         "nodes": [
@@ -456,7 +456,7 @@ fn canonical_runtime_is_send_and_selects_native_video_bindings() {
     }))
     .unwrap();
 
-    let mut browser = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut browser = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     browser.set_graph(&graph).unwrap();
     let browser_shader = browser
         .execution_plan()
@@ -472,7 +472,7 @@ fn canonical_runtime_is_send_and_selects_native_video_bindings() {
         .external_texture_bindings
         .contains_key("inputImage"));
 
-    let mut native = PlayerHost::new_native(RuntimeCapabilities { data_paths: vec![] });
+    let mut native = Runtime::new_native(RuntimeCapabilities { data_paths: vec![] });
     native.set_graph(&graph).unwrap();
     let native_shader = native
         .execution_plan()
@@ -520,7 +520,7 @@ fn runtime_dispatches_engine_work_through_the_gpu_facade() {
         "edges": []
     }))
     .unwrap();
-    let mut runtime = PlayerHost::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph).unwrap();
     runtime.play(100).unwrap();
     runtime

@@ -3,12 +3,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use open_quartz_execution::native_video::{NativeVideoConfig, NativeVideoSourceKind};
-use open_quartz_native_host::NativeHost;
+use open_quartz_execution::runtime::ExecutionRuntime;
 use open_quartz_sdk::Graph;
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
 
-use crate::onnx_runtime::{LiveOnnxState, ModelMessage, OnnxRuntime};
+use crate::onnx_runtime::{host_resource_plan, LiveOnnxState, ModelMessage, OnnxRuntime};
 use std::collections::BTreeMap;
 pub struct RenderUpdate {
     generation: u64,
@@ -18,6 +18,7 @@ pub struct RenderUpdate {
     pub onnx: Option<BTreeMap<String, LiveOnnxState>>,
     pub previews: Option<BTreeMap<String, wgpu::Texture>>,
     pub node_error: Option<open_quartz_sdk::SdkError>,
+    pub metrics: Option<PlaybackMetrics>,
 }
 
 impl RenderUpdate {
@@ -30,7 +31,59 @@ impl RenderUpdate {
             onnx: None,
             previews: None,
             node_error: None,
+            metrics: None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct PlaybackMetrics {
+    pub timeline_ns: u64,
+    pub fps: f64,
+}
+
+struct RenderMeter {
+    metrics: PlaybackMetrics,
+    window_started: Instant,
+    published: Instant,
+    frames: u64,
+}
+
+impl RenderMeter {
+    fn new(now: Instant) -> Self {
+        Self { metrics: PlaybackMetrics::default(), window_started: now, published: now, frames: 0 }
+    }
+
+    fn frame(&mut self, now: Instant, timeline_ns: u64, has_output: bool) -> Option<PlaybackMetrics> {
+        self.metrics.timeline_ns = timeline_ns;
+        self.frames += u64::from(has_output);
+        let window = now.saturating_duration_since(self.window_started);
+        if window >= Duration::from_millis(500) {
+            self.metrics.fps = self.frames as f64 / window.as_secs_f64();
+            self.frames = 0;
+            self.window_started = now;
+        }
+        if now.saturating_duration_since(self.published) >= Duration::from_millis(100) {
+            self.published = now;
+            Some(self.metrics)
+        } else { None }
+    }
+
+    fn suspend(&mut self, now: Instant, reset_time: bool) -> PlaybackMetrics {
+        if reset_time { self.metrics.timeline_ns = 0; }
+        self.metrics.fps = 0.0;
+        self.frames = 0;
+        self.window_started = now;
+        self.published = now;
+        self.metrics
+    }
+}
+
+fn publish_metrics(updates: &Mutex<Option<RenderUpdate>>, generation: u64, metrics: PlaybackMetrics) {
+    if let Ok(mut pending) = updates.lock() {
+        let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+        if update.generation != generation { *update = RenderUpdate::new(generation); }
+        update.metrics = Some(metrics);
     }
 }
 
@@ -124,7 +177,7 @@ impl RenderBridge {
         .map_err(|error| {
             format!("Cannot initialize native rendering: GPU device request failed: {error}")
         })?;
-        let (host, info) = NativeHost::from_shared_wgpu(device.clone(), queue.clone(), &adapter)?;
+        let (host, info) = ExecutionRuntime::from_shared_wgpu(device.clone(), queue.clone(), &adapter)?;
         let description = format!("{} · {}", info.adapter_name, info.backend);
         let configuration = WGPUConfiguration::Manual {
             instance,
@@ -307,7 +360,7 @@ fn publish_onnx(updates: &Mutex<Option<RenderUpdate>>, generation: u64, onnx: &O
 }
 
 fn render_worker(
-    mut host: NativeHost,
+    mut host: ExecutionRuntime,
     description: String,
     receiver: mpsc::Receiver<Command>,
     updates: Arc<Mutex<Option<RenderUpdate>>>,
@@ -321,7 +374,7 @@ fn render_worker(
     let mut image_keys = BTreeMap::<String, u64>::new();
     let mut video_configs = BTreeMap::<String, NativeVideoConfig>::new();
     let mut video_pipelines = BTreeMap::<String, String>::new();
-    let mut current_graph: Option<String> = None;
+    let mut current_graph: Option<Graph> = None;
     let mut stopped = true;
     let mut ready_to_start = false;
     let mut playback_requested = false;
@@ -329,6 +382,7 @@ fn render_worker(
     let mut preview_nodes = Vec::<String>::new();
     let mut preview_tick = Instant::now();
     let mut pending_video_previews = BTreeMap::<String, Instant>::new();
+    let mut meter = RenderMeter::new(Instant::now());
     loop {
         if onnx.reap_workers() {
             publish_onnx(&updates, generation, &onnx);
@@ -352,6 +406,7 @@ fn render_worker(
                 playback_requested = false;
                 running = false;
                 pending_video_previews.clear();
+                publish_metrics(&updates, generation, meter.suspend(Instant::now(), false));
             }
             Some(Command::SetGraph {
                 generation: next_generation,
@@ -367,6 +422,7 @@ fn render_worker(
                 stopped = false;
                 ready_to_start = !play;
                 playback_requested = play;
+                publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
                 pending_video_previews.clear();
                 preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz_sdk::NodeType::Shader | open_quartz_sdk::NodeType::Constant | open_quartz_sdk::NodeType::Renderer)
@@ -380,8 +436,9 @@ fn render_worker(
                     if host.has_graph() {
                         host.stop()?;
                     }
-                    onnx.sync(&graph, &mut host, false)?;
-                    let next_video_configs = graph_video_configs(&graph)?;
+                    let resource_plan = host_resource_plan(&graph)?;
+                    onnx.sync(&resource_plan.intents, &mut host, false);
+                    let next_video_configs = graph_video_configs(&resource_plan.intents);
                     for node_id in video_configs
                         .iter()
                         .filter(|(id, config)| {
@@ -394,9 +451,7 @@ fn render_worker(
                         video_configs.remove(&node_id);
                         video_pipelines.remove(&node_id);
                     }
-                    let graph_json = serde_json::to_string(&graph)
-                        .map_err(|error| format!("Cannot serialize the SDK graph: {error}"))?;
-                    host.set_graph(&graph_json)?;
+                    host.set_graph_snapshot(&graph)?;
                     for (node_id, config) in next_video_configs {
                         if video_configs.get(&node_id) != Some(&config)
                             || (!play && !host.has_output_texture(&node_id))
@@ -417,7 +472,6 @@ fn render_worker(
                             video_configs.insert(node_id, config);
                         }
                     }
-                    current_graph = Some(graph_json);
                     let stale_images = image_keys
                         .iter()
                         .filter(|(node_id, key)| {
@@ -448,22 +502,24 @@ fn render_worker(
                 match result {
                     Ok(should_run) => {
                         running = should_run;
+                        publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
                         let status = if running {
-                            format!("{description} · NativeHost graph ready; waiting for renderer output")
+                            format!("{description} · Graph ready; waiting for renderer output")
                         } else if graph.nodes().is_empty() {
-                            format!("{description} · NativeHost ready; empty graph has no renderer output")
+                            format!("{description} · Ready; empty graph has no renderer output")
                         } else {
-                            format!("{description} · NativeHost graph ready; press Play to render")
+                            format!("{description} · Graph ready; press Play to render")
                         };
                         let status = if video_pipelines.is_empty() { status } else {
                             format!("{status} · {}", video_pipelines.values().cloned().collect::<Vec<_>>().join("; "))
                         };
                         publish_status(&updates, generation, status, true);
+                        current_graph = Some(graph);
                     }
                     Err(error) => {
                         render_failed = true;
                         pending_video_previews.clear();
-                        publish_failure(&updates, generation, "NativeHost graph initialization failed", &error);
+                        publish_failure(&updates, generation, "Graph initialization failed", &error);
                     }
                 }
                 publish_onnx(&updates, generation, &onnx);
@@ -571,10 +627,10 @@ fn render_worker(
                     })(),
                     _ if running => Ok(()),
                     _ if stopped => (|| {
-                        let graph_json = current_graph
-                            .as_deref()
+                        let graph = current_graph
+                            .as_ref()
                             .ok_or("No graph is ready for playback")?;
-                        host.set_graph(graph_json)?;
+                        host.set_graph_snapshot(graph)?;
                         for (node_id, config) in &video_configs {
                             host.detach_video(node_id)?;
                             host.attach_video(node_id, config.clone())?;
@@ -597,6 +653,7 @@ fn render_worker(
                         }
                         first_frame = true;
                         publish_status(&updates, generation, format!("Playback: {action}"), false);
+                        publish_metrics(&updates, generation, meter.suspend(Instant::now(), action == "stop"));
                     }
                     Err(error) => publish_status(&updates, generation, error, false),
                 }
@@ -625,7 +682,7 @@ fn render_worker(
                             running = false;
                             render_failed = true;
                             onnx.render_failed(&error);
-                            publish_failure(&updates, generation, "NativeHost resume failed", &error);
+                            publish_failure(&updates, generation, "Resume failed", &error);
                         }
                     }
                 } else if let Some(state) = onnx.states.get(&node_id) {
@@ -690,6 +747,9 @@ fn render_worker(
         }
         let result: Result<Option<(wgpu::Texture, u32, u32)>, String> = (|| {
             let rendered = host.render_next()?;
+            if let Some(metrics) = meter.frame(Instant::now(), rendered.timeline_ns, rendered.width > 0 && rendered.height > 0) {
+                publish_metrics(&updates, generation, metrics);
+            }
             if rendered.width == 0 || rendered.height == 0 {
                 return Ok(None);
             }
@@ -726,7 +786,7 @@ fn render_worker(
                     }
                     update.texture = Some(texture);
                     if first_frame {
-                        update.status = Some(format!("{description} · NativeHost rendering {width}×{height} · shared GPU texture"));
+                        update.status = Some(format!("{description} · Rendering {width}×{height} · shared GPU texture"));
                         first_frame = false;
                     }
                 }
@@ -736,9 +796,10 @@ fn render_worker(
                 let _ = host.pause();
                 running = false;
                 render_failed = true;
+                publish_metrics(&updates, generation, meter.suspend(Instant::now(), false));
                 onnx.render_failed(&error);
                 publish_onnx(&updates, generation, &onnx);
-                publish_failure(&updates, generation, "NativeHost rendering stopped", &error);
+                publish_failure(&updates, generation, "Rendering stopped", &error);
             }
         }
     }
@@ -747,22 +808,12 @@ fn render_worker(
     }
 }
 
-fn graph_video_configs(graph: &Graph) -> Result<BTreeMap<String, NativeVideoConfig>, String> {
-    use open_quartz_host_api::{
-        plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent,
-        HostResourceIntentRequest, HostResourceTarget, VideoSourceKind,
-    };
-    let snapshot: HostGraphSnapshot =
-        serde_json::from_value(serde_json::to_value(graph).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    let plan = plan_host_resource_intents(HostResourceIntentRequest {
-        host: HostResourceTarget::Native,
-        previous_graph: None,
-        graph: snapshot,
-    })?;
-    Ok(plan
-        .intents
-        .into_iter()
+fn graph_video_configs(
+    intents: &[open_quartz_host_api::HostResourceIntent],
+) -> BTreeMap<String, NativeVideoConfig> {
+    use open_quartz_host_api::{HostResourceIntent, VideoSourceKind};
+    intents
+        .iter()
         .filter_map(|intent| match intent {
             HostResourceIntent::AttachVideo {
                 node_id,
@@ -772,20 +823,20 @@ fn graph_video_configs(graph: &Graph) -> Result<BTreeMap<String, NativeVideoConf
                 playback_rate,
                 ..
             } => Some((
-                node_id,
+                node_id.clone(),
                 NativeVideoConfig {
                     kind: match kind {
                         VideoSourceKind::File => NativeVideoSourceKind::File,
                         VideoSourceKind::Camera => NativeVideoSourceKind::Camera,
                     },
-                    source,
-                    looping,
-                    playback_rate,
+                    source: source.clone(),
+                    looping: *looping,
+                    playback_rate: *playback_rate,
                 },
             )),
             _ => None,
         })
-        .collect())
+        .collect()
 }
 
 fn save_output_png(path: &std::path::Path, payload: &[u8]) -> Result<(), String> {
@@ -808,6 +859,26 @@ fn save_output_png(path: &std::path::Path, payload: &[u8]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_rate_excludes_missing_outputs_and_pause_time() {
+        let now = Instant::now();
+        let mut meter = RenderMeter::new(now);
+        for index in 1..=10 {
+            meter.frame(now + Duration::from_millis(index * 50), index * 50_000_000, index % 2 == 0);
+        }
+        assert_eq!(meter.metrics.fps, 10.0);
+        assert_eq!(meter.metrics.timeline_ns, 500_000_000);
+        let paused = meter.suspend(now + Duration::from_secs(1), false);
+        assert_eq!(paused.timeline_ns, 500_000_000);
+        assert_eq!(paused.fps, 0.0);
+        meter.suspend(now + Duration::from_secs(10), false);
+        meter.frame(now + Duration::from_millis(10_500), 1_000_000_000, true);
+        assert_eq!(meter.metrics.fps, 2.0);
+        let stopped = meter.suspend(now + Duration::from_secs(11), true);
+        assert_eq!(stopped.timeline_ns, 0);
+        assert_eq!(stopped.fps, 0.0);
+    }
 
     #[test]
     fn failure_retains_node_identity_and_clears_failed_generation_previews() {

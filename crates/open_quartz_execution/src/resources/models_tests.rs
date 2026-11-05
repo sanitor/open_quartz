@@ -22,7 +22,7 @@ fn serve(
 fn download_publishes_verified_bytes_and_uses_cache_offline() {
     let directory = tempfile::tempdir().unwrap();
     let store = ModelStore::new(directory.path().to_owned());
-    let model = include_bytes!("../../open_quartz/tests/data/image_identity.onnx");
+    let model = include_bytes!("../../../open_quartz/tests/data/image_identity.onnx");
     let digest = format!("{:x}", Sha256::digest(model));
     let (url, worker) = serve(model.to_vec(), 200, model.len());
     let mut progress = Vec::new();
@@ -116,7 +116,7 @@ fn failed_or_cancelled_downloads_never_become_cached_models() {
 fn concurrent_process_style_cache_repair_is_serialized_per_model() {
     let directory = tempfile::tempdir().unwrap();
     let store = ModelStore::new(directory.path().to_owned());
-    let model = include_bytes!("../../open_quartz/tests/data/image_identity.onnx").to_vec();
+    let model = include_bytes!("../../../open_quartz/tests/data/image_identity.onnx").to_vec();
     let digest = format!("{:x}", Sha256::digest(&model));
     std::fs::write(store.path("concurrent").unwrap(), b"corrupt").unwrap();
     let (url, worker) = serve(model.clone(), 200, model.len());

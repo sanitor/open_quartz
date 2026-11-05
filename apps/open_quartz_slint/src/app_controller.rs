@@ -1026,7 +1026,7 @@ impl AppController {
                     this.inspector_draft = None;
                     this.publish_project();
                     this.set_edit_status(
-                        "Video file saved through the SDK; NativeHost is opening the source.",
+                        "Video file saved; opening the source.",
                     );
                 }
             },
@@ -1751,6 +1751,8 @@ impl AppController {
         };
         window.set_renderer_image(slint::Image::default());
         window.set_has_renderer_image(false);
+        window.set_playback_time("00:00:00.0".into());
+        window.set_render_fps("0.0".into());
         if let Some(requested_count) = self.graph_stress_count {
             window.set_runtime_status(
                 format!("Graph stress mode · projection only · requested {requested_count} nodes")
@@ -1805,7 +1807,7 @@ impl AppController {
             .collect();
         if let Some(renderer) = &mut self.renderer {
             match renderer.set_graph(graph, images, window.get_playback_state() == "playing") {
-                Ok(()) => window.set_runtime_status("NativeHost is applying the SDK graph…".into()),
+                Ok(()) => window.set_runtime_status("Applying graph…".into()),
                 Err(error) => window.set_runtime_status(error.into()),
             }
         }
@@ -3040,6 +3042,10 @@ impl AppController {
         }
         let update = self.renderer.as_ref().and_then(RenderBridge::take_update);
         if let Some(update) = update {
+            if let Some(metrics) = update.metrics {
+                window.set_playback_time(format_playback_time(metrics.timeline_ns).into());
+                window.set_render_fps(format!("{:.1}", metrics.fps).into());
+            }
             if let Some(error) = update.node_error {
                 if let Some(node_id) = error.node_id {
                     self.node_errors.insert(node_id, error.message);
@@ -3102,6 +3108,11 @@ impl AppController {
             }
         }
     }
+}
+
+fn format_playback_time(timeline_ns: u64) -> String {
+    let tenths = timeline_ns / 100_000_000;
+    format!("{:02}:{:02}:{:02}.{}", tenths / 36_000, (tenths / 600) % 60, (tenths / 10) % 60, tenths % 10)
 }
 
 fn commit_inspector(

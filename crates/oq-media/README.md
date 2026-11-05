@@ -78,7 +78,7 @@ Release freerun，解码和 GPU 重叠、一个待处理帧、有界队列、不
 | HEVC 8-bit | 21.67 FPS | 49.92 FPS | 2.30× |
 | HEVC 10-bit | 6.32 FPS | 136.53 FPS | 21.60× |
 
-**这张表是旧实现记录，8-bit 约 50 FPS 不是硬件极限。** 不能将本次解码 A/B 的 141 FPS 直接代入完整链路表，也不能将历史媒体路径重建说成两套完整应用的屏幕 FPS。当前 Tauri 也消费更新后的 NativeHost；保留的历史整包 benchmark 因 `Clock is not running` 失败，没有有效整包 freerun 成绩。
+**这张表是旧实现记录，8-bit 约 50 FPS 不是硬件极限。** 不能将本次解码 A/B 的 141 FPS 直接代入完整链路表，也不能将历史媒体路径重建说成两套完整应用的屏幕 FPS。当前 Tauri 也消费 execution 内的 ExecutionRuntime；保留的历史整包 benchmark 因 `Clock is not running` 失败，没有有效整包 freerun 成绩。
 
 拆测旧 FFmpeg 4.4：只解码到 YUV/null 时，8/10-bit 分别约 153.45/141.31 FPS；转 RGBA 后写 `/dev/null`，尚未经过 stdout pipe 或 GPU 上传时，分别降至 51.26/7.56 FPS。旧 10-bit 路径的主要损失在 RGBA 转换/输出阶段，不能称作“硬件解码器加速 20 倍”。旧路径每帧还需上传 132,710,400 字节（126.56 MiB）CPU RGBA，新路径没有这次 CPU RGBA 上传，但仍有 GPU 转换，不能称完整链路完全无拷贝。
 

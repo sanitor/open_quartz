@@ -15,7 +15,6 @@ ui-automation = ["slint/mcp"]
 [dependencies]
 open_quartz_sdk = { path = "../../crates/open_quartz_sdk" }
 open_quartz_execution = { path = "../../crates/open_quartz_execution" }
-open_quartz_native_host = { path = "../../crates/open_quartz_native_host" }
 open_quartz_host_api = { path = "../../crates/open_quartz_host_api" }
 slint_code_editor = { path = "../../crates/slint_code_editor" }
 directories = "6"
@@ -31,7 +30,7 @@ rfd = "0.16"
 
 [target.'cfg(windows)'.dependencies]
 open_quartz_screensaver = { path = "../../crates/open_quartz_screensaver" }
-open_quartz_native_host = { path = "../../crates/open_quartz_native_host", features = ["native-video-d3d12"] }
+open_quartz_execution = { path = "../../crates/open_quartz_execution", features = ["native-video-d3d12"] }
 
 
 [build-dependencies]

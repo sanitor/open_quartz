@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { createClient, saveJson } from './slint-ui-client.mjs';
 import { UI_CASES, STATUS_LABELS } from './slint-ui-report.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { encodePng } from './shader-e2e-reference.mjs';
 
 export const BLUE_SHADER_SOURCE = `// UI automation persistence and GPU output probe.
 @fragment
@@ -459,6 +461,100 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       await capture('14-reopened-connected-stopped');
       await client.tree({ path: join(directory, 'reopened-tree.json') });
       return { status: observed, nodes, edges: savedGraph.edges };
+    });
+    await checkpoint('auto-size-playback-time-renderer-fps', async () => {
+      const fixturePath = join(directory, 'auto-size-metrics.quartz.json');
+      const port = (id, label, direction) => ({ id, label, dataType: 'sampler2D', direction });
+      const image = (id, width, height, x) => ({
+        id, type: 'input', position: { x, y: 40 }, data: {
+          type: 'input', label: id, shaderCode: '', inputs: [], outputs: [port('out', 'fragColor', 'output')], uniforms: {},
+          inputMode: 'image', inputDataType: 'sampler2D', imageWidth: width, imageHeight: height,
+          imageDataUrl: `data:image/png;base64,${encodePng({ width, height, pixels: Uint8Array.from({ length: width * height * 4 }, (_, i) => i % 4 >= 2 ? 255 : 0) }).toString('base64')}`,
+        },
+      });
+      const source = image('Input image', 96, 48, 20);
+      const unrelated = image('Unconnected image', 32, 32, 20);
+      unrelated.position.y = 270;
+      const filter = { id: 'filter', type: 'shader', position: { x: 270, y: 40 }, data: {
+        type: 'shader', label: 'Auto Filter', shaderCode: '@group(0) @binding(0) var inputTexture: texture_2d<f32>; @group(0) @binding(1) var inputTextureSampler: sampler; @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f { return textureSample(inputTexture, inputTextureSampler, uv); }',
+        inputs: [port('in', 'inputTexture', 'input')], outputs: [port('out', 'fragColor', 'output')], uniforms: {}, autoSize: true, width: 320, height: 180,
+      } };
+      const renderer = { id: 'renderer', type: 'renderer', position: { x: 520, y: 40 }, data: {
+        type: 'renderer', label: 'Metrics Renderer', shaderCode: '', inputs: [port('in', 'inputTexture', 'input')], outputs: [], uniforms: {},
+      } };
+      await writeFile(fixturePath, JSON.stringify({ version: '0.4.0', name: 'Auto size and metrics', createdAt: '', updatedAt: '', graph: {
+        nodes: [unrelated, source, filter, renderer], edges: [
+          { id: 'input-filter', source: source.id, sourceHandle: 'out', target: filter.id, targetHandle: 'in' },
+          { id: 'filter-renderer', source: filter.id, sourceHandle: 'out', target: renderer.id, targetHandle: 'in' },
+        ],
+      } }, null, 2));
+      report.artifacts = [...(report.artifacts || []), fixturePath];
+      await connect(await restart({ project: fixturePath }));
+      await stopped(4, 2);
+      const timer = async () => {
+        const element = await client.find({ label: /^Playback time \d+:\d{2}:\d{2}\.\d$/ });
+        return element.accessibleLabel.slice('Playback time '.length);
+      };
+      const seconds = (time) => {
+        const [hours, minutes, seconds] = time.split(':').map(Number);
+        return hours * 3600 + minutes * 60 + seconds;
+      };
+      const rendererFps = async () => {
+        const element = await client.find({ label: /^Render [\d.]+ FPS$/ });
+        return Number(element.accessibleLabel.match(/^Render ([\d.]+) FPS$/)[1]);
+      };
+      const waitSize = (expected) => client.waitFor(async () => {
+        const filterState = parseStatus((await header(filter.id)).accessibleDescription);
+        const rendererState = parseStatus((await header(renderer.id)).accessibleDescription);
+        return filterState.Preview === 'available' && rendererState.Preview === 'available'
+          && filterState.Resolution === expected && rendererState.Resolution === expected;
+      }, { description: `Filter and Renderer output ${expected}` });
+      const chooseRenderer = async () => client.activate(await header(renderer.id));
+      assert.equal(await timer(), '00:00:00.0');
+      await chooseRenderer();
+      await activate('PLAY');
+      await status({ Playback: 'playing', 'Renderer image': 'available' });
+      await waitSize('96×48');
+      await client.waitFor(async () => seconds(await timer()) >= 0.5 && await rendererFps() > 0, { description: 'Advancing playback time and positive Renderer FPS' });
+      const playingTime = await timer();
+      const fps = await rendererFps();
+      const png = await capture('15-auto-size-playing');
+      const pixels = bluePixelStats(png, await client.find({ label: 'Renderer preview' }), await client.windowProperties());
+      assert.ok(pixels.blueRatio >= 0.8, 'Auto-size Renderer did not display the actual blue input');
+      await activate('PAUSE');
+      await status({ Playback: 'paused' });
+      await client.waitFor(async () => await rendererFps() === 0, { description: 'Paused Renderer FPS resets' });
+      const pausedTime = await timer();
+      await delay(350, undefined, { signal });
+      assert.equal(await timer(), pausedTime, 'Playback timer advanced during Pause');
+      await activate('RESUME');
+      await client.waitFor(async () => seconds(await timer()) > seconds(pausedTime) && await rendererFps() > 0, { description: 'Resume continues clock and render rate' });
+      await activate('STOP');
+      await stopped(4, 2);
+      await client.waitFor(async () => await timer() === '00:00:00.0' && await rendererFps() === 0, { description: 'Stop resets time and FPS' });
+      const setAuto = async () => {
+        await client.activate(await header(filter.id));
+        for (const label of ['Collapse SHADER EDITOR', 'Collapse Sampling']) {
+          const sections = await client.byLabel(label, { role: 'Button' });
+          if (sections.length) await client.click(sections[0]);
+        }
+        await client.click(await client.find({ label: 'Auto size', role: 'Checkbox' }));
+        await activate('Apply output size');
+        await stopped(4, 2);
+        await chooseRenderer();
+        await activate('PLAY');
+        await status({ Playback: 'playing', 'Renderer image': 'available' });
+      };
+      await setAuto();
+      await waitSize('320×180');
+      await capture('15-manual-size-playing');
+      await activate('STOP');
+      await setAuto();
+      await waitSize('96×48');
+      await capture('15-auto-size-restored');
+      await activate('STOP');
+      await stopped(4, 2);
+      return { playingTime, pausedTime, fps, dimensions: { input: '96×48', unrelated: '32×32', manual: '320×180', restored: '96×48' }, pixels };
     });
     report.passed = true;
     return report;

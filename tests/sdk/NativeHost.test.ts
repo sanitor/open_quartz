@@ -423,6 +423,7 @@ describe('NativeHost transport', () => {
     await runtime.initialize();
     const frame: NativeFrameRendered = {
       frame: 6,
+      timelineNs: 200_000_000,
       revision: 2,
       outputNodeId: 'renderer',
       width: 960,
@@ -469,6 +470,7 @@ describe('NativeHost transport', () => {
       });
       const frame = {
         frame: 1,
+        timelineNs: 0,
         revision: 1,
         outputNodeId: 'renderer',
         width: 640,
@@ -520,6 +522,7 @@ describe('NativeHost transport', () => {
       await runtime.initialize();
       bridge.emit('native-runtime-frame', {
         frame: 1,
+        timelineNs: 0,
         revision: 1,
         outputNodeId: 'renderer',
         width: 640,
@@ -552,6 +555,7 @@ describe('NativeHost transport', () => {
 
     bridge.emit('native-runtime-frame', {
       frame: 1,
+      timelineNs: 0,
       revision: 1,
       outputNodeId: 'renderer',
       width: 640,

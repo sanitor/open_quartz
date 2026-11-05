@@ -1,3 +1,4 @@
+#[cfg(any(test, all(windows, feature = "native-video-d3d12")))]
 use std::cell::Cell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -55,8 +56,10 @@ pub struct NativeVideoInfo {
     pub height: u32,
     pub fps: f64,
     pub decoder: String,
+    #[cfg(all(windows, feature = "native-video-d3d12"))]
     #[serde(skip)]
     d3d12_eligible: bool,
+    #[cfg(all(windows, feature = "native-video-d3d12"))]
     #[serde(skip)]
     d3d12_detach_required: bool,
     pub fallback_reason: Option<String>,
@@ -133,7 +136,9 @@ impl NativeVideoSource {
                 height: 1,
                 fps: 30.0,
                 decoder: "test".to_owned(),
+                #[cfg(all(windows, feature = "native-video-d3d12"))]
                 d3d12_eligible: false,
+                #[cfg(all(windows, feature = "native-video-d3d12"))]
                 d3d12_detach_required: false,
                 fallback_reason: None,
             }
@@ -644,6 +649,7 @@ unsafe extern "C" fn select_d3d12_format(
     ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NONE
 }
 
+#[cfg(any(test, all(windows, feature = "native-video-d3d12")))]
 fn frame_pacing_delay(
     next_frame_at: &mut Instant,
     now: Instant,
@@ -657,6 +663,7 @@ fn frame_pacing_delay(
         Duration::ZERO
     }
 }
+#[cfg(any(test, all(windows, feature = "native-video-d3d12")))]
 fn validate_monotonic_pts(last_pts: &Cell<Option<i64>>, pts: Option<i64>) -> Result<(), String> {
     let Some(pts) = pts else {
         return Ok(());
@@ -928,6 +935,7 @@ fn read_video_thumbnail_with(ffmpeg: &Path, path: &str) -> Result<Vec<u8>, Strin
     Ok(output.stdout)
 }
 
+#[cfg(any(test, all(windows, feature = "native-video-d3d12")))]
 fn d3d12_decode_policy(video_line: &str) -> (bool, bool) {
     let detach_required = video_line.contains("h264");
     let codec_supported = detach_required || video_line.contains("hevc");
@@ -971,14 +979,17 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .and_then(|capture| capture[1].parse::<f64>().ok())
         .filter(|fps| *fps > 0.0)
         .unwrap_or(30.0);
+    #[cfg(all(windows, feature = "native-video-d3d12"))]
     let (d3d12_eligible, d3d12_detach_required) = d3d12_decode_policy(video_line);
     Ok(NativeVideoInfo {
         width,
         height,
         fps,
         decoder: "ffmpeg-native".to_owned(),
+        #[cfg(all(windows, feature = "native-video-d3d12"))]
         d3d12_eligible,
         fallback_reason: None,
+        #[cfg(all(windows, feature = "native-video-d3d12"))]
         d3d12_detach_required,
     })
 }

@@ -8,14 +8,14 @@ use open_quartz_execution::native_video::{
     find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoInfo,
     NativeVideoSourceKind,
 };
-use open_quartz_native_host::{
-    NativeFrameRendered, NativeHost, NativeOnnxConfig, NativeOnnxLoadOptions, NativeRuntimeInfo,
+use open_quartz_execution::runtime::{
+    NativeFrameRendered, ExecutionRuntime, NativeOnnxConfig, NativeOnnxLoadOptions, NativeRuntimeInfo,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 pub struct NativeRuntimeState {
-    runtime: Arc<Mutex<Option<NativeHost>>>,
+    runtime: Arc<Mutex<Option<ExecutionRuntime>>>,
     preview: Mutex<Option<GpuPreviewReader>>,
     alive: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
@@ -185,7 +185,7 @@ async fn initialize_runtime(
         .lock()
         .map_err(|_| "Native runtime lock is poisoned".to_owned())?
         .take();
-    let (runtime, info) = NativeHost::new().await?;
+    let (runtime, info) = ExecutionRuntime::new().await?;
     #[cfg(windows)]
     let mut info = info;
     #[cfg(windows)]
@@ -286,7 +286,7 @@ pub async fn native_gpu_read_output(
     let rgba = backend
         .read_texture_rgba(&output.texture, output.width, output.height)
         .await?;
-    Ok(tauri::ipc::Response::new(NativeHost::output_payload(
+    Ok(tauri::ipc::Response::new(ExecutionRuntime::output_payload(
         &rgba,
         output.width,
         output.height,
@@ -312,7 +312,7 @@ fn read_preview_payload(
         .ok_or_else(|| "Native preview reader is not initialized".to_owned())?;
     let image = pollster::block_on(reader.read(&source, max_dimension))?;
     let gpu_read = gpu_started.elapsed();
-    let payload = NativeHost::output_payload(&image.rgba, image.width, image.height);
+    let payload = ExecutionRuntime::output_payload(&image.rgba, image.width, image.height);
     let width = image.width;
     let height = image.height;
     let scale_submit = image.scale_submit;
@@ -419,7 +419,7 @@ pub fn native_gpu_play(state: State<'_, NativeRuntimeState>) -> Result<(), Strin
 #[tauri::command]
 pub fn native_gpu_pause(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
     let was_playing = state.playing.swap(false, Ordering::AcqRel);
-    let result = with_runtime(&state, NativeHost::pause);
+    let result = with_runtime(&state, ExecutionRuntime::pause);
     if result.is_err() && was_playing {
         state.playing.store(true, Ordering::Release);
     }
@@ -428,7 +428,7 @@ pub fn native_gpu_pause(state: State<'_, NativeRuntimeState>) -> Result<(), Stri
 
 #[tauri::command]
 pub fn native_gpu_resume(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
-    with_runtime(&state, NativeHost::resume)?;
+    with_runtime(&state, ExecutionRuntime::resume)?;
     state.playing.store(true, Ordering::Release);
     Ok(())
 }
@@ -436,7 +436,7 @@ pub fn native_gpu_resume(state: State<'_, NativeRuntimeState>) -> Result<(), Str
 #[tauri::command]
 pub fn native_gpu_stop(state: State<'_, NativeRuntimeState>) -> Result<(), String> {
     state.playing.store(false, Ordering::Release);
-    with_runtime(&state, NativeHost::stop)
+    with_runtime(&state, ExecutionRuntime::stop)
 }
 
 #[tauri::command]
@@ -485,7 +485,7 @@ pub fn native_video_devices() -> Result<Vec<NativeVideoDevice>, String> {
 pub fn native_gpu_render_once(
     state: State<'_, NativeRuntimeState>,
 ) -> Result<NativeFrameRendered, String> {
-    with_runtime(&state, NativeHost::render_next)
+    with_runtime(&state, ExecutionRuntime::render_next)
 }
 
 #[tauri::command]
@@ -501,7 +501,7 @@ pub fn native_gpu_set_mouse(
 
 #[tauri::command]
 pub fn native_gpu_drain_events(state: State<'_, NativeRuntimeState>) -> Result<String, String> {
-    with_runtime(&state, NativeHost::drain_events_json)
+    with_runtime(&state, ExecutionRuntime::drain_events_json)
 }
 
 #[tauri::command]
@@ -550,13 +550,13 @@ pub async fn native_onnx_load_model(
     let prefer_direct_ml = options.prefer_direct_ml;
     let prepared = tokio::task::spawn_blocking(move || {
         if let Some(model_path) = options.model_path {
-            open_quartz_native_host::models::PreparedOnnxModel::open(
+            open_quartz_execution::resources::models::PreparedOnnxModel::open(
                 &std::path::PathBuf::from(model_path),
                 config,
                 prefer_direct_ml,
             )
         } else {
-            open_quartz_native_host::models::ModelStore::new(cache_directory).open_cached(
+            open_quartz_execution::resources::models::ModelStore::new(cache_directory).open_cached(
                 &model_id_for_cache,
                 config,
                 prefer_direct_ml,
@@ -598,7 +598,7 @@ fn smoke_native_onnx() -> Result<(String, f32), String> {
     Ok((backend, output.data[0]))
 }
 
-fn smoke_native_onnx_graph(runtime: &mut NativeHost) -> Result<bool, String> {
+fn smoke_native_onnx_graph(runtime: &mut ExecutionRuntime) -> Result<bool, String> {
     let graph = r#"{
         "nodes": [
             {
@@ -666,7 +666,7 @@ fn smoke_native_onnx_graph(runtime: &mut NativeHost) -> Result<bool, String> {
 }
 
 #[cfg(windows)]
-fn smoke_shared_texture_presenter(runtime: &mut NativeHost) -> Result<bool, String> {
+fn smoke_shared_texture_presenter(runtime: &mut ExecutionRuntime) -> Result<bool, String> {
     runtime.set_shared_texture_enabled(true)?;
     runtime.render_next()?;
     let Some(frame) = runtime.take_shared_texture() else {
@@ -712,7 +712,7 @@ fn smoke_native_preview_latency(
     Ok(elapsed_ms)
 }
 
-fn smoke_native_video(runtime: &mut NativeHost, image_graph: &str) -> Result<bool, String> {
+fn smoke_native_video(runtime: &mut ExecutionRuntime, image_graph: &str) -> Result<bool, String> {
     let ffmpeg = find_ffmpeg()?;
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1010,7 +1010,7 @@ pub fn maybe_start_smoke(app: &AppHandle) {
 
 fn with_runtime<T>(
     state: &NativeRuntimeState,
-    operation: impl FnOnce(&mut NativeHost) -> Result<T, String>,
+    operation: impl FnOnce(&mut ExecutionRuntime) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut guard = state
         .runtime

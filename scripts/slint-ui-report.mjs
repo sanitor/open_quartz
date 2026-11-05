@@ -22,6 +22,7 @@ export const UI_CASES = [
   ['stop-playback', '停止播放', '点击 Stop，确认播放停止，节点和连接保留。', ['12-']],
   ['save-project-through-file-menu', '通过文件菜单保存', '点击 Save，确认落盘包含两个节点、一条连线、修改后的名称和源码。', []],
   ['restart-same-project-retains-graph-parameters-stopped', '重启并恢复项目', '重开同一文件，核对节点 ID、名称、位置、连线和源码，确认保持停止。', ['13-', '14-']],
+  ['auto-size-playback-time-renderer-fps', '自动尺寸、播放计时与 Renderer FPS', '真实图片经 Filter 到 Renderer：Auto size 跟随输入，关闭后指定尺寸，再打开恢复跟随；播放计时与 FPS 更新，暂停计时不变且 FPS 为零，恢复继续，Stop 计时清零。', ['15-']],
 ].map(([id, title, description, screenshotPrefixes]) => ({ id, title, description, screenshotPrefixes }));
 
 export const STATUS_LABELS = { passed: '通过', failed: '失败', incomplete: '未完成', not_run: '未执行' };

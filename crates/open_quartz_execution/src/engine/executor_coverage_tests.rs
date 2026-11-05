@@ -119,6 +119,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
             width: 20,
             height: 30,
             float: false,
+            size_source: None,
         }),
         ..bare_plan.clone()
     };
