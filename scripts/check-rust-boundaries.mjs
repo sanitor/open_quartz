@@ -5,188 +5,133 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve('.');
 const dir = mkdtempSync(join(tmpdir(), 'open-quartz-boundary-'));
+const dependency = `open_quartz = { path = ${JSON.stringify(join(root, 'crates/open_quartz'))}, default-features = false }`;
 
-function cargoCheck(source, expectSuccess, dependencies = `
-open_quartz = { path = ${JSON.stringify(join(root, 'crates/open_quartz'))}, default-features = false }
-`) {
-  mkdirSync(join(dir, 'src'), { recursive: true });
-  writeFileSync(join(dir, 'Cargo.toml'), `
-[package]
-name = "open_quartz_boundary_check"
-version = "0.0.0"
-edition = "2021"
-
-[dependencies]
-${dependencies}
-`);
-  writeFileSync(join(dir, 'src/main.rs'), source);
-  const result = spawnSync('cargo', ['check', '--quiet', '--manifest-path', join(dir, 'Cargo.toml')], {
-    cwd: dir,
-    encoding: 'utf8',
-  });
-  const ok = result.status === 0;
-  if (ok !== expectSuccess) {
-    const expectation = expectSuccess ? 'succeed' : 'fail';
-    throw new Error(`Expected boundary compile to ${expectation}\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
-  }
+function run(command, args, cwd) {
+  const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed\n${result.stdout}\n${result.stderr}`);
+  return result.stdout;
 }
 
-function cargoMetadata(packageName) {
-  const result = spawnSync('cargo', ['metadata', '--quiet', '--no-deps', '--format-version', '1'], {
-    cwd: root,
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
-    throw new Error(`cargo metadata failed\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
-  }
-  const metadata = JSON.parse(result.stdout);
-  const pkg = metadata.packages.find((candidate) => candidate.name === packageName);
-  if (!pkg) throw new Error(`Package ${packageName} not found in workspace metadata`);
-  return pkg.dependencies.map((dependency) => dependency.name).sort();
+function consumer(name, source, dependencies = dependency) {
+  const project = join(dir, name);
+  mkdirSync(join(project, 'src'), { recursive: true });
+  writeFileSync(join(project, 'Cargo.toml'), `[package]\nname = "${name}"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\n${dependencies}\n`);
+  writeFileSync(join(project, 'src/main.rs'), source);
+  return project;
 }
 
 try {
-  cargoCheck(`
-use open_quartz::{DataType, Environment, OpenQuartz, ProjectFile, PROJECT_FILE_VERSION};
-
+  const publicConsumer = consumer('open_quartz_public_check', `
+use open_quartz::{DataType, Environment, Graph, OpenQuartz, PlayerState, ProjectFile, PROJECT_FILE_VERSION};
 fn main() {
     let sdk = OpenQuartz::new(Environment::headless());
     let project = sdk.create_project("public");
     let _: ProjectFile = project.to_file();
+    let _: Graph = project.graph_snapshot();
     let _: DataType = DataType::Float;
     let _: &str = PROJECT_FILE_VERSION;
-}
-`, true);
-
-  const forbidden = [
-    ['engine', 'ExecutionEngine'],
-    ['gpu', 'GpuExecutor'],
-    ['runtime', 'Runtime'],
-    ['event', 'EngineState'],
-    ['runtime', 'ExecutionRuntime'],
-    ['onnx', 'OnnxSession'],
-    ['wgsl', 'CompileRequest'],
-    ['graph', 'GraphRequest'],
-    ['types', 'Graph'],
-  ];
-  for (const [moduleName, itemName] of forbidden) {
-    cargoCheck(`
-use open_quartz::${moduleName}::${itemName};
-
-fn main() {
-    let _ = core::any::type_name::<${itemName}>();
-}
-`, false);
-  }
-
-  const schemaDependency = `
-open_quartz_schema = { path = ${JSON.stringify(join(root, 'crates/open_quartz_schema'))} }
-`;
-  cargoCheck(`
-use open_quartz_schema::{DataType, NodeData, ProjectFile, PROJECT_FILE_VERSION};
-
-fn main() {
-    let _: DataType = DataType::Float;
-    let _: NodeData = NodeData::default();
-    let _: Option<ProjectFile> = None;
-    let _: &str = PROJECT_FILE_VERSION;
-}
-`, true, schemaDependency);
-  cargoCheck(`
-use open_quartz_schema::OnnxStatus;
-
-fn main() {
-    let _ = core::any::type_name::<OnnxStatus>();
-}
-`, false, schemaDependency);
-  cargoCheck(`
-use open_quartz_schema::{NodeData, NodeType};
-
-fn main() {
-    let _ = NodeData {
-        node_type: NodeType::Shader,
-        label: String::new(),
-        shader_code: String::new(),
-        inputs: vec![],
-        outputs: vec![],
-        uniforms: serde_json::Map::new(),
-        collapsed: None,
-        ..NodeData::default()
-    };
-}
-`, false, `${schemaDependency}serde_json = "1.0"\n`);
-
-  const sdkDependency = `
-open_quartz_sdk = { path = ${JSON.stringify(join(root, 'crates/open_quartz_sdk'))} }
-`;
-  cargoCheck(`
-use open_quartz_sdk::{Environment, OpenQuartz, PlayerState, ProjectFile};
-
-fn main() {
-    let sdk = OpenQuartz::new(Environment::headless());
-    let project = sdk.create_project("sdk");
-    let _: ProjectFile = project.to_file();
     let _: PlayerState = sdk.player(project.graph()).build().unwrap().state();
 }
-`, true, sdkDependency);
-  cargoCheck(`
-use open_quartz_execution::runtime::Runtime;
+`);
+  run('cargo', ['check', '--quiet', '--manifest-path', join(publicConsumer, 'Cargo.toml')], root);
 
-fn main() {
-    let _ = core::any::type_name::<Runtime>();
-}
-`, false, sdkDependency);
-
-  const hostDependency = `
-open_quartz_host_api = { path = ${JSON.stringify(join(root, 'crates/open_quartz_host_api'))} }
-serde_json = "1.0"
-`;
-  cargoCheck(`
-use open_quartz_host_api::{plan_host_resource_intents, HostResourceIntentRequest};
-
-fn main() {
-    let request: HostResourceIntentRequest = serde_json::from_value(serde_json::json!({
-        "host": "browser",
-        "graph": { "nodes": [], "edges": [] }
-    })).unwrap();
-    let _ = plan_host_resource_intents(request).unwrap();
-}
-`, true, hostDependency);
-
-  const executionDependency = `
-open_quartz_execution = { path = ${JSON.stringify(join(root, 'crates/open_quartz_execution'))} }
-`;
-  cargoCheck(`
-use open_quartz_execution::runtime::{ExecutionRuntime, Runtime};
-use open_quartz_execution::resources::models::{ModelStore, PreparedOnnxModel};
-
-fn main() {
-    let _ = ExecutionRuntime::from_shared_wgpu;
-    let _ = Runtime::new_native;
-    let _ = ModelStore::new;
-    let _ = PreparedOnnxModel::open;
-}
-`, true, executionDependency);
-  cargoCheck(`
-use open_quartz_execution::host::PlayerHost;
-fn main() { let _ = core::any::type_name::<PlayerHost>(); }
-`, false, executionDependency);
-
-  const openQuartzManifest = readFileSync(join(root, 'crates/open_quartz/Cargo.toml'), 'utf8');
-  if (openQuartzManifest.includes('host-internals')) {
-    throw new Error('open_quartz still declares the obsolete host-internals pseudo-boundary');
-  }
-  const sdkDeps = cargoMetadata('open_quartz_sdk');
-  for (const required of ['open_quartz_execution', 'open_quartz_host_api', 'open_quartz_schema']) {
-    if (!sdkDeps.includes(required)) throw new Error(`open_quartz_sdk is missing ${required}`);
-  }
-  const executionDeps = cargoMetadata('open_quartz_execution');
-  for (const forbidden of ['open_quartz', 'open_quartz_sdk', 'open_quartz_host_api', 'open_quartz_native_host']) {
-    if (executionDeps.includes(forbidden)) {
-      throw new Error(`open_quartz_execution must not depend on ${forbidden}`);
+  const heavy = ['wgpu', 'ort', 'ffmpeg-next', 'reqwest', 'oq-media', 'objc2', 'windows'];
+  const tree = run('cargo', ['tree', '--quiet', '--manifest-path', join(publicConsumer, 'Cargo.toml'), '-e', 'normal,build', '--prefix', 'none'], root);
+  for (const dependencyName of heavy) {
+    if (tree.split('\n').some((line) => line.startsWith(`${dependencyName} `) || line === dependencyName)) {
+      throw new Error(`Default open_quartz dependency closure unexpectedly contains ${dependencyName}`);
     }
   }
-  console.log('Rust dependency boundaries passed');
+
+  const host = run('rustc', ['-vV'], root).match(/^host: (.+)$/m)?.[1];
+  if (!host) throw new Error('Cannot determine the Rust host target');
+  const featureConsumers = [
+    {
+      feature: 'native-runtime',
+      forbidden: ['ort', 'ffmpeg-next', 'oq-media', 'reqwest'],
+      source: `
+use open_quartz::runtime::ExecutionRuntime;
+fn main() {
+    let _ = ExecutionRuntime::from_shared_wgpu;
+}
+`,
+    },
+    {
+      feature: 'native-video',
+      forbidden: ['ort', 'reqwest', 'wgpu', 'objc2-metal'],
+      source: `
+use open_quartz::native_video::NativeVideoSource;
+fn main() {
+    let _: Option<NativeVideoSource> = None;
+}
+`,
+    },
+    {
+      feature: 'native-onnx',
+      forbidden: ['wgpu', 'reqwest'],
+      source: `
+use open_quartz::onnx::OnnxSession;
+fn main() {
+    let _ = OnnxSession::from_memory(&[]);
+}
+`,
+    },
+    {
+      feature: 'model-cache',
+      forbidden: ['ort', 'wgpu'],
+      source: `
+use open_quartz::resources::models::ModelStore;
+fn main() {
+    let _ = ModelStore::new(std::path::PathBuf::from("models"));
+}
+`,
+    },
+  ];
+  for (const { feature, forbidden, source } of featureConsumers) {
+    const dependencies = dependency.replace('default-features = false', `default-features = false, features = [${JSON.stringify(feature)}]`);
+    const project = consumer(`open_quartz_${feature.replaceAll('-', '_')}_check`, source, dependencies);
+    const manifest = join(project, 'Cargo.toml');
+    run('cargo', ['check', '--quiet', '--manifest-path', manifest, '--target', host], root);
+    const featureTree = run('cargo', ['tree', '--quiet', '--manifest-path', manifest, '--target', host, '-e', 'normal,build', '--prefix', 'none'], root);
+    for (const dependencyName of forbidden) {
+      if (featureTree.split('\n').some((line) => line.startsWith(`${dependencyName} `) || line === dependencyName)) {
+        throw new Error(`${feature} open_quartz dependency closure unexpectedly contains ${dependencyName}`);
+      }
+    }
+  }
+
+  const privateDomain = consumer('open_quartz_private_domain_check', `
+use open_quartz::domain::Graph;
+fn main() { let _ = Graph::default(); }
+`);
+  const privateSdk = consumer('open_quartz_private_sdk_check', `
+use open_quartz::sdk::Project;
+fn main() { let _ = core::any::type_name::<Project>(); }
+`);
+  for (const project of [privateDomain, privateSdk]) {
+    const result = spawnSync('cargo', ['check', '--quiet', '--manifest-path', join(project, 'Cargo.toml')], { cwd: root, encoding: 'utf8' });
+    if (result.status === 0) throw new Error(`Internal module unexpectedly public: ${project}`);
+  }
+
+  const metadata = JSON.parse(run('cargo', ['metadata', '--quiet', '--no-deps', '--format-version', '1'], root));
+  const members = metadata.packages.map((pkg) => pkg.name);
+  if (!members.includes('open_quartz')) throw new Error('open_quartz core package is missing');
+  for (const obsolete of ['open_quartz_schema', 'open_quartz_execution', 'open_quartz_sdk']) {
+    if (members.includes(obsolete)) throw new Error(`Obsolete core package remains in workspace: ${obsolete}`);
+  }
+  const manifests = [
+    'Cargo.toml', 'apps/open_quartz_slint/Cargo.toml', 'crates/slint_code_editor/Cargo.toml',
+    'crates/open_quartz/Cargo.toml', 'src-tauri/Cargo.toml',
+    'crates/open_quartz_screensaver/Cargo.toml', 'crates/open-quartz-screensaver-stub/Cargo.toml',
+  ];
+  for (const manifest of manifests) {
+    const content = readFileSync(join(root, manifest), 'utf8');
+    for (const obsolete of ['open_quartz_schema', 'open_quartz_execution', 'open_quartz_sdk']) {
+      if (content.includes(obsolete)) throw new Error(`${manifest} still references ${obsolete}`);
+    }
+  }
+  console.log('Single-core API, default, and feature dependency boundaries passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use open_quartz_sdk::{Graph, Project, SdkError};
+use open_quartz::{Graph, Project, SdkError};
 
 /// An owned graph snapshot, independent of later source edits or project opens.
 /// Only edges whose endpoints are both selected belong to the clipboard.
@@ -97,7 +97,7 @@ impl GraphClipboard {
         // SDK Connect owns edge identity, compatibility, cycles and occupied-input rules.
         graph.edit(&mut |edit| {
             for edge in &self.graph.edges {
-                use open_quartz_sdk::{NodeId, PortId, PortKey};
+                use open_quartz::{NodeId, PortId, PortKey};
                 edit.connect(
                     PortKey::new(
                         NodeId::new(&node_map[edge.source.as_str()]),
@@ -120,7 +120,7 @@ impl GraphClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_quartz_sdk::{
+    use open_quartz::{
         Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey,
         Position,
     };

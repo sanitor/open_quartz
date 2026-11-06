@@ -2,14 +2,13 @@
 name = "open-quartz-screensaver-stub"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.92"
 publish = false
 
 [target.'cfg(windows)'.dependencies]
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif", "tiff"] }
-open_quartz = { path = "../open_quartz" }
-open_quartz_execution = { path = "../open_quartz_execution", features = ["native-video-d3d12"] }
-open_quartz_schema = { path = "../open_quartz_schema" }
+open_quartz = { path = "../open_quartz", features = ["gpu", "native-video", "native-onnx", "native-video-d3d12"] }
 pollster = "0.4"
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12"] }
 serde = { version = "1", features = ["derive"] }

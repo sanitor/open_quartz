@@ -23,12 +23,12 @@
 
 | 现状 | 代码依据 | 设计影响 |
 |---|---|---|
-| Rust `NativeVideoSource` 管理文件/摄像头、解码线程、暂停恢复和帧槽 | [native_video.rs](../crates/open_quartz_execution/src/native_video.rs) | 提取为媒体后端，不让 UI 拥有解码生命周期 |
+| Rust `NativeVideoSource` 管理文件/摄像头、解码线程、暂停恢复和帧槽 | [native_video.rs](../crates/open_quartz/src/native_video.rs) | 提取为媒体后端，不让 UI 拥有解码生命周期 |
 | Windows 有进程内 FFmpeg D3D12VA；初始化失败时回退到 FFmpeg 子进程 RGBA，运行中 decode 失败目前仅记录并停源 | 同上，`start_decoder` / `decode_d3d12_frames` | 复用基础但补齐可观察终态与恢复策略，不声称当前能自动处理中途故障 |
 | macOS/Linux 当前通过 FFmpeg 可执行文件输出 RGBA 管道，没有统一进程内硬解 | 同上，`append_input_args` | 新增平台库、打包与 GPU 适配是实际工作，不能只改选项 |
-| ExecutionRuntime 上传解码帧并标记节点 dirty | [执行运行时](../crates/open_quartz_execution/src/runtime/execution.rs)，`upload_video_frames` | 图执行适配留在 execution，解码核心不接收 NodeId |
+| ExecutionRuntime 上传解码帧并标记节点 dirty | [执行运行时](../crates/open_quartz/src/runtime/execution.rs)，`upload_video_frames` | 图执行适配留在 open_quartz 的 runtime 模块，解码核心不接收 NodeId |
 | Slint 与 ExecutionRuntime 共用 wgpu Device/Queue | [render_bridge.rs](../apps/open_quartz_slint/src/render_bridge.rs)，`initialize` | 保留共享设备设计；共享 UI/GPU 不意味着解码设备天然一致 |
-| Windows 已管理解码 fence、NV12/P010、纹理子资源与必要的 GPU detach copy | [dxgi.rs](../crates/open_quartz_execution/src/gpu/dxgi.rs) | 新接口必须表达生命周期和同步，不能只传纹理指针 |
+| Windows 已管理解码 fence、NV12/P010、纹理子资源与必要的 GPU detach copy | [dxgi.rs](../crates/open_quartz/src/gpu/dxgi.rs) | 新接口必须表达生命周期和同步，不能只传纹理指针 |
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
 | 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
 | FFmpeg 打包不同：Windows 固定 shared 9.0.2 snapshot；其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
@@ -68,16 +68,16 @@ flowchart TD
 
 | 提议包/模块 | 内容 | 禁止依赖 |
 |---|---|---|
-| `media_core`（暂名） | 会话、Source/Demux/Decoder/Encoder/Muxer 协议、时间与色彩描述、帧租约；内部 `ffmpeg`、`browser`、`platform` feature modules | Slint、OpenQuartz schema/SDK/NodeId、UI 文件选择器 |
+| `media_core`（暂名） | 会话、Source/Demux/Decoder/Encoder/Muxer 协议、时间与色彩描述、帧租约；内部 `ffmpeg`、`browser`、`platform` feature modules | Slint、open_quartz 的 domain/SDK/NodeId、UI 文件选择器 |
 | `media_wgpu`（暂名） | 与固定 wgpu 版本配套的设备协商、硬件帧导入、YUV/色彩转换、GPU encoder 输入适配、完成通知 | Slint、应用 Controller、项目历史 |
 | `slint_media`（暂名） | `.slint` 控件、Rust controller、可选共享 wgpu presenter、标准控制条；独立示例 | OpenQuartz graph/SDK、默认把所有 decoder/encoder 编入 |
 | 现有 OpenQuartz 宿主模块 | `NodeId ↔ SessionId`、图 tick、资源 intent、图输出导出、权限/文件选择 | 不在其中复制 FFmpeg 解码实现 |
 
 `media_core` 逻辑协议部分应可不启用 FFmpeg、wgpu、浏览器依赖而测试。初期 backend modules 可以共包，稳定后根据链接大小和分发需要拆包。FFmpeg 类型仅存在于后端，不从公共协议泄漏 `AVFrame*`。GPU 适配器是可选依赖；软件解码、离线编码、命令行和其他 UI 可独立使用核心。
 
-依赖方向为 **Slint → 媒体核心/GPU 适配**，不能让媒体核心反向依赖 Slint，也不能把解码器放进 `open_quartz_sdk` 的 domain model。Slint 版本升级不应迫使媒体核心重写，wgpu 升级只影响 GPU adapter。
+依赖方向为 **Slint → 媒体核心/GPU 适配**，不能让媒体核心反向依赖 Slint，也不能把解码器放进 `open_quartz` 的私有 domain 或 SDK 模块。Slint 版本升级不应迫使媒体核心重写，wgpu 升级只影响 GPU adapter。
 
-**公共类型只定义一次。** `media_core` 是 SessionId/epoch、命令/事件、时间/色彩元数据、源能力与 frame lease 接口的唯一所有者；平台后端实现该接口。`media_wgpu` 拥有依赖 wgpu 的 `GpuFrameLease`，不要求核心返回 `GpuOutputHandle`。OpenQuartz execution/native-host/host-api 向内依赖并进行句柄映射；旧 `execution::media` 只能保留带弃用说明的 re-export/adapter wrapper，不能复制定义第二套规范类型，也不能通过 type alias 让核心反向引用 execution/schema。既有 SDK/host-api 的其他 execution 类型不必一次迁移；仅媒体公共契约逐项收敛。依赖检查必须禁止 `media_core → open_quartz_execution/open_quartz_schema/open_quartz_sdk/slint/wgpu`，而不是只检查包名是否“看起来独立”。
+**公共类型只定义一次。** `media_core` 是 SessionId/epoch、命令/事件、时间/色彩元数据、源能力与 frame lease 接口的唯一所有者；平台后端实现该接口。`media_wgpu` 拥有依赖 wgpu 的 `GpuFrameLease`，不要求核心返回 `GpuOutputHandle`。当前单一 `open_quartz` 的 runtime/GPU 模块消费媒体实现并进行节点与句柄映射；媒体公共契约不能反向引用核心的 domain、SDK 或执行类型。早期 `execution::media` 外部帧 facade 已删除，不保留 alias、re-export 或转发 wrapper，也不复制第二套规范类型。依赖边界必须禁止 `media_core → open_quartz/slint/wgpu`；可选 GPU adapter 单独承担 wgpu 依赖，不能只按包名判断是否独立。
 
 ## 4. 对象、所有权与来源
 
@@ -380,16 +380,16 @@ controller 投影 `state`、`position`、可选 `duration`、`seekable`、`video
 ```text
 SDK Project（持久化 source 与选项）
   → HostResourceIntent
-  → execution::ExecutionRuntime media registry：NodeId → MediaSession
+  → open_quartz::runtime::ExecutionRuntime media registry：NodeId → MediaSession
   → shared video frame / graph input
   → Runtime dirty + 图执行
   → output lease
   → 节点/Inspector/fullscreen 的 Slint presenter
 ```
 
-`RenderBridge` 继续是 UI 与执行线程之间的窗口适配，不包含 FFmpeg 解码策略或跨平台表面解析。execution 内的 `ExecutionRuntime` 直接组合节点资源对齐、graph dirty、帧时钟与 GPU 执行；原独立 NativeHost crate 和 PlayerHost 转发层已移除。`media_core` 返回帧和状态，既不知道节点也不会发布 SDK command。
+`RenderBridge` 继续是 UI 与执行线程之间的窗口适配，不包含 FFmpeg 解码策略或跨平台表面解析。单一核心 `open_quartz` 的 `ExecutionRuntime` 直接组合节点资源对齐、graph dirty、帧时钟与 GPU 执行；原独立 NativeHost crate 和 PlayerHost 转发层已移除。`media_core` 返回帧和状态，既不知道节点也不会发布 SDK command。
 
-首轮已落实独立 `oq-media` 的 retained `FrameLease` 与 macOS VideoToolbox 后端，OpenQuartz `NativeVideoSource` 持有宿主节点和播放策略，GPU 导入仍是平台执行适配。旧 `open_quartz_execution::media` 外部帧 facade 完全没有生产消费者；核对仓内调用及重复模拟测试后，已随切换删除。避免执行层同时保留第二套 `ExternalVideoFrame`、同步和 importer 契约。未来跨平台抽取如需新公共协议，应由实际第二平台实现验证后再定义，不先留空抽象。
+首轮已落实独立 `oq-media` 的 retained `FrameLease` 与 macOS VideoToolbox 后端，OpenQuartz `NativeVideoSource` 持有宿主节点和播放策略，GPU 导入仍是平台执行适配。**历史删除记录：** 合包前旧 `open_quartz_execution::media` 外部帧 facade 完全没有生产消费者；核对当时仓内调用及重复模拟测试后，已随切换删除。该旧包路径不是当前源码入口。避免执行层同时保留第二套 `ExternalVideoFrame`、同步和 importer 契约。未来跨平台抽取如需新公共协议，应由实际第二平台实现验证后再定义，不先留空抽象。
 
 前期 FFmpeg 子进程 fallback 可保留在 backend adapter，report `backend=ffmpeg-process / software / cpu-upload`。它是可观测迁移手段，不是让新接口把硬解承诺打折；`Require` 模式绝不走该 fallback。新平台 libav 路径通过后再逐平台移除子进程默认路径，CLI probe 也逐步用 libav stream info 替换正则解析 stderr。
 

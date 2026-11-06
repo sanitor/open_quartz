@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use open_quartz_sdk::{DataType, InputMode, NodeType, Port, Project, ProjectNode};
+use open_quartz::{DataType, InputMode, NodeType, Port, Project, ProjectNode};
 use slint::{ModelRc, VecModel};
 
 use crate::{GraphEdge, GraphNode, GraphPort};
@@ -338,7 +338,7 @@ fn project_port(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_quartz_sdk::{
+    use open_quartz::{
         Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey,
         Position,
     };

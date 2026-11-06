@@ -11,6 +11,22 @@ still Unreleased; local stage completion does not mean a tagged release was publ
 The application is a standalone Rust workspace, with Slint and its build compiler
 pinned to **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
+The app consumes the single `open_quartz` core through its root SDK types and
+advanced host modules. The former schema/execution/SDK packages are removed;
+private `domain` and `sdk` modules live under `crates/open_quartz/src/` and have no
+compatibility crates. The core defaults to graph/project/WGSL/runtime state with
+`default = []`. Slint explicitly selects `native-runtime` (which enables only
+`gpu`), `native-video`, `native-onnx` and `model-cache`, plus
+`native-video-d3d12` on Windows. Browser/WASM uses its separate `browser` capability.
+`oq-media`, `slint_code_editor`, the screen saver exporter and standalone stub
+remain independent components/products. Consolidation regression passes 72 Slint
+tests and 18/18 real-window interactions ([report](../../test-results/slint-ui/interaction-2026-11-06T02-36-13-880Z/report.html)).
+Core/default, workspace, browser, TypeScript and feature-boundary results are
+recorded in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
+Both overall default/full-native 100% coverage gates fail on execution gaps;
+domain/SDK/FFI/planner reach 100%. Windows/Linux runtime and release packaging were
+not rerun for this consolidation; historical acceptance below describes earlier changes.
+
 ## Run
 
 From the repository root:
@@ -165,7 +181,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
 - A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
-  A separate render worker owns `open_quartz_execution::runtime::ExecutionRuntime`;
+  A separate render worker owns `open_quartz::runtime::ExecutionRuntime`;
   it directly composes shared Runtime rules and GPU/video/inference resources.
   The former native host crate and PlayerHost forwarding layer have been removed.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
@@ -174,9 +190,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   and provides its output texture. A Slint timer imports the latest texture using
   `slint::Image::try_from`; frames do not go through pixel readback or encoded URLs.
   Graph generations discard stale output after opening another project.
-- Model cache/download/checksum/session preparation lives in execution's
-  `resources::models` service module and runs on model workers. Ticket/generation
-  validation still precedes session attachment; the render loop performs no downloads.
+- Model cache/download/checksum/session preparation lives in `open_quartz::resources::models`, and runs on model workers. Ticket/generation validation still precedes session attachment; the render loop performs no downloads. Capabilities are enabled by the Slint app's explicit core features.
   Historical acceptance records below use the former NativeHost implementation name.
 - If GPU/host initialization fails, the shell attempts Slint's default UI backend
   and explicitly reports **Renderer not initialized**. It never synthesizes an

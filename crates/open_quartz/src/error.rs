@@ -1,1 +1,1 @@
-pub use open_quartz_schema::{SdkError, SdkErrorCode};
+pub use crate::domain::{SdkError, SdkErrorCode};

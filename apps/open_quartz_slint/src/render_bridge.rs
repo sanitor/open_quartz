@@ -2,9 +2,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use open_quartz_execution::native_video::{NativeVideoConfig, NativeVideoSourceKind};
-use open_quartz_execution::runtime::ExecutionRuntime;
-use open_quartz_sdk::Graph;
+use open_quartz::native_video::{NativeVideoConfig, NativeVideoSourceKind};
+use open_quartz::runtime::ExecutionRuntime;
+use open_quartz::Graph;
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ pub struct RenderUpdate {
     pub clear_image: bool,
     pub onnx: Option<BTreeMap<String, LiveOnnxState>>,
     pub previews: Option<BTreeMap<String, wgpu::Texture>>,
-    pub node_error: Option<open_quartz_sdk::SdkError>,
+    pub node_error: Option<open_quartz::SdkError>,
     pub metrics: Option<PlaybackMetrics>,
 }
 
@@ -337,7 +337,7 @@ fn publish_failure(
         if update.generation != generation {
             *update = RenderUpdate::new(generation);
         }
-        let parsed = serde_json::from_str::<open_quartz_sdk::SdkError>(error).ok();
+        let parsed = serde_json::from_str::<open_quartz::SdkError>(error).ok();
         update.node_error = parsed.clone();
         update.status = Some(format!(
             "{context}: {}",
@@ -425,8 +425,8 @@ fn render_worker(
                 publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
                 pending_video_previews.clear();
                 preview_nodes = graph.nodes().iter().filter(|node| {
-                    matches!(node.node_type, open_quartz_sdk::NodeType::Shader | open_quartz_sdk::NodeType::Constant | open_quartz_sdk::NodeType::Renderer)
-                        || node.data.outputs.iter().any(|port| port.data_type == open_quartz_sdk::DataType::Sampler2d)
+                    matches!(node.node_type, open_quartz::NodeType::Shader | open_quartz::NodeType::Constant | open_quartz::NodeType::Renderer)
+                        || node.data.outputs.iter().any(|port| port.data_type == open_quartz::DataType::Sampler2d)
                 }).map(|node| node.id.clone()).collect();
                 preview_tick = Instant::now() - Duration::from_millis(100);
                 if reset_resources {
@@ -809,9 +809,9 @@ fn render_worker(
 }
 
 fn graph_video_configs(
-    intents: &[open_quartz_host_api::HostResourceIntent],
+    intents: &[open_quartz::resources::plan::HostResourceIntent],
 ) -> BTreeMap<String, NativeVideoConfig> {
-    use open_quartz_host_api::{HostResourceIntent, VideoSourceKind};
+    use open_quartz::resources::plan::{HostResourceIntent, VideoSourceKind};
     intents
         .iter()
         .filter_map(|intent| match intent {
@@ -883,8 +883,8 @@ mod tests {
     #[test]
     fn failure_retains_node_identity_and_clears_failed_generation_previews() {
         let updates = Mutex::new(Some(RenderUpdate::new(1)));
-        let error = open_quartz_sdk::SdkError::new(
-            open_quartz_sdk::SdkErrorCode::InvalidResource, "Invalid WGSL type",
+        let error = open_quartz::SdkError::new(
+            open_quartz::SdkErrorCode::InvalidResource, "Invalid WGSL type",
         ).for_node("shader_7");
         publish_failure(&updates, 2, "Rendering stopped", &error.to_json());
         let update = updates.lock().unwrap();
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn preparing_a_graph_waits_for_explicit_play_and_preserves_first_frame_work() {
-        use open_quartz_sdk::{Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey};
+        use open_quartz::{Environment, GraphCommand, NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey};
         let sdk = OpenQuartz::new(Environment::headless());
         let mut project = sdk.create_project("Explicit playback");
         let (shader, _) = project.create_graph_node(NodeFactoryRequest::Shader {
@@ -934,15 +934,15 @@ mod tests {
         assert!(update.clear_image);
     }
     fn standalone_video_graph(path: &std::path::Path) -> Graph {
-        let sdk = open_quartz_sdk::OpenQuartz::new(open_quartz_sdk::Environment::headless());
+        let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
         let mut project = sdk.create_project("Standalone video");
-        let (video, _) = project.create_graph_node(open_quartz_sdk::NodeFactoryRequest::Input {
-            position: None, data_type: open_quartz_sdk::DataType::Sampler2d,
-            input_mode: Some(open_quartz_sdk::InputMode::Video),
+        let (video, _) = project.create_graph_node(open_quartz::NodeFactoryRequest::Input {
+            position: None, data_type: open_quartz::DataType::Sampler2d,
+            input_mode: Some(open_quartz::InputMode::Video),
         }, project.graph_revision()).unwrap();
         let mut graph = project.graph_snapshot();
         let node = graph.nodes.iter_mut().find(|node| node.id == video.id).unwrap();
-        node.data.video_source_type = Some(open_quartz_sdk::VideoSourceType::File);
+        node.data.video_source_type = Some(open_quartz::VideoSourceType::File);
         node.data.video_file_path = Some(path.to_string_lossy().into_owned());
         graph
     }
@@ -952,7 +952,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
         let path = std::env::temp_dir().join(format!("oq-standalone-{}.mp4",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        let ffmpeg = open_quartz_execution::native_video::find_ffmpeg().unwrap();
+        let ffmpeg = open_quartz::native_video::find_ffmpeg().unwrap();
         assert!(std::process::Command::new(ffmpeg).args([
             "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
             "testsrc2=size=64x64:rate=10:duration=2", "-pix_fmt", "yuv420p", "-y",
@@ -991,7 +991,7 @@ mod tests {
 
     #[test]
     fn choosing_video_previews_decoded_pixels_while_stopped_or_paused() {
-        use open_quartz_sdk::{DataType, Environment, GraphCommand, InputMode,
+        use open_quartz::{DataType, Environment, GraphCommand, InputMode,
             NodeFactoryRequest, NodeId, OpenQuartz, PortId, PortKey, VideoSourceType};
         use std::process::Command as ProcessCommand;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -999,7 +999,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("open-quartz-video-preview-{}",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&directory).unwrap();
-        let ffmpeg = open_quartz_execution::native_video::find_ffmpeg().unwrap();
+        let ffmpeg = open_quartz::native_video::find_ffmpeg().unwrap();
         let red = directory.join("red.mp4");
         let blue = directory.join("blue.mp4");
         for (path, color) in [(&red, "red"), (&blue, "blue")] {

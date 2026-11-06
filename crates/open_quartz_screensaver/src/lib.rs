@@ -1,4 +1,4 @@
-use open_quartz_schema::{Graph, InputMode, NodeType};
+use open_quartz::{Graph, InputMode, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -156,7 +156,7 @@ fn collect_resources(
     for node in &graph.nodes {
         if node.node_type == NodeType::Input && node.data.input_mode == Some(InputMode::Video) {
             needs_ffmpeg = true;
-            if node.data.video_source_type == Some(open_quartz_schema::VideoSourceType::Camera) {
+            if node.data.video_source_type == Some(open_quartz::VideoSourceType::Camera) {
                 return Err(format!(
                     "Camera node '{}' cannot be exported as a deterministic screen saver input",
                     node.data.label

@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use open_quartz_sdk::{
+use open_quartz::{
     DataType, Environment, FramebufferFormat, GraphCommand, InputMode, NodeFactoryRequest, NodeId,
     NodeType, OpenQuartz, PortId, PortKey, Position, Project, SdkError,
 };
@@ -41,7 +41,7 @@ struct InspectorDraft {
 }
 
 impl InspectorDraft {
-    fn from_node(node: &open_quartz_sdk::ProjectNode) -> Self {
+    fn from_node(node: &open_quartz::ProjectNode) -> Self {
         Self {
             node_id: node.id.clone(),
             label: node.data.label.clone(),
@@ -61,7 +61,7 @@ impl InspectorDraft {
         }
     }
 
-    fn refresh_uniforms(&mut self, node: &open_quartz_sdk::ProjectNode, retain_drafts: bool) {
+    fn refresh_uniforms(&mut self, node: &open_quartz::ProjectNode, retain_drafts: bool) {
         let mut uniforms = uniform_drafts(node);
         if retain_drafts {
             for uniform in &mut uniforms {
@@ -107,7 +107,7 @@ impl InspectorChange {
 struct NodeFactoryOption {
     label: String,
     request: NodeFactoryRequest,
-    onnx_params: Option<BTreeMap<String, open_quartz_sdk::OnnxParamValue>>,
+    onnx_params: Option<BTreeMap<String, open_quartz::OnnxParamValue>>,
 }
 
 fn node_factory_options() -> Vec<NodeFactoryOption> {
@@ -156,9 +156,9 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         onnx_params: None,
     }));
     for (label, input_mode) in [
-        ("Image", open_quartz_sdk::InputMode::Image),
-        ("Framebuffer", open_quartz_sdk::InputMode::Framebuffer),
-        ("Video", open_quartz_sdk::InputMode::Video),
+        ("Image", open_quartz::InputMode::Image),
+        ("Framebuffer", open_quartz::InputMode::Framebuffer),
+        ("Video", open_quartz::InputMode::Video),
     ] {
         options.push(NodeFactoryOption {
             label: format!("Input · {label}"),
@@ -171,11 +171,11 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         });
     }
     for source in [
-        open_quartz_sdk::SystemSource::Time,
-        open_quartz_sdk::SystemSource::TimeDelta,
-        open_quartz_sdk::SystemSource::Frame,
-        open_quartz_sdk::SystemSource::Mouse,
-        open_quartz_sdk::SystemSource::Resolution,
+        open_quartz::SystemSource::Time,
+        open_quartz::SystemSource::TimeDelta,
+        open_quartz::SystemSource::Frame,
+        open_quartz::SystemSource::Mouse,
+        open_quartz::SystemSource::Resolution,
     ] {
         options.push(NodeFactoryOption {
             label: format!("System · {source:?}"),
@@ -187,7 +187,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         });
     }
     options.extend(
-        open_quartz_execution::catalog::math_ops()
+        open_quartz::catalog::math_ops()
             .into_iter()
             .map(|operation| NodeFactoryOption {
                 label: format!("Math · {}", operation.label),
@@ -204,7 +204,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         onnx_params: None,
     });
     options.extend(
-        open_quartz_execution::catalog::onnx_models()
+        open_quartz::catalog::onnx_models()
             .into_iter()
             .map(|model| {
                 let params = model.default_params.as_ref().map(|defaults| {
@@ -275,7 +275,7 @@ pub struct AppController {
     framebuffer_assets: BTreeMap<String, crate::services::file_service::FramebufferAsset>,
     pending_resources: BTreeMap<String, PendingResource>,
     resource_ticket: u64,
-    video_devices: Vec<open_quartz_execution::native_video::NativeVideoDevice>,
+    video_devices: Vec<open_quartz::native_video::NativeVideoDevice>,
     camera_loading: bool,
     selected_renderer_id: Option<String>,
     pending_capture: Option<(PathBuf, mpsc::Receiver<Result<(), String>>)>,
@@ -314,7 +314,7 @@ enum EditKind {
     Content,
 }
 
-fn node_has_texture_preview(node: &open_quartz_sdk::ProjectNode) -> bool {
+fn node_has_texture_preview(node: &open_quartz::ProjectNode) -> bool {
     matches!(node.node_type, NodeType::Shader | NodeType::Renderer)
         || (node.node_type == NodeType::Input
             && matches!(
@@ -390,8 +390,8 @@ impl AppController {
         window.set_playback_state("stopped".into());
         window.set_io_status("Ready".into());
         let node_factories = node_factory_options();
-        let math_catalog = open_quartz_execution::catalog::math_ops();
-        let onnx_catalog = open_quartz_execution::catalog::onnx_models();
+        let math_catalog = open_quartz::catalog::math_ops();
+        let onnx_catalog = open_quartz::catalog::onnx_models();
         let mut menu_groups = Vec::<crate::FactoryGroup>::new();
         for (index, option) in node_factories.iter().enumerate() {
             let (section, category, label) = match &option.request {
@@ -1011,7 +1011,7 @@ impl AppController {
                 .add_filter("Video", &["mp4", "mov", "mkv", "webm", "avi", "m4v"]),
             false,
             move |this, path| {
-                data.video_source_type = Some(open_quartz_sdk::VideoSourceType::File);
+                data.video_source_type = Some(open_quartz::VideoSourceType::File);
                 data.video_file_path = Some(path.to_string_lossy().into_owned());
                 if this
                     .project
@@ -1098,7 +1098,7 @@ impl AppController {
         window.set_inspector_camera_index(selected.map_or(-1, |index| index as i32));
     }
 
-    fn renderer_candidates(&self) -> Vec<&open_quartz_sdk::ProjectNode> {
+    fn renderer_candidates(&self) -> Vec<&open_quartz::ProjectNode> {
         self.project
             .graph()
             .nodes()
@@ -1601,7 +1601,7 @@ impl AppController {
         }
     }
 
-    fn apply_resource_data(&mut self, node_id: &str, data: open_quartz_sdk::NodeData) -> bool {
+    fn apply_resource_data(&mut self, node_id: &str, data: open_quartz::NodeData) -> bool {
         let revision = self.project.graph_revision();
         match Arc::make_mut(&mut self.project).apply_graph_command(
             GraphCommand::UpdateNodeData {
@@ -2638,11 +2638,11 @@ impl AppController {
             data.onnx_params = Some(params.clone());
             data.onnx_score_threshold =
                 params.get("scoreThreshold").and_then(|value| match value {
-                    open_quartz_sdk::OnnxParamValue::Number(value) => Some(*value),
+                    open_quartz::OnnxParamValue::Number(value) => Some(*value),
                     _ => None,
                 });
             data.onnx_iou_threshold = params.get("iouThreshold").and_then(|value| match value {
-                open_quartz_sdk::OnnxParamValue::Number(value) => Some(*value),
+                open_quartz::OnnxParamValue::Number(value) => Some(*value),
                 _ => None,
             });
             if let Err(error) = candidate.apply_graph_command(
@@ -3127,7 +3127,7 @@ fn commit_inspector(
         .find(|node| node.id == draft.node_id)
         .ok_or_else(|| {
             SdkError::new(
-                open_quartz_sdk::SdkErrorCode::UnknownNode,
+                open_quartz::SdkErrorCode::UnknownNode,
                 "Inspector node no longer exists",
             )
         })?;
@@ -3146,7 +3146,7 @@ fn commit_inspector(
         InspectorChange::Shader => {
             if node.node_type != NodeType::Shader || node.data.shader_template_id.is_some() {
                 return Err(SdkError::new(
-                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    open_quartz::SdkErrorCode::InvalidState,
                     "Only custom Shader nodes have editable WGSL source",
                 ));
             }
@@ -3161,7 +3161,7 @@ fn commit_inspector(
         InspectorChange::OutputSize => {
             if !matches!(node.node_type, NodeType::Shader | NodeType::Constant) {
                 return Err(SdkError::new(
-                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    open_quartz::SdkErrorCode::InvalidState,
                     "This node has no output size",
                 ));
             }
@@ -3170,7 +3170,7 @@ fn commit_inspector(
                     || !(1..=8192).contains(&draft.output_height))
             {
                 return Err(SdkError::new(
-                    open_quartz_sdk::SdkErrorCode::InvalidGraph,
+                    open_quartz::SdkErrorCode::InvalidGraph,
                     "Output dimensions must be between 1 and 8192",
                 ));
             }
@@ -3193,7 +3193,7 @@ fn commit_inspector(
         InspectorChange::Uniforms => {
             if node.node_type != NodeType::Shader {
                 return Err(SdkError::new(
-                    open_quartz_sdk::SdkErrorCode::InvalidState,
+                    open_quartz::SdkErrorCode::InvalidState,
                     "Only Shader nodes have editable uniforms",
                 ));
             }
@@ -3210,7 +3210,7 @@ fn commit_inspector(
                 let value =
                     parse_uniform_literal(port.data_type, &uniform.literal).map_err(|message| {
                         SdkError::new(
-                            open_quartz_sdk::SdkErrorCode::InvalidGraph,
+                            open_quartz::SdkErrorCode::InvalidGraph,
                             format!("{}: {message}", port.label),
                         )
                     })?;
@@ -3232,7 +3232,7 @@ fn commit_inspector(
                 .forms
                 .updated_data(&node.data, kind)
                 .map_err(|message| {
-                    SdkError::new(open_quartz_sdk::SdkErrorCode::InvalidGraph, message)
+                    SdkError::new(open_quartz::SdkErrorCode::InvalidGraph, message)
                 })?;
             if data == node.data {
                 return Ok(false);
@@ -3290,7 +3290,7 @@ fn format_uniform_literal(value: &serde_json::Value) -> String {
     }
 }
 
-fn uniform_drafts(node: &open_quartz_sdk::ProjectNode) -> Vec<UniformDraft> {
+fn uniform_drafts(node: &open_quartz::ProjectNode) -> Vec<UniformDraft> {
     if node.node_type != NodeType::Shader {
         return Vec::new();
     }
@@ -3311,8 +3311,8 @@ fn uniform_drafts(node: &open_quartz_sdk::ProjectNode) -> Vec<UniformDraft> {
 }
 
 fn effective_uniform_value(
-    node: &open_quartz_sdk::ProjectNode,
-    port: &open_quartz_sdk::Port,
+    node: &open_quartz::ProjectNode,
+    port: &open_quartz::Port,
 ) -> serde_json::Value {
     let value = node
         .data
@@ -3325,8 +3325,8 @@ fn effective_uniform_value(
 
 fn uniform_connected(
     project: &Project,
-    node: &open_quartz_sdk::ProjectNode,
-    port: &open_quartz_sdk::Port,
+    node: &open_quartz::ProjectNode,
+    port: &open_quartz::Port,
 ) -> bool {
     project
         .graph()
@@ -3337,7 +3337,7 @@ fn uniform_connected(
 
 fn uniform_drafts_dirty(
     project: &Project,
-    node: &open_quartz_sdk::ProjectNode,
+    node: &open_quartz::ProjectNode,
     draft: &InspectorDraft,
 ) -> bool {
     node.node_type == NodeType::Shader
@@ -3644,7 +3644,7 @@ enum FileRequest {
     LoadFramebuffer {
         node_id: String,
         path: PathBuf,
-        format: open_quartz_sdk::FramebufferFormat,
+        format: open_quartz::FramebufferFormat,
         width: u32,
         height: u32,
         stride: Option<u32>,
@@ -3660,7 +3660,7 @@ enum FileRequest {
         node_id: String,
         data_url: String,
         file_name: String,
-        format: open_quartz_sdk::FramebufferFormat,
+        format: open_quartz::FramebufferFormat,
         width: u32,
         height: u32,
         stride: Option<u32>,
@@ -3675,7 +3675,7 @@ enum FileResult {
         project: Project,
     },
     Saved(PathBuf),
-    VideoDevices(Result<Vec<open_quartz_execution::native_video::NativeVideoDevice>, String>),
+    VideoDevices(Result<Vec<open_quartz::native_video::NativeVideoDevice>, String>),
     #[cfg(target_os = "windows")]
     ExportedScreenSaver(PathBuf),
     LoadedImage {
@@ -3712,7 +3712,7 @@ impl ProjectIo {
                 while let Ok(request) = requests.recv() {
                     let result = match request {
                         FileRequest::ListCameras => FileResult::VideoDevices(
-                            open_quartz_execution::native_video::list_video_devices(),
+                            open_quartz::native_video::list_video_devices(),
                         ),
                         #[cfg(target_os = "windows")]
                         FileRequest::ExportScreenSaver {
@@ -3875,7 +3875,7 @@ impl Drop for ProjectIo {
 
 #[cfg(test)]
 mod tests {
-    use open_quartz_sdk::{
+    use open_quartz::{
         DataType, Environment, GraphCommand, NodeFactoryRequest, NodeId, NodeType, OpenQuartz,
         Port, PortDirection, PortId, PortKey, Position, Project, SdkErrorCode,
     };
@@ -3896,10 +3896,10 @@ mod tests {
             .map(|option| option.label.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(labels.len(), options.len());
-        for operation in open_quartz_execution::catalog::math_ops() {
+        for operation in open_quartz::catalog::math_ops() {
             assert!(labels.contains(format!("Math · {}", operation.label).as_str()));
         }
-        for model in open_quartz_execution::catalog::onnx_models() {
+        for model in open_quartz::catalog::onnx_models() {
             assert!(labels.contains(format!("ONNX · {}", model.label).as_str()));
         }
         for source in ["Time", "TimeDelta", "Frame", "Mouse", "Resolution"] {
@@ -3971,11 +3971,11 @@ mod tests {
         assert_eq!(node.data.onnx_iou_threshold, Some(0.45));
         assert_eq!(
             node.data.onnx_params.as_ref().unwrap()["scoreThreshold"],
-            open_quartz_sdk::OnnxParamValue::Number(0.25)
+            open_quartz::OnnxParamValue::Number(0.25)
         );
         assert_eq!(
             node.data.onnx_params.as_ref().unwrap()["iouThreshold"],
-            open_quartz_sdk::OnnxParamValue::Number(0.45)
+            open_quartz::OnnxParamValue::Number(0.45)
         );
     }
 
@@ -4012,7 +4012,7 @@ mod tests {
     #[test]
     fn node_forms_commit_independently_with_single_history_and_save_reload() {
         use crate::inspector_forms::FormKind;
-        use open_quartz_sdk::{InputMode, TextureFilter};
+        use open_quartz::{InputMode, TextureFilter};
         for (kind, changes) in [
             (FormKind::Sampling, vec![("filter", "1"), ("wrap", "2")]),
             (
@@ -4767,7 +4767,7 @@ mod tests {
         let mut project = sample_project(&sdk).unwrap();
         project
             .apply_graph_command(
-                open_quartz_sdk::GraphCommand::Disconnect {
+                open_quartz::GraphCommand::Disconnect {
                     edge_id: project.graph().edges()[0].id.clone(),
                 },
                 project.graph_revision(),
@@ -4975,7 +4975,7 @@ mod tests {
     }
 
     fn port_key(
-        project: &open_quartz_sdk::Project,
+        project: &open_quartz::Project,
         node: usize,
         output: bool,
         port: usize,

@@ -64,7 +64,7 @@ pub fn configure_runtime() -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn export_screen_saver(
-    project: &open_quartz_sdk::Project,
+    project: &open_quartz::Project,
     renderer_node_id: &str,
     path: &Path,
 ) -> Result<(), String> {
@@ -73,10 +73,10 @@ pub fn export_screen_saver(
             export_windows, ScreenSaverExportRequest, ScreenSaverExposedInput,
             ScreenSaverModelFiles, ScreenSaverRuntimeFiles,
         };
-        use open_quartz_sdk::{InputMode, NodeType};
+        use open_quartz::{InputMode, NodeType};
         let graph = project
             .graph()
-            .upstream_subgraph(&open_quartz_sdk::NodeId::new(renderer_node_id))
+            .upstream_subgraph(&open_quartz::NodeId::new(renderer_node_id))
             .map_err(|error| error.to_json())?;
         let exposed_inputs = graph
             .nodes()
@@ -124,12 +124,12 @@ pub fn export_screen_saver(
 
 #[cfg(any(windows, test))]
 fn prepare_screen_saver_project(
-    project: &open_quartz_sdk::Project,
+    project: &open_quartz::Project,
     renderer_node_id: &str,
 ) -> Result<String, String> {
     use base64::Engine as _;
     use image::ImageEncoder as _;
-    use open_quartz_sdk::{FramebufferFormat, InputMode, NodeId, NodeType};
+    use open_quartz::{FramebufferFormat, InputMode, NodeId, NodeType};
     let mut file = project.to_file();
     file.graph = file
         .graph
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn screen_saver_bakes_padded_framebuffer_without_changing_project() {
         use base64::Engine as _;
-        use open_quartz_sdk::{
+        use open_quartz::{
             DataType, Environment, GraphCommand, InputMode, NodeFactoryRequest, NodeId, OpenQuartz,
             PortId, PortKey,
         };

@@ -35,7 +35,10 @@ fn ffi_surface_covers_versions_catalog_graph_shader_gpu_and_invalid_json() {
         .unwrap()
         .contains("fullFragmentCode"));
     assert_eq!(validate_shader_json("not wgsl", 0).starts_with('['), true);
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-onnx"))]
     assert_eq!(onnx_backend(), "ort-native");
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "native-onnx")))]
+    assert_eq!(onnx_backend(), "disabled");
 }
 
 #[test]

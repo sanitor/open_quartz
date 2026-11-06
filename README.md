@@ -110,7 +110,7 @@ The following editor details describe the retained React interface; they are not
 - Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
 - Launches into an empty Untitled canvas with playback stopped. Opening/New also stop playback; editing nodes does not implicitly press Play. Manual node drags preserve the drop position even for a single-node graph; Fit View remains explicit.
 - Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build, and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux, and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
-- Slint and `execution::ExecutionRuntime` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
+- Slint and `open_quartz::runtime::ExecutionRuntime` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
 - Filter **Auto size** follows connected input texture dimensions; disabling it uses explicit width/height. The toolbar displays composition time, while Renderer cards and previews show graph **Render FPS** (not source video FPS or screen refresh); Pause freezes time and Stop resets it.
 - The native Shader editor uses the reusable `crates/slint_code_editor` component: cosmic-text shaping/editing with live WGSL colors, line numbers, goto/find/replace, selection and local undo/redo. Slint provides the UI and public desktop IME event bridge; no fork or WebView. Presets remain read-only and Apply is explicit. Full screen-reader caret/selection reporting and real IME/platform acceptance are not yet verified; completion and inline lint are not provided. Run `npm run dev:editor` for the independent WGSL/JSON demo.
 - Rust owns graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, previews/fullscreen, and Windows screen saver export. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
@@ -127,12 +127,26 @@ The following editor details describe the retained React interface; they are not
 The prior React/Tauri shell and its native runtime remain available for one version through explicit commands. Windows WebView2 TextureStream and bounded readback presentation belong to this fallback, not the Slint renderer. Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint or Tauri application; camera inputs are not deterministic export sources.
 
 ## Rust SDK and Structured Runtime
-- Real crate boundaries: `open_quartz_schema` → `open_quartz_execution` → `open_quartz_host_api` → `open_quartz_sdk`, with `open_quartz` as the thin native/WASM facade and `open_quartz_bindings` for JNI
+- `open_quartz` is the single core implementation and Rust SDK, owning graph/domain, Project/history, WGSL/catalog, runtime state and optional device execution. The former schema, execution and SDK packages are removed without aliases or forwarding crates. Private `domain` and `sdk` modules expose their public types through the crate root; advanced host modules remain explicitly available. See the [implemented crate boundaries and verification gates](docs/DESIGN.md#7-crate-边界审查与重新设计).
 - Rust-backed public `OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, and `Player` aggregates with atomic edits, revision/history ownership, serialization, and structured errors
 - Rust-backed production WGSL parser/compiler validation via `naga`
 - Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, feedback state preservation, catalog semantics, ONNX tasks, and host resource intents
-- Native `wgpu` primitives and `execution::runtime::ExecutionRuntime`, shared by Slint and the retained Tauri render thread; model I/O lives in `execution::resources::models`, with no separate native host crate or forwarding PlayerHost
-- Dependency-boundary CI plus Rust/WASM/TypeScript/Java public-proxy conformance
+- Native `wgpu` primitives and `open_quartz::runtime::ExecutionRuntime`, shared by Slint and the retained Tauri render thread; resource planning and model services live in `open_quartz::resources::{plan, models}`, with no separate native host crate or forwarding PlayerHost
+- Consolidation regression: default core 230 tests, retained workspace 308 tests plus two targeted capability regressions, Slint 72 tests and 18/18 real-window interactions, TS 704 tests, type checking, independent feature boundaries and actual Chrome browser 5/5 pass. Default/browser WASM, standalone editor and Tauri app library compile checks pass. Overall default and full native 100% coverage gates both fail on execution gaps; domain/SDK/FFI/planner reach 100%. See [results and limits](docs/DESIGN.md#78-验证矩阵与证据状态); Windows/Linux runtime and release packaging were not rerun.
+
+The core's `default = []` supports graph/project editing, WGSL tools and shared runtime state without GPU, ORT, FFmpeg, HTTP or UI dependencies. Consumers select capabilities explicitly:
+
+| Feature | Capability |
+|---|---|
+| `gpu` | wgpu execution, textures, readback and presentation |
+| `native-runtime` | Native device coordination; enables `gpu`, not video, ONNX or downloads |
+| `native-video` | Native video sources and platform workers; macOS uses independent `oq-media` |
+| `native-video-d3d12` | Windows D3D12 video; enables `native-video` and `gpu` |
+| `native-onnx` | Native ORT sessions/pipeline without requiring GPU or HTTP |
+| `model-cache` | Model download, checksum verification and file cache without requiring ORT/GPU |
+| `browser` | WASM/browser GPU environment and execution; enables `gpu`, not native runtimes |
+
+`oq-media`, `slint_code_editor`, the screen saver exporter and standalone `.scr` stub remain independent components/products, as do the Slint and Tauri applications. A future inference extraction remains conditional on a real independent implementation and its own tests; no empty provider/API packages are introduced.
 
 ## Getting Started — Native Desktop
 

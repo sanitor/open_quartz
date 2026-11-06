@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use open_quartz_execution::engine::{ExecutionEngine, FrameInputs};
-use open_quartz_execution::gpu::{GpuBackend, GpuExecutor};
-use open_quartz_schema::{Edge, ProjectNode};
+use open_quartz::engine::{ExecutionEngine, FrameInputs};
+use open_quartz::gpu::{GpuBackend, GpuExecutor};
+use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 use slint::wgpu_30::{wgpu, WGPUConfiguration};
 
@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("slint: wgpu 30 backend selected with manual device/queue");
 
     let window = SpikeWindow::new()?;
-    window.set_status("open_quartz_execution output: starting".into());
+    window.set_status("open_quartz output: starting".into());
 
     let weak = window.as_weak();
     let stress = options.stress;
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(image) => {
                     if first_import {
                         eprintln!(
-                            "PASS: imported open_quartz_execution output {dimensions} into slint::Image"
+                            "PASS: imported open_quartz output {dimensions} into slint::Image"
                         );
                         first_import = false;
                     }

@@ -10,15 +10,16 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-use open_quartz_host_api::{
+use open_quartz::resources::plan::{
     plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentPlan,
     HostResourceIntentRequest, HostResourceTarget, OnnxDownloadIntent,
 };
-use open_quartz_execution::resources::models::{ModelStore, PreparedOnnxModel};
-use open_quartz_execution::runtime::{
+use open_quartz::onnx::PreparedOnnxModel;
+use open_quartz::resources::models::ModelStore;
+use open_quartz::runtime::{
     ExecutionRuntime, NativeOnnxConfig, NativeOutputEvent,
 };
-use open_quartz_sdk::{Graph, OnnxTask};
+use open_quartz::{Graph, OnnxTask};
 
 use crate::render_bridge::Command;
 
@@ -331,7 +332,7 @@ impl OnnxRuntime {
     }
 
     pub fn render_failed(&mut self, error: &str) {
-        let failed_node = serde_json::from_str::<open_quartz_sdk::SdkError>(error)
+        let failed_node = serde_json::from_str::<open_quartz::SdkError>(error)
             .ok()
             .and_then(|error| error.node_id);
         for (node_id, state) in self.states.iter_mut().filter(|(_, state)| state.attached) {
@@ -436,7 +437,7 @@ fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
 #[cfg(test)]
 mod error_tests {
     use super::{LiveOnnxState, OnnxRuntime};
-    use open_quartz_sdk::{SdkError, SdkErrorCode};
+    use open_quartz::{SdkError, SdkErrorCode};
 
     #[test]
     fn render_error_only_marks_the_attributed_onnx_node_failed() {

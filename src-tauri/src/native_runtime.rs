@@ -3,12 +3,12 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use open_quartz_execution::gpu::{GpuPreviewReader, SharedTextureFrame};
-use open_quartz_execution::native_video::{
+use open_quartz::gpu::{GpuPreviewReader, SharedTextureFrame};
+use open_quartz::native_video::{
     find_ffmpeg, list_video_devices, NativeVideoConfig, NativeVideoDevice, NativeVideoInfo,
     NativeVideoSourceKind,
 };
-use open_quartz_execution::runtime::{
+use open_quartz::runtime::{
     NativeFrameRendered, ExecutionRuntime, NativeOnnxConfig, NativeOnnxLoadOptions, NativeRuntimeInfo,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -465,7 +465,7 @@ pub fn native_gpu_attach_video(
 pub fn native_gpu_video_metrics(
     node_id: String,
     state: State<'_, NativeRuntimeState>,
-) -> Result<open_quartz_execution::native_video::NativeVideoMetrics, String> {
+) -> Result<open_quartz::native_video::NativeVideoMetrics, String> {
     with_runtime(&state, |runtime| runtime.video_metrics(&node_id))
 }
 
@@ -526,8 +526,8 @@ fn close_runtime(state: &NativeRuntimeState) -> Result<(), String> {
 
 #[tauri::command]
 pub fn native_onnx_capabilities(
-) -> Result<open_quartz_execution::onnx::NativeOnnxCapabilities, String> {
-    open_quartz_execution::onnx::native_onnx_capabilities()
+) -> Result<open_quartz::onnx::NativeOnnxCapabilities, String> {
+    open_quartz::onnx::native_onnx_capabilities()
 }
 
 #[tauri::command]
@@ -537,7 +537,7 @@ pub async fn native_onnx_load_model(
     model_id: String,
     options: NativeOnnxLoadOptions,
     state: State<'_, NativeRuntimeState>,
-) -> Result<open_quartz_execution::onnx::OnnxSessionInfo, String> {
+) -> Result<open_quartz::onnx::OnnxSessionInfo, String> {
     let cache_directory = crate::models_dir(&app)?;
     let model_id_for_cache = model_id.clone();
     let config = NativeOnnxConfig {
@@ -550,13 +550,13 @@ pub async fn native_onnx_load_model(
     let prefer_direct_ml = options.prefer_direct_ml;
     let prepared = tokio::task::spawn_blocking(move || {
         if let Some(model_path) = options.model_path {
-            open_quartz_execution::resources::models::PreparedOnnxModel::open(
+            open_quartz::onnx::PreparedOnnxModel::open(
                 &std::path::PathBuf::from(model_path),
                 config,
                 prefer_direct_ml,
             )
         } else {
-            open_quartz_execution::resources::models::ModelStore::new(cache_directory).open_cached(
+            open_quartz::resources::models::ModelStore::new(cache_directory).open_cached(
                 &model_id_for_cache,
                 config,
                 prefer_direct_ml,
@@ -580,15 +580,15 @@ pub fn native_onnx_unload_model(
 }
 
 fn smoke_native_onnx() -> Result<(String, f32), String> {
-    let capabilities = open_quartz_execution::onnx::native_onnx_capabilities()?;
+    let capabilities = open_quartz::onnx::native_onnx_capabilities()?;
     let provider = if capabilities.direct_ml {
-        open_quartz_execution::onnx::NativeOnnxProvider::DirectMl
+        open_quartz::onnx::NativeOnnxProvider::DirectMl
     } else {
-        open_quartz_execution::onnx::NativeOnnxProvider::Cpu
+        open_quartz::onnx::NativeOnnxProvider::Cpu
     };
-    let mut session = open_quartz_execution::onnx::OnnxSession::from_memory_with_options(
+    let mut session = open_quartz::onnx::OnnxSession::from_memory_with_options(
         include_bytes!("../../crates/open_quartz/tests/data/identity.onnx"),
-        open_quartz_execution::onnx::NativeOnnxOptions {
+        open_quartz::onnx::NativeOnnxOptions {
             provider,
             allow_cpu_fallback: false,
         },
@@ -638,7 +638,7 @@ fn smoke_native_onnx_graph(runtime: &mut ExecutionRuntime) -> Result<bool, Strin
         255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
     ];
     runtime.upload_image("image", &pixels, 2, 2)?;
-    let session = open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!(
+    let session = open_quartz::onnx::OnnxSession::from_memory(include_bytes!(
         "../../crates/open_quartz/tests/data/image_identity.onnx"
     ))?;
     runtime.load_onnx(
@@ -646,7 +646,7 @@ fn smoke_native_onnx_graph(runtime: &mut ExecutionRuntime) -> Result<bool, Strin
         session,
         NativeOnnxConfig {
             model_id: "image-identity".to_owned(),
-            task: open_quartz_execution::onnx::OnnxTask::Generic,
+            task: open_quartz::onnx::OnnxTask::Generic,
             target_size: 2,
             score_threshold: 0.25,
             iou_threshold: 0.45,
@@ -672,7 +672,7 @@ fn smoke_shared_texture_presenter(runtime: &mut ExecutionRuntime) -> Result<bool
     let Some(frame) = runtime.take_shared_texture() else {
         return Ok(false);
     };
-    let valid = frame.platform == open_quartz_execution::gpu::SharedTexturePlatform::Dxgi
+    let valid = frame.platform == open_quartz::gpu::SharedTexturePlatform::Dxgi
         && frame.resource_handle != 0
         && frame.sync_handle.is_some()
         && frame.sync_value > 0

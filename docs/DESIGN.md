@@ -4,13 +4,15 @@
 >
 > 当前默认桌面是 Rust/Slint；Web 独立保留，不迁移到 Slint WASM；Tauri 明确保留一个版本作为 fallback。
 > Phase 5/7 按用户确认的 macOS 范围完成：默认 Slint 入口、原生包/搬迁运行、Web production build 与显式 Tauri fallback `.app` 构建通过；原生资源对话框重入崩溃已修复。真实相机、Windows/Linux（含 `.scr`）、Phase 6 Android/iOS 验收延后。一次未复现的 winit 启动 abort 保留为已知风险；当前仍在 Unreleased，未执行 tag 或远端发布。
+> Android glue 清理：本仓不再包含 Java SDK、JNI/C ABI 句柄桥、Android launcher 资产和打包配置。Rust SDK、桌面 execution、TypeScript/WASM/Tauri 入口保留；第三方跨平台依赖内的 Android 支持不等于本仓 Android 产品或桥接层。
+> 核心 crate 收敛：第 7 节保留迁移前审查证据，并记录已采用的单一 `open_quartz` 实现、私有 domain/SDK 模块及可选设备能力。原 schema/execution/SDK 包全部移除，不保留 alias 或转发 crate；本轮功能/边界回归通过，默认与完整 native 的整体 100% coverage gate 均未通过，详见 §7.8。
 
 ## 0. 阅读指南
 
 本文优先回答五个问题：
 
 1. TypeScript、WASM、Tauri 和 Rust 各自负责什么，依赖方向是什么？
-2. Rust domain model 如何投影为 TypeScript/Java 可直接消费的浅层 SDK 对象？
+2. Rust domain model 如何投影为 TypeScript 可直接消费的浅层 SDK 对象？
 3. UI 如何通过 SDK 和监听把意图送入 runtime，又如何监听下层状态和数据？
 4. Browser 与 Native 两条执行路径在哪里共用 Rust，在哪里仍然分叉？
 5. 长期优化后，原有模块切分哪些仍成立，哪些已经漂移？
@@ -39,17 +41,17 @@
 
 ```text
 Slint AppWindow / GraphView / Inspector
-  -> Rust AppController -> open_quartz_sdk::Project / Graph commands / history
+  -> Rust AppController -> open_quartz::Project / Graph commands / history
   -> ProjectIo worker   -> project/resource/model I/O + Windows screen saver export
-  -> RenderBridge      -> open_quartz_execution::runtime::ExecutionRuntime
+  -> RenderBridge      -> open_quartz::runtime::ExecutionRuntime
                          -> Runtime 状态/时钟/图计划 + GPU/视频/推理资源
                          -> shared wgpu Device/Queue -> Slint texture Image import
 ```
 
-- SDK 拥有项目、graph/history；execution 拥有播放和执行。Slint 只投影 UI，`RenderBridge` 只管理执行线程、命令与 UI 更新，不在 UI 中重建 graph/inference policy。
-- `ExecutionRuntime` 是原生应用直接使用的执行对象，位于 execution 的 runtime 模块；它与 Slint 使用同一组 wgpu 30 Device/Queue，持有 GPU executor、视频源、推理会话和异步任务。输出直接导入纹理，只有显式截图执行 readback。
-- `Runtime` 保留时钟、revision/generation、dirty、输出订阅及异步完成等共享状态规则，由 `ExecutionRuntime` 直接组合；删除只有转发的 `PlayerHost`，不再通过独立 host crate 接入 execution。浏览器和 headless SDK 可以直接组合相同 Runtime 规则与各自设备实现。
-- 文件/模型下载、缓存与校验放在 execution 的 `resources::models` 服务模块，由 I/O/model worker 调用，不进入渲染循环。准备好的会话只有通过 request ticket 校验后才交给执行对象；迟到完成不能复活旧节点。项目和 Image/Framebuffer 文件处理继续留在应用 I/O worker。
+- `open_quartz` 的 SDK 模块拥有项目、graph/history，advanced execution 模块拥有播放和设备执行。它们在同一核心 crate 内；Slint 只投影 UI，`RenderBridge` 只管理执行线程、命令与 UI 更新，不在 UI 中重建 graph/inference policy。
+- `ExecutionRuntime` 是原生应用直接使用的执行对象，位于 `crates/open_quartz/src/runtime/execution.rs`；它与 Slint 使用同一组 wgpu 30 Device/Queue，持有 GPU executor 和显式启用的视频/推理资源。输出直接导入纹理，只有显式截图执行 readback。
+- `Runtime` 保留时钟、revision/generation、dirty、输出订阅及异步完成等共享状态规则，由 `ExecutionRuntime` 直接组合；删除只有转发的 `PlayerHost`，不再通过独立 host crate 接入。浏览器和 headless SDK 可以直接组合相同 Runtime 规则与各自设备实现。
+- 文件/模型下载、缓存与校验放在 `open_quartz::resources::models` 服务模块，由 I/O/model worker 调用，不进入渲染循环。准备好的会话只有通过 request ticket 校验后才交给执行对象；迟到完成不能复活旧节点。项目和 Image/Framebuffer 文件处理继续留在应用 I/O worker。
 - GraphView 将 Shader、Constant、Renderer 和 sampler 输出节点的实际共享 GPU 纹理导入原生卡片，显示分辨率并允许收起预览；实时预览不经过 PNG/base64，Renderer 侧栏复用 GPU 输出纹理。
 - 原生 Shader 编辑器使用独立 `crates/slint_code_editor`：cosmic-text 排版/编辑与 Slint 公开 UI API，提供 WGSL/JSON/plain 高亮、行号、导航、查找替换和本地历史，源码仍显式 Apply。系统 IME、完整辅助技术和 Windows/Linux 输入验收仍有缺口。
 - GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 execution / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
@@ -57,21 +59,21 @@ Slint AppWindow / GraphView / Inspector
 - Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。
 - `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
 - Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。
-- 图更新从 Slint 到 execution 使用类型化 `Graph`，JSON 编解码留在 WASM/Tauri IPC 边界。Slint 每次 SetGraph 只生成一次资源计划，视频配置与 ONNX 同步共用 intents；保留 generation/ticket、取消、暂停预览、Stop/Play 与 GPU 帧 lease 的行为。
+- 图更新从 Slint 到核心的 Runtime 使用类型化 `Graph`，JSON 编解码留在 WASM/Tauri IPC 边界。Slint 每次 SetGraph 只生成一次资源计划，视频配置与 ONNX 同步共用 intents；保留 generation/ticket、取消、暂停预览、Stop/Play 与 GPU 帧 lease 的行为。
 
 媒体子系统架构与实现边界见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md)：独立 `oq-media` 已落地 macOS VideoToolbox 硬解、保留原生帧及 CoreVideo/Metal GPU 消费；完整跨平台会话、编码、独立 Slint 播放器组件仍为提案，未迁移 Slint Web。
 通用原生推理后端、统一设备资源契约及分阶段迁移方案见[推理架构设计](INFERENCE_ARCHITECTURE.md)。该方案明确区别当前 ORT CPU/DirectML 输入输出搬运与尚未实现的平台硬件驻留目标。
 
 执行层收敛实施约定：
 
-- 删除 `open_quartz_native_host` crate，将其执行实现迁入 `execution::runtime`，将模型服务迁入 `execution::resources`；不保留同名兼容转发 crate 或 `PlayerHost` 包装。
+- 删除 `open_quartz_native_host` crate；原生执行和模型服务最终归入 `open_quartz::runtime` 与 `open_quartz::resources`，不保留同名兼容转发 crate 或 `PlayerHost` 包装。
 - Slint/Tauri 改用同一个 `ExecutionRuntime`；屏保和 WASM 直接使用 `Runtime`，保留各自的窗口 Surface/浏览器资源适配。TypeScript 内部 transport 接口不是 Rust 执行层，本次不重写其通信协议。
-- 原生模块以 `cfg(not(target_arch = "wasm32"))` 隔离，下载/哈希等原生依赖按目标声明，WASM 构建不引入 blocking HTTP。GPU、媒体和推理仍各自管理底层资源；收敛执行所有权不要求把实现塞进一个文件。
-- execution 不反向依赖 UI、SDK 或 host API，资源意图规划继续由已有 host API 提供，避免 crate 循环。资源规划的一次 `Graph → Value → HostGraphSnapshot` 转换可另行收敛，本次不复制资源策略。
+- 原生模块由 Cargo capability feature 与平台 cfg 共同隔离；`default = []` 不启用设备、网络或原生媒体/推理库，WASM 显式选择 `browser`。GPU、媒体和推理仍各自管理底层资源；单一 crate 不等于单一文件。
+- 核心模块不反向依赖 UI；image/video/ONNX 资源意图与 generation policy 由 `open_quartz::resources::plan` 提供，不再有独立 host API crate。资源规划的一次 `Graph → Value → HostGraphSnapshot` 转换可另行收敛，本次不复制资源策略。
 - `RenderBridge` 的 worker 与共享设备边界保留；模型 worker Drop 设置取消标记，不能用阻塞 join 等待不可中断的构建/网络读取。执行对象退出继续清理 GPU/视频/推理任务。
 - 回归覆盖原生图输出、视频预览与替换、ONNX 取消和过期完成、AutoSize/计时/FPS、真实窗口交互，以及保留的 Tauri/WASM 编译和 crate 依赖边界。Windows/Linux 实机结果需独立记录。
-- 原有 coverage 集成测试重复入口属于当前覆盖率机制，除已删除转发层对应的测试外不在本轮调整。SDK 100% 统计范围保留原口径：原 native_host 中未纳入该门槛的执行/模型服务文件迁入 execution 后仍由真实 GPU/模型/缓存/生命周期测试单独验证，覆盖率脚本明确列出该范围；不降低 SDK 阈值。
-- 本轮 macOS 回归：工作区 305 项测试、Slint 72 项测试、真实窗口交互 18/18、catalog Shader 像素用例 34/34、Rust 依赖边界及 WASM 编译通过；release 原生包构建、签名和启动自检通过。独立 execution 探针验证 2×2 ORT CPU 输出精确 RGBA、暂停/恢复/停止/卸载，以及 128×72 VideoToolbox 硬解蓝色像素、预览/播放/分离与正常退出。Windows/Linux 实机未执行。一次 Shader 自动化读取被图片上传销毁的旧节点句柄失败，改用单次 UI 树快照后全量重跑通过；像素断言未放宽。
+- coverage 按行为和实际生产模块归属，不能因合包删除 planner 或业务断言，也不降低既有 SDK 阈值。原 native_host 的设备/模型服务仍需真实 GPU、模型、缓存与生命周期测试。
+合包前 macOS 回归记录：工作区 305 项测试、Slint 72 项测试、真实窗口交互 18/18、catalog Shader 像素用例 34/34、Rust 依赖边界及 WASM 编译通过；release 原生包构建、签名和启动自检通过。当时独立 execution 探针验证 2×2 ORT CPU 输出精确 RGBA、暂停/恢复/停止/卸载，以及 128×72 VideoToolbox 硬解蓝色像素、预览/播放/分离与正常退出。这些是合包前证据；本轮新增回归见 §7.8，未重跑 release packaging 或 Windows/Linux runtime。
 
 
 ### 0.2 打包与启动资源约定
@@ -107,18 +109,16 @@ Windows DLL 也必须放在主 exe 同目录：链接器导入在 `main` 前解�
 
 ### 1.1 系统总览：Rust SDK 与语言 SDK 对称目标
 
-这一节先画**目标架构**，再画**当前实现**。目标架构区分三个不同概念：
+这一节先画**目标架构**，再画**当前实现**。目标架构区分两个不同概念：
 
 1. `open_quartz` 是完整的 Rust SDK。Native 业务、Tauri、Screen Saver 或其他 Rust host 可以直接使用 Rust SDK 的 domain/runtime/GPU/media/inference/presentation 接口开发，不需要经过 TypeScript。
 2. TypeScript SDK 是给 Web/React 等 JavaScript 应用使用的浅层 domain facade；Worker、wasm-bindgen、Tauri IPC 是它内部的 transport/binding 实现，不是另一个业务层。
-3. Java SDK 是独立的语言 SDK，通过 JNI 进入 Rust SDK；它不复用 TypeScript SDK 的 transport，也不依赖 Worker、wasm-bindgen 或 Tauri IPC。
 
-#### 目标架构：Rust SDK、TypeScript SDK、Java SDK 与宿主
+#### 目标架构：Rust SDK、TypeScript SDK 与桌面执行
 
 ```mermaid
 flowchart TB
     Web[Web application / React]
-    JavaApp[Java application / Android]
     Native[Native Rust business / host]
     Rust[open_quartz Rust SDK]
 
@@ -128,23 +128,14 @@ flowchart TB
         TSApi --> TSInternal
     end
 
-    subgraph JavaSdk[Java SDK]
-        JavaApi[Object-oriented public API]
-        JNI[Internal JNI binding]
-        JavaApi --> JNI
-    end
-
     Web --> TSApi
     TSInternal -->|Browser Worker + wasm-bindgen| Rust
     TSInternal -->|Tauri IPC + direct Rust bridge| Rust
 
-    JavaApp --> JavaApi
-    JNI --> Rust
-
     Native --> Rust
 ```
 
-上图只表达大的软件栈关系。TypeScript transport/binding 明确属于 TypeScript SDK 内部，JNI binding 明确属于 Java SDK 内部；二者不是位于语言 SDK 与 Rust SDK 之间的独立产品层。
+上图只表达大的软件栈关系。TypeScript transport/binding 属于 TypeScript SDK 内部，不是语言 SDK 与 Rust SDK 之间的独立产品层；本仓不保留 Android/Java/JNI glue。
 
 TypeScript SDK 内部的目标链路为：
 
@@ -152,12 +143,6 @@ TypeScript SDK 内部的目标链路为：
 React / Web UI -> React adapter -> TypeScript SDK
                                       ├-> Browser Worker -> wasm-bindgen -> Rust SDK
                                       └-> Tauri IPC -> direct Rust bridge -> Rust SDK
-```
-
-Java SDK 的目标链路为：
-
-```text
-Java UI / application -> Java SDK -> JNI -> Rust SDK
 ```
 
 Native Rust 业务的目标链路为：
@@ -172,7 +157,7 @@ Rust SDK 内部仍按以下方向组织：
 Rust SDK Runtime -> Engine -> GPU/media/inference/presentation contracts -> platform implementations
 ```
 
-`open_quartz` 本身是可被 Native 业务直接消费的完整、面向对象的 Rust SDK。它的 public API 只暴露用户能够直接理解和使用的领域对象：Project、Graph、Node、Port、Player、Resource、Output。Runtime、Engine、ExecutionPlan、ExecutionEngine、Compositor、GpuExecutor 等是 Rust SDK 内部实现，不属于用户接口，也不出现在 TypeScript/Java public proxy 中。
+`open_quartz` 是包含实际实现的 Rust SDK，而非重导出 facade。普通 root API 暴露 Project、Graph、Node、Port、Player、Resource、Output 等领域对象；Rust host 可使用显式公开的 advanced runtime/engine/GPU 等模块，设备模块受 feature 控制。这些内部执行类型不进入 TypeScript public proxy，私有 `domain` 与 `sdk` 模块也不是第二套公开包入口。
 
 #### 目标 SDK 的对象 API
 
@@ -183,15 +168,9 @@ Rust SDK public object API:
 TypeScript SDK public proxy API:
   OpenQuartzClient / Project / Graph / Node / Port / Player / Resource / Output
   internal: Browser Worker / wasm-bindgen / Tauri IPC / environment injection
-
-Java SDK public proxy API:
-  OpenQuartzClient / Project / Graph / Node / Port / Player / Resource / Output
-  internal: JNI binding / environment injection
 ```
 
-TypeScript SDK 和 Java SDK 的 public 类图应基本对应 Rust SDK public object graph；允许使用符合语言习惯的命名、Promise/Future、iterator/stream 和 error mapping，但不能引入 Rust public API 中不存在的业务层。尤其不能把 `PipelineRuntime`、`ExecutionEngine`、`Compositor` 或 binding object 包装成用户需要理解的 public 类。
-
-TypeScript SDK 和 Java SDK 内部可以使用浅 proxy、object cache、request/response、transaction encoding、event dispatch、thread handoff 和序列化。这些属于各 SDK internal implementation，不反向塑造 Rust SDK public object API。
+TypeScript SDK 的 public 类图对应 Rust SDK public object graph，采用符合语言习惯的 Promise、iterator/stream 和 error mapping；不能引入 Rust public API 中不存在的业务层。浅 proxy、object cache、request/response、event dispatch 和序列化属于 SDK 内部实现，不反向塑造 Rust 业务 API。
 
 目标总依赖为：
 
@@ -199,10 +178,6 @@ TypeScript SDK 和 Java SDK 内部可以使用浅 proxy、object cache、request
 Web application -> TypeScript SDK public proxy
                 -> TypeScript SDK internal transport/environment
                 -> Rust SDK public objects
-
-Java application -> Java SDK public proxy
-                 -> Java SDK internal JNI/environment
-                 -> Rust SDK public objects
 
 Native Rust business -> Rust SDK public objects
 ```
@@ -213,9 +188,7 @@ Rust SDK 内部统一执行：
 Player -> internal Runtime -> internal Engine/Execution/GPU/media/inference/presentation
 ```
 
-WASM Browser 路径中，Rust wgpu 已直接创建并拥有 WebGPU device/queue/pipeline/target 与 OffscreenCanvas surface；TypeScript SDK internal 只提供 Rust/WASM 无法独立取得的平台能力：DOM video/camera frame acquisition、transferable `ImageBitmap`、ORT-Web、Worker wakeup、resource resolution 和 DOM/UI projection。Java/JNI 与 Native host 使用同类细粒度 environment contracts，但具体平台实现不同。Environment/provider 是 SDK internal/advanced host integration，不进入普通 Project/Graph/Player 业务接口。
-
-Browser 与 Tauri 不存在两套 TypeScript public API；它们只是同一个 TypeScript SDK internal 的两种 host implementation。Java SDK 通过自己的 JNI internal 调用 Rust SDK；Native Rust host 直接使用 Rust SDK。
+WASM Browser 路径中，Rust wgpu 直接拥有 WebGPU device/queue/pipeline/target 与 OffscreenCanvas surface；TypeScript internal 只提供 DOM video/camera、ImageBitmap transfer、ORT-Web、Worker wakeup 和 UI projection 等平台能力。Browser 与 Tauri 共用 TypeScript public API，Native Rust 应用直接消费 `open_quartz` root SDK 与 advanced execution modules。Environment/provider 属于核心内部平台适配，不进入普通 Project/Graph/Player 接口。
 
 #### 当前实现：public Player 已切换，平台 transport 仍分叉
 
@@ -249,7 +222,7 @@ flowchart TB
     subgraph Native[Tauri production]
         NHost[NativeHost]
         Tauri[Tauri command / event shell]
-        NRuntime[execution::ExecutionRuntime]
+        NRuntime[open_quartz::runtime::ExecutionRuntime]
         NGpu[GpuExecutor]
         NMedia[Native video / FFmpeg]
         NOnnx[ORT / DirectML]
@@ -272,7 +245,7 @@ flowchart TB
 - Browser 的合理平台差异仍位于 TypeScript internal：DOM video/camera acquisition、`ImageBitmap` transfer、ORT-Web session、Worker timer 和 preview/capture 编码。
 - Native 已使用共享 Rust Runtime/Player 语义；Tauri command/event、FFmpeg/ORT worker、DXGI/TextureStream 仍是 native host integration，不进入 public SDK。
 - Browser 与 Tauri 对 UI 暴露同一个 TypeScript `Player`；host selection 位于 `OpenQuartzClient` internal，Component 和 Store 不处理 Worker/Tauri wire protocol。
-- Java facade 与 JNI bindings crate 已建立，但真实 Java↔native 动态库端到端仍是未完成集成项。
+- Android/Java/JNI 专用桥接已从本仓删除，不计作当前支持的 SDK 交付路径。
 
 | 语义/模块 | Browser/WASM | Tauri/native | 当前结论 |
 |---|---|---|---|
@@ -311,9 +284,11 @@ checkIsTauri() == true  -> NativeHost
 
 ---
 
-## 2. TypeScript 模块依赖
+## 2. TypeScript 模块依赖（迁移前审计快照）
 
-### 2.1 当前依赖图
+本节保留 Phase 7 完成前的 TypeScript 目录与依赖审计；其中“当前”仅指审计快照时的实现。后续 cutover 的完成状态以 §10.1 为准，当前 Rust crate/module ownership 以 §7 为准。
+
+### 2.1 迁移前依赖图
 
 ```mermaid
 flowchart TD
@@ -413,7 +388,7 @@ React components/store projection
 
 ### 3.1 跨语言 public proxy 类图（目标）
 
-跨语言类图只描述用户可见对象。TypeScript/Java SDK 作为 Rust SDK public object 的 proxy，类图应基本对应；PipelineService、PipelineRuntime、Worker、JNI、Runtime、Engine、Execution、Compositor、GpuExecutor 都不属于这张 public 类图。
+跨语言类图只描述用户可见对象。TypeScript SDK 作为 Rust SDK public object 的 proxy，类图应基本对应；PipelineService、PipelineRuntime、Worker、JNI、Runtime、Engine、Execution、Compositor、GpuExecutor 都不属于这张 public 类图。
 
 ```mermaid
 classDiagram
@@ -439,17 +414,6 @@ classDiagram
         class TsOutput[Output]
     }
 
-    namespace JavaSDK {
-        class JavaOpenQuartz[OpenQuartzClient]
-        class JavaProject[Project]
-        class JavaGraph[Graph]
-        class JavaNode[Node]
-        class JavaPort[Port]
-        class JavaPlayer[Player]
-        class JavaResource[Resource]
-        class JavaOutput[Output]
-    }
-
     RustOpenQuartz --> RustProject
     RustOpenQuartz --> RustPlayer
     RustProject *-- RustGraph
@@ -466,13 +430,6 @@ classDiagram
     TsNode *-- TsPort
     TsPlayer --> TsOutput
 
-    JavaOpenQuartz --> JavaProject
-    JavaOpenQuartz --> JavaPlayer
-    JavaProject *-- JavaGraph
-    JavaProject *-- JavaResource
-    JavaGraph *-- JavaNode
-    JavaNode *-- JavaPort
-    JavaPlayer --> JavaOutput
 
     TsOpenQuartz ..> RustOpenQuartz : proxy
     TsProject ..> RustProject : proxy
@@ -483,17 +440,9 @@ classDiagram
     TsResource ..> RustResource : proxy
     TsOutput ..> RustOutput : proxy
 
-    JavaOpenQuartz ..> RustOpenQuartz : proxy
-    JavaProject ..> RustProject : proxy
-    JavaGraph ..> RustGraph : proxy
-    JavaNode ..> RustNode : proxy
-    JavaPort ..> RustPort : proxy
-    JavaPlayer ..> RustPlayer : proxy
-    JavaResource ..> RustResource : proxy
-    JavaOutput ..> RustOutput : proxy
 ```
 
-proxy 对应的是对象 identity、方法行为、lifecycle、error 和 observable result，不要求三种语言共享相同的内存布局或通信 DTO。TypeScript/Java internal 可以批量调用和缓存，但不得增加另一个 public runtime/business abstraction。
+proxy 对应的是对象 identity、方法行为、lifecycle、error 和 observable result，不要求Rust 与 TypeScript共享相同的内存布局或通信 DTO。TypeScript internal 可以批量调用和缓存，但不得增加另一个 public runtime/business abstraction。
 
 ### 3.2 当前内部实现所有权（非 public SDK）
 
@@ -587,8 +536,8 @@ classDiagram
 | 稳定用户接口 | `OpenQuartz`、`Project`、`Graph`、`Node`、`Port`、`Player`、`Resource`、`Output` | 是 | 用户直接创建、编辑、运行和观察 composition 所需对象 |
 | Scoped public helper | `GraphEdit`、`NodeMut`、`PlayerBuilder`、`Subscription`、typed value/ID/error | 按语言习惯映射 | 服务 public object method，不形成新的业务层 |
 | Host integration API | `EnvironmentBuilder`、`GpuProvider`、`MediaProvider`、`InferenceProvider`、`PresentationProvider` | 仅 SDK internal/高级 host 使用 | 为 Rust internal execution 注入平台功能；不是普通用户业务接口 |
-| Rust internal | `Runtime`、`Engine`、`ExecutionEngine`、`ExecutionPlan`、`ExecutionCommand`、`Compositor`、`GpuExecutor`、clock、registry | 否 | 统一沉到 Rust；不出现在 TS/Java public 类图 |
-| Language internal | Worker/Tauri transport、wasm-bindgen binding、JNI handle table、proxy cache、DTO | 否 | 分别属于 TypeScript SDK 与 Java SDK internal |
+| Rust internal | `Runtime`、`Engine`、`ExecutionEngine`、`ExecutionPlan`、`ExecutionCommand`、`Compositor`、`GpuExecutor`、clock、registry | 否 | 统一沉到 Rust；不出现在 TS public 类图 |
+| Language internal | Worker/Tauri transport、wasm-bindgen binding、proxy cache、DTO | 否 | 属于 TypeScript SDK internal |
 
 `PipelineHostRuntime`、`BrowserPipelineRuntime`、`NativePipelineRuntime`、`WasmRuntimeContract` 已作为迁移期 adapter 删除；当前 internal 使用 `BrowserHost`、`NativeHost`、`WasmBrowserPlayerContract`，且均不进入 public SDK export。
 
@@ -634,7 +583,7 @@ Rust public method 使用 typed Rust value、newtype ID、enum、trait、iterato
 
 - JSON string 作为常规 graph/node/player 参数或返回值；
 - Worker/Tauri request ID、event name、callback payload；
-- JNI handle、Java class name、wasm-bindgen type；
+- wasm-bindgen type；
 - React Flow node、DOM object、WebView event；
 - `ExecutionPlan`、`ExecutionCommand`、GPU bind group 或其他 internal execution descriptor。
 
@@ -686,7 +635,7 @@ Player
 - position-only layout edit 不调用 `Player::apply`，不增加 execution revision，也不重建 GPU/feedback resource。
 - Project 不拥有 decoder、GPU texture、ORT session 或 presenter。
 - Player 构建时复制/编译 Graph state，不长期借用 Project/Graph；Project 可继续编辑并创建多个 Player。
-- Player 更新使用 `player.apply(project.graph(), change)`；`GraphChange` 允许 Rust internal 做增量更新，如何跨 Worker/JNI 同步由 language SDK internal 决定。
+- Player 更新使用 `player.apply(project.graph(), change)`；`GraphChange` 允许 Rust internal 做增量更新，如何跨 Worker/Tauri 同步由 language SDK internal 决定。
 - Output subscription 是 owned handle，不长期借用 Player 到阻止后续 mutable method；Player 关闭时 subscription 统一失效。
 
 `Resource` 保留为 public object，但仅表示用户实际消费的 project resource：导入/替换图片、选择视频、选择 camera、绑定 ONNX model、查看 descriptor/状态。当前产品 UI 已经直接提供这些行为，因此完全隐藏 Resource 会迫使 NodeData 再次承载 path/data URL/model status。
@@ -715,7 +664,7 @@ Player live resource (internal)
 | ORT-Web | 当前是 JavaScript library，Rust SDK 不能直接创建当前 ORT-Web session | 必须注入 `InferenceProvider`，除非未来替换为 Rust/WASM inference implementation |
 | DOM/WebView presentation | DOM slot、HTMLVideoElement、TextureStream 属于 host | 注入 `PresentationTarget/Presenter` 或传 surface target；presentation policy 仍由 Rust internal 决定 |
 | wakeup/timer | Browser event loop 属于 host | host 只实现 `FrameScheduler/Waker`；clock、deadline、play/pause policy 归 Rust Player/internal Runtime |
-| file picker、camera permission、URL/blob resolution | 浏览器/Java UI 平台能力 | 由 language SDK internal resource resolver 提供，不进入普通 Project/Graph API |
+| file picker、camera permission、URL/blob resolution | 浏览器 UI 平台能力 | 由 language SDK internal resource resolver 提供，不进入普通 Project/Graph API |
 
 因此 Environment 不应先定义一个包罗万象的 `GpuProvider`。推荐优先让 Rust wgpu 自己拥有 GPU；只对不可移入 Rust/WASM 的能力定义细粒度 host ports：
 
@@ -728,12 +677,11 @@ pub trait FrameScheduler { /* wake at Rust-provided deadline */ }
 pub trait ResourceResolver { /* host file/blob/device resolution */ }
 ```
 
-这些 trait 的准确签名仍需在实现前做 spike，但边界已确定：Rust `Player`/internal execution 请求能力，host 提供实现；host 不接收 Graph 后自行执行。TypeScript/Java UI 不直接调用 provider，Project/Graph/Node/Player public API 不出现 provider 类型。
+这些 trait 的准确签名仍需在实现前做 spike，但边界已确定：Rust `Player`/internal execution 请求能力，host 提供实现；host 不接收 Graph 后自行执行。TypeScript UI 不直接调用 provider，Project/Graph/Node/Player public API 不出现 provider 类型。
 
 ```text
 Native Rust host -> Environment::native_defaults() + optional presenter target
 TypeScript SDK internal -> EnvironmentBuilder + browser-only host ports
-Java SDK internal -> EnvironmentBuilder + Java/JNI platform ports
 ```
 
 `EnvironmentBuilder` 和 host ports 是 advanced host integration API。普通 composition 用户只使用 `OpenQuartz/Project/Graph/Player`；host integration 不得演变成第二套 PipelineRuntime。
@@ -780,26 +728,26 @@ Player public facade
 | Output | public `Output` + owned `Subscription` | 用户确实需要观察结果；internal registry/delivery 不暴露 |
 | Thread model | Player 默认 single owner；按 environment capability决定 `Send` | 保留平台 thread affinity，避免虚假 `Sync` |
 
-### 3.4 TypeScript/Java SDK 是 Rust public object 的薄 proxy（目标）
+### 3.4 TypeScript SDK 是 Rust public object 的薄 proxy（目标）
 
-| Rust public object | TypeScript proxy | Java proxy |
-|---|---|---|
-| `OpenQuartz` | `OpenQuartzClient` | `OpenQuartzClient` |
-| `Project` | `Project` | `Project` |
-| `Graph` | `Graph` | `Graph` |
-| `Node` | `Node` | `Node` |
-| `Port` | `Port` | `Port` |
-| `Player` | `Player` | `Player` |
-| `Resource` | `Resource` | `Resource` |
-| `Output` / `Subscription` | `Output` / `Subscription` | `Output` / `Subscription` |
-| `SdkError` | typed error | typed exception/result |
+| Rust public object | TypeScript proxy |
+|---|---|
+| `OpenQuartz` | `OpenQuartzClient` |
+| `Project` | `Project` |
+| `Graph` | `Graph` |
+| `Node` | `Node` |
+| `Port` | `Port` |
+| `Player` | `Player` |
+| `Resource` | `Resource` |
+| `Output` / `Subscription` | `Output` / `Subscription` |
+| `SdkError` | typed error |
 
-TypeScript/Java public proxy 可以调整语言命名和 async 形状，但不能增加 `PipelineRuntime`、`ExecutionEngine`、`Compositor` 等 Rust public graph 中不存在的业务对象。
+TypeScript public proxy 可以调整语言命名和 async 形状，但不能增加 `PipelineRuntime`、`ExecutionEngine`、`Compositor` 等 Rust public graph 中不存在的业务对象。
 
 ```mermaid
 sequenceDiagram
     participant UI as UI / application
-    participant Proxy as TS or Java public proxy
+    participant Proxy as TypeScript public proxy
     participant Internal as SDK internal transport/binding
     participant Rust as Rust public object
     participant Exec as Rust internal execution
@@ -814,7 +762,7 @@ sequenceDiagram
     Proxy-->>UI: framework projection
 ```
 
-TypeScript SDK internal 拥有 Browser Worker、Tauri transport、wasm-bindgen、proxy cache 和 Browser capability adapters。Java SDK internal 拥有 JNI binding、handle table、marshalling、thread handoff 和 Java platform adapters。Native Rust application 直接使用 Rust public object，不经过 proxy。
+TypeScript SDK internal 拥有 Browser Worker、Tauri transport、wasm-bindgen、proxy cache 和 Browser capability adapters。Native Rust application 直接使用 Rust public object，不经过 proxy。
 
 ---
 
@@ -923,7 +871,7 @@ sequenceDiagram
     participant UI as TS Player
     participant Host as NativeHost
     participant Cmd as Tauri commands/events
-    participant Core as execution::ExecutionRuntime
+    participant Core as open_quartz::runtime::ExecutionRuntime
     participant GPU as GpuExecutor / presenter
 
     UI->>Host: play/apply/output/capture
@@ -941,32 +889,19 @@ sequenceDiagram
 
 TypeScript `NativeHost` 是 SDK internal IPC transport，不是 Rust 执行层。Tauri command 调用 execution 内的 `ExecutionRuntime`，后者直接组合 `Runtime` 状态规则与 GPU/媒体/推理资源；不存在单独的 Rust NativeHost crate 或 PlayerHost 转发。
 
-### 5.3 Java SDK：public facade 与 JNI 当前完成度
+### 5.3 当前接口一致性
 
-Java public source已包含 `OpenQuartzClient/Project/Graph/Node/Port/Player/Resource/Output`、`AutoCloseable` lifecycle、`CompletionStage` output/capture 形状、typed error mapping 和 `JavaEnvironment` provider contracts。`open_quartz_bindings` 提供 aggregate handle table 与 lifecycle C ABI；proxy、error 和 environment contract tests 使用可替换 `InternalBridge/JniBridge` 验证。
+| 语义 | Browser | Native | 结论 |
+|---|---|---|---|
+| public object graph | TS proxy | Rust SDK / retained Tauri TS proxy | 领域对象语义共享 |
+| lifecycle/clock/graph policy | Rust Runtime/Engine | Rust Runtime/Engine | 共享 |
+| GPU execution | Rust wgpu WebGPU | Rust wgpu native | surface/interop 平台化 |
+| inference | ORT-Web provider | ORT/DirectML | completion contract 共享 |
+| output registry | Rust Runtime | Rust Runtime | 共享 |
+| state transport | Worker events | Slint thread bridge / Tauri IPC | adapter 各自投影 |
+| presentation | OffscreenCanvas/readback | Slint shared textures / TextureStream/readback | 合理平台差异 |
 
-当前仍是**部分完成**：
-
-- Rust C ABI 只覆盖 client/project/player 创建释放和 player lifecycle 子集；
-- `NativeBridge` 声明的 graph/node/output/capture 方法尚未全部由 Rust 导出；
-- 尚未运行真实 `System.loadLibrary("open_quartz_jni")` 端到端测试；
-- Android Surface/Desktop presenter、direct buffer、callback thread 和完整 subscription 尚未接平台 host。
-
-因此 Java object graph 和 internal boundary 已建立，但不能描述为可发布的完整 Java/JNI SDK。
-
-### 5.4 当前接口一致性
-
-| 语义 | Browser | Native | Java | 结论 |
-|---|---|---|---|---|
-| public object graph | TS proxy | TS proxy | Java proxy source | 形状一致 |
-| lifecycle/clock/graph policy | Rust Runtime/Engine | Rust Runtime/Engine | JNI lifecycle 子集 | Browser/Native 共享；Java partial |
-| GPU execution | Rust wgpu WebGPU | Rust wgpu native | provider contract only | 平台 backend 分叉 |
-| inference | ORT-Web provider | ORT/DirectML | provider contract only | completion contract共享，平台实现不同 |
-| output registry | Rust Runtime | Rust Runtime | facade/bridge shape | Java native method覆盖不完整 |
-| state transport | Worker events | Tauri events | JNI future/publisher target | transport 可不同，public semantics 不应分叉 |
-| presentation | OffscreenCanvas/readback | TextureStream/readback | Surface/presenter 待接 | 合理平台差异 |
-
-UI 不消费统一 wire DTO；Browser/Tauri/JNI internal 分别投影相同 public object semantics。
+Android/Java/JNI glue 不在本仓实现和验收范围；不保留占位桥接或 Java 源码形状对齐检查。跨语言回归覆盖保留的 Rust/WASM/TypeScript 行为，public export 边界继续由 dependencyBoundary 测试验证。
 
 ---
 
@@ -1042,91 +977,175 @@ Native ONNX 当前需要 `GpuExecutor.read_output_rgba()`，在线程中执行 O
 
 ---
 
-## 7. Rust 分仓与依赖关系
+## 7. Crate 边界审查与重新设计
 
-### 7.1 实际 Cargo workspace 边界
+本节记录清理 native host、Android glue 和 host API crate 后的审查与实施边界，优先于旧 Phase 6 的拆包结论。**7.1–7.2 是迁移前快照，旧 package/path/行号仅作审查证据，不是当前源码索引；7.3–7.8 描述本轮单核心落点及验收结果。合包和 feature cutover 已实现，保留原有行为；公开真实 Player driver、Project graph_mut 收紧与 browser coordinator 提取仍是后续工作。**
 
-根 `Cargo.toml` 当前统一管理五个成员：
+### 7.1 迁移前实现与审查依据
 
-| package | 路径 | 当前责任 |
+迁移前局部依赖为：`open_quartz → {open_quartz_sdk, open_quartz_execution, open_quartz_schema}`，`open_quartz_sdk → {open_quartz_execution, open_quartz_schema}`，`open_quartz_execution → open_quartz_schema`，macOS execution 另依赖 `oq-media`。当时不是四层彼此隔离的编译边界；这些旧核心包现已移除。
+
+| 迁移前 crate / 产物 | 当时的实际实现 | 审查判断 |
 |---|---|---|
-| `open_quartz_schema` | `crates/open_quartz_schema` | public IDs、types、Project/Graph schema、`SdkError`；不依赖 execution/binding |
-| `open_quartz` | `crates/open_quartz` | Rust public objects以及 internal Runtime/Engine/GPU/media/ONNX/WASM implementation |
-| `open_quartz_bindings` | `crates/open_quartz_bindings` | JNI aggregate handle table 与 C ABI；依赖 `open_quartz` |
-| `app` | `src-tauri` | Tauri shell、native provider composition、events/commands、WebView2、screen saver export |
-| `open-quartz-screensaver-stub` | `crates/open-quartz-screensaver-stub` | 自包含 Win32 `.scr` host |
+| `open_quartz_schema` | Graph 校验、GraphEdit/command 事务、上游子图、ID、节点/端口、ProjectFile、错误；直接依赖只有 serde/serde_json | 有实质的领域图模型边界，名称容易被误读为仅有 DTO |
+| `open_quartz_sdk` | Project/history/revision、节点工厂、layout/resources、屏保图变换，以及 headless Player/Output/Subscription | 有实际业务实现；与同一产品的 `open_quartz` 分成两个 SDK 包，收益不足 |
+| `open_quartz` | crate root 重导出，另有 JSON/WASM binding、BrowserPlayer 设备执行组合 | Rust SDK 入口主要是壳；整个 crate 并非空包，binding 中还有必须保留的实际执行代码 |
+| `open_quartz_execution` | WGSL/catalog、Engine/Runtime、GPU、video/ONNX、资源计划、模型下载缓存、browser GPU environment | 实质实现集中，但纯工具与平台重依赖没有隔离 |
+| `oq-media` | VideoToolbox session、原生 frame lease、色彩元数据、取消与错误 | 小而真实的独立媒体库；不能按行数并回图引擎 |
+| `open_quartz_screensaver` | `.scr` footer/manifest/resource 打包、校验、原子发布与读取 | 有独立格式与 I/O 行为，保留 |
+| `open-quartz-screensaver-stub` | Win32 `/s`、`/p`、`/c`、窗口/Surface 与独立播放循环 | 独立可执行产品，保留；不是转发 lib |
+| `slint_code_editor` | cosmic-text 编辑、排版、语法、剪贴板、Slint bridge | 无 OpenQuartz 依赖的可复用组件，保留独立 workspace |
+| Slint / Tauri app | UI、窗口、权限、I/O worker、render thread、打包与启动 | 产品组合根，保留各自入口，不抽象成空 host crate |
+
+迁移前证据（旧路径与行数）：`crates/open_quartz_schema/src/project.rs`、`crates/open_quartz_sdk/src/sdk.rs`、`crates/open_quartz/src/lib.rs`、`crates/open_quartz/src/ffi/browser_player.rs`、`crates/open_quartz_execution/Cargo.toml`。当时去掉独立 test 文件后的源码行数上界约为 schema 1,145、SDK 1,366、facade/binding 830、execution 12,768、media 226；仍含 inline tests，仅辅助判断，不作为拆包标准。
+
+### 7.2 迁移前 Review 发现（按影响排序）
+
+| 级别 | 发现与源码证据 | 影响 / 设计决策 |
+|---|---|---|
+| P1 | `open_quartz_sdk/Cargo.toml:9` 无条件依赖 execution；`sdk.rs:257` 的 shader 编辑和 `sdk.rs:1100` 的 headless Player 都进入该包；execution manifest 无条件声明 wgpu，非 WASM 目标无条件声明 ORT、reqwest、sha2，macOS 无条件启用媒体后端 | 仅做项目编辑也引入 GPU/网络/原生库编译闭包；用可测试的 feature 隔离纯工具与设备实现 |
+| P1 | `sdk.rs:32` 的 Environment 仅有 capabilities，`:1098` 的 PlayerBuilder 只创建 Runtime，`:1143` 的 play 使用内部合成时刻推进；Slint/Tauri 则消费 `runtime/execution.rs` 中的 ExecutionRuntime；BrowserPlayerBinding 自己持有 Runtime+BrowserGpuEnvironment | 公共 Player 的 headless 状态行为不能证明真实播放；分别验证状态规则、设备执行与公开 API 的能力，明确时钟和驱动所有权 |
+| P1 | `sdk.rs:395` 的公开 graph_mut 返回可直接修改的 Graph，schema 的 nodes/edges 也是 pub；`sdk.rs:144` 的公开 from_file 不执行 try_from_file 的校验 | `project.graph_mut().nodes.clear()` 可改变图却不递增 revision 或记录 history；独立 crate 并未守住聚合不变量。目标 API 通过 Project command/edit 提交，未校验构造和可变直通入口收为内部；现有特殊状态测试用私有 fixture 保留 |
+| P1 | `scripts/check-rust-boundaries.mjs:132` 只验证 SDK 消费者不能直接 import 未声明的 execution，`:61` 检查 facade 路径缺失；这不验证传递依赖轻量或 production 所有权 | 保留 public export 检查，增加依赖闭包与真实驱动测试；禁止用“路径不可见”代替架构验收 |
+| P2 | `open_quartz/src/lib.rs:7` 重导出 schema/SDK；`open_quartz_sdk/src/lib.rs:3` 又重导出 schema | 同一个 Rust SDK 有两个入口和重复维护点；将 SDK 实现并入 open_quartz，不保留兼容空 crate |
+| P2 | schema 的 `project.rs` 拥有 Graph 事务，SDK Project 拥有 history 和高层 shader/node command；execution 的资源规划仍用 `Vec<Value>`，Slint `onnx_runtime.rs:393` 将 typed Graph 序列化后再反序列化 | 分清低层图不变量与高层项目事务；原生资源规划消费 typed Graph，JSON 兼容放在 binding 入口 |
+| P2 | `resources/models.rs:10,228` 将文件缓存/会话准备与 ExecutionRuntime attach 放在一起；`wgsl/compiler.rs:6` 为一个 shader 常量反向 import GPU 模块 | 隐含模块依赖妨碍 feature 切分；会话接入归执行协调者，shader 源常量归 WGSL 模块 |
+| P2 | `execution/src/engine/state.rs:50,61,75` 直接声明 wasm-bindgen 函数/Engine 类导出，GPU、ONNX 等子模块又整体 pub | 语言导出与执行实现混在一起，且可见性按目录放开；JS 类导出迁到 SDK binding，Rust 内部实现收紧为私有或 pub(crate)，只显式导出实际 host 需要的类型 |
+| P2 | screensaver manifest 无条件依赖完整 facade，仅为 `lib.rs:121` 的项目导出变换；stub manifest 声明 facade，实际 native_host 直接组合 Runtime/GPU/video/ONNX | exporter 使用关闭设备 feature 的 SDK；stub 删除无用 SDK 依赖，保留独立 Surface 和 Win32 消息循环 |
+| P2 | SDK/facade/exporter/Tauri 声明 Rust 1.77.2，却传递依赖声明 1.92 的 execution；stub 的 release profile 位于 root workspace 成员 manifest，会被 Cargo 忽略 | 实际工具链与配置声明不一致；根共享包统一按经 CI 验证的 1.92 基线声明，构建 profile 在实际 workspace 根配置 |
+
+Engine、Runtime、ExecutionRuntime 并不是三个应简单合并的同义对象：Engine 管图计划、dirty、节点 generation 和待执行命令；Runtime 组合时钟、输出订阅和异步完成校验；ExecutionRuntime 组合设备、视频源与推理任务。保留这些模块职责，审查的重点是 adapter 中的设备调度和 binding 中的业务越界。
+
+### 7.3 单一核心 crate，加真实独立组件与产品
+
+`open_quartz` 同时拥有领域模型、SDK aggregates、纯工具、共享执行状态及可选设备实现。原 `open_quartz_schema`、`open_quartz_execution`、`open_quartz_sdk` 的实现与测试迁入该包；旧包、workspace member、依赖路径和调用方全部切换，不保留 compatibility alias、空壳或转发 crate。
+
+| 当前 crate / 产物 | 拥有的实现 | 边界 |
+|---|---|---|
+| `open_quartz` | 私有 domain、SDK aggregates、catalog/WGSL、Engine/Runtime、资源计划、可选 GPU/video/ONNX/cache/browser，以及 bindings | 唯一核心实现与 Rust root SDK 入口；不依赖应用 UI |
+| `oq-media` | 独立媒体会话、帧生命周期和元数据；当前实际后端为 VideoToolbox | 无 OpenQuartz graph/runtime/UI 依赖，macOS native video 选择性消费 |
+| `open_quartz_screensaver` | `.scr` 包格式、资源打包/读取和导出校验 | 消费无设备核心 SDK；核心不反向依赖 exporter |
+| `slint_code_editor` | 通用原生代码编辑组件 | 无 OpenQuartz 依赖，保留独立 workspace、示例和测试 |
+| Slint / Tauri app / `.scr` stub | 各自的 UI、窗口、Surface、启动、权限和发布产物 | 显式选择核心能力；stub 保留独立 Win32 loop，不依赖已安装主应用 |
 
 ```mermaid
-flowchart LR
-    Schema[open_quartz_schema]
-    Core[open_quartz]
-    Bindings[open_quartz_bindings]
-    App[src-tauri app]
-    Stub[screen saver host]
-
-    Core --> Schema
-    Bindings --> Core
-    App --> Core
-    Stub --> Core
+flowchart TD
+    CORE[open_quartz: domain + SDK + tools + runtime + optional devices]
+    CORE -->|macOS native-video| MEDIA[oq-media]
+    EXPORT[open_quartz_screensaver: format / export] --> CORE
+    SLINT[Slint app] --> CORE
+    SLINT --> EXPORT
+    SLINT --> EDITOR[slint_code_editor]
+    TAURI[Tauri fallback] --> CORE
+    TAURI --> EXPORT
+    SCR[standalone Win32 .scr] --> CORE
 ```
 
-### 7.2 当前完成与剩余编译边界
+单核心不是把独立产品并进引擎。Slint、Tauri、exporter、stub、媒体库和编辑器仍各有真实职责。WASM 仍由 `open_quartz` 输出 cdylib；public Rust root 类型名、JS 导出名与 TypeScript proxy contract 保持不变。
 
-已完成：
+### 7.4 同一核心中的可选能力
 
-- schema/error/type 已从 core 拆到 `open_quartz_schema`；
-- JNI handle/C ABI 已从 core 拆到 `open_quartz_bindings`；
-- workspace 包含 Tauri 和 screen saver，`cargo metadata`/`cargo test --workspace` 可从根执行；
-- TypeScript public export parity 与 dependency boundary 有 CI。
+feature 控制同一实现 crate 的模块和外部依赖，而不是转发到旧核心包。
 
-仍未完成：
+| 能力 | 内容 / 依赖要求 |
+|---|---|
+| `default = []` | Graph/Project 编辑、serde、catalog、WGSL parser/compiler、Engine/Runtime 状态、clock/output、资源规划与纯 ONNX task/pre/postprocess；无 wgpu、ORT、FFmpeg、reqwest 或 UI 依赖闭包 |
+| `gpu` | wgpu executor、纹理、readback、通用 presentation；WGSL 工具不反向依赖 GPU |
+| `native-runtime` | 原生设备协调，蕴含 `gpu`，不自动启用 video、ONNX 或下载；相关资源字段/方法按能力编译 |
+| `native-video` | 原生视频源和平台 worker；macOS 选择 oq-media/VideoToolbox；可独立用于 source/thumbnail，不强制 native-runtime |
+| `native-video-d3d12` | Windows D3D12 video 细化能力，蕴含 native-video 与 gpu |
+| `native-onnx` | ORT session 和 native pipeline；不要求 GPU 或 HTTP；纯 task/pre/postprocess 保持无设备可用 |
+| `model-cache` | 下载、哈希校验和文件发布，显式启用 reqwest/sha2；不要求 ORT 或 GPU |
+| `browser` | wasm32 的 GPU environment 和浏览器执行组合，蕴含 gpu；不引入原生 ORT、FFmpeg 或下载服务 |
 
-- 计划中的独立 `open_quartz_sdk`、`open_quartz_host_api`、`open_quartz_execution` 尚未拆出；
-- native host 仍需要访问 core 中 `#[doc(hidden)] pub` 的 `engine/gpu/host/media/runtime/onnx/wgsl` 模块；这只是文档隐藏，不是 compiler-private；
-- WASM object binding 仍在 `open_quartz::ffi`，尚未整体迁入 bindings crate；
-- `open_quartz` 仍同时包含 public object facade 与 execution implementation。
+平台 cfg 与 feature 同时约束模块和依赖。项目编辑与屏保打包采用无设备配置；桌面应用显式选择 native-runtime、native-video、native-onnx、model-cache，Windows 按需加 native-video-d3d12；WASM 构建显式选择 browser。Slint 与核心维持同版本 wgpu 和同一 Device/Queue 实例。
 
-### 7.3 当前依赖规则
+Cargo feature 可加性意味着同一构建图中的其他消费者可能重新打开设备能力。轻量闭包验收必须用独立 consumer invocation，不能用完整 workspace 构建图冒充默认配置；不支持的平台能力也不能产出可构造但无法工作的占位设备。
 
-1. `open_quartz_schema` 不得依赖 core、bindings 或 platform crate。
-2. `open_quartz_bindings -> open_quartz -> open_quartz_schema` 单向依赖。
-3. Runtime/Engine 不依赖 language binding、Tauri、DOM 或 JNI DTO。
-4. Tauri/screen saver 可依赖 hidden host integration，但不得通过 crate root重新导出 internal execution type给应用用户。
-5. 下一步若继续拆 crate，应优先建立 `sdk/host_api/execution` 的编译边界，而不是复制现有模块。
+### 7.5 模块、调度与数据所有权
 
-### 7.4 Rust 核心对象所有权
+- 私有 `domain` 模块保存 typed Graph/GraphEdit、ID/Port/Node、ProjectFile 和错误；crate root 显式导出公共领域类型。它是内部模块边界，不再是独立 schema 包。
+- 私有 `sdk` 模块保存 OpenQuartz、Project/history/revision、节点工厂、layout/resources 和 headless Player/Output/Subscription；root 导出公共 aggregates，不另建 `open_quartz::sdk` wrapper 入口。
+- `Engine` 管图计划、dirty、节点 generation 和命令；`Runtime` 管时钟、输出与异步完成；`ExecutionRuntime` 组合原生设备资源。合包不改变三者职责，也不把 headless Player 的合成推进宣称为真实设备播放。
+- Rust host 使用显式公开的 `engine`、`runtime`、`wgsl`、`catalog`、`resources`、`onnx` 等 advanced 模块及 feature-gated GPU/video/browser 模块；不是按旧包名建立公开 wrapper 模块。
+- Slint render thread、I/O/model worker、共享设备、frame lease、ticket/generation、取消与迟到完成丢弃保持原所有权。文件服务不在渲染循环下载；JSON/JS 值转换留在 binding/IPC 边界。
 
-| 对象 | 当前定义 | 当前 owner |
-|---|---|---|
-| public IDs/Graph/ProjectFile/error | `open_quartz_schema` | public value layer |
-| `OpenQuartz/Project/Player/Resource/Output` | `open_quartz::sdk`，crate root re-export | Rust SDK user |
-| `Runtime/Engine/ExecutionPlan` | `open_quartz_execution` | Rust SDK / execution |
-| Browser wgpu environment | `open_quartz_execution::wasm_environment` | Worker Rust BrowserPlayer |
-| `GpuExecutor/GpuBackend` | `open_quartz_execution::gpu` | Browser execution / ExecutionRuntime |
-| ORT-Web session | TypeScript SDK internal provider | Browser Worker |
-| Native ORT/video/presenter | `open_quartz_execution::runtime` + GPU/媒体/推理模块 | ExecutionRuntime |
-| JNI aggregate handles/C ABI | `open_quartz_bindings` | Java SDK internal |
+行为收紧、typed planner 输入和公开 Player 的真实 driver 属于各自的行为验收，不能仅凭迁包声称已完成。BrowserPlayerBinding 的当前执行组合位于 `open_quartz::ffi::browser_player`；不把未来模块拆分目标写成当前 `execution::browser` 包路径。
 
-Binding 只能投影 public/domain/runtime methods；不得反向塑造 Rust public business API。
+### 7.6 当前源码落点
+
+| 实现 | 当前位置 |
+|---|---|
+| 领域图、项目文件、ID/端口/错误 | `crates/open_quartz/src/domain/`，私有模块，由 root 选择导出 |
+| SDK aggregates 与状态契约 | `crates/open_quartz/src/sdk.rs`、`sdk_coverage_tests.rs` |
+| 图计划、执行状态与时钟/输出 | `crates/open_quartz/src/engine/`、`runtime/` |
+| WGSL/catalog 与 ONNX task/session | `crates/open_quartz/src/wgsl/`、`crates/open_quartz/src/catalog.rs`、`crates/open_quartz/src/onnx/` |
+| GPU、视频与资源计划/模型服务 | `crates/open_quartz/src/gpu/`、`native_video.rs`、`resources/` |
+| WASM/JSON SDK binding 与 browser 组合 | `crates/open_quartz/src/ffi/`、`wasm_environment.rs` |
+| 核心集成测试 | `crates/open_quartz/tests/`，保留迁入的领域、SDK 与执行行为断言 |
+
+### 7.7 构建与消费边界
+
+根 workspace、Slint workspace 与独立 editor workspace 各保留实际需要的 profile/lockfile。所有活动 manifests、lockfiles、源码 imports、coverage/boundary fixtures 与 CI 改用唯一 `open_quartz` 核心；历史审查和变更记录中的旧包名不代表兼容入口。编辑器继续无 OpenQuartz normal/build dependency。
+
+不为目录整齐新增 provider-api/core/runtime-api 壳包。独立 `oq-inference` 仍是条件性提案：只有具备实际可用的 session/tensor/provider 实现、消除 graph/runtime 反向依赖并有独立测试时才提取；不把当前 ONNX 目录移动成空契约包，也不增加第二套图任务调度。
+
+### 7.8 验证矩阵与证据状态
+
+| 门槛 | 必须证明的行为 |
+|---|---|
+| 无设备 consumer | Project 创建/编辑/撤销/保存、节点工厂、WGSL 与 Runtime 状态；目标 normal/build 依赖无 wgpu/ORT/FFmpeg/reqwest/UI |
+| 独立能力组合 | native-runtime 无 ORT/FFmpeg/oq-media/reqwest；native-video 无 ORT/reqwest；native-onnx 无 wgpu/reqwest；model-cache 无 ORT/wgpu；另验 Windows D3D12 组合与平台 cfg |
+| Browser | wasm32 无原生库；真实 shader 像素、ImageBitmap、时钟、ONNX completion、close/output，以及 wire/stamp/generation 兼容 |
+| 产品 | Slint 共享纹理/交互、Tauri fallback build、`.scr` /s /p /c 与 Surface；未实测平台明确标记 |
+| 公共边界与覆盖率 | 保留 Rust root/JS/TS 名称；domain/sdk 私有，host advanced 模块明确；迁入业务/领域/执行断言不删除，不降低 SDK 阈值或扩大 ignore 掩盖缺口 |
+
+迁移前审查基线：host API 收敛后 workspace 308、Slint 72、TS 704、类型检查、Rust boundary 与 WASM 编译通过。当时 `resources/plan.rs` 行/函数/区域均为 100%，execution 整体约为 98.13% / 97.37% / 96.50%，100% gate 失败于 GPU、VideoToolbox、native video 等实现，后续 package coverage 未执行。这些数值保留为迁移前证据。
+
+本轮单核心与 feature 隔离验收结果：
+
+| 范围 | 实测结果 |
+|---|---|
+| 核心与工作区 | 默认核心 230 项通过；完整 workspace 原有 308 项保留套件通过，另加下述两项针对性能力回归 |
+| native-runtime 单独启用 | 禁用 ONNX/video 的请求明确拒绝；保留原 plan、revision、generation 与真实蓝色 GPU 输出，针对性回归通过 |
+| native-onnx 单独启用 | 离线模型 transfer 与实际 scalar inference 通过，不依赖 GPU/HTTP |
+| Slint | 72 项测试、真实窗口交互 18/18 通过；[本轮交互报告](../test-results/slint-ui/interaction-2026-11-06T02-36-13-880Z/report.html) |
+| Web / 编译入口 | TS 704 项与 tsc 通过；browser/default wasm cargo check、独立 editor check、Tauri app --lib check 通过 |
+| 独立 feature 闭包 | 修复依赖泄漏后，独立 default + 四个能力组合的边界脚本通过 |
+| 实际浏览器 | Chrome 157 与匹配 driver 在临时目录运行，5/5 通过；修正旧 fixture 的 surface format 有效性/仅支持时优先 sRGB，以及 transfer 前初始化实际 OffscreenCanvas 2d context，保留像素断言 |
+| 未重跑范围 | Windows/Linux runtime 与 release packaging 本轮未重跑，不能据本轮结果声称通过 |
+
+coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 ignore 范围；**两项整体 gate 均失败**，保留已有 execution 覆盖缺口：
+
+| 统计范围 | Lines | Functions | Regions | 结论 |
+|---|---:|---:|---:|---|
+| 默认核心 | 99.97% | 99.69% | 99.92% | 未达到整体 100% gate |
+| 完整 native 核心 | 98.54% | 98.20% | 97.27% | 未达到整体 100% gate |
+| domain / sdk / ffi / planner | 100% | 100% | 100% | 各模块达到要求 |
+| Prepared 实现（从已排除 cache 文件移出后现已计量） | 96.55% | 100% | 97.06% | provider 平台分支尚有缺口 |
+
+这些结果验证核心合并、能力隔离与既有行为保留，不代表公开 Player 已接通真实 driver、Project graph_mut 已收紧或 browser coordinator 已完成提取。
+
 
 ---
 
-## 8. 优化后的边界审计
+## 8. 优化后的边界审计（迁移前快照）
 
-### 8.1 审计结论
+本节的 TypeScript/Rust 审计表保留薄层 cutover 前的证据与建议；其中“当前”表示该审计当时的状态，不是本轮迁移后的状态。最新 crate/module 归属见 §7.3–7.6，当前完成度见 §10.1，本轮集成与 coverage 结果见 §7.8。
 
-控制路径重构已消除了第二套 TypeScript graph/GPU engine，但“public proxy + platform adapter”仍偏厚，不能把 public 类名一致等同于薄 SDK 完成。
+### 8.1 迁移前审计结论
 
-剩余问题分为四类：
+迁移前的控制路径重构已消除了第二套 TypeScript graph/GPU engine，但“public proxy + platform adapter”仍偏厚，不能把 public 类名一致等同于薄 SDK 完成。
 
-1. **TypeScript 业务下沉**：TS local Project/Graph、Store mutation、Project I/O、screen saver transform、ORT task policy、resource reconcile和遗留算法仍需迁入Rust SDK。
-2. **Web 数据路径性能**：功能正确但存在已知问题；本轮暂缓，迁移时保留基线，后续单独profile。
-3. **Java/JNI 完整度**：Java facade 和 lifecycle C ABI 已有，但native method与平台集成不完整。
-4. **Rust 编译边界**：schema、bindings已拆；public SDK、host API、execution尚未完全拆crate。
+迁移前剩余问题分为四类：
 
-### 8.2 逐项审计
+1. **TypeScript 业务下沉（迁移前）**：TS local Project/Graph、Store mutation、Project I/O、screen saver transform、ORT task policy、resource reconcile和遗留算法当时仍需迁入Rust SDK。
+2. **Web 数据路径性能**：功能正确但存在已知问题；本轮暂缓专项修复，后续单独 profile。
+3. **Rust 模块与能力边界（当前已更新）**：领域、SDK 与执行实现现统一为单一 `open_quartz`；资源意图规划归属 `open_quartz::resources::plan`，设备实现由 feature 隔离。Android glue 已移除，不再为延期平台保留包装层。
 
-| 边界 | 当前证据 | 状态 | 后续 |
+### 8.2 迁移前逐项审计（历史快照）
+
+| 边界 | 当时证据 | 当时状态 | 当时建议 |
 |---|---|---|---|
 | UI ↔ SDK | Component 经 Store/Service 调 public objects，但 catalog和部分editor helper仍直连 | **部分** | GUI只消费Rust-backed proxy和UI metadata |
 | Store ↔ SDK | 无live object，但`graphSlice/helpers`仍实现Graph invariant、node factory、model准备和shader port mutation | **未完成** | mutation迁入SDK；Store仅保留UI projection/intent |
@@ -1135,21 +1154,21 @@ Binding 只能投影 public/domain/runtime methods；不得反向塑造 Rust pub
 | Browser main ↔ Worker | DOM media/transport合理；Worker仍扫描Graph建立output subscription和renderer mapping | **部分** | observation intent由Rust Output/Subscription提供 |
 | Browser execution/inference | shader/GPU在Rust；ORT task/pre-postprocess/output mapping仍在TS | **部分** | TS只运行ORT-Web，Rust拥有task/tensor/result语义 |
 | Native execution/resource | Runtime语义共享；`NativeHost`仍扫描完整Graph reconcile image/video/ONNX | **部分** | Rust产生typed provider intent，host只执行平台调用 |
-| Runtime ↔ binding | legacy `RuntimeBinding` 已删除；JNI ABI 独立 crate | **保持** | WASM binding 后续可迁 bindings crate |
-| Schema boundary | `open_quartz_schema` 无 execution/binding dependency | **保持** | CI 守护 |
-| Rust public visibility | internal root re-export 已移除；部分 host modules `#[doc(hidden)] pub` | **部分** | 继续拆 `sdk/host_api/execution` |
+| Runtime ↔ binding | WASM FFI 保留在 `open_quartz::ffi`，Android/Java/JNI glue 已删除 | **保持** | 不为延期平台保留占位层 |
+| Domain boundary | `open_quartz/src/domain` 为私有模块，不依赖执行、binding 或 UI | **保持模块边界** | root 显式导出公共值类型 |
+| Rust public visibility | root 为 SDK aggregates；advanced host 模块显式公开，设备能力按 feature 启用 | **单核心** | 私有 domain/sdk，不恢复旧 package wrapper；资源规划归属 `open_quartz::resources::plan` |
 | Output observation | Rust registry + public Output；host events 为 projection | **保持/部分** | presentation/multi-output仍可完善 |
-| Java/JNI | facade、tests、handle table、lifecycle ABI存在 | **部分** | 补全 graph/node/output ABI和真实加载测试 |
 | Web copy budget | shader GPU-only；preview/ORT/video 仍有显著 host cost | **未通过** | 暂缓修复，先建立 profile 基线 |
 | Project/screen saver/catalog | TS重复version/normalize/graph transform/Math formula/ONNX registry | **未完成** | 迁Rust并删除重复来源 |
 | TS遗留算法 | topo sort、旧WebGL types、shader pipeline materialization、重复overlay仍存在 | **债务** | 先做无调用清理并以Rust contract test替代 |
+
 
 ### 8.3 防回退规则
 
 - Rust `Engine` 继续作为 topology、dirty、feedback、Math、generation 和 work ordering 的唯一来源。
 - TypeScript provider 可持 DOM/ORT/session/transport，不得接收完整 Store 后自行 plan graph。
-- `OutputDeliveryBatch`、stamp 和 generation 是 async/output consistency source；Worker/Tauri/JNI 只是 transport projection。
-- `open_quartz_schema` 不依赖 core/bindings/platform；`open_quartz_bindings -> open_quartz -> open_quartz_schema` 保持单向。
+- `OutputDeliveryBatch`、stamp 和 generation 是 async/output consistency source；Worker/Tauri 只是 transport projection。
+- 私有 domain 模块不依赖执行、binding 或 platform；普通 SDK root 与 advanced host 模块分开，不向 TypeScript proxy 泄漏执行对象。
 - Web 性能优化不得用重新引入 `Compositor/WebGPUExecutionEngine`、把 live object 放入 Store或让 UI 逐帧发 command 的方式实现。
 - 平台类型如 `ImageBitmap`、ORT session、FFmpeg frame、D3D12 resource、HWND/Surface 必须留在 host/provider boundary。
 - Public TypeScript SDK不得导入React Flow，也不得自行维护domain revision/invariant。
@@ -1157,16 +1176,15 @@ Binding 只能投影 public/domain/runtime methods；不得反向塑造 Rust pub
 - Provider/Host不得从catalog或完整Graph推导跨平台业务policy；Rust提供typed intent/request。
 - 下沉任何行为前必须先建立回归，切换caller后才能删除TS实现和旧测试。
 
-### 8.4 当前风险优先级
+### 8.4 迁移前风险优先级（历史快照）
 
-| 优先级 | 风险 | 当前决定 |
+| 优先级 | 风险 | 当时决定 |
 |---|---|---|
 | P0 | TS public objects不是真实Rust proxy，Store仍持domain mutation | 下一阶段先完成Rust-backed object与Graph command cutover |
 | P0 | Browser inference和NativeHost仍定义跨平台业务policy | 将task/resource intent下沉Rust，TS只保留平台执行 |
 | P1 | Project I/O、screen saver、catalog和遗留算法重复 | 分小步迁移；每步先补Rust regression再删除TS实现 |
 | P1 | Web frame/preview/inference/video性能不足 | 已记录并暂缓专项修复；迁移过程不得退化现有基线 |
-| P1 | Java `NativeBridge` 与Rust C ABI覆盖不一致 | 补全后才能宣称Java SDK可用 |
-| P2 | `open_quartz` public facade与execution共crate | 行为下沉稳定后继续拆compiler boundary |
+| P2 | 单核心 feature 闭包及独立 consumer 验收 | 本轮独立 default + 四个能力组合边界回归已通过；整体 coverage 缺口见 §7.8 |
 | P2 | 多output/presentation完整度 | 在真实产品需求下推进 |
 
 ---
@@ -1179,21 +1197,20 @@ Binding 只能投影 public/domain/runtime methods；不得反向塑造 Rust pub
 components -> framework adapter / Store projection
 framework adapter -> TypeScript SDK public Project/Graph/Player/Output proxy
 TypeScript SDK public proxy -> TypeScript SDK internal transport/environment
-Java UI/application -> Java SDK public proxy -> Java SDK internal JNI/environment
 Native Rust business -> Rust SDK public objects
-TS/Java internal -> Rust SDK public methods + host integration providers
+TS internal -> Rust SDK public methods + host integration providers
 Rust Player -> internal Runtime/Engine/Execution -> provider traits
 platform implementation -> injected provider traits + platform APIs
 ```
 
 ### 9.2 禁止依赖
 
-- component 直接调用 native GPU command、Worker/Tauri transport、JNI internal 或 environment provider；screen saver host integration 除外。
-- public TypeScript/Java SDK 暴露 `PipelineRuntime`、Runtime、Engine、ExecutionEngine、Compositor、binding、request ID、wire DTO 或具体 platform object。
-- Rust SDK business API 按 Worker message、Tauri command、JNI DTO 或序列化格式组织。
+- component 直接调用 native GPU command、Worker/Tauri transport 或 environment provider；screen saver host integration 除外。
+- public TypeScript SDK 暴露 `PipelineRuntime`、Runtime、Engine、ExecutionEngine、Compositor、binding、request ID、wire DTO 或具体 platform object。
+- Rust SDK business API 按 Worker message、Tauri command、binding DTO 或序列化格式组织。
 - TypeScript Browser 层保留 topology、plan、dirty、feedback、shader compilation policy 或第二个 execution engine。
 - environment provider 暴露为 Project/Graph/Node/Player 的业务方法，或由 UI 逐帧驱动。
-- Node/Port proxy getter 通过同步 IPC/JNI 逐属性读取，或 proxy 长期持有无生命周期保护的 native pointer。
+- Node/Port proxy getter 通过同步 IPC 逐属性读取，或 proxy 长期持有无生命周期保护的 native pointer。
 - Store 保存 SDK client/player/proxy object、GPU texture、decoder frame、ORT session/tensor 或 per-frame command。
 - 将 SDK class instance/native handle 序列化进 Project JSON。
 - `runtime` 依赖 `ffi`、Tauri、DOM 或具体 WebView event name。
@@ -1213,7 +1230,7 @@ platform implementation -> injected provider traits + platform APIs
 6. 是否改变 revision、generation、frame/content stamp？
 7. fallback 是否通过 capability 显式可观察？
 8. 是否新增逆向模块依赖？
-9. 该能力属于 Rust SDK object API、TypeScript SDK public/internal、Java SDK public/JNI internal，还是 framework adapter？
+9. 该能力属于 Rust SDK object API、TypeScript SDK public/internal，还是 framework adapter？
 10. 新对象的 ownership、identity、stale/dispose 和线程语义是什么；是否把 internal communication 泄漏成了 public API？
 
 ---
@@ -1222,13 +1239,12 @@ platform implementation -> injected provider traits + platform APIs
 
 ### 10.1 当前完成度与真实阻塞
 
-Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Graph command、Project I/O、screen saver transform、catalog、Browser inference和host resource policy均已切到Rust-owned contract；`open_quartz_sdk`、`open_quartz_host_api`、`open_quartz_execution`也已形成真实crate边界。
+Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Graph command、Project I/O、screen saver transform、catalog、Browser inference和host resource policy均已切到Rust-owned contract。领域、SDK和执行实现现统一位于 `open_quartz`；Rust模块职责与feature依赖边界见第7节，不能以crate数量或未验证的依赖闭包推断完成度。
 
 当前剩余工作不再属于Phase 7业务语义下沉：
 
-1. Java完整JNI、真实动态库与平台surface仍需独立贯通。
-2. 干净Windows VM上的screen saver `/s`、`/p`、`/c`手工验证，以及真实video/ONNX长时间稳定性验证仍未完成。
-3. Web性能已建立可复现benchmark，并完成preview Blob编码边界和Worker逐帧typed-array分配优化；ORT tensor transfer、video `ImageBitmap` transfer和timer调度仍需在具备真实Browser API与GPU的环境继续profile，不得宣称未经测量的性能提升。
+1. 干净 Windows VM 的 screen saver `/s`、`/p`、`/c` 手工验证，以及真实 video/ONNX 长稳仍未完成。
+2. Web 已有可复现 benchmark；ORT tensor transfer、video ImageBitmap transfer 和 timer 调度需在真实 Browser API/GPU 环境继续 profile。
 
 ### 10.2 阶段状态
 
@@ -1239,11 +1255,11 @@ Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Gr
 | 2 Player/Native | **完成主路径** | Tauri/SCR 使用 Rust Player/Runtime；platform host composition仍存在 |
 | 3 WASM | **功能完成，性能未通过** | Rust wgpu Browser execution已生产使用；Web 性能问题已记录并暂缓 |
 | 4 TypeScript execution cutover | **完成** | React adapter、App/ScreenSaver cutover、legacy TS execution删除 |
-| 5 Java/JNI | **部分** | public facade和tests完成；完整ABI、真实动态库与平台surface未完成 |
-| 6 Boundaries | **完成** | schema、bindings、`open_quartz_sdk`、`open_quartz_host_api`、`open_quartz_execution`真实crate边界及dependency/proxy CI已建立 |
+| 5 Android/Java/JNI | **已移除** | 专用 glue、源码与构建/对齐门槛已清理，不属于本仓产品 |
+| 6 Boundaries | **单核心实现与能力隔离回归通过** | schema/SDK/execution 统一为 open_quartz；domain/sdk 私有，独立 feature 闭包回归通过；整体 coverage gate 未通过，详见 §7.8 |
 | 7 Thin TS convergence | **完成** | Rust-backed proxy、Store command、Project/screen saver/catalog/inference/resource policy下沉和TS遗留清理均已完成；Web剩余性能项已有benchmark基线 |
 
-以下Phase 0–7条目保留为历史实施规格；后续工作以Java/platform integration、Windows实机验证和基于测量的Web性能优化为准。
+以下Phase 0–7条目保留为历史实施规格；后续工作以桌面产品、Windows实机验证和基于测量的Web性能优化为准。
 
 ### Phase 0：冻结 public object API，完成高风险 spike
 
@@ -1332,38 +1348,26 @@ Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Gr
 - Browser 与 Tauri 使用同一 UI scenario 完成 open/edit/play/pause/apply/output/capture/close。
 - production bundle 中不再存在第二个 TypeScript graph/execution policy；不存在旧 runtime fallback。
 
-### Phase 5：Java SDK/JNI 投影
+### Phase 5：Android/Java/JNI glue（已移除）
 
-**实现：**
-
-1. 在 Rust/TypeScript public API 稳定后，建立 Java `OpenQuartzClient/Project/Graph/Node/Port/Player/Resource/Output` proxy。
-2. JNI internal 管理 aggregate-level handle、thread handoff、direct buffer/platform surface、subscription callback 和 error mapping；不为每个 Port 建长期 native pointer。
-3. Android/Desktop host 通过 environment ports 注入 surface、resource resolver、scheduler 和需要的平台 inference/media 能力。
-4. 复用 Phase 2/3 的 public object conformance fixture，不创建 Java 专属 graph/runtime policy。
-
-**验收 gate：**
-
-- Java public 类图与 Rust public object 对应，无 Runtime/Engine/Execution/Compositor/JNI handle 泄漏。
-- Java close/AutoCloseable、callback thread、stale object 和 native handle release 有确定测试。
-- 同一 Project fixture 在 Native Rust、TypeScript 和 Java 产生一致 Graph/Player/Output 行为。
+本仓不保留 Java SDK、C ABI 壳或 Java public proxy 源码形状检查。未来独立 Android 产品的 glue 应在对应产品仓中实现，不挂入本仓默认构建。
 
 ### Phase 6：删除迁移边界并用编译边界固化
 
-只有 Phase 4 clean cutover 完成后才拆 crate；否则只会固化临时 adapter。
+旧 Phase 6 曾按 schema/execution/SDK/facade 拆包；第 7 节已取代该结构。当前以模块职责和 capability feature 固化单核心边界：
 
 ```text
-open_quartz_schema       public value/ID/error
-open_quartz_sdk          Project/Graph/Player/Resource/Output public objects
-open_quartz_host_api     advanced Environment/provider contracts
-open_quartz_execution    internal Runtime/Engine/GPU execution
-open_quartz_bindings     WASM/JNI/C bindings
+open_quartz root          public value/ID/error + Project/Graph/Player/Resource/Output
+  private domain + sdk    领域不变量与聚合实现
+  advanced modules        Runtime/Engine/WGSL/catalog/resources + optional GPU/video/ONNX/browser
+  ffi                     native/WASM language adaptation
 ```
 
 **实现与验收：**
 
-1. public SDK crate 不能依赖 bindings、Tauri、DOM、JNI DTO 或 platform shell；execution crate 不依赖 language binding。
+1. domain 与 SDK 业务实现不依赖应用 UI 或平台 shell；binding 消费核心业务，advanced 执行模块不反向依赖语言适配。
 2. dependency-policy CI 禁止 internal execution type从 public crate/root re-export。
-3. public-proxy parity 检查 Rust/TypeScript/Java object/method/error；internal conformance 检查行为，不要求共享 wire DTO。
+3. public-proxy parity 检查 Rust/TypeScript object/method/error；internal conformance 检查行为，不要求共享 wire DTO。
 4. 删除所有迁移 adapter、临时 conversion helper、dev feature flag 和已无 caller 的 legacy test；Project file version conversion仅保留在持久化 loader boundary。
 
 ### 10.3 切换策略与提交纪律
@@ -1385,7 +1389,7 @@ open_quartz_bindings     WASM/JNI/C bindings
 | Output | value/preview/capture/presentation 统一由 Output/Subscription 观察 |
 | Environment | Rust execution 请求能力；host provider 不拥有 graph/execution policy |
 | Browser/Native | 同一 fixture 的 graph behavior、output schema、stamp 和可比较像素一致 |
-| Language SDK | TS/Java public proxy 对应 Rust public object，internal transport 可替换 |
+| Language SDK | TS public proxy 对应 Rust public object，internal transport 可替换 |
 | UI | framework 只依赖 public proxy，Store 无 live SDK/platform object |
 | Cleanup | 无 PipelineRuntime、TS Compositor/WebGPUExecutionEngine policy、双 runtime 或 public wire DTO |
 | Thin TS | public SDK不导入React Flow；Store无domain mutation；Host不扫描catalog/完整Graph；TS无跨平台算法重复 |
@@ -1402,8 +1406,7 @@ open_quartz_bindings     WASM/JNI/C bindings
 5. **WASM execution change-sets：** Rust wgpu core、frame source、ORT-Web、presentation、scheduler，全部先落 hidden harness。
 6. **TypeScript SDK change-set：** public proxy 和 internal object binding，不改 UI。
 7. **Application cutover change-set：** React adapter/Store 切换，同时删除 PipelineRuntime、RealtimeHost、TS Compositor/WebGPUExecutionEngine policy 和旧 production tests。
-8. **Java/JNI change-sets：** 在 Rust/TS public API 经生产验证后单独推进，不阻塞 Phase 6 dependency boundaries。
-9. **Compile-boundary change-set：** 最后拆 crate、收紧 visibility、启用 dependency/proxy parity CI。
+8. **Compile-boundary change-set：** 最后拆 crate、收紧 visibility、启用 dependency CI 和 public contract tests。
 
 不得把第 5–7 项压成“先加一层 proxy、底下继续永久运行旧 TS engine”的假迁移。TypeScript proxy 可以先合入但不能成为 production 入口，直到 Rust/WASM Player 通过 Phase 3 gate。
 
@@ -1420,7 +1423,7 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 | 5 | Catalog执行语义下沉 | Rust Math descriptor/formula、ONNX task/IO/defaults/integrity、shader template contract | label/category/icon/control metadata | Rust catalog snapshot/behavior tests；public proxy parity；菜单渲染tests；删除第二registry |
 | 6 | Browser inference瘦身 | Rust task dispatch、tensor descriptor、tile/preprocess/postprocess、threshold、NMS/segmentation、output mapping和completion stamp | ORT-Web session lifecycle与raw tensor marshalling | Rust task unit tests覆盖每个model family/boundary；Native/Browser tensor conformance；stale completion；Browser ONNX smoke |
 | 7 | Host resource intent | Rust Player输出resolve/attach/detach/load/unload/present typed intent和generation policy | DOM/Tauri/WebView2具体调用及opaque handle | image/video/model replace/remove/stop/close tests；Browser/Native同fixture；platform smoke |
-| 8 | Schema与crate边界 | 拆 `open_quartz_sdk/host_api/execution`，移除UI/runtime projection字段 | GUI projection单独TS type | `cargo test --workspace`、compile-fail/dependency tests、TS diagnostics、project compatibility fixtures |
+| 8 | Domain与核心边界 | 在单一 open_quartz 内保持 domain/SDK/执行职责，资源意图规划归入 `open_quartz::resources::plan`，设备能力由 feature 隔离 | GUI projection单独TS type | `cargo test --workspace`、独立 feature consumer/dependency tests、TS diagnostics、project compatibility fixtures |
 | 9 | Web性能专项 | 在正确边界上优化readback/encode/tensor/video/scheduler | 必要Web API与instrumentation | 优化前后同一benchmark；像素/输出/stamp回归；不得以关闭功能换指标 |
 
 **实施状态：已完成。** 九个change-set已按回归先行方式落地；Web性能项只记录可复现实测结论，未对缺少真实Browser API/GPU证据的ORT/video/scheduler路径宣称提升。
@@ -1440,9 +1443,9 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 1. **冻结行为**：列出要迁移的observable contract和edge cases。若行为目前只在TS，先保留/补characterization test；若Rust已有对应行为，先补Rust regression。
 2. **Rust test先行**：为目标Rust API增加会在合理错误实现下失败的unit/contract test；覆盖success、boundary、invalid input、state transition、stale/dispose和serialization invariants。
 3. **实现但不切生产**：完成Rust逻辑和binding/proxy，运行targeted Rust tests。
-4. **跨语言conformance**：同一fixture同时经过Rust direct、WASM/TS proxy，必要时JNI；比较Graph/result/output key、revision/generation、stamp和可比较pixels/tensors。
+4. **跨语言conformance**：同一fixture经过Rust direct、WASM/TS proxy；比较Graph/result/output key、revision/generation、stamp和可比较pixels/tensors。
 5. **切一个caller**：一次只迁一个Store action、provider task或host intent；运行对应TS component/adapter regression和实际smoke。
-6. **完整gate**：至少运行`cargo test --workspace`、`npm test`、`npm exec -- tsc -b`和public proxy/dependency checks；GPU/media/inference行为变更还要运行对应Browser或Native smoke。
+6. **完整gate**：至少运行`cargo test --workspace`、`npm test`、`npm exec -- tsc -b`和dependency checks；GPU/media/inference行为变更还要运行对应Browser或Native smoke。
 7. **清理**：只有新路径通过完整gate后，才删除旧TS实现、legacy fixture和临时adapter；保留真正防守public behavior的tests。
 
 每个PR必须记录“迁移前由哪个test防守、迁移后由哪个Rust test防守、还需要哪个platform smoke”。没有回归证据的代码搬运不算完成。
@@ -1451,7 +1454,7 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 
 薄TS迁移完成后，一个重要副产物是：**几乎所有非GUI、非平台专属功能都可由Rust层unit/contract tests直接覆盖。** 这不是追求虚假的100%行覆盖，而是让业务功能的失败首先在Rust tests中出现，而不是依赖React/Worker/Tauri端到端测试才发现。
 
-`open_quartz_sdk`是例外：作为跨语言public aggregate和业务入口，它实行**100%硬门禁**，而不是把“几乎所有功能可由Rust测试”当作模糊目标。CI使用单一lib coverage binary执行私有不变量和错误分支测试，并排除独立测试源码本身，强制production `sdk.rs`同时满足line、function和region coverage 100%。 facade/WASM/TypeScript/Java测试继续验证marshalling和平台集成，但不能替代SDK层contract coverage。
+`open_quartz` 的 SDK aggregate 实现保留既有 **100% 硬门禁**要求，而不是把“几乎所有功能可由Rust测试”当作模糊目标。CI使用单一lib coverage binary执行私有不变量和错误分支测试，并排除独立测试源码本身，强制production `sdk.rs`同时满足line、function和region coverage 100%。FFI/WASM/TypeScript测试继续验证marshalling和平台集成，但不能替代SDK层contract coverage；其他设备模块和整体 gate 的真实结果另行记录。
 
 ```bash
 npm run test:sdk-coverage
@@ -1459,10 +1462,10 @@ npm run test:sdk-coverage
 
 测试归属遵循以下规则：
 
-1. `open_quartz_sdk`拥有Project/Graph/Layout/node factory/Player/resource/output/screen saver等业务契约测试。
-2. `open_quartz` facade只保留FFI、WASM和目标平台组合测试，不重复防守SDK内部业务分支。
+1. `open_quartz/src/sdk.rs` 拥有 Project/Graph/Layout/node factory/Player/resource/output/screen saver 等业务契约测试。
+2. `open_quartz/src/ffi` 保留 FFI、WASM 和目标平台组合测试，不重复防守 SDK 内部业务分支。
 3. TypeScript Store/SDK tests只验证React Flow projection、transport、error mapping和语言conformance；任何跨平台业务断言必须先在Rust owning crate存在。
-4. `open_quartz_execution`、`open_quartz_host_api`和`open_quartz_schema`分别防守执行、host intent和wire schema，不把下层算法覆盖塞回SDK facade。
+4. 同一核心的 execution 模块防守执行及 `resources::plan` 的 resource intent/generation policy，domain 模块防守领域与 wire schema；测试按行为 owner 划分，不再按旧包分层。
 
 ### 10.9 测试归属与 coverage gate
 
@@ -1470,15 +1473,13 @@ npm run test:sdk-coverage
 
 | 层 | 必须覆盖 | 测试位置 | 不应重复承担 |
 |---|---|---|---|
-| `open_quartz_sdk` | Project/Graph/Layout、node factory、revision/history、Player lifecycle、ResourceCatalog、Output/Subscription、screen saver graph transform | `crates/open_quartz_sdk/src/sdk_coverage_tests.rs` 与 `crates/open_quartz_sdk/tests/` | 不承担 DOM、React Flow、Worker、Tauri、JNI transport |
-| `open_quartz_execution` | Runtime/Engine/GPU/WGSL/ONNX/media execution与状态机 | `crates/open_quartz_execution/tests/` | 不重复 public aggregate facade 行为 |
-| `open_quartz_host_api` | image/video/ONNX resource intent与generation policy | `crates/open_quartz_host_api/tests/` | 不承担具体 DOM/Tauri/WebView2 调用 |
-| `open_quartz_schema` | wire names、serde round-trip、兼容性和 public boundary | `crates/open_quartz_schema/tests/` | 不承担执行语义 |
-| `open_quartz` facade | WASM/native FFI、binding marshalling、GPU/environment composition | `crates/open_quartz/tests/` | 不重复 SDK business contract |
+| 核心 SDK aggregates | Project/Graph/Layout、node factory、revision/history、Player lifecycle、ResourceCatalog、Output/Subscription、screen saver graph transform | `crates/open_quartz/src/sdk_coverage_tests.rs` 与 `crates/open_quartz/tests/` | 不承担 DOM、React Flow、Worker、Tauri |
+| 核心执行模块 | Runtime/Engine/GPU/WGSL/ONNX/media execution与状态机；`resources::plan` 的 image/video/ONNX resource intent与generation policy | `crates/open_quartz/tests/`、`crates/open_quartz/src/resources/plan_coverage_tests.rs` | 不重复 aggregate 行为，不承担具体 DOM/Tauri/WebView2 调用 |
+| 核心 domain | wire names、serde round-trip、兼容性和 public boundary | `crates/open_quartz/tests/` 与 domain unit tests | 不承担设备执行语义 |
+| 核心 FFI | WASM/native FFI、binding marshalling、GPU/environment composition | `crates/open_quartz/tests/` | 不重复 SDK business contract |
 | TypeScript | React Flow projection、Store adapter、Worker/host transport、error mapping、UI interaction | `tests/sdk`、`tests/store`、`tests/components`、`tests/services` | 不再是跨平台业务规则的唯一防线 |
-| Java/platform | JNI marshalling、thread/close/error、真实 GPU/media/Windows surface | `java/sdk/src/test`、platform smoke | 不替代 Rust semantic tests |
 
-`npm run test:sdk-coverage` 是 SDK 层硬 gate：production `sdk.rs` 的 line/function/region coverage 均必须为 100%；独立 coverage test source 使用 filename filter 排除，不会把测试代码计入分母。当前 SDK gate 实测：100% regions、100% functions、100% lines。
+`npm run test:sdk-coverage` 保留 100% 硬 gate，独立 coverage test source 使用 filename filter 排除，不把测试代码计入分母。本轮分别运行默认与完整 native gate，未扩大 ignore；domain/sdk/ffi/planner 的 lines/functions/regions 均为 100%，但默认整体为 99.97%/99.69%/99.92%，完整 native 整体为 98.54%/98.20%/97.27%，**两项整体 gate 均未通过**。已有 execution 缺口与新纳入计量的 Prepared 平台分支详见 §7.8；不能用 SDK 模块 100% 代替整体 gate 结论。
 
 | 功能层 | 主要Rust测试 | 仍需语言/platform测试 |
 |---|---|---|
@@ -1488,9 +1489,9 @@ npm run test:sdk-coverage
 | screen saver transform/package | graph fixture、manifest/package round-trip | Windows VM `/s`/`/p`/`/c` smoke |
 | ONNX task/pre-postprocess | deterministic tensor/image fixtures、threshold/NMS/segmentation boundaries | ORT-Web/native provider availability与GPU interop |
 | GPU execution | small deterministic texture/pixel fixtures | Browser/native adapter/device smoke |
-| language proxy parity | Rust public contract fixture | TS/Java marshalling、close/error/thread behavior |
+| language proxy parity | Rust public contract fixture | TS marshalling、close/error/thread behavior |
 
-最终测试金字塔应为：大量快速Rust unit/contract tests；少量TS GUI与platform adapter tests；更少但真实的Browser/Tauri/Java/screen saver smoke。端到端测试验证集成，不能代替Rust对功能语义的直接覆盖。
+最终测试金字塔应为：大量快速Rust unit/contract tests；少量TS GUI与platform adapter tests；更少但真实的Browser/Tauri/screen saver smoke。端到端测试验证集成，不能代替Rust对功能语义的直接覆盖。
 
 ### 专项状态：自包含 Windows Screen Saver Host
 
@@ -1601,17 +1602,17 @@ render thread -> video/completion -> Rust Runtime/Engine -> GpuExecutor -> prese
 cargo test --workspace
 npm test
 npm exec -- tsc -b
-npm run check:public-proxy
+npm run check:rust-boundaries
 ```
 
-按变更路径追加smoke：Browser GPU/ORT/video、Tauri/native、Java JNI或screen saver。Targeted test可用于开发循环，但不能替代change-set完成时的完整gate。
+按变更路径追加smoke：Browser GPU/ORT/video、Tauri/native或 screen saver。Targeted test可用于开发循环，但不能替代change-set完成时的完整gate。
 
 自动边界检查应持续扩展：
 
-- Rust public boundary：禁止public object引用binding、Tauri、DOM、JNI/wasm DTO或internal execution type；
+- Rust public boundary：禁止public object引用binding、Tauri、DOM、wasm DTO或internal execution type；
 - TypeScript thin boundary：public SDK禁止React Flow，Store禁止provider/execution，Host禁止catalog/完整Graph policy；
-- public proxy parity：Rust/TypeScript/Java对象、方法、error与observable behavior对应；
-- internal conformance：WASM、Worker、Tauri、JNI对同一fixture行为一致，不要求共享wire DTO；
+- public proxy parity：Rust/TypeScript对象、方法、error与observable behavior对应；
+- internal conformance：WASM、Worker、Tauri对同一fixture行为一致，不要求共享wire DTO；
 - duplicate policy detection：禁止TS topo、Math公式、ONNX pre/postprocess、Project normalize和screen saver transform重新出现。
 
 测试迁移原则：TS-only业务每迁出一项，Rust层必须增加等价或更强的regression；删除TS test前确认其contract已由Rust test和必要platform test共同覆盖。目标结果是Rust unit/contract tests几乎覆盖全部非GUI功能，而TS tests集中于GUI与不可替代platform integration。
@@ -1628,24 +1629,22 @@ npm run check:public-proxy
 | WASM internal wrapper | `src/sdk/WasmSdkClient.ts` |
 | Browser ORT provider/resource | `src/sdk/internal/BrowserInferenceProvider.ts`、`src/sdk/internal/OnnxResourceRegistry.ts` |
 | Native TypeScript internal host | `src/sdk/internal/NativeHost.ts` |
-| Java public/internal SDK | `java/sdk/src/main/java/com/sanitor/openquartz` |
-| Java/Rust JNI binding | `crates/open_quartz_bindings` |
 | Tauri command registration | `src-tauri/src/lib.rs` |
-| Tauri commands/events / execution | `src-tauri/src/native_runtime.rs`、`crates/open_quartz_execution/src/runtime/execution.rs` |
-| Native video | `crates/open_quartz_execution/src/native_video.rs`、`crates/oq-media` |
+| Tauri commands/events / execution | `src-tauri/src/native_runtime.rs`、`crates/open_quartz/src/runtime/execution.rs` |
+| Native video | `crates/open_quartz/src/native_video.rs`、`crates/oq-media` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
-| Rust schema crate | `crates/open_quartz_schema` |
-| Rust public object/core crate | `crates/open_quartz_sdk/src`、`crates/open_quartz/src/lib.rs` |
-| Rust host intent API | `crates/open_quartz_host_api/src` |
-| Runtime/Engine/GPU/ONNX execution | `crates/open_quartz_execution/src` |
-| Browser Rust wgpu environment | `crates/open_quartz_execution/src/wasm_environment.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
-| Boundary/parity CI | `.github/workflows/dependency-boundaries.yml`、`scripts/check-public-proxy-parity.mjs` |
+| Rust private domain | `crates/open_quartz/src/domain/` |
+| Rust SDK aggregates / root | `crates/open_quartz/src/sdk.rs`、`crates/open_quartz/src/lib.rs` |
+| Rust resource intent planner | `crates/open_quartz/src/resources/plan.rs` |
+| Runtime/Engine/GPU/ONNX execution | `crates/open_quartz/src/runtime/`、`engine/`、`gpu/`、`onnx/` |
+| Browser Rust wgpu environment | `crates/open_quartz/src/wasm_environment.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
+| Boundary CI | `.github/workflows/dependency-boundaries.yml`、`scripts/check-rust-boundaries.mjs`、`tests/sdk/dependencyBoundary.test.ts` |
 
 ### 12.3 当前基线总结
 
-- **已成立**：Rust-backed public object API与薄TypeScript proxy；Rust/WASM wgpu Browser execution；Rust-owned Graph command、Project/screen saver/catalog、ONNX task与host resource intent；旧TS graph/GPU和重复业务算法删除；`open_quartz_schema/open_quartz_sdk/open_quartz_host_api/open_quartz_execution/open_quartz_bindings`真实crate边界及boundary/proxy CI。
+- **已成立**：Rust-backed public object API与薄TypeScript proxy；Rust/WASM wgpu Browser execution；Rust-owned Graph command、Project/screen saver/catalog、ONNX task与host resource intent；旧TS graph/GPU和重复业务算法删除。领域、SDK 与执行实现现归单一 open_quartz，资源规划位于 `open_quartz::resources::plan`；默认无设备与可选能力的功能/边界回归通过，实际 Browser 5/5、Slint 72 与交互 18/18 通过。默认/完整 native 整体 coverage gate 均未达到 100%；详细数值及未重跑平台见 §7.8。
 - **已测量、继续优化**：Web preview Blob编码优先使用`FileReader`并保留等价fallback；Worker复用逐帧typed array。Node benchmark只证明fallback parity与allocation差异，不代表Browser PNG、ORT或video生产性能；后续必须在真实Browser API/GPU上profile ORT readback-upload、video `ImageBitmap` transfer和timer/GC。
-- **下一主线**：完整Java JNI/platform integration，以及真实Browser/Native/Windows环境的功能、长稳和性能验证。
-- **尚未完成**：Java真实动态库与平台surface；干净Windows VM的screen saver `/s`、`/p`、`/c`手工验证；真实video/ONNX graph长稳验证；真实Browser ONNX和preview性能smoke。
+- **下一主线**：真实Browser/Native/Windows环境的功能、长稳和性能验证。
+- **尚未完成**：干净Windows VM的screen saver `/s`、`/p`、`/c`手工验证；真实video/ONNX graph长稳验证；真实Browser ONNX和preview性能smoke。
 
 后续任何性能或边界优化若改变上述状态，必须同时更新总图、逐帧数据流、copy 特征、阶段状态和源码索引。

@@ -1,4 +1,4 @@
-use open_quartz_sdk::{Graph, NodeType, OnnxSource, ProjectNode};
+use open_quartz::{Graph, NodeType, OnnxSource, ProjectNode};
 use serde_json::Value;
 
 /// Recorded project metadata only; live ONNX sessions are projected separately.

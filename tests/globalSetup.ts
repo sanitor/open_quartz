@@ -15,6 +15,8 @@ export default function setup(): void {
       '../../node_modules/.tmp/open_quartz-sdk-node',
       '--out-name',
       'open_quartz',
+      '--features',
+      'browser',
     ],
     { stdio: 'pipe' },
   );

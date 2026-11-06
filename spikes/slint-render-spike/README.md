@@ -95,12 +95,12 @@ slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wg
 ```
 
 Slint's web stack requires newer `wasm-bindgen`/`js-sys`/`web-sys` versions than the main
-workspace previously pinned. The execution and SDK crates now pin `wasm-bindgen = "=0.2.129"`;
-`cargo check --target wasm32-unknown-unknown` still passes.
+workspace previously pinned. The single `open_quartz` core now pins `wasm-bindgen = "=0.2.129"`;
+the Web/WASM product build explicitly selects its `browser` feature. This spike selects `gpu` only.
 
 The renderer output is `Rgba8Unorm`, which `Image::try_from` accepts as long as the texture
 has both `TEXTURE_BINDING` and `RENDER_ATTACHMENT` usage. Both requirements are satisfied by
-`open_quartz_execution` render targets. Slint also supports `Rgba8UnormSrgb` imports; float
+`open_quartz` render targets. Slint also supports `Rgba8UnormSrgb` imports; float
 formats are rejected by `Image::try_from`.
 
 The color probe matters for correctness. A shader output of `(0.25, 0.5, 0.75)` appears as

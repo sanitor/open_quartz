@@ -3,14 +3,14 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use open_quartz_execution::engine::ExecutionCommand;
-use open_quartz_execution::runtime::Runtime;
-use open_quartz_execution::runtime::{
+use crate::engine::ExecutionCommand;
+use crate::runtime::Runtime;
+use crate::runtime::{
     AsyncCompletionEnvelope, ContentStamp, DataPathMode, FrameStamp, OutputKey, OutputPayload,
     OutputState, OutputSubscription, RuntimeCapabilities, RuntimeFrameInput,
 };
-use open_quartz_execution::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
-use open_quartz_schema::Graph;
+use crate::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
+use crate::domain::Graph;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,7 +25,7 @@ struct BrowserInferenceTask {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserFrameResult {
-    clock: open_quartz_execution::runtime::ClockState,
+    clock: crate::runtime::ClockState,
     inference_tasks: Vec<BrowserInferenceTask>,
 }
 

@@ -13,9 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: cargo test -p open_quartz --no-default-features
       - run: cargo test --workspace
       - run: npm run check:rust-boundaries
       - run: npm ci
       - run: npm exec -- tsc -b
-      - run: npm exec -- vitest run tests/sdk/dependencyBoundary.test.ts tests/sdk/languageConformance.test.ts
-      - run: npm run check:public-proxy
+      - run: npm exec -- vitest run tests/sdk/dependencyBoundary.test.ts

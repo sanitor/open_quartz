@@ -7,8 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-open_quartz_execution = { path = "../../crates/open_quartz_execution" }
-open_quartz_schema = { path = "../../crates/open_quartz_schema" }
+open_quartz = { path = "../../crates/open_quartz", default-features = false, features = ["gpu"] }
 pollster = "0.4"
 serde_json = "1"
 slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }

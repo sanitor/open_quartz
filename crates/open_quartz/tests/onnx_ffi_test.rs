@@ -6,7 +6,10 @@ use open_quartz::ffi::{
 
 #[test]
 fn onnx_ffi_preprocesses_and_serializes() {
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-onnx"))]
     assert_eq!(onnx_backend(), "ort-native");
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "native-onnx")))]
+    assert_eq!(onnx_backend(), "disabled");
     let rgba = [255, 0, 0, 255, 0, 255, 0, 255];
     let tensor = preprocess_onnx_image(&rgba, 2, 1, 2).unwrap();
     assert!(tensor.contains("\"shape\":[1,3,2,2]"));
@@ -50,14 +53,14 @@ fn browser_onnx_task_ffi_roundtrips_plan_tensor_output_and_completion() {
     assert!(completion.contains(r#""timelineNs":9"#));
 }
 
-#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[cfg(all(feature = "native-onnx", not(target_arch = "wasm32"), target_os = "windows"))]
 #[test]
 fn native_session_runs_identity_model() {
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", runtime);
     let mut session =
-        open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!("data/identity.onnx"))
+        open_quartz::onnx::OnnxSession::from_memory(include_bytes!("data/identity.onnx"))
             .unwrap();
     assert_eq!(session.info().input_names, ["input"]);
     assert_eq!(session.info().output_names, ["output"]);
@@ -66,22 +69,22 @@ fn native_session_runs_identity_model() {
     assert_eq!(output.data, [42.0]);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[cfg(all(feature = "native-onnx", not(target_arch = "wasm32"), target_os = "windows"))]
 #[test]
 fn native_image_task_roundtrips_texture_pixels() {
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", runtime);
-    let mut session = open_quartz_execution::onnx::OnnxSession::from_memory(include_bytes!(
+    let mut session = open_quartz::onnx::OnnxSession::from_memory(include_bytes!(
         "data/image_identity.onnx"
     ))
     .unwrap();
     let rgba = vec![
         255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
     ];
-    let output = open_quartz_execution::onnx::run_native_image_task(
+    let output = open_quartz::onnx::run_native_image_task(
         &mut session,
-        open_quartz_execution::onnx::OnnxTask::Generic,
+        open_quartz::onnx::OnnxTask::Generic,
         "image-identity",
         &rgba,
         2,
@@ -96,21 +99,21 @@ fn native_image_task_roundtrips_texture_pixels() {
     assert!(output.data.is_none());
 }
 
-#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[cfg(all(feature = "native-onnx", not(target_arch = "wasm32"), target_os = "windows"))]
 #[test]
 fn native_directml_session_runs_without_cpu_fallback() {
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", runtime);
-    let capabilities = open_quartz_execution::onnx::native_onnx_capabilities().unwrap();
+    let capabilities = open_quartz::onnx::native_onnx_capabilities().unwrap();
     assert!(capabilities.cpu);
     assert!(capabilities.direct_ml);
     assert!(!capabilities.shared_wgpu_device);
 
-    let mut session = open_quartz_execution::onnx::OnnxSession::from_memory_with_options(
+    let mut session = open_quartz::onnx::OnnxSession::from_memory_with_options(
         include_bytes!("data/identity.onnx"),
-        open_quartz_execution::onnx::NativeOnnxOptions {
-            provider: open_quartz_execution::onnx::NativeOnnxProvider::DirectMl,
+        open_quartz::onnx::NativeOnnxOptions {
+            provider: open_quartz::onnx::NativeOnnxProvider::DirectMl,
             allow_cpu_fallback: false,
         },
     )

@@ -3,7 +3,7 @@
 name = "open_quartz"
 version = "0.20.0"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.92"
 description = "Rust SDK for the OpenQuartz realtime heterogeneous video pipeline"
 license = "MIT"
 
@@ -12,24 +12,48 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-native-video-d3d12 = ["open_quartz_execution/native-video-d3d12"]
+gpu = ["dep:wgpu", "dep:windows-graphics", "dep:futures-channel", "dep:objc2", "dep:objc2-metal"]
+native-runtime = ["gpu", "dep:pollster", "dep:log"]
+native-video = ["dep:oq-media", "dep:log"]
+native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
+native-onnx = ["dep:ort"]
+model-cache = ["dep:reqwest", "dep:sha2"]
+browser = ["gpu", "dep:wasm-bindgen", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:js-sys"]
 
 [dependencies]
-open_quartz_execution = { path = "../open_quartz_execution" }
-open_quartz_host_api = { path = "../open_quartz_host_api" }
-open_quartz_sdk = { path = "../open_quartz_sdk" }
-open_quartz_schema = { path = "../open_quartz_schema" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+naga = { version = "30", features = ["wgsl-in"] }
+regex = "1.12"
+futures-channel = { version = "0.3", optional = true }
+wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "webgpu", "gles", "vulkan", "dx12", "metal"] }
 
-[dev-dependencies]
-pollster = "0.4"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { version = "0.4", optional = true }
+log = { version = "0.4", optional = true }
+ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["std", "load-dynamic", "api-20"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = { version = "0.10", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-graphics = { package = "windows", version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
+ffmpeg-next = { version = "9.0.0", optional = true, default-features = false, features = ["codec", "format"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+oq-media = { path = "../oq-media", optional = true, features = ["videotoolbox"] }
+objc2 = { version = "0.6.3", optional = true }
+objc2-metal = { version = "0.3.2", optional = true, features = ["MTLDevice", "MTLTexture"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "=0.2.129"
-web-sys = { version = "0.3", features = ["ImageBitmap", "OffscreenCanvas"] }
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
+wasm-bindgen = { version = "=0.2.129", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["ImageBitmap", "OffscreenCanvas"] }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+pollster = "0.4"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+web-sys = { version = "0.3", features = ["OffscreenCanvasRenderingContext2d"] }

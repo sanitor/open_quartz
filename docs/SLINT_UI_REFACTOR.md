@@ -8,7 +8,7 @@
 >
 > 当前决定：本轮以 macOS 已完成的实现与验收收尾；真实相机、Windows/Linux 验收和 Android/iOS 延后。Tauri 保留一个版本作为显式 fallback；React/Web 独立保留，不迁移到 Slint WASM。以下多平台设计项作为后续方向，不是本轮验收承诺。
 >
-> 执行层收敛更新：原生应用直接使用 `open_quartz_execution::runtime::ExecutionRuntime`；已移除独立 `open_quartz_native_host` crate 和 Rust `PlayerHost` 转发层，模型 I/O 位于 `execution::resources::models`。本文 Phase 2/后续验收中的 NativeHost 名称保留当时历史口径，当前所有权以 [`DESIGN.md` §0.1](./DESIGN.md#01-当前桌面入口与所有权phase-57) 为准，不代表仍存在额外 host 层。
+> 核心归属更新：当前 Slint/Tauri 使用单一 `open_quartz`；设备运行位于 `open_quartz::runtime::ExecutionRuntime`，模型服务位于 `open_quartz::resources::models`。本文早期 Phase 2/后续实施记录中的 `open_quartz_execution`、`open_quartz_sdk` 和 NativeHost package paths 是迁移前证据，不是当前源码路径；当前源码索引见 §13.1 和 [`DESIGN.md` §7.6](./DESIGN.md#76-当前源码落点)。Host 名称只表示应用/传输层，不代表仍存在额外 Rust host crate。
 
 ## 0. 结论摘要
 
@@ -46,7 +46,7 @@ Tauri 保留一个版本的显式可构建 fallback；默认 native 路径与 We
 1. **UI 原生化**：主窗口、节点图、Inspector、菜单、对话框和预览全部由 Slint/Rust 渲染，不依赖 WebView DOM。
 2. **渲染零拷贝**：渲染器输出的 `wgpu::Texture` 直接进入 Slint 场景，不再经过 GPU readback、PNG/base64、`ImageData` 或 WebView2 TextureStream。
 3. **平台统一**：Windows、macOS、Linux、Android、iOS 使用同一套 Rust 业务和 Slint UI；平台差异只留在窗口、文件、相机、权限和打包层。
-4. **保留核心语义**：`open_quartz_sdk`、`open_quartz_execution`、`open_quartz_host_api` 的 graph/engine/GPU/ONNX 语义不变；迁移只新增 host 组合和 UI projection。
+4. **保留核心语义（原迁移目标）**：graph/engine/GPU/ONNX 和 `resources::plan` 资源意图语义不变；本方案原设计只新增 host 组合和 UI projection，当前 crate/module ownership 已按第 0 节与第 13 节回写。
 5. **可回退**：新应用独立成 crate，旧 Tauri 应用在切换前保持可构建、可发布。
 6. **可验证**：每一阶段都有性能、功能和平台验收，不以“能启动”代替完成。
 
@@ -74,11 +74,13 @@ Tauri 保留一个版本的显式可构建 fallback；默认 native 路径与 We
 
 ---
 
-## 2. 当前状态
+## 2. 迁移前状态（历史审计证据）
 
-### 2.1 当前 UI 组成
+本节保留 Slint 迁移与核心合包之前的源码路径、行号及规模估算，不作为当前源码入口。最新 ownership 与路径见 §3.2 和 §13.1；当时 Tauri/React UI 的耦合点仍用于解释迁移设计。
 
-当前 UI 是 React 19 + Zustand + React Flow + CodeMirror 6，组件约 3,800 行。
+### 2.1 迁移前 UI 组成
+
+迁移前 UI 是 React 19 + Zustand + React Flow + CodeMirror 6，组件约 3,800 行。
 
 | 区域 | 当前文件 | 主要职责 | 迁移难度 |
 |---|---|---|---|
@@ -162,8 +164,8 @@ flowchart TD
     View[Slint UI / .slint]
     Controller[SlintAppController]
     VM[GraphViewModel / UiState]
-    SDK[open_quartz_sdk Project/Graph/Player]
-    Host[NativeHost / open_quartz_execution]
+    SDK[open_quartz root Project/Graph/Player]
+    Host[open_quartz advanced runtime/GPU modules]
     GPU[wgpu Device/Queue]
     Renderer[Renderer output texture]
     Image[slint::Image]
@@ -222,8 +224,8 @@ apps/open_quartz_slint/
 
 当前 Rust 边界：
 
-- `open_quartz_execution::runtime::ExecutionRuntime`：拥有 GPU/视频/ONNX/presentation 执行状态，Slint 与 Tauri 共用。模型下载、缓存和校验在同 crate 的 `resources::models` 模块；不再创建独立 host crate。
-- `open_quartz_slint`：只依赖 sdk/资源意图 API/execution，不依赖 `tauri`、`wry`、`webview2-com`、`js-sys`。线程桥接留在 RenderBridge，不复制执行逻辑。
+- `open_quartz::runtime::ExecutionRuntime`：拥有 GPU/视频/ONNX/presentation 执行状态，Slint 与 Tauri 共用。资源意图规划在 `open_quartz::resources::plan`，原生模型下载、缓存和校验在 `open_quartz::resources::models`；不再有独立 host crate。
+- `open_quartz_slint`：直接组合 `open_quartz` public SDK 与按需启用的 advanced execution modules（包括 `resources::plan`），不依赖 `tauri`、`wry`、`webview2-com`、`js-sys`。线程桥接留在 RenderBridge，不复制执行逻辑。
 
 ### 3.3 单向数据流
 
@@ -257,7 +259,7 @@ sequenceDiagram
 
 | 状态 | Owner | 说明 |
 |---|---|---|
-| Project/Graph/Node/Edge | `open_quartz_sdk` | 唯一 domain source of truth |
+| Project/Graph/Node/Edge | `open_quartz` root aggregates | 唯一 domain source of truth |
 | 节点位置 | UI + project | 拖拽时 UI 持有；持久化仍进 Project |
 | 选择、视口、折叠、面板宽度 | Slint/UI | 不需要进 SDK |
 | 运行状态、FPS、时间 | `Player`/host | UI 只投影 |
@@ -627,19 +629,19 @@ GPU 编译失败不伪装成成功输出：`NativeHost` 保留结构化 `SdkErro
 
 ### 7.6 ONNX
 
-当前 `src-tauri` 负责模型下载、读取、ORT 配置；UI 通过 Tauri command 调用。
+当前模型下载、读取和 ORT 配置属于 `open_quartz::resources::models` 与可选 ONNX 模块；应用 worker 调用这些服务。
 
-目标：
+目标与保留边界：
 
-- 新增 `ModelService`（Rust）：下载、校验、缓存、读取、删除、进度事件。
-- 复用 `open_quartz_execution` 的 ONNX session/task/pre/postprocess。
+- `ModelService`（Rust）承担下载、校验、缓存、读取、删除和进度投影，不在 UI 或渲染循环实现。
+- 复用 `open_quartz::onnx` 的 session/task/pre/postprocess；native-onnx 与 model-cache 独立选择。
 - `NativeHost` 负责 `load_model/unload_model/capabilities`。
 - UI 只显示状态/进度/结果，不直接读文件系统。
 - 移动端模型路径/权限/内存限制单独测试。
 
 ### 7.7 视频/相机
 
-原生视频/相机由共享 `open_quartz_execution::native_video` 管理，macOS 文件硬解已接入 `oq-media`；Web 仍使用 DOM `<video>`。Slint 消费共享 GPU 纹理。
+原生视频/相机由 `open_quartz::native_video`（native-video feature）管理，macOS 文件硬解消费独立 `oq-media`；Web 仍使用 DOM `<video>`。Slint 消费共享 GPU 纹理。
 
 目标：
 
@@ -982,45 +984,34 @@ Rust:
 
 ### 13.1 当前
 
-| 主题 | 源码 |
+| 主题 | 当前源码 |
 |---|---|
-| React 应用壳 | `src/App.tsx` |
-| Header/菜单/传输控制 | `src/components/Header.tsx` |
-| 节点图 | `src/components/NodeGraph/index.tsx` |
-| 节点卡片 | `src/components/NodeGraph/nodes/*.tsx` |
-| 连线 | `src/components/NodeGraph/edges/CustomEdge.tsx` |
-| Inspector | `src/components/SidePanel/index.tsx` |
-| WGSL 编辑器 | `src/components/SidePanel/ShaderEditor.tsx` |
-| 端口面板 | `src/components/SidePanel/PortInspector.tsx` |
-| ONNX 面板 | `src/components/SidePanel/OnnxPanel.tsx` |
-| 预览/灯箱 | `src/components/SidePanel/index.tsx`、`src/components/ImageLightbox.tsx` |
-| 状态 | `src/store/index.ts`、`src/store/graphSlice.ts`、`src/store/graphAdapter.ts` |
-| SDK public API | `src/sdk/OpenQuartzClient.ts` |
-| Native host TS | `src/sdk/internal/NativeHost.ts` |
-| Pipeline/projection | `src/services/PipelineService.ts` |
-| Tauri commands | `src-tauri/src/lib.rs` |
-| Native runtime | `src-tauri/src/native_runtime.rs` |
+| React 应用壳 / Header | `src/App.tsx`、`src/components/Header.tsx` |
+| React 节点图 / Inspector | `src/components/NodeGraph/`、`src/components/SidePanel/` |
+| TypeScript SDK / Native host | `src/sdk/`、`src/sdk/internal/NativeHost.ts` |
+| Tauri commands / native integration | `src-tauri/src/lib.rs`、`src-tauri/src/native_runtime.rs` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
-| Native video | `crates/open_quartz_execution/src/native_video.rs`、`crates/oq-media` |
-| Screen saver | `src-tauri/src/screen_saver.rs`、`crates/open-quartz-screensaver-stub` |
-| GPU presenter | `crates/open_quartz_execution/src/gpu/presenter.rs` |
-| GPU preview/readback | `crates/open_quartz_execution/src/gpu/preview.rs`、`readback.rs` |
-| wgpu 版本 | `crates/open_quartz_execution/Cargo.toml`、`src-tauri/Cargo.toml` |
-| 架构基线 | `docs/DESIGN.md` |
+| Rust SDK root / private domain | `crates/open_quartz/src/lib.rs`、`crates/open_quartz/src/sdk.rs`、`crates/open_quartz/src/domain/` |
+| Native execution / model services | `crates/open_quartz/src/runtime/execution.rs`、`crates/open_quartz/src/resources/models.rs` |
+| Runtime/Engine/GPU/ONNX | `crates/open_quartz/src/runtime/`、`crates/open_quartz/src/engine/`、`crates/open_quartz/src/gpu/`、`crates/open_quartz/src/onnx/` |
+| Resource planning / browser binding | `crates/open_quartz/src/resources/plan.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
+| Native video / independent media | `crates/open_quartz/src/native_video.rs`、`crates/oq-media/` |
+| Screen saver | `src-tauri/src/screen_saver.rs`、`crates/open-quartz-screensaver-stub/` |
+| Slint UI app | `apps/open_quartz_slint/` |
+| Slint AppController / Graph projection / Render bridge | `apps/open_quartz_slint/src/app_controller.rs`、`graph_view_model.rs`、`render_bridge.rs` |
+| Architecture baseline | `docs/DESIGN.md` §7.6 |
 
-### 13.2 目标
+### 13.2 Slint product entrypoints
 
-| 主题 | 建议路径 |
+| 主题 | 当前路径 |
 |---|---|
-| Phase 1 spike | `spikes/slint-render-spike` |
-| Slint app | `apps/open_quartz_slint` |
-| Slint UI | `apps/open_quartz_slint/ui` |
+| Slint app / UI | `apps/open_quartz_slint/`、`apps/open_quartz_slint/ui/` |
 | AppController | `apps/open_quartz_slint/src/app_controller.rs` |
 | Graph projection | `apps/open_quartz_slint/src/graph_view_model.rs` |
 | Render bridge | `apps/open_quartz_slint/src/render_bridge.rs` |
-| 原生执行 / 模型资源服务 | `crates/open_quartz_execution/src/runtime/execution.rs`、`src/resources/models.rs` |
-| 平台服务 | `apps/open_quartz_slint/src/platform` |
-| 文件/模型/视频服务 | `apps/open_quartz_slint/src/services` |
+| Core SDK root/private modules | `crates/open_quartz/src/lib.rs`、`crates/open_quartz/src/sdk.rs`、`crates/open_quartz/src/domain/` |
+| Native execution / model resources | `crates/open_quartz/src/runtime/execution.rs`、`crates/open_quartz/src/resources/models.rs` |
+| Platform adapters / app services | `apps/open_quartz_slint/src/`、`apps/open_quartz_slint/src/services/` |
 
 ---
 

@@ -1,6 +1,6 @@
 # 跨平台硬件推理架构
 
-> 状态：**目标架构与迁移提案**，尚未实施新执行层、Core ML 后端、设备 Tensor I/O 或硬件驻留推理。现有原生 ONNX 实现仍按下方“现状”工作。本设计不承诺任意模型都能在任意硬件上执行，也不把 EP 注册成功视为模型实际由 GPU/NPU 执行。
+> 状态：**未来通用推理契约/后端拆分与硬件驻留仍是设计提案**；当前 ONNX task、ORT pipeline/session 与执行调度属于单一 `open_quartz` 核心。尚未实现独立推理层、Core ML 后端、设备 Tensor I/O 或硬件驻留推理。本设计不承诺任意模型都能在任意硬件上执行，也不把 EP 注册成功视为模型实际由 GPU/NPU 执行。
 
 ## 1. 决策摘要
 
@@ -19,7 +19,7 @@
 
 ## 2. 现状与问题
 
-当前原生实现位于 `crates/open_quartz_execution/src/onnx/session.rs`、`onnx/pipeline.rs` 与 `onnx/task.rs`；`ExecutionRuntime` 管图和资源会话，Slint/Tauri 是宿主。应保留模型缓存/哈希验证、异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。
+当前原生实现位于 `crates/open_quartz/src/onnx/session.rs`、`onnx/pipeline.rs` 与 `onnx/task.rs`；`ExecutionRuntime` 管图和资源会话，Slint/Tauri 是宿主。应保留模型缓存/哈希验证、异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。若源码进一步调整位置，以 [`DESIGN.md` §7.6](./DESIGN.md#76-当前源码落点) 为当前索引。
 
 目前设备路径是明确的：
 
@@ -52,27 +52,24 @@ flowchart TD
     BACKEND --> CUDA[CUDA / TensorRT]
 ```
 
+**当前实现：** Slint/Tauri 应用消费单一 `open_quartz` 核心；核心拥有 WASM binding、Rust SDK/domain、图执行调度、资源意图及可选 GPU/ORT/video 设备适配。应用与独立 `oq-media` 媒体组件继续保留各自边界。
+
+**有条件的未来提取：** 只有具备真实独立 session/tensor/provider 实现、可运行的 ORT adapter、独立测试并消除 graph/runtime 反向依赖时，才考虑把稳定推理契约与后端 adapter 从核心分离。不是先创建契约 crate 再等待实现。
+
 ```text
-apps / SDK / web schema
-          ↓ model references, task and result contracts
-open_quartz_host_api       resource intents and graph policy
-          ↓
-open_quartz_execution     runtime scheduling/cancellation/stamps + resources::models I/O
-          ↓
-oq-inference              stable session/resource/capability contracts (proposed)
-          ↓
-platform backend crates    Core ML | ORT | DirectML/WinML | CUDA/TensorRT | CPU
-          ↕
-open_quartz_execution GPU graph adapters and device-to-device interop
+open_quartz (graph / SDK / Runtime / current ORT adapter / optional GPU interop)
+     └─ future extraction only after independent implementation gate
+          → oq-inference contracts + usable ORT adapter (conditional, not current)
+               → optional platform adapters (Core ML / DirectML / CUDA / CPU)
 ```
 
-Dependency rule: backend may depend on inference contracts and its platform runtime. Public graph/SDK/UI never depend on ORT/Core ML/DirectML concrete types. `open_quartz_execution` may provide wgpu import/export and GPU preprocess kernels; platform interop implementations may use wgpu HAL and native APIs behind cfg-gated private modules. `oq-media` remains independent and provides owned media `FrameLease`; it does not gain an ONNX or graph dependency.
+依赖规则：若后续达到提取门槛，backend 可依赖 inference contracts 与其平台 runtime；公共 graph/SDK/UI 不直接依赖 ORT/Core ML/DirectML 具体类型。当前 `open_quartz` 核心提供可选 wgpu import/export 和 GPU preprocess，平台 interop 可在 feature/cfg 私有模块中使用 wgpu HAL 与系统 API；domain/SDK/runtime 都是核心内部模块，而不是依赖链上的独立 crate。`oq-media` 保持独立并提供拥有的 `FrameLease`，不获得 ONNX 或 graph 依赖。
 
-独立推理库采用 `oq-inference`（Rust `oq_inference`）作为提案名称，`oq` 仅表示出处；不依赖 OpenQuartz graph、schema、ExecutionRuntime、Slint 或 `oq-media`。宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制。平台后端不能反向依赖 `open_quartz_execution`；wgpu/HAL 互操作放在可选适配模块或后续有实际实现的 `oq-inference-wgpu` 包，由组合层连接两侧资源。首轮先提取一个实际可用核心和现有 ORT adapter，不预建空后端 crate。本文列出的新模块与类型均为提案，不是已存在 API。
+宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制；wgpu/HAL interop 留在核心的可选适配模块，只有其自身形成独立可运行实现时才考虑另一个实包。
 
-core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 `open_quartz_execution::FrameStamp` 的类型别名。示例中的 `FrameStamp` 仅表示这一跨平台请求戳概念；graph revision、node generation 和 NodeId 由 ExecutionRuntime 保存为 request ID→图上下文映射，不进入独立库依赖。库的错误类型也不依赖 SDK `SdkError`，在宿主边界转换。
+未来抽取后的 inference core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 OpenQuartz frame stamp 的类型别名。graph revision、node generation 和 NodeId 由 OpenQuartz execution 保存为 request ID→图上下文映射，不进入独立库依赖。库错误也不依赖 SDK `SdkError`，在宿主边界转换。
 
-The model descriptor, task schema, and serialized project record **logical model identity and parameters**, not transient pointers, command queues, device addresses, or runtime session handles. The ExecutionRuntime resource store maps logical identity plus immutable model/version/configuration and selected execution plan to live sessions and caches.
+The model descriptor, task schema, and serialized project record **logical model identity and parameters**, not transient pointers, command queues, device addresses, or runtime session handles. The `open_quartz` resource store maps logical identity plus immutable model/version/configuration and selected execution plan to live sessions and caches.
 
 ## 4. Public contract
 

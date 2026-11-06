@@ -121,7 +121,7 @@ fn decode_image(bytes: &[u8], file_name: String) -> Result<ImageAsset, String> {
 pub struct FramebufferAsset {
     pub data_url: String,
     pub file_name: String,
-    pub format: open_quartz_sdk::FramebufferFormat,
+    pub format: open_quartz::FramebufferFormat,
     pub width: u32,
     pub height: u32,
     pub stride: Option<u32>,
@@ -131,7 +131,7 @@ pub struct FramebufferAsset {
 
 pub fn read_framebuffer(
     path: &Path,
-    format: open_quartz_sdk::FramebufferFormat,
+    format: open_quartz::FramebufferFormat,
     width: u32,
     height: u32,
     stride: Option<u32>,
@@ -173,7 +173,7 @@ pub fn read_framebuffer(
 pub fn decode_framebuffer_data_url(
     data_url: &str,
     file_name: String,
-    format: open_quartz_sdk::FramebufferFormat,
+    format: open_quartz::FramebufferFormat,
     width: u32,
     height: u32,
     stride: Option<u32>,
@@ -209,7 +209,7 @@ pub fn decode_framebuffer_data_url(
 
 fn decode_framebuffer_bytes(
     bytes: &[u8],
-    format: open_quartz_sdk::FramebufferFormat,
+    format: open_quartz::FramebufferFormat,
     width: u32,
     height: u32,
     stride: Option<u32>,
@@ -225,13 +225,13 @@ fn decode_framebuffer_bytes(
         .filter(|length| *length as u64 <= MAX_DECODED_IMAGE_BYTES)
         .ok_or_else(|| "Decoded framebuffer exceeds the 256 MiB limit".to_owned())?;
     let (bytes_per_pixel, channels, is_float) = match format {
-        open_quartz_sdk::FramebufferFormat::Rgba8 => (4, 4, false),
-        open_quartz_sdk::FramebufferFormat::Rgba32f => (16, 4, true),
-        open_quartz_sdk::FramebufferFormat::Rg8 => (2, 2, false),
-        open_quartz_sdk::FramebufferFormat::Rg32f => (8, 2, true),
-        open_quartz_sdk::FramebufferFormat::R8 => (1, 1, false),
-        open_quartz_sdk::FramebufferFormat::R32f => (4, 1, true),
-        open_quartz_sdk::FramebufferFormat::Nv12 => {
+        open_quartz::FramebufferFormat::Rgba8 => (4, 4, false),
+        open_quartz::FramebufferFormat::Rgba32f => (16, 4, true),
+        open_quartz::FramebufferFormat::Rg8 => (2, 2, false),
+        open_quartz::FramebufferFormat::Rg32f => (8, 2, true),
+        open_quartz::FramebufferFormat::R8 => (1, 1, false),
+        open_quartz::FramebufferFormat::R32f => (4, 1, true),
+        open_quartz::FramebufferFormat::Nv12 => {
             if width % 2 != 0 || height % 2 != 0 {
                 return Err("NV12 framebuffers require even width and height".to_owned());
             }
@@ -325,7 +325,7 @@ fn resource_key<T: std::hash::Hash>(value: &T) -> u64 {
 mod tests {
     use super::{decode_framebuffer_data_url, decode_image_data_url, read_project, write_project};
     use base64::Engine as _;
-    use open_quartz_sdk::{
+    use open_quartz::{
         DataType, Environment, FramebufferFormat, GraphCommand, InputMode, NodeFactoryRequest,
         NodeId, OpenQuartz,
     };

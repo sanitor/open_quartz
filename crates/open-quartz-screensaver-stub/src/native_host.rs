@@ -4,16 +4,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use open_quartz_execution::gpu::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
-use open_quartz_execution::runtime::Runtime;
-use open_quartz_execution::native_video::{
+use open_quartz::gpu::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
+use open_quartz::runtime::Runtime;
+use open_quartz::native_video::{
     NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
 };
-use open_quartz_execution::onnx::{
+use open_quartz::onnx::{
     run_native_image_task, NativeOnnxOptions, NativeOnnxProvider, OnnxSession, OnnxTask,
 };
-use open_quartz_execution::runtime::{DataPathMode, RuntimeCapabilities, RuntimeFrameInput};
-use open_quartz_schema::{Graph, InputMode, NodeType, OnnxParamValue, VideoSourceType};
+use open_quartz::runtime::{DataPathMode, RuntimeCapabilities, RuntimeFrameInput};
+use open_quartz::{Graph, InputMode, NodeType, OnnxParamValue, VideoSourceType};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
 };
@@ -210,7 +210,7 @@ impl NativeRenderer {
 
     fn execute_commands(
         &mut self,
-        commands: &[open_quartz_execution::engine::ExecutionCommand],
+        commands: &[open_quartz::engine::ExecutionCommand],
     ) -> Result<(), String> {
         let mut batch = Vec::new();
         for command in commands {

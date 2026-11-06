@@ -15,12 +15,13 @@ fn public_player_behavior_is_target_neutral() {
     assert_eq!(player.state(), PlayerState::Stopped);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
 mod wasm_contract {
     use open_quartz::ffi::BrowserPlayerBinding;
     use open_quartz::wasm_environment::{BrowserFrame, BrowserGpuEnvironment};
     use serde_json::json;
     use wasm_bindgen_test::*;
+    use wasm_bindgen::JsCast;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -36,7 +37,9 @@ mod wasm_contract {
         let environment = BrowserGpuEnvironment::from_offscreen_canvas(canvas)
             .await
             .unwrap();
-        assert_eq!(environment.surface_format.is_srgb(), true);
+        let capabilities = environment.surface.get_capabilities(&environment.adapter);
+        assert!(capabilities.formats.contains(&environment.surface_format));
+        assert_eq!(environment.surface_format.is_srgb(), capabilities.formats.iter().any(wgpu::TextureFormat::is_srgb));
     }
 
     #[wasm_bindgen_test(async)]
@@ -159,6 +162,13 @@ mod wasm_contract {
             ]
         }).to_string()).unwrap();
         let source = web_sys::OffscreenCanvas::new(2, 2).unwrap();
+        let context = source
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<web_sys::OffscreenCanvasRenderingContext2d>()
+            .unwrap();
+        context.fill_rect(0.0, 0.0, 2.0, 2.0);
         player
             .upload_frame("video", source.transfer_to_image_bitmap().unwrap(), 0)
             .unwrap();

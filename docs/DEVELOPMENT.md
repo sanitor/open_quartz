@@ -8,9 +8,25 @@ Web 独立使用 `npm run dev:web`、`npm run build:web`、`npm run preview:web`
 
 macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相机、Windows/Linux 验收和移动端按用户决定延后。详细阶段证据与已知启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md#810-phase-7切换)。下文保留历史 Web/Tauri 单元测试规划，旧 TypeScript engine 路径、工具和 CI 示例不代表当前实现；当前入口以 `package.json` 和 `.github/workflows/` 为准。
 
+Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。桌面 execution 与 Web/WASM 的 API、资源规划和边界测试保留；依赖锁文件中的第三方 Android/JNI 包属于跨平台库的目标依赖，不手工删除。
+
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:runtime` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
 跨平台硬件推理系统的目标分层、设备缓冲契约、执行方案策略与迁移验收见 [推理架构设计](INFERENCE_ARCHITECTURE.md)。当前 ONNX/ORT 读回路径与计划架构明确区分；Core ML、Windows 设备驻留和零 CPU 图像传输在通过各自平台门槛前不视为已实现。
+
+核心实现已收敛为单一 `open_quartz`，原 schema/execution/SDK 包全部移除，无 alias 或兼容转发层；详见 [设计第 7 节](DESIGN.md#7-crate-边界审查与重新设计)。源码集中在 `crates/open_quartz/src/`：`domain/` 和 `sdk.rs` 为私有实现，公共领域类型与 SDK aggregates 由 root 导出，host 使用显式公开的 advanced 模块。根/Slint/editor 三个实际 workspace 继续各自维护需要的 profile 与 lockfile；`oq-media`、编辑器、屏保 exporter/stub 与应用不并入核心。
+
+### 核心能力选择与验收
+
+- `default = []`：Graph/Project 编辑、WGSL/catalog 和共享 Runtime 状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出使用无设备配置。
+- `gpu`：wgpu executor/纹理/readback/presentation。`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或模型下载。
+- `native-video`：平台视频 source/worker，macOS 选择独立 oq-media；`native-video-d3d12` 蕴含 native-video 与 gpu，供 Windows D3D12 路径显式选择。
+- `native-onnx`：ORT session/pipeline，可独立于 GPU 和 HTTP 使用。`model-cache`：下载/哈希/文件缓存，可独立于 ORT/GPU 使用。纯 task/pre/postprocess 不随 native-onnx 关闭。
+- `browser`：wasm32 的 GPU environment/执行组合，蕴含 gpu，不启用原生媒体、ORT 或下载服务。Web/WASM 构建脚本显式选择此能力；桌面 manifests 显式选择 native-runtime/video/ONNX/cache 组合。
+
+Cargo feature 可加，完整 workspace 构建会因应用重新打开设备依赖；默认无设备闭包与每个独立能力必须分别用 consumer invocation 和目标 normal/build dependency tree 验收。默认纯核心不需要先准备原生运行库；显式 native video/ONNX 的直接 Cargo 调用仍需对应 SDK/运行库。
+
+本轮单核心与 feature 隔离已验证：默认核心 230 项、完整 workspace 原有 308 项及两项新增独立能力回归、Slint 72 项与真实交互 18/18、TS 704 项和 tsc 均通过；实际 Chrome 157 browser 5/5、default/browser wasm、独立 editor 与 Tauri app --lib 编译检查通过。修复依赖泄漏后，独立 default + 四个能力组合的边界脚本通过。默认/完整 native 分别运行 100% coverage gate，未扩大 ignore；整体 lines/functions/regions 为 99.97%/99.69%/99.92% 和 98.54%/98.20%/97.27%，**两项整体 gate 均失败**，domain/sdk/ffi/planner 均 100%。Prepared 从已排除的 cache 文件移出后纳入计量，为 96.55%/100%/97.06%，缺口为 provider 平台分支。详细报告与能力回归见设计 §7.8；Windows/Linux runtime 与 release packaging 未重跑。公开真实 Player driver、Project graph_mut 收紧及 browser coordinator 提取仍为后续工作。
 
 ### 可复用 Slint 编辑器
 

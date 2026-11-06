@@ -1,4 +1,4 @@
-use open_quartz_sdk::{
+use open_quartz::{
     DataType, FramebufferFormat, InputMode, NodeData, NodeType, TextureFilter, TextureWrap,
     VideoSourceType,
 };
