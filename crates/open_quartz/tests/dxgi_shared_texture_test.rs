@@ -2,10 +2,8 @@
 
 use std::sync::Arc;
 
-use open_quartz::gpu::{
-    DxgiSharedTextureExporter, GpuBackend, GpuPresentationFrame, SharedTextureExporter,
-    TextureFormat,
-};
+use open_quartz::execution::gpu::{DxgiSharedTextureExporter, GpuBackend, GpuPresentationFrame, SharedTextureExporter,
+TextureFormat,};
 use windows_graphics::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_graphics::Win32::Graphics::Direct3D12::{ID3D12Fence, ID3D12Resource};
 use windows_graphics::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -45,7 +43,7 @@ fn dxgi_export_opens_resource_and_signals_shared_fence() {
             node_id: "renderer".to_owned(),
             frame: 1,
             timeline_ns: 16_666_667,
-            output: open_quartz::gpu::GpuOutputHandle {
+            output: open_quartz::execution::gpu::GpuOutputHandle {
                 texture: source.texture,
                 view: source.view,
                 sampler: source.sampler,
@@ -97,7 +95,7 @@ fn dxgi_pool_requires_consumer_release_before_reuse() {
     pollster::block_on(async {
         let backend = dx12_backend().await;
         let source = backend.create_texture(2, 2, TextureFormat::Rgba8Unorm);
-        let output = open_quartz::gpu::GpuOutputHandle {
+        let output = open_quartz::execution::gpu::GpuOutputHandle {
             texture: source.texture,
             view: source.view,
             sampler: source.sampler,

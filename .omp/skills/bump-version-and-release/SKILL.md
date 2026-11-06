@@ -7,16 +7,15 @@ description: Bump the app version, update CHANGELOG and README, create a git tag
 
 ## Version locations
 
-Bump the version string in **all 4 files** (keep them in sync):
+Bump the version string in **all 3 manifests** (keep them in sync):
 
 | File | Field | Format | Notes |
 |------|-------|--------|-------|
 | `package.json` | `"version"` | `"0.X.0b"` | App version, semver + `b` suffix for beta |
-| `src-tauri/tauri.conf.json` | `"version"` | `"0.X.0"` | Tauri app version (no `b` suffix) |
-| `src-tauri/Cargo.toml` | `version` | `"0.X.0"` | Rust crate version (no `b` suffix) |
+| `apps/open_quartz_slint/Cargo.toml` | `version` | `"0.X.0"` | Native desktop version (no `b` suffix) |
 | `crates/open_quartz/Cargo.toml` | `version` | `"0.X.0"` | Shared Rust SDK version (no `b` suffix) |
 
-**Do NOT touch** `src/utils/projectIO.ts` `CURRENT_VERSION` — that is the **project file format** version, only bumped when serialization schema changes (new/removed fields in `ShaderNodeData` or `ProjectFile`).
+Update the version label in `apps/open_quartz_slint/ui/components/top_bar.slint` as well. The desktop packager derives the macOS bundle version from `package.json`. Keep the project file format version unchanged unless the serialization schema changes.
 
 ## Steps
 
@@ -26,14 +25,15 @@ Bump the version string in **all 4 files** (keep them in sync):
 - Check recent tags: `git tag --sort=-creatordate | head -5`
 - Increment minor version (e.g. `0.12.0b` -> `0.13.0b`)
 
-### 2. Bump version in all 4 files
+### 2. Bump version in all 3 manifests
 
 ```
 package.json          →  "version": "0.X.0b"
-src-tauri/Cargo.toml  →  version = "0.X.0"
-src-tauri/tauri.conf.json → "version": "0.X.0"
+apps/open_quartz_slint/Cargo.toml → version = "0.X.0"
 crates/open_quartz/Cargo.toml → version = "0.X.0"
 ```
+
+Refresh `package-lock.json` with `npm install --package-lock-only --ignore-scripts` and refresh the native Cargo lockfiles without upgrading unrelated dependencies.
 
 ### 3. Update CHANGELOG.md
 
@@ -59,7 +59,7 @@ crates/open_quartz/Cargo.toml → version = "0.X.0"
 ### 4. Update README.md
 
 Review and update if needed:
-- Test count in the `npm test` line (e.g. `# 1045 unit tests`)
+- Native test counts and the commands that produced them
 - Features section — move completed roadmap items to Features
 - Roadmap section — remove completed items
 - Node catalog — add new node types/shaders/models
@@ -117,11 +117,12 @@ gh release create v0.X.0b \
 
 ## Checklist
 
-- [ ] Version bumped in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `crates/open_quartz/Cargo.toml`
+- [ ] Version bumped in `package.json`, `apps/open_quartz_slint/Cargo.toml`, and `crates/open_quartz/Cargo.toml`; toolbar label and native lockfiles updated
 - [ ] CHANGELOG.md updated with new section
 - [ ] README.md reviewed and updated (test count, features, roadmap)
-- [ ] All tests pass (`npm test`)
-- [ ] Type check passes (`npx tsc --noEmit`)
+- [ ] Native tests pass (`npm run test:desktop`)
+- [ ] Desktop UI and shader suites pass (`npm run test:desktop:ui`, `npm run test:desktop:shaders`)
+- [ ] Native package builds (`npm run build`)
 - [ ] Committed with `release: v0.X.0b` message
 - [ ] Annotated tag `v0.X.0b` created
 - [ ] Pushed to origin with tags

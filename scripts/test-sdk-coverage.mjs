@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 // These files were excluded from the former native_host coverage gate before
 // consolidation. Keep that exact scope; merging crates must not exclude more
 // production implementation or relax the 100% SDK/execution thresholds.
-const nativeIntegrationFiles = '/runtime/(execution|onnx_lifecycle_tests)\\.rs$|/resources/(models|models_tests)\\.rs$';
+const nativeIntegrationFiles = '/execution/runtime/(execution|onnx_lifecycle_tests)\\.rs$|/resources/(models|models_tests)\\.rs$';
 const ignoredFiles = `(/tests/|_coverage_tests\\.rs$|${nativeIntegrationFiles})`;
 function run(args, collectFailure = false) {
   const result = spawnSync('cargo', args, { stdio: 'inherit' });

@@ -1,20 +1,26 @@
 # OpenQuartz 开发文档
 
-## 当前开发入口（Slint 默认）
+## 当前开发入口（Rust Slint + 独立 .scr）
 
-默认桌面使用 `apps/open_quartz_slint`：`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。这些命令不构建 Web/WASM、不启动 Vite。`dist-desktop/` 是可重新生成的忽略产物。
+当前产品仅为 `apps/open_quartz_slint` 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 已退役。`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。没有 Vite/Web/Tauri 构建入口。`dist-desktop/` 是可重新生成的忽略产物；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
 
-Web 独立使用 `npm run dev:web`、`npm run build:web`、`npm run preview:web`；Tauri 保留一个版本，通过 `npm run dev:tauri`、`npm run package:tauri` 显式使用。Tauri 的构建 hook 调用 Web 构建，不递归到 Slint。根 Cargo workspace 的 Tauri 产物位于 `target/release/bundle/`；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
+本次原生测试、boundary、真实窗口/Shader、editor 与 macOS release 包通过；两项整体 100% coverage gate 均失败，精确结果见 [设计 §7.8](DESIGN.md#78-验证矩阵与证据状态)。先前 macOS 包搬迁、原生交互以及当时 Web/Tauri 结果只作历史证据；真实相机、Windows/Linux（含 `.scr`）和移动端仍需独立验收。历史记录与启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md)。下文历史 Web/Tauri 测试规划中的命令、路径和 CI 示例不代表当前实现。
 
-macOS 原生归档搬迁后的运行与 Tauri `.app` 构建已验证；真实相机、Windows/Linux 验收和移动端按用户决定延后。详细阶段证据与已知启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md#810-phase-7切换)。下文保留历史 Web/Tauri 单元测试规划，旧 TypeScript engine 路径、工具和 CI 示例不代表当前实现；当前入口以 `package.json` 和 `.github/workflows/` 为准。
-
-Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。桌面 execution 与 Web/WASM 的 API、资源规划和边界测试保留；依赖锁文件中的第三方 Android/JNI 包属于跨平台库的目标依赖，不手工删除。
+Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:runtime` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
 跨平台硬件推理系统的目标分层、设备缓冲契约、执行方案策略与迁移验收见 [推理架构设计](INFERENCE_ARCHITECTURE.md)。当前 ONNX/ORT 读回路径与计划架构明确区分；Core ML、Windows 设备驻留和零 CPU 图像传输在通过各自平台门槛前不视为已实现。
 
-核心实现已收敛为单一 `open_quartz`，原 schema/execution/SDK 包全部移除，无 alias 或兼容转发层；详见 [设计第 7 节](DESIGN.md#7-crate-边界审查与重新设计)。源码集中在 `crates/open_quartz/src/`：`domain/` 和 `sdk.rs` 为私有实现，公共领域类型与 SDK aggregates 由 root 导出，host 使用显式公开的 advanced 模块。根/Slint/editor 三个实际 workspace 继续各自维护需要的 profile 与 lockfile；`oq-media`、编辑器、屏保 exporter/stub 与应用不并入核心。
+核心实现为单一 `open_quartz`，原 schema/execution/SDK 包全部移除，无 alias 或兼容转发层；详见 [设计第 7 节](DESIGN.md#7-crate-边界审查与重新设计)。`crates/open_quartz/src/` 根部仅 `lib.rs`，负责模块声明与公共 Rust 类型导出；实现位于 `project`（model/catalog/Project/history/layout/node factory/screen saver）、`player`（Environment/OpenQuartz/Player/Output/Subscription）、`resources`（catalog/plan/models）、`execution`（engine/runtime/gpu/shader/schedule/event/logging）、`inference` 和 `media`。`bindings`、`web-bindings` 与 `browser` 不再是可选能力。根/Slint/editor 三个实际 workspace 各自维护需要的 profile 与 lockfile；`oq-media`、编辑器、屏保 exporter/stub 与应用保持独立，不新增空壳 crate。
+
+Rust host 使用 `open_quartz::execution::{engine,runtime,gpu,shader,schedule,event}`、`open_quartz::project::catalog`、`open_quartz::inference`、`open_quartz::media::native` 和 `open_quartz::resources`；普通业务仍消费 root 导出的 typed aggregates。`project::model` 和聚合实现模块是内部实现。完整源码链接见 [设计 §7.6](DESIGN.md#76-当前源码落点)。
+
+### 桌面是否需要 FFI？
+
+纯 Rust/Slint 桌面和 `.scr` 直接调用 typed Rust API，不需要额外导出的 SDK C ABI、JNI 或语言 FFI 桥；已移除 JS/WASM adapter 和 Tauri IPC 产品边界，不提供兼容 bindings feature/API。
+
+这里的“无需 SDK FFI”不等于无需外部库 FFI：ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生后端必要的实现细节。typed planner、图校验、WGSL/catalog/ONNX 语义及原生 Rust `Engine` 保留。
 
 ### 核心能力选择与验收
 
@@ -22,11 +28,28 @@ Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` �
 - `gpu`：wgpu executor/纹理/readback/presentation。`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或模型下载。
 - `native-video`：平台视频 source/worker，macOS 选择独立 oq-media；`native-video-d3d12` 蕴含 native-video 与 gpu，供 Windows D3D12 路径显式选择。
 - `native-onnx`：ORT session/pipeline，可独立于 GPU 和 HTTP 使用。`model-cache`：下载/哈希/文件缓存，可独立于 ORT/GPU 使用。纯 task/pre/postprocess 不随 native-onnx 关闭。
-- `browser`：wasm32 的 GPU environment/执行组合，蕴含 gpu，不启用原生媒体、ORT 或下载服务。Web/WASM 构建脚本显式选择此能力；桌面 manifests 显式选择 native-runtime/video/ONNX/cache 组合。
 
 Cargo feature 可加，完整 workspace 构建会因应用重新打开设备依赖；默认无设备闭包与每个独立能力必须分别用 consumer invocation 和目标 normal/build dependency tree 验收。默认纯核心不需要先准备原生运行库；显式 native video/ONNX 的直接 Cargo 调用仍需对应 SDK/运行库。
 
-本轮单核心与 feature 隔离已验证：默认核心 230 项、完整 workspace 原有 308 项及两项新增独立能力回归、Slint 72 项与真实交互 18/18、TS 704 项和 tsc 均通过；实际 Chrome 157 browser 5/5、default/browser wasm、独立 editor 与 Tauri app --lib 编译检查通过。修复依赖泄漏后，独立 default + 四个能力组合的边界脚本通过。默认/完整 native 分别运行 100% coverage gate，未扩大 ignore；整体 lines/functions/regions 为 99.97%/99.69%/99.92% 和 98.54%/98.20%/97.27%，**两项整体 gate 均失败**，domain/sdk/ffi/planner 均 100%。Prepared 从已排除的 cache 文件移出后纳入计量，为 96.55%/100%/97.06%，缺口为 provider 平台分支。详细报告与能力回归见设计 §7.8；Windows/Linux runtime 与 release packaging 未重跑。公开真实 Player driver、Project graph_mut 收紧及 browser coordinator 提取仍为后续工作。
+本次功能/边界/包结果、两项失败的整体 100% coverage gate 与未实测平台见 [设计 §7.8](DESIGN.md#78-验证矩阵与证据状态)，未降低阈值或扩大 ignore；不把先前 Web/WASM/Tauri 结果当作当前验收。`execution` 仍是过渡性组合目录，目录分组不足以完成所有权设计；Runtime 是机制而非业务领域，编译/求值/播放/渲染/推理/媒体/输出职责方案见 §7.5。公开真实 Player driver 尚未接通，`Project::graph_mut` 仍可绕过 revision/history，本次不声称修复。
+
+### 当前命令与资源索引
+
+```sh
+npm ci
+npm run prepare:runtime              # 准备原生库；直接 Cargo 前同样需要
+npm run dev
+npm run build
+cargo test --workspace               # 根核心/媒体/exporter/stub workspace
+npm run test:desktop                 # Slint 独立 workspace
+npm run test:desktop:ui              # 真实原生窗口交互
+npm run test:desktop:shaders         # catalog GPU 像素用例
+npm run test:editor                 # 独立编辑器 workspace
+npm run check:rust-boundaries
+npm run test:sdk-coverage
+```
+
+图标源为 `apps/open_quartz_slint/icons/`；准备生成的运行库、媒体 SDK、许可证和对应源码在 `apps/open_quartz_slint/runtime/`，不再使用 `src-tauri/` 或 `public/`。`.scr` stub 从 `target/screensaver-stub/` 构建后暂存到 app runtime。macOS numeric bundle version 来自 `package.json`。Shader 唯一源为 `crates/open_quartz/src/project/shader_catalog.json`，原生 catalog 与 Shader automation 共用；根 `tests/fixtures/` 保留原生图像/Shader fixtures。以上是可运行命令与路径，不是本次已通过的检查记录。
 
 ### 可复用 Slint 编辑器
 
@@ -43,7 +66,9 @@ Cargo feature 可加，完整 workspace 构建会因应用重新打开设备依�
 本轮 macOS 验证不等于跨平台发布验收。真实输入法候选操作尚未验证；读屏器完整 caret/selection/text-run 报告缺少 Slint 公开接口，现有 accessible value/set-value/selection-action 不等于完整文本无障碍。详细证据见 [研究与实现记录](WGSL_SYNTAX_HIGHLIGHT_RESEARCH.md#11-本仓组件实现与验证)。
 
 
-## 单元测试计划
+## 单元测试计划（历史 Web/Tauri 规划）
+
+> **归档范围：本节至文末全部为退役前 Web/Tauri 测试规划。** 当时的“当前”、命令、源码树和覆盖门槛不适用于当前原生产品；不需要安装或运行这里的前端工具。当前入口仅以上文、`package.json` 与活动 CI 为准。
 
 ### 1. 目标
 

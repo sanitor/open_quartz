@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "macos", feature = "gpu", feature = "native-video"))]
 
-use open_quartz::gpu::{GpuBackend, TextureFormat};
+use open_quartz::execution::gpu::{GpuBackend, TextureFormat};
 use oq_media::{ColorMatrix, PixelFormat, Session};
 use std::{path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
 
@@ -9,7 +9,7 @@ impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_file(&self.0)
 
 #[test]
 fn eight_and_ten_bit_hardware_surfaces_preserve_color_and_range() {
-    let ffmpeg=std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/runtime/ffmpeg"));
+    let ffmpeg=std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/open_quartz_slint/runtime/ffmpeg"));
     pollster::block_on(async {
         let instance=wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter=instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap();
@@ -52,7 +52,7 @@ fn eight_and_ten_bit_hardware_surfaces_preserve_color_and_range() {
 #[test]
 fn decoded_pal_primaries_override_container_tags_and_convert_to_srgb() {
     use oq_media::ColorPrimaries;
-    let ffmpeg=std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/runtime/ffmpeg"));
+    let ffmpeg=std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/open_quartz_slint/runtime/ffmpeg"));
     let suffix=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let base=Fixture(std::env::temp_dir().join(format!("oq-pal-{suffix}.mp4")));
     let tagged=Fixture(std::env::temp_dir().join(format!("oq-pal-tags-{suffix}.mp4")));

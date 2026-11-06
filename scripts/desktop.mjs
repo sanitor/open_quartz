@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Native desktop entry point. Web/WASM preparation is deliberately separate.
+// Native desktop runtime preparation, development, testing and portable packaging.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -26,7 +26,7 @@ if (process.env.CARGO_BUILD_TARGET && process.env.CARGO_BUILD_TARGET !== triple)
 const cache = join(root, 'node_modules', '.cache', 'open-quartz');
 const target = join(root, 'apps', 'open_quartz_slint', 'target');
 const manifest = join(root, 'apps', 'open_quartz_slint', 'Cargo.toml');
-const helperRuntime = join(root, 'src-tauri', 'runtime');
+const helperRuntime = join(root, 'apps', 'open_quartz_slint', 'runtime');
 const runtime = join(cache, `desktop-runtime-${platform}-${arch}`);
 const exe = `open_quartz_slint${platform === 'win32' ? '.exe' : ''}`;
 const ortName = platform === 'win32' ? 'onnxruntime.dll'
@@ -226,7 +226,8 @@ async function verifyStartup(binary) {
 }
 async function packageDesktop(binary) {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  const config = JSON.parse(await readFile(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  const bundleVersion = pkg.version.match(/^\d+\.\d+\.\d+/)?.[0];
+  if (!bundleVersion) throw new Error(`Invalid desktop package version: ${pkg.version}`);
   const output = join(root, 'dist-desktop');
   const label = `OpenQuartz-${pkg.version}-${platform === 'win32' ? 'windows' : platform === 'darwin' ? 'macos' : 'linux'}-${arch}`;
   const stagingRoot = join(output, `${label}.staging`);
@@ -247,7 +248,7 @@ async function packageDesktop(binary) {
       await copyRequired(binary, join(contents, 'MacOS', exe));
       await chmod(join(contents, 'MacOS', exe), 0o755);
       await cp(runtime, join(resources, 'runtime'), { recursive: true });
-      await copyRequired(join(root, 'src-tauri', 'icons', 'icon.icns'), join(resources, 'icon.icns'));
+      await copyRequired(join(root, 'apps', 'open_quartz_slint', 'icons', 'icon.icns'), join(resources, 'icon.icns'));
       await copyRequired(join(root, 'LICENSE'), join(resources, 'LICENSE.txt'));
       await writeFile(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -258,8 +259,8 @@ async function packageDesktop(binary) {
 <key>CFBundleExecutable</key><string>${exe}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>icon.icns</string>
-<key>CFBundleShortVersionString</key><string>${config.version}</string>
-<key>CFBundleVersion</key><string>${config.version}</string>
+<key>CFBundleShortVersionString</key><string>${bundleVersion}</string>
+<key>CFBundleVersion</key><string>${bundleVersion}</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSBackgroundOnly</key><false/>
 <key>LSUIElement</key><false/>
@@ -279,7 +280,7 @@ async function packageDesktop(binary) {
       await copyRequired(binary, join(staging, exe));
       await installRuntime(staging);
       await copyRequired(join(root, 'LICENSE'), join(staging, 'LICENSE.txt'));
-      await copyRequired(join(root, 'src-tauri', 'icons', platform === 'win32' ? 'icon.ico' : 'icon.png'),
+      await copyRequired(join(root, 'apps', 'open_quartz_slint', 'icons', platform === 'win32' ? 'icon.ico' : 'icon.png'),
         join(staging, platform === 'win32' ? 'icon.ico' : 'icon.png'));
       await verifyStartup(join(staging, exe));
       if (platform === 'win32') {

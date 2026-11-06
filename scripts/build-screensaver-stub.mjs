@@ -11,10 +11,10 @@ if (process.platform !== 'win32') {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = resolve(root, 'crates', 'open-quartz-screensaver-stub', 'Cargo.toml');
-const targetDir = resolve(root, 'src-tauri', 'target');
+const targetDir = resolve(root, 'target', 'screensaver-stub');
 const target = 'x86_64-pc-windows-msvc';
 const executable = resolve(targetDir, target, 'release', 'open-quartz-screensaver-stub.exe');
-const destination = resolve(root, 'src-tauri', 'runtime', 'open-quartz-screensaver-stub.exe');
+const destination = resolve(root, 'apps', 'open_quartz_slint', 'runtime', 'open-quartz-screensaver-stub.exe');
 // The exported .scr must reach main() without app-local VC++ sidecars so it
 // can extract the FFmpeg/ORT DLLs before their first use.
 // An explicit target keeps these flags off host build scripts/proc-macros.

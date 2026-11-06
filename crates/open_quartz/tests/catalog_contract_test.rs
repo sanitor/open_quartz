@@ -1,4 +1,4 @@
-use open_quartz::catalog::{catalog_snapshot, evaluate_math};
+use open_quartz::project::catalog::{catalog_snapshot, evaluate_math};
 use open_quartz::OnnxTask;
 use open_quartz::{DataType, PortDirection};
 use serde_json::json;

@@ -1,4 +1,4 @@
-use open_quartz::wgsl::parse_shader;
+use open_quartz::execution::shader::parse_shader;
 
 #[test]
 fn extracts_texture_uniform_and_fragment_output() {

@@ -7,8 +7,15 @@ const root = resolve('.');
 const dir = mkdtempSync(join(tmpdir(), 'open-quartz-boundary-'));
 const dependency = `open_quartz = { path = ${JSON.stringify(join(root, 'crates/open_quartz'))}, default-features = false }`;
 
+function execute(command, args, cwd) {
+  const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' });
+  if (result.error) throw new Error(`${command} ${args.join(' ')} could not finish: ${result.error.message}`);
+  if (result.signal) throw new Error(`${command} ${args.join(' ')} terminated by ${result.signal}`);
+  return result;
+}
+
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
+  const result = execute(command, args, cwd);
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
@@ -36,7 +43,7 @@ fn main() {
 `);
   run('cargo', ['check', '--quiet', '--manifest-path', join(publicConsumer, 'Cargo.toml')], root);
 
-  const heavy = ['wgpu', 'ort', 'ffmpeg-next', 'reqwest', 'oq-media', 'objc2', 'windows'];
+  const heavy = ['wgpu', 'ort', 'ffmpeg-next', 'reqwest', 'oq-media', 'objc2', 'windows', 'wasm-bindgen', 'web-sys', 'js-sys'];
   const tree = run('cargo', ['tree', '--quiet', '--manifest-path', join(publicConsumer, 'Cargo.toml'), '-e', 'normal,build', '--prefix', 'none'], root);
   for (const dependencyName of heavy) {
     if (tree.split('\n').some((line) => line.startsWith(`${dependencyName} `) || line === dependencyName)) {
@@ -51,7 +58,7 @@ fn main() {
       feature: 'native-runtime',
       forbidden: ['ort', 'ffmpeg-next', 'oq-media', 'reqwest'],
       source: `
-use open_quartz::runtime::ExecutionRuntime;
+use open_quartz::execution::runtime::ExecutionRuntime;
 fn main() {
     let _ = ExecutionRuntime::from_shared_wgpu;
 }
@@ -61,7 +68,7 @@ fn main() {
       feature: 'native-video',
       forbidden: ['ort', 'reqwest', 'wgpu', 'objc2-metal'],
       source: `
-use open_quartz::native_video::NativeVideoSource;
+use open_quartz::media::native::NativeVideoSource;
 fn main() {
     let _: Option<NativeVideoSource> = None;
 }
@@ -71,7 +78,7 @@ fn main() {
       feature: 'native-onnx',
       forbidden: ['wgpu', 'reqwest'],
       source: `
-use open_quartz::onnx::OnnxSession;
+use open_quartz::inference::OnnxSession;
 fn main() {
     let _ = OnnxSession::from_memory(&[]);
 }
@@ -101,17 +108,23 @@ fn main() {
     }
   }
 
-  const privateDomain = consumer('open_quartz_private_domain_check', `
-use open_quartz::domain::Graph;
-fn main() { let _ = Graph::default(); }
+  const privateModel = consumer('open_quartz_private_model_check', `
+use open_quartz::project::model::Graph;
+fn main() { let _ = core::any::type_name::<Graph>(); }
 `);
-  const privateSdk = consumer('open_quartz_private_sdk_check', `
-use open_quartz::sdk::Project;
-fn main() { let _ = core::any::type_name::<Project>(); }
+  const privatePlayer = consumer('open_quartz_private_player_check', `
+use open_quartz::player::playback::Player;
+fn main() { let _ = core::any::type_name::<Player>(); }
 `);
-  for (const project of [privateDomain, privateSdk]) {
-    const result = spawnSync('cargo', ['check', '--quiet', '--manifest-path', join(project, 'Cargo.toml')], { cwd: root, encoding: 'utf8' });
+  for (const [project, diagnostic] of [
+    [privateModel, /error\[E0603\]: module `model` is private/],
+    [privatePlayer, /error\[E0603\]: module `playback` is private/],
+  ]) {
+    const result = execute('cargo', ['check', '--quiet', '--manifest-path', join(project, 'Cargo.toml')], root);
     if (result.status === 0) throw new Error(`Internal module unexpectedly public: ${project}`);
+    if (!diagnostic.test(result.stderr)) {
+      throw new Error(`Boundary fixture did not fail for the expected reason: ${project}\n${result.stdout}\n${result.stderr}`);
+    }
   }
 
   const metadata = JSON.parse(run('cargo', ['metadata', '--quiet', '--no-deps', '--format-version', '1'], root));
@@ -122,7 +135,7 @@ fn main() { let _ = core::any::type_name::<Project>(); }
   }
   const manifests = [
     'Cargo.toml', 'apps/open_quartz_slint/Cargo.toml', 'crates/slint_code_editor/Cargo.toml',
-    'crates/open_quartz/Cargo.toml', 'src-tauri/Cargo.toml',
+    'crates/open_quartz/Cargo.toml',
     'crates/open_quartz_screensaver/Cargo.toml', 'crates/open-quartz-screensaver-stub/Cargo.toml',
   ];
   for (const manifest of manifests) {

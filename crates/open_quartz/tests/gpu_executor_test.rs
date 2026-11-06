@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use open_quartz::engine::{ExecutionEngine, FrameInputs};
-use open_quartz::gpu::{GpuBackend, GpuExecutor};
+use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
+use open_quartz::execution::gpu::{GpuBackend, GpuExecutor};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 
@@ -121,7 +121,7 @@ fn renderer_reconnection_cannot_reuse_previous_source_texture() {
         );
 
         graph.edges[0].source = "inference".into();
-        let plan = open_quartz::engine::build_execution_plan(&graph.nodes, &graph.edges);
+        let plan = open_quartz::execution::engine::build_execution_plan(&graph.nodes, &graph.edges);
         executor.sync_plan(&plan).unwrap();
         assert!(executor.read_output_rgba("renderer").await.is_err());
 
@@ -140,7 +140,7 @@ fn renderer_reconnection_cannot_reuse_previous_source_texture() {
             executor.read_output_rgba("renderer").await.unwrap(),
             [0, 255, 0, 255]
         );
-        let plan = open_quartz::engine::build_execution_plan(&graph.nodes, &[]);
+        let plan = open_quartz::execution::engine::build_execution_plan(&graph.nodes, &[]);
         executor.sync_plan(&plan).unwrap();
         assert!(executor.read_output_rgba("renderer").await.is_err());
     });
@@ -342,7 +342,7 @@ fn uploads_reuses_and_releases_image_texture_resources() {
 fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
     pollster::block_on(async {
         let catalog: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../src/shaders/catalog.json"
+            "../src/project/shader_catalog.json"
         )).unwrap();
         let shader = catalog["groups"].as_array().unwrap().iter()
             .flat_map(|group| group["items"].as_array().unwrap())
@@ -371,15 +371,15 @@ fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
             ],
             "edges":[{"id":"e","source":"feedback","sourceHandle":"out","target":"renderer","targetHandle":"in"}]
         })).unwrap();
-        let mut runtime = open_quartz::runtime::Runtime::new_native(
-            open_quartz::runtime::RuntimeCapabilities { data_paths: vec![] },
+        let mut runtime = open_quartz::execution::runtime::Runtime::new_native(
+            open_quartz::execution::runtime::RuntimeCapabilities { data_paths: vec![] },
         );
         runtime.set_graph(&graph).unwrap();
         runtime.play(0).unwrap();
         let mut executor = GpuExecutor::new(request_backend().await);
         let mut frames = Vec::new();
         for number in 1..=3 {
-            let clock = runtime.advance(&open_quartz::runtime::RuntimeFrameInput {
+            let clock = runtime.advance(&open_quartz::execution::runtime::RuntimeFrameInput {
                 now_ns: (number - 1) * 16_666_667,
                 date: [0.0; 4], mouse: [0.0; 4], resolution: [32.0, 32.0, 1.0],
             }).unwrap();
@@ -464,8 +464,8 @@ fn native_runtime_auto_size_follows_live_sources_and_manual_filter_cascades() {
                     edge("cascade-output", "cascade", "cascade-renderer", "in")
                 ]
             })).unwrap();
-            let mut runtime = open_quartz::runtime::Runtime::new_native(
-                open_quartz::runtime::RuntimeCapabilities { data_paths: vec![] },
+            let mut runtime = open_quartz::execution::runtime::Runtime::new_native(
+                open_quartz::execution::runtime::RuntimeCapabilities { data_paths: vec![] },
             );
             runtime.set_graph(&graph).unwrap();
             runtime.play(0).unwrap();
@@ -475,7 +475,7 @@ fn native_runtime_auto_size_follows_live_sources_and_manual_filter_cascades() {
             for (number, (width, height)) in [(1920, 1080), (640, 360)].into_iter().enumerate() {
                 executor.upload_rgba("source", &[64, 0, 0, 255].repeat((width * height) as usize), width, height).unwrap();
                 runtime.mark_dirty("source").unwrap();
-                runtime.advance(&open_quartz::runtime::RuntimeFrameInput {
+                runtime.advance(&open_quartz::execution::runtime::RuntimeFrameInput {
                     now_ns: number as u64 * 16_666_667,
                     date: [0.0; 4], mouse: [0.0; 4], resolution: [7.0, 9.0, 1.0],
                 }).unwrap();

@@ -2,8 +2,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use open_quartz::native_video::{NativeVideoConfig, NativeVideoSourceKind};
-use open_quartz::runtime::ExecutionRuntime;
+use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
+use open_quartz::execution::runtime::ExecutionRuntime;
 use open_quartz::Graph;
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
@@ -952,7 +952,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
         let path = std::env::temp_dir().join(format!("oq-standalone-{}.mp4",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        let ffmpeg = open_quartz::native_video::find_ffmpeg().unwrap();
+        let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
         assert!(std::process::Command::new(ffmpeg).args([
             "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
             "testsrc2=size=64x64:rate=10:duration=2", "-pix_fmt", "yuv420p", "-y",
@@ -999,7 +999,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("open-quartz-video-preview-{}",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&directory).unwrap();
-        let ffmpeg = open_quartz::native_video::find_ffmpeg().unwrap();
+        let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
         let red = directory.join("red.mp4");
         let blue = directory.join("blue.mp4");
         for (path, color) in [(&red, "red"), (&blue, "blue")] {

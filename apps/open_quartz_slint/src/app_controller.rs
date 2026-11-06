@@ -187,7 +187,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         });
     }
     options.extend(
-        open_quartz::catalog::math_ops()
+        open_quartz::project::catalog::math_ops()
             .into_iter()
             .map(|operation| NodeFactoryOption {
                 label: format!("Math · {}", operation.label),
@@ -204,7 +204,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         onnx_params: None,
     });
     options.extend(
-        open_quartz::catalog::onnx_models()
+        open_quartz::project::catalog::onnx_models()
             .into_iter()
             .map(|model| {
                 let params = model.default_params.as_ref().map(|defaults| {
@@ -275,7 +275,7 @@ pub struct AppController {
     framebuffer_assets: BTreeMap<String, crate::services::file_service::FramebufferAsset>,
     pending_resources: BTreeMap<String, PendingResource>,
     resource_ticket: u64,
-    video_devices: Vec<open_quartz::native_video::NativeVideoDevice>,
+    video_devices: Vec<open_quartz::media::native::NativeVideoDevice>,
     camera_loading: bool,
     selected_renderer_id: Option<String>,
     pending_capture: Option<(PathBuf, mpsc::Receiver<Result<(), String>>)>,
@@ -390,8 +390,8 @@ impl AppController {
         window.set_playback_state("stopped".into());
         window.set_io_status("Ready".into());
         let node_factories = node_factory_options();
-        let math_catalog = open_quartz::catalog::math_ops();
-        let onnx_catalog = open_quartz::catalog::onnx_models();
+        let math_catalog = open_quartz::project::catalog::math_ops();
+        let onnx_catalog = open_quartz::project::catalog::onnx_models();
         let mut menu_groups = Vec::<crate::FactoryGroup>::new();
         for (index, option) in node_factories.iter().enumerate() {
             let (section, category, label) = match &option.request {
@@ -3675,7 +3675,7 @@ enum FileResult {
         project: Project,
     },
     Saved(PathBuf),
-    VideoDevices(Result<Vec<open_quartz::native_video::NativeVideoDevice>, String>),
+    VideoDevices(Result<Vec<open_quartz::media::native::NativeVideoDevice>, String>),
     #[cfg(target_os = "windows")]
     ExportedScreenSaver(PathBuf),
     LoadedImage {
@@ -3712,7 +3712,7 @@ impl ProjectIo {
                 while let Ok(request) = requests.recv() {
                     let result = match request {
                         FileRequest::ListCameras => FileResult::VideoDevices(
-                            open_quartz::native_video::list_video_devices(),
+                            open_quartz::media::native::list_video_devices(),
                         ),
                         #[cfg(target_os = "windows")]
                         FileRequest::ExportScreenSaver {
@@ -3896,10 +3896,10 @@ mod tests {
             .map(|option| option.label.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(labels.len(), options.len());
-        for operation in open_quartz::catalog::math_ops() {
+        for operation in open_quartz::project::catalog::math_ops() {
             assert!(labels.contains(format!("Math · {}", operation.label).as_str()));
         }
-        for model in open_quartz::catalog::onnx_models() {
+        for model in open_quartz::project::catalog::onnx_models() {
             assert!(labels.contains(format!("ONNX · {}", model.label).as_str()));
         }
         for source in ["Time", "TimeDelta", "Frame", "Mouse", "Resolution"] {

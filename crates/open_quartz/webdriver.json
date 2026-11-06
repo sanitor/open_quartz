@@ -1,9 +1,0 @@
-{
-  "goog:chromeOptions": {
-    "args": [
-      "--enable-unsafe-webgpu",
-      "--use-angle=swiftshader",
-      "--enable-features=Vulkan"
-    ]
-  }
-}

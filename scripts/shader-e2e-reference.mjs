@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { deflateSync, inflateSync } from 'node:zlib';
 import assert from 'node:assert/strict';
-const catalog = JSON.parse(readFileSync(new URL('../src/shaders/catalog.json', import.meta.url), 'utf8'));
+const catalog = JSON.parse(readFileSync(new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url), 'utf8'));
 export const CATALOG_SHADERS = catalog.groups.flatMap((group) => group.items.map((item) => ({ ...item, category: group.category })));
 export const CATALOG_SHADER_LABELS = CATALOG_SHADERS.map((item) => item.label);
 

@@ -1,4 +1,4 @@
-use open_quartz::engine::{ExecutionCommand, ExecutionPlan, GpuFacade};
+use open_quartz::execution::engine::{ExecutionCommand, ExecutionPlan, GpuFacade};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ struct RecordingBackend {
     removed: Arc<AtomicU64>,
 }
 
-impl open_quartz::runtime::HostBackend for RecordingBackend {
+impl open_quartz::execution::runtime::HostBackend for RecordingBackend {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             data_paths: vec![DataPathMode::NativePresent],
@@ -36,14 +36,14 @@ impl open_quartz::runtime::HostBackend for RecordingBackend {
         Ok(())
     }
 }
-use open_quartz::runtime::Runtime;
+use open_quartz::execution::runtime::Runtime;
 
-use open_quartz::event::EngineState;
-use open_quartz::runtime::{
-    public_surface_manifest, AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy,
-    FrameStamp, HostBackend, OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload,
-    OutputState, OutputSubscription, OutputTransport, PresentationFit, PresentationItem,
-    PresentationSet, ResourceDescriptor, RuntimeCapabilities, RuntimeFrameInput, Viewport,
+use open_quartz::execution::event::EngineState;
+use open_quartz::execution::runtime::{
+    AsyncCompletionEnvelope, ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, HostBackend,
+    OutputDelivery, OutputDeliveryBatch, OutputKey, OutputPayload, OutputState,
+    OutputSubscription, OutputTransport, PresentationFit, PresentationItem, PresentationSet,
+    ResourceDescriptor, RuntimeCapabilities, RuntimeFrameInput, Viewport,
 };
 use open_quartz::Graph;
 use serde_json::json;
@@ -163,39 +163,17 @@ fn presentation_and_async_completion_keep_original_stamps() {
 }
 
 #[test]
-fn capabilities_name_copy_boundaries_instead_of_claiming_zero_copy() {
+fn capabilities_report_native_copy_paths() {
     let capabilities = RuntimeCapabilities {
-        data_paths: vec![
-            DataPathMode::CpuCopy,
-            DataPathMode::ExternalFrameNoCpuReadback,
-            DataPathMode::SharedGpu,
-            DataPathMode::NativePresent,
-        ],
+        data_paths: vec![DataPathMode::CpuCopy, DataPathMode::SharedGpu, DataPathMode::NativePresent],
     };
     let value = serde_json::to_value(capabilities).unwrap();
     assert_eq!(
         value["dataPaths"],
-        json!([
-            "cpu-copy",
-            "external-frame/no-cpu-readback",
-            "shared-gpu",
-            "native-present"
-        ])
+        json!(["cpu-copy", "shared-gpu", "native-present"])
     );
 }
 
-#[test]
-fn public_surface_is_host_neutral_and_versioned() {
-    let manifest = public_surface_manifest();
-    assert!(manifest.api_version > 0);
-    assert!(manifest.methods.contains(&"set_graph"));
-    assert!(manifest.methods.contains(&"subscribe_output"));
-    assert!(manifest.methods.contains(&"update_presentation"));
-    assert!(manifest.methods.contains(&"drain_deliveries"));
-    assert!(manifest.methods.iter().all(|name| !name.starts_with("web_")
-        && !name.starts_with("tauri_")
-        && !name.starts_with("native_")));
-}
 
 #[test]
 fn direct_runtime_client_drives_the_same_public_lifecycle() {

@@ -1,7 +1,4 @@
-use open_quartz::graph::{
-    plan_graph, topological_sort, DirtySet, GraphEdge, GraphNode, GraphRequest,
-};
-use serde_json::json;
+use open_quartz::execution::schedule::{topological_sort, DirtySet, GraphEdge, GraphNode};
 
 fn nodes(ids: &[&str]) -> Vec<GraphNode> {
     ids.iter()
@@ -76,21 +73,4 @@ fn dirty_set_is_cycle_safe_and_edge_updates_replace_dependents() {
     dirty.set_edges(&edges(&[("X", "Y")]));
     dirty.mark_dirty("X");
     assert!(dirty.contains("Y"));
-}
-
-#[test]
-fn graph_plan_serializes_order_and_cycle_status() {
-    let request: GraphRequest = serde_json::from_value(json!({
-        "nodes": [{"id": "A"}, {"id": "B"}, {"id": "C"}],
-        "edges": [
-            {"source": "A", "target": "B"},
-            {"source": "B", "target": "C"}
-        ]
-    }))
-    .unwrap();
-
-    let plan = plan_graph(request);
-    assert_eq!(plan.order, ["A", "B", "C"]);
-    assert!(!plan.cycle);
-    assert_eq!(serde_json::to_value(plan).unwrap()["cycle"], false);
 }

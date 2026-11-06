@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { basename, join, resolve } from 'node:path';
 import { decodePng, encodePng, makeReference, REFERENCE_LABELS } from './shader-e2e-reference.mjs';
 
-const CATALOG_PATH = fileURLToPath(new URL('../src/shaders/catalog.json', import.meta.url));
+const CATALOG_PATH = fileURLToPath(new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url));
 const PHYSICAL_FIXTURES = fileURLToPath(new URL('../tests/fixtures/shaders/', import.meta.url));
 const WIDTH = 64;
 const HEIGHT = 64;

@@ -12,11 +12,11 @@ use std::thread::{self, JoinHandle};
 
 use open_quartz::resources::plan::{
     plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentPlan,
-    HostResourceIntentRequest, HostResourceTarget, OnnxDownloadIntent,
+    HostResourceIntentRequest, OnnxDownloadIntent,
 };
-use open_quartz::onnx::PreparedOnnxModel;
+use open_quartz::inference::PreparedOnnxModel;
 use open_quartz::resources::models::ModelStore;
-use open_quartz::runtime::{
+use open_quartz::execution::runtime::{
     ExecutionRuntime, NativeOnnxConfig, NativeOutputEvent,
 };
 use open_quartz::{Graph, OnnxTask};
@@ -396,7 +396,6 @@ pub(crate) fn host_resource_plan(graph: &Graph) -> Result<HostResourceIntentPlan
         serde_json::from_value(serde_json::to_value(graph).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     plan_host_resource_intents(HostResourceIntentRequest {
-        host: HostResourceTarget::Native,
         previous_graph: None,
         graph,
     })

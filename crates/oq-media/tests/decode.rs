@@ -4,7 +4,7 @@ use std::{process::Command, time::{SystemTime, UNIX_EPOCH}};
 
 fn ffmpeg() -> Command {
     let path = std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/runtime/ffmpeg"));
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/open_quartz_slint/runtime/ffmpeg"));
     let mut command=Command::new(path);
     command.env_remove("DYLD_LIBRARY_PATH").env_remove("DYLD_FALLBACK_LIBRARY_PATH");
     command

@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 #[cfg(feature = "native-onnx")]
-use crate::onnx::PreparedOnnxModel;
+use crate::inference::PreparedOnnxModel;
 #[cfg(feature = "native-onnx")]
-use crate::onnx::NativeOnnxConfig;
+use crate::inference::NativeOnnxConfig;
 use sha2::{Digest, Sha256};
 
 /// Disk/HTTP policy shared by native shells. Call from a blocking resource worker.

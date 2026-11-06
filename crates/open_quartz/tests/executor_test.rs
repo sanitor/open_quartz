@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use open_quartz::engine::{ExecutionEngine, FrameInputs};
+use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 

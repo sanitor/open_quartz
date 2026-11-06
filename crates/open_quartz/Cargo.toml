@@ -7,9 +7,6 @@ rust-version = "1.92"
 description = "Rust SDK for the OpenQuartz realtime heterogeneous video pipeline"
 license = "MIT"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:windows-graphics", "dep:futures-channel", "dep:objc2", "dep:objc2-metal"]
@@ -18,7 +15,6 @@ native-video = ["dep:oq-media", "dep:log"]
 native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
 native-onnx = ["dep:ort"]
 model-cache = ["dep:reqwest", "dep:sha2"]
-browser = ["gpu", "dep:wasm-bindgen", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:js-sys"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -26,7 +22,7 @@ serde_json = "1.0"
 naga = { version = "30", features = ["wgsl-in"] }
 regex = "1.12"
 futures-channel = { version = "0.3", optional = true }
-wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "webgpu", "gles", "vulkan", "dx12", "metal"] }
+wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "gles", "vulkan", "dx12", "metal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }
@@ -44,16 +40,6 @@ oq-media = { path = "../oq-media", optional = true, features = ["videotoolbox"] 
 objc2 = { version = "0.6.3", optional = true }
 objc2-metal = { version = "0.3.2", optional = true, features = ["MTLDevice", "MTLTexture"] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "=0.2.129", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["ImageBitmap", "OffscreenCanvas"] }
-wasm-bindgen-futures = { version = "0.4", optional = true }
-js-sys = { version = "0.3", optional = true }
-
 [dev-dependencies]
 tempfile = "3"
 pollster = "0.4"
-
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3"
-web-sys = { version = "0.3", features = ["OffscreenCanvasRenderingContext2d"] }

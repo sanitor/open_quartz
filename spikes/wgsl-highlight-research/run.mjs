@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, '../..');
 const directory = resolve(process.argv[2] ?? join(repository, 'test-results/research', `wgsl-highlight-${new Date().toISOString().replaceAll(':', '-')}`));
 await mkdir(directory, { recursive: true });
-const catalogBytes = await readFile(join(repository, 'src/shaders/catalog.json'));
+const catalogBytes = await readFile(join(repository, 'crates/open_quartz/src/project/shader_catalog.json'));
 const catalog = JSON.parse(catalogBytes);
 const cases = catalog.groups.flatMap((group) => group.items.map((item) => ({ label: item.label, catalog: true, source: item.code })));
 const edges = [

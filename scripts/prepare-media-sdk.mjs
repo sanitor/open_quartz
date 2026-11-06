@@ -12,7 +12,7 @@ export const version = '8.1.1';
 export const sha256 = 'b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3';
 export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const mediaSdk = join(root, 'src-tauri', 'runtime', 'ffmpeg-media');
+export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
 const revision = 'videotoolbox-lgpl-hw2-metal';
 

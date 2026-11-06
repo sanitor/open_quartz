@@ -4,11 +4,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      tauri_fallback:
-        description: Also build the one-version Tauri fallback (workflow artifacts only)
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -82,40 +77,3 @@ jobs:
             See CHANGELOG.md for release notes and README.md for platform requirements.
           draft: false
           prerelease: ${{ contains(github.ref_name, 'b') || contains(github.ref_name, '-') }}
-
-  tauri-fallback:
-    name: Optional Tauri fallback (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch' && inputs.tauri_fallback
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
-      - run: npm ci
-      - name: Configure Windows FFmpeg and bindgen
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          npm run copy:ffmpeg
-          "FFMPEG_DIR=$pwd\src-tauri\runtime\ffmpeg-shared" >> $env:GITHUB_ENV
-          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
-      - name: Build explicit Tauri fallback
-        run: npm run package:tauri
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tauri-fallback-${{ matrix.os }}
-          path: target/release/bundle/
-          if-no-files-found: error

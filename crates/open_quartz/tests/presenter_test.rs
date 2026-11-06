@@ -2,12 +2,10 @@
 
 use std::sync::Arc;
 
-use open_quartz::gpu::{
-    GpuBackend, GpuPresentationFrame, GpuPresenter, LatestFrameMailbox, SharedTextureExporter,
-    SharedTextureFrame, SharedTexturePlatform, SharedTexturePresenter, TextureFormat,
-};
+use open_quartz::execution::gpu::{GpuBackend, GpuPresentationFrame, GpuPresenter, LatestFrameMailbox, SharedTextureExporter,
+SharedTextureFrame, SharedTexturePlatform, SharedTexturePresenter, TextureFormat,};
 
-async fn output() -> open_quartz::gpu::GpuOutputHandle {
+async fn output() -> open_quartz::execution::gpu::GpuOutputHandle {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -24,7 +22,7 @@ async fn output() -> open_quartz::gpu::GpuOutputHandle {
         .expect("GPU device creation must succeed");
     let backend = Arc::new(GpuBackend::from_device(device, queue));
     let texture = backend.create_texture(4, 4, TextureFormat::Rgba8Unorm);
-    open_quartz::gpu::GpuOutputHandle {
+    open_quartz::execution::gpu::GpuOutputHandle {
         texture: texture.texture,
         view: texture.view,
         sampler: texture.sampler,
@@ -35,7 +33,7 @@ async fn output() -> open_quartz::gpu::GpuOutputHandle {
 }
 
 fn frame(
-    output: &open_quartz::gpu::GpuOutputHandle,
+    output: &open_quartz::execution::gpu::GpuOutputHandle,
     number: u64,
 ) -> GpuPresentationFrame {
     GpuPresentationFrame {
@@ -59,7 +57,7 @@ fn latest_frame_mailbox_replaces_slow_presenter_work() {
         assert_eq!(mailbox.try_take().unwrap().frame, 3);
         assert_eq!(
             mailbox.stats(),
-            open_quartz::gpu::PresentationQueueStats {
+            open_quartz::execution::gpu::PresentationQueueStats {
                 submitted: 3,
                 replaced: 2,
                 consumed: 1,

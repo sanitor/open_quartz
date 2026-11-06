@@ -196,7 +196,7 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
   publish();
   try {
     abort();
-    const catalogPath = new URL('../src/shaders/catalog.json', import.meta.url);
+    const catalogPath = new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url);
     const catalog = JSON.parse(await readFile(catalogPath, 'utf8')).groups.flatMap((group) => group.items.map((item) => ({ ...item, category: group.category })));
     assert.equal(catalog.length, 34, 'Update the explicit E2E catalog coverage contract when catalog entries change');
     report.caseDefinitions = catalog.map((entry) => ({
@@ -215,7 +215,7 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
     });
     caseDefinitions = cases.map((entry) => ({ id: entry.id, title: entry.title, description: entry.description, screenshotPrefixes: [entry.id] }));
     report.caseDefinitions = caseDefinitions;
-    report.catalogCoverage = { expected: catalog.length, prepared: cases.length, ids: cases.map((entry) => entry.id), origin: 'src/shaders/catalog.json + prepareShaderFixtures metadata', labels: cases.map((entry) => entry.label) };
+    report.catalogCoverage = { expected: catalog.length, prepared: cases.length, ids: cases.map((entry) => entry.id), origin: 'crates/open_quartz/src/project/shader_catalog.json + prepareShaderFixtures metadata', labels: cases.map((entry) => entry.label) };
     publish();
     for (const [index, entry] of cases.entries()) {
       abort();

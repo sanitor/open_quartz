@@ -1,28 +1,22 @@
 # Open Quartz 软件架构设计
 
-> 桌面入口更新：v0.20.0b，Phase 5/7；以下单独标注原 v0.19.0b Browser/Tauri 历史审计。
+> 当前产品：Rust/Slint 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 均已退役，不保留 opt-in 兼容入口。
 >
-> 当前默认桌面是 Rust/Slint；Web 独立保留，不迁移到 Slint WASM；Tauri 明确保留一个版本作为 fallback。
-> Phase 5/7 按用户确认的 macOS 范围完成：默认 Slint 入口、原生包/搬迁运行、Web production build 与显式 Tauri fallback `.app` 构建通过；原生资源对话框重入崩溃已修复。真实相机、Windows/Linux（含 `.scr`）、Phase 6 Android/iOS 验收延后。一次未复现的 winit 启动 abort 保留为已知风险；当前仍在 Unreleased，未执行 tag 或远端发布。
-> Android glue 清理：本仓不再包含 Java SDK、JNI/C ABI 句柄桥、Android launcher 资产和打包配置。Rust SDK、桌面 execution、TypeScript/WASM/Tauri 入口保留；第三方跨平台依赖内的 Android 支持不等于本仓 Android 产品或桥接层。
-> 核心 crate 收敛：第 7 节保留迁移前审查证据，并记录已采用的单一 `open_quartz` 实现、私有 domain/SDK 模块及可选设备能力。原 schema/execution/SDK 包全部移除，不保留 alias 或转发 crate；本轮功能/边界回归通过，默认与完整 native 的整体 100% coverage gate 均未通过，详见 §7.8。
+> 当前仍为 Unreleased，未执行 tag 或远端发布。本次原生测试、boundary、真实窗口/Shader 与 macOS release 包通过；两项整体 100% coverage gate 均失败，实际百分比见 §7.8。先前 Phase 5/7、TS 704、Chrome 5/5 等仅为归档证据。真实相机、Windows/Linux（含 `.scr`）与 Android/iOS 仍需独立验收；一次未复现的 winit 启动 abort 保留为已知风险。
+>
+> 单一 `open_quartz` 按 project/player/resources/execution/inference/media 组织，源码根部仅 `lib.rs`，公共 Rust 类型继续 root 导出。当前 `execution` 仍是过渡性组合目录：上次将旧模块装入目录不足以完成职责设计。§7.5 记录证据与真实所有权方案，不声称已实施分拆。
 
 ## 0. 阅读指南
 
-本文优先回答五个问题：
+本文当前摘要优先回答：
 
-1. TypeScript、WASM、Tauri 和 Rust 各自负责什么，依赖方向是什么？
-2. Rust domain model 如何投影为 TypeScript 可直接消费的浅层 SDK 对象？
-3. UI 如何通过 SDK 和监听把意图送入 runtime，又如何监听下层状态和数据？
-4. Browser 与 Native 两条执行路径在哪里共用 Rust，在哪里仍然分叉？
-5. 长期优化后，原有模块切分哪些仍成立，哪些已经漂移？
+1. Slint 与独立 `.scr` 如何直接消费 typed Rust 核心？
+2. 项目领域、求值状态、播放会话与设备资源由谁拥有？
+3. 为什么原生产品不需要 SDK 语言 FFI，而外部库/平台 FFI 仍必要？
+4. `execution`/`Runtime` 的职责为何仍需重构，哪些限制尚未解决？
+5. 哪些证据是历史记录，哪些本次验收仍待运行？
 
-建议阅读顺序：
-
-- 第 1–3 节：系统总图、模块依赖、对象关系；
-- 第 4–6 节：状态监听、JS↔Rust 接口和逐帧数据流；
-- 第 7–8 节：Rust 分仓、所有权和优化后的边界审计；
-- 第 9–12 节：约束、演进顺序、验证方法和源码索引。
+建议先读第 0 节、§7.3–7.8、原生 app README；§7.1–7.2 和第 1–6、8–12 节全部是归档的 Browser/Tauri 设计、审计或迁移证据。历史的“当前/目标/生产”、接口和命令不代表保留产品，也不推翻本次退役决定。
 
 状态标记：
 
@@ -33,7 +27,7 @@
 | **遗留** | 源码仍存在，但生产入口不再使用 |
 | **目标** | 应收敛到的边界，不代表已实现 |
 
-### 0.1 当前桌面入口与所有权（Phase 5/7）
+### 0.1 当前原生入口与所有权
 
 `npm run dev` 经 `scripts/desktop.mjs` 准备原生运行库并启动
 `apps/open_quartz_slint`；`npm run build` 构建 release 并生成 portable package。
@@ -43,37 +37,37 @@
 Slint AppWindow / GraphView / Inspector
   -> Rust AppController -> open_quartz::Project / Graph commands / history
   -> ProjectIo worker   -> project/resource/model I/O + Windows screen saver export
-  -> RenderBridge      -> open_quartz::runtime::ExecutionRuntime
+  -> RenderBridge      -> open_quartz::execution::runtime::ExecutionRuntime
                          -> Runtime 状态/时钟/图计划 + GPU/视频/推理资源
                          -> shared wgpu Device/Queue -> Slint texture Image import
 ```
 
-- `open_quartz` 的 SDK 模块拥有项目、graph/history，advanced execution 模块拥有播放和设备执行。它们在同一核心 crate 内；Slint 只投影 UI，`RenderBridge` 只管理执行线程、命令与 UI 更新，不在 UI 中重建 graph/inference policy。
-- `ExecutionRuntime` 是原生应用直接使用的执行对象，位于 `crates/open_quartz/src/runtime/execution.rs`；它与 Slint 使用同一组 wgpu 30 Device/Queue，持有 GPU executor 和显式启用的视频/推理资源。输出直接导入纹理，只有显式截图执行 readback。
-- `Runtime` 保留时钟、revision/generation、dirty、输出订阅及异步完成等共享状态规则，由 `ExecutionRuntime` 直接组合；删除只有转发的 `PlayerHost`，不再通过独立 host crate 接入。浏览器和 headless SDK 可以直接组合相同 Runtime 规则与各自设备实现。
+- `project` 拥有领域模型、项目、graph/history、catalog、layout 和节点工厂；`player` 拥有 Environment/OpenQuartz/Player/Output/Subscription；`execution` 拥有图调度、播放状态和设备执行。它们在同一核心 crate 内；Slint 只投影 UI，`RenderBridge` 管理执行线程、命令与 UI 更新，不在 UI 中重建 graph/inference policy。
+- `ExecutionRuntime` 是原生应用直接使用的执行对象，位于 [`execution/runtime/execution.rs`](../crates/open_quartz/src/execution/runtime/execution.rs)；它与 Slint 使用同一组 wgpu 30 Device/Queue，持有 GPU executor 和显式启用的视频/推理资源。输出直接导入纹理，只有显式截图执行 readback。
+- `Runtime` 仍组合时钟、revision/generation、dirty、输出订阅及异步完成等状态规则，由 `ExecutionRuntime` 直接组合；这只是当前机制，不是合理业务领域边界的证明。公开 headless `Player` 未接通真实设备 driver；`Project::graph_mut` 可绕过 revision/history，均未因本次退役解决。
 - 文件/模型下载、缓存与校验放在 `open_quartz::resources::models` 服务模块，由 I/O/model worker 调用，不进入渲染循环。准备好的会话只有通过 request ticket 校验后才交给执行对象；迟到完成不能复活旧节点。项目和 Image/Framebuffer 文件处理继续留在应用 I/O worker。
 - GraphView 将 Shader、Constant、Renderer 和 sampler 输出节点的实际共享 GPU 纹理导入原生卡片，显示分辨率并允许收起预览；实时预览不经过 PNG/base64，Renderer 侧栏复用 GPU 输出纹理。
 - 原生 Shader 编辑器使用独立 `crates/slint_code_editor`：cosmic-text 排版/编辑与 Slint 公开 UI API，提供 WGSL/JSON/plain 高亮、行号、导航、查找替换和本地历史，源码仍显式 Apply。系统 IME、完整辅助技术和 Windows/Linux 输入验收仍有缺口。
 - GPU Shader 编译错误保留结构化 `SdkError.node_id` 并经 execution / RenderBridge 回传；只有出错节点的状态灯变红，失败时清除旧预览。无关 ONNX 节点不因图执行错误被标为推理失败。
 - 原生 Shader 菜单包含 7 个分类、34 个预设。AppKit 实际打开并取消了 FILE → Open 与 Save As 对话框；GUI 键盘验收边界见原生 app README。
 - Windows `.scr` 导出复用共享 Rust screen saver 打包边界，明确选择 Renderer，设置中列出可公开 Image/Video 输入；相机图拒绝导出。独立 Win32 host 不依赖主应用进程。
-- `npm run dev:web` / `build:web` / `preview:web` 是独立保留的 React/Web 路径，不是 Slint 的 browser port。`dev:tauri` / `package:tauri` 是一个版本的显式 fallback；Tauri hook 只调用 Web 构建，不能递归默认 native 入口。
-- Desktop CI 覆盖 Windows/macOS/Linux build/test，Linux 安装字体、窗口系统与 Vulkan 依赖；不加入 mobile job。新增矩阵和当前 native GUI/运行库包的实际结果仍待最终验证。
-- 图更新从 Slint 到核心的 Runtime 使用类型化 `Graph`，JSON 编解码留在 WASM/Tauri IPC 边界。Slint 每次 SetGraph 只生成一次资源计划，视频配置与 ONNX 同步共用 intents；保留 generation/ticket、取消、暂停预览、Stop/Play 与 GPU 帧 lease 的行为。
+- Web/Tauri 的源码、脚本和语言绑定已移除；没有 `dev:web`、`build:web`、`preview:web`、`dev:tauri` 或 `package:tauri` 入口，也没有 browser/WebView2 fallback。
+- Desktop CI 的 Windows/macOS/Linux build/test 不代替真实 GPU、相机、原生窗口或 `.scr` 平台验收。本次当前结果待 §7.8 记录。
+- Slint 到核心 Runtime 的图更新使用类型化 `Graph`，JSON 只用于项目/包持久化等数据格式。每次 SetGraph 的资源计划供视频配置和 ONNX 同步共用，保留 generation/ticket、取消、暂停预览、Stop/Play 与 GPU 帧 lease 的规则。
 
-媒体子系统架构与实现边界见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md)：独立 `oq-media` 已落地 macOS VideoToolbox 硬解、保留原生帧及 CoreVideo/Metal GPU 消费；完整跨平台会话、编码、独立 Slint 播放器组件仍为提案，未迁移 Slint Web。
+媒体子系统架构与实现边界见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md)：独立 `oq-media` 已落地 macOS VideoToolbox 硬解、保留原生帧及 CoreVideo/Metal GPU 消费；完整跨平台会话、编码、独立 Slint 播放器组件仍为提案。
 通用原生推理后端、统一设备资源契约及分阶段迁移方案见[推理架构设计](INFERENCE_ARCHITECTURE.md)。该方案明确区别当前 ORT CPU/DirectML 输入输出搬运与尚未实现的平台硬件驻留目标。
 
 执行层收敛实施约定：
 
-- 删除 `open_quartz_native_host` crate；原生执行和模型服务最终归入 `open_quartz::runtime` 与 `open_quartz::resources`，不保留同名兼容转发 crate 或 `PlayerHost` 包装。
-- Slint/Tauri 改用同一个 `ExecutionRuntime`；屏保和 WASM 直接使用 `Runtime`，保留各自的窗口 Surface/浏览器资源适配。TypeScript 内部 transport 接口不是 Rust 执行层，本次不重写其通信协议。
-- 原生模块由 Cargo capability feature 与平台 cfg 共同隔离；`default = []` 不启用设备、网络或原生媒体/推理库，WASM 显式选择 `browser`。GPU、媒体和推理仍各自管理底层资源；单一 crate 不等于单一文件。
-- 核心模块不反向依赖 UI；image/video/ONNX 资源意图与 generation policy 由 `open_quartz::resources::plan` 提供，不再有独立 host API crate。资源规划的一次 `Graph → Value → HostGraphSnapshot` 转换可另行收敛，本次不复制资源策略。
+- 删除独立 native host crate；原生执行和模型服务归入 `open_quartz::execution::runtime` 与 `open_quartz::resources::models`，不保留同名兼容转发 crate 或 `PlayerHost` 包装。
+- Slint 使用 `ExecutionRuntime`；独立 `.scr` 保留其 Win32 消息循环、Surface 和 Runtime/GPU/media/inference 组合。当前组合没有新增公开 Player driver 接线。
+- Cargo native capabilities 与平台 cfg 隔离设备依赖；`default = []` 不拉入设备库。`bindings::wasm`、`web-bindings`、`browser` 与 JS/worker export 已删除，不是默认关闭的可选入口。
+- 核心不反向依赖 UI；image/video/ONNX 意图与 generation policy 由 `open_quartz::resources::plan` 提供，不再有独立 host API crate。原生调用使用 typed planner。
 - `RenderBridge` 的 worker 与共享设备边界保留；模型 worker Drop 设置取消标记，不能用阻塞 join 等待不可中断的构建/网络读取。执行对象退出继续清理 GPU/视频/推理任务。
-- 回归覆盖原生图输出、视频预览与替换、ONNX 取消和过期完成、AutoSize/计时/FPS、真实窗口交互，以及保留的 Tauri/WASM 编译和 crate 依赖边界。Windows/Linux 实机结果需独立记录。
+- 本次应验收原生图输出、视频预览/替换、ONNX 取消/过期完成、AutoSize/计时/FPS、真实窗口交互、独立 native feature 与公共边界；不再构建 Web/Tauri/WASM 产品。Windows/Linux 实机结果需独立记录。
 - coverage 按行为和实际生产模块归属，不能因合包删除 planner 或业务断言，也不降低既有 SDK 阈值。原 native_host 的设备/模型服务仍需真实 GPU、模型、缓存与生命周期测试。
-合包前 macOS 回归记录：工作区 305 项测试、Slint 72 项测试、真实窗口交互 18/18、catalog Shader 像素用例 34/34、Rust 依赖边界及 WASM 编译通过；release 原生包构建、签名和启动自检通过。当时独立 execution 探针验证 2×2 ORT CPU 输出精确 RGBA、暂停/恢复/停止/卸载，以及 128×72 VideoToolbox 硬解蓝色像素、预览/播放/分离与正常退出。这些是合包前证据；本轮新增回归见 §7.8，未重跑 release packaging 或 Windows/Linux runtime。
+合包前 macOS 回归记录（历史）：工作区 305 项测试、Slint 72 项测试、真实窗口交互 18/18、catalog Shader 像素用例 34/34、Rust 依赖边界及 WASM 编译通过；release 原生包构建、签名和启动自检通过。当时独立 execution 探针验证 2×2 ORT CPU 输出精确 RGBA、暂停/恢复/停止/卸载，以及 128×72 VideoToolbox 硬解蓝色像素、预览/播放/分离与正常退出。这些记录与 §7.8 的上一轮单核心验收都不验证本次职责/绑定清理。
 
 
 ### 0.2 打包与启动资源约定
@@ -94,18 +88,17 @@ Windows DLL 也必须放在主 exe 同目录：链接器导入在 `main` 前解�
 修改 PATH 不够。开发入口设置 `ORT_DYLIB_PATH`、`OPEN_QUARTZ_FFMPEG_PATH` 和 PATH；
 安装包启动按上述目录解析。依赖许可证、来源和 notices 随包保留。
 
+源资源的唯一落点为 `apps/open_quartz_slint/icons/` 与准备生成的 `apps/open_quartz_slint/runtime/`（媒体 SDK、库、许可证及对应源码）；不再来自 `src-tauri/` 或 `public/`。macOS numeric bundle version 从 `package.json` 推导；Windows stub 从 `target/screensaver-stub/` 构建后暂存 app runtime。Shader catalog 唯一源为 `crates/open_quartz/src/project/shader_catalog.json`，native catalog 与 Shader automation 共用；根 `tests/fixtures/` 保留原生 fixtures。
+
 ### 0.3 下面历史审计的阅读边界
 
-第 1–12 节保留原 v0.19.0b Browser/Tauri 设计与边界审计，作为迁移背景，
-其中“当前/目标/生产”均指该历史基线，**不是当前 Slint 默认入口或新增发布包的验收结论**。
-尤其旧 TS domain ownership、crate 共仓、WebView/TextureStream、wgpu 版本和 copy
-预算不能用于判断当前 native UI；当前桌面以本节、app README 和
-[`SLINT_UI_REFACTOR.md`](./SLINT_UI_REFACTOR.md) 为准。Web 的性能问题需独立测量，
-不因为 native UI 切换就宣称修复或删除 Web。
+§7.1–7.2 与第 1–6、8–12 节全部保留为**退役前归档**。历史的“当前/目标/生产”、旧包/模块、TypeScript SDK、WASM、Tauri、WebView/TextureStream、性能预算和验证结果只解释当时迁移，不是当前接口或后续必须保留的承诺。当前实现与限制以本节、§7.3–7.8 和原生 app README 为准；Web/Tauri 已删除，而非声称其性能问题已修复。
 
 ---
 
 ## 1. 系统总览
+
+> **归档范围：第 1–6 节。** 以下设计和图示记录退役前的语言 SDK / Browser / Tauri 架构；当时的“当前”不代表现行产品。
 
 ### 1.1 系统总览：Rust SDK 与语言 SDK 对称目标
 
@@ -157,7 +150,7 @@ Rust SDK 内部仍按以下方向组织：
 Rust SDK Runtime -> Engine -> GPU/media/inference/presentation contracts -> platform implementations
 ```
 
-`open_quartz` 是包含实际实现的 Rust SDK，而非重导出 facade。普通 root API 暴露 Project、Graph、Node、Port、Player、Resource、Output 等领域对象；Rust host 可使用显式公开的 advanced runtime/engine/GPU 等模块，设备模块受 feature 控制。这些内部执行类型不进入 TypeScript public proxy，私有 `domain` 与 `sdk` 模块也不是第二套公开包入口。
+`open_quartz` 是包含实际实现的 Rust SDK。普通 root API 暴露 Project、Graph、Node、Port、Player、Resource、Output 等领域对象；Rust host 使用 `execution::{runtime,engine,gpu,shader,schedule,event}`、`project::catalog`、`resources`、`inference` 和 `media::native` 等 advanced 路径，设备模块受 feature 控制。执行类型不进入 TypeScript public proxy，模型和聚合实现保持内部可见性；完整当前布局见 §7.5–7.6。
 
 #### 目标 SDK 的对象 API
 
@@ -222,7 +215,7 @@ flowchart TB
     subgraph Native[Tauri production]
         NHost[NativeHost]
         Tauri[Tauri command / event shell]
-        NRuntime[open_quartz::runtime::ExecutionRuntime]
+        NRuntime[open_quartz::execution::runtime::ExecutionRuntime]
         NGpu[GpuExecutor]
         NMedia[Native video / FFmpeg]
         NOnnx[ORT / DirectML]
@@ -871,7 +864,7 @@ sequenceDiagram
     participant UI as TS Player
     participant Host as NativeHost
     participant Cmd as Tauri commands/events
-    participant Core as open_quartz::runtime::ExecutionRuntime
+    participant Core as open_quartz::execution::runtime::ExecutionRuntime
     participant GPU as GpuExecutor / presenter
 
     UI->>Host: play/apply/output/capture
@@ -979,7 +972,7 @@ Native ONNX 当前需要 `GpuExecutor.read_output_rgba()`，在线程中执行 O
 
 ## 7. Crate 边界审查与重新设计
 
-本节记录清理 native host、Android glue 和 host API crate 后的审查与实施边界，优先于旧 Phase 6 的拆包结论。**7.1–7.2 是迁移前快照，旧 package/path/行号仅作审查证据，不是当前源码索引；7.3–7.8 描述本轮单核心落点及验收结果。合包和 feature cutover 已实现，保留原有行为；公开真实 Player driver、Project graph_mut 收紧与 browser coordinator 提取仍是后续工作。**
+本节当前决策为 native-only 单核心与真实独立组件；§7.1–7.2 是迁移前归档，旧 package/path/行号只作历史证据。§7.3–7.7 描述当前布局、限制与尚未实施的执行所有权方案，§7.8 将本次待验证结果和旧结果分开。公开真实 Player driver 与 `Project::graph_mut` 收紧仍未完成；browser coordinator 随产品退役，不再是待提取项。
 
 ### 7.1 迁移前实现与审查依据
 
@@ -1022,11 +1015,11 @@ Engine、Runtime、ExecutionRuntime 并不是三个应简单合并的同义对�
 
 | 当前 crate / 产物 | 拥有的实现 | 边界 |
 |---|---|---|
-| `open_quartz` | 私有 domain、SDK aggregates、catalog/WGSL、Engine/Runtime、资源计划、可选 GPU/video/ONNX/cache/browser，以及 bindings | 唯一核心实现与 Rust root SDK 入口；不依赖应用 UI |
+| `open_quartz` | project、player、resources、execution、inference、media 的实际实现 | 唯一核心实现与 Rust root API 入口；源码根部仅 lib.rs，不依赖应用 UI |
 | `oq-media` | 独立媒体会话、帧生命周期和元数据；当前实际后端为 VideoToolbox | 无 OpenQuartz graph/runtime/UI 依赖，macOS native video 选择性消费 |
 | `open_quartz_screensaver` | `.scr` 包格式、资源打包/读取和导出校验 | 消费无设备核心 SDK；核心不反向依赖 exporter |
 | `slint_code_editor` | 通用原生代码编辑组件 | 无 OpenQuartz 依赖，保留独立 workspace、示例和测试 |
-| Slint / Tauri app / `.scr` stub | 各自的 UI、窗口、Surface、启动、权限和发布产物 | 显式选择核心能力；stub 保留独立 Win32 loop，不依赖已安装主应用 |
+| Slint app / `.scr` stub | 各自的 UI、窗口、Surface、启动、权限和发布产物 | 显式选择核心能力；stub 保留独立 Win32 loop，不依赖已安装主应用 |
 
 ```mermaid
 flowchart TD
@@ -1036,12 +1029,10 @@ flowchart TD
     SLINT[Slint app] --> CORE
     SLINT --> EXPORT
     SLINT --> EDITOR[slint_code_editor]
-    TAURI[Tauri fallback] --> CORE
-    TAURI --> EXPORT
     SCR[standalone Win32 .scr] --> CORE
 ```
 
-单核心不是把独立产品并进引擎。Slint、Tauri、exporter、stub、媒体库和编辑器仍各有真实职责。WASM 仍由 `open_quartz` 输出 cdylib；public Rust root 类型名、JS 导出名与 TypeScript proxy contract 保持不变。
+Slint、exporter、stub、媒体库和编辑器各有真实职责，保留独立 crate/workspace 或产品入口。Web/Tauri 与 WASM cdylib、JS/TypeScript object/browser/worker contract、`bindings`、`web-bindings`、`browser` feature 已删除；没有兼容 re-export、fallback 或可选 adapter。typed Rust root API 和原生 `Engine` 保留。
 
 ### 7.4 同一核心中的可选能力
 
@@ -1056,33 +1047,71 @@ feature 控制同一实现 crate 的模块和外部依赖，而不是转发到�
 | `native-video-d3d12` | Windows D3D12 video 细化能力，蕴含 native-video 与 gpu |
 | `native-onnx` | ORT session 和 native pipeline；不要求 GPU 或 HTTP；纯 task/pre/postprocess 保持无设备可用 |
 | `model-cache` | 下载、哈希校验和文件发布，显式启用 reqwest/sha2；不要求 ORT 或 GPU |
-| `browser` | wasm32 的 GPU environment 和浏览器执行组合，蕴含 gpu；不引入原生 ORT、FFmpeg 或下载服务 |
 
-平台 cfg 与 feature 同时约束模块和依赖。项目编辑与屏保打包采用无设备配置；桌面应用显式选择 native-runtime、native-video、native-onnx、model-cache，Windows 按需加 native-video-d3d12；WASM 构建显式选择 browser。Slint 与核心维持同版本 wgpu 和同一 Device/Queue 实例。
+平台 cfg 与 feature 同时约束模块和依赖。项目编辑与屏保打包采用无设备配置；Slint 显式选择 native-runtime、native-video、native-onnx、model-cache，Windows 按需加 native-video-d3d12。Slint 与核心维持同版本 wgpu 和同一 Device/Queue 实例；不需要任何 SDK 语言绑定。
 
 Cargo feature 可加性意味着同一构建图中的其他消费者可能重新打开设备能力。轻量闭包验收必须用独立 consumer invocation，不能用完整 workspace 构建图冒充默认配置；不支持的平台能力也不能产出可构造但无法工作的占位设备。
 
 ### 7.5 模块、调度与数据所有权
 
-- 私有 `domain` 模块保存 typed Graph/GraphEdit、ID/Port/Node、ProjectFile 和错误；crate root 显式导出公共领域类型。它是内部模块边界，不再是独立 schema 包。
-- 私有 `sdk` 模块保存 OpenQuartz、Project/history/revision、节点工厂、layout/resources 和 headless Player/Output/Subscription；root 导出公共 aggregates，不另建 `open_quartz::sdk` wrapper 入口。
-- `Engine` 管图计划、dirty、节点 generation 和命令；`Runtime` 管时钟、输出与异步完成；`ExecutionRuntime` 组合原生设备资源。合包不改变三者职责，也不把 headless Player 的合成推进宣称为真实设备播放。
-- Rust host 使用显式公开的 `engine`、`runtime`、`wgsl`、`catalog`、`resources`、`onnx` 等 advanced 模块及 feature-gated GPU/video/browser 模块；不是按旧包名建立公开 wrapper 模块。
-- Slint render thread、I/O/model worker、共享设备、frame lease、ticket/generation、取消与迟到完成丢弃保持原所有权。文件服务不在渲染循环下载；JSON/JS 值转换留在 binding/IPC 边界。
+- `project` 保存领域模型与 Graph/GraphEdit、不变量、ID/Port/Node/ProjectFile/错误，以及 Project/history/revision、catalog、layout、节点工厂和 screen saver 图变换；`project::model` 为内部实现，公共类型由 crate root 显式导出。
+- `player` 保存 Environment、OpenQuartz、headless Player/Output/Subscription；`resources` 保存资源 catalog、typed plan 与 `models` cache/download service。聚合实现不再集中到根部 sdk.rs，也不增加同名 compatibility wrapper。
+- 当前 `Engine` 包装图 revision/generation、状态与待执行命令，`ExecutionEngine` 保存求值 dirty/Math/feedback；`Runtime` 和 `ExecutionRuntime` 又分别组合时钟/输出与设备资源。这些是现状，不表示职责边界已经设计完成，也不把 headless Player 的合成推进宣称为真实设备播放。
+- Rust host 使用 `execution::{engine,runtime,gpu,shader,schedule,event}`、`project::catalog`、`resources`、`inference` 与 `media::native`。`execution::shader` 拥有 WGSL，`inference` 拥有 ONNX task/session/pipeline，`media::native` 拥有视频源与 worker；旧 advanced 根路径没有 alias。
+- Slint render thread、I/O/model worker、共享设备、frame lease、ticket/generation、取消与迟到完成丢弃保持原所有权；文件服务不在渲染循环下载。JSON 仍可作为项目/包持久化格式，不再承担 Web/Tauri 产品 transport。
 
-行为收紧、typed planner 输入和公开 Player 的真实 driver 属于各自的行为验收，不能仅凭迁包声称已完成。BrowserPlayerBinding 的当前执行组合位于 `open_quartz::ffi::browser_player`；不把未来模块拆分目标写成当前 `execution::browser` 包路径。
+公开 `Player` 仍使用 headless Runtime 和内部合成推进，没有真实设备 driver 接线；`Project::graph_mut` 的可变直通仍能绕过 revision/history。二者需要单独行为收紧与验收，本次仅退役无消费者的语言/产品路径，不声称修复。
+
+#### Execution/Runtime 职责复审与后续所有权方案
+
+**先前目录装袋不足。Runtime 是运行机制，不是业务领域。** `execution/mod.rs` 只是将 engine/runtime/gpu/shader/schedule/event/logging 汇总到一个命名空间；它降低根目录噪声，却没有定义各自的修改原因、状态所有者或资源生命周期。把这些对象改名或再包一层 Runtime/Engine trait 也不能解决问题。
+
+当前源码证据：
+
+| 证据 | 实际混合职责 / 判断 |
+|---|---|
+| [`execution/mod.rs`](../crates/open_quartz/src/execution/mod.rs) | 只有模块声明与 feature gate，没有业务聚合边界 |
+| [`runtime/api.rs` 的 `Runtime`](../crates/open_quartz/src/execution/runtime/api.rs#L49) | 同时持有 Engine、resource registry、output contracts/registry、CompositionClock、PresentationPlanner、HostBackend 和 capabilities；session、输出与后端机制混合 |
+| [`runtime/execution.rs` 的 `ExecutionRuntime`](../crates/open_quartz/src/execution/runtime/execution.rs#L170) | 一个约 1,220 行的原生协调实现同时持有 GPU executor、Runtime、clock origin、视频源、ORT sessions、pending/completion workers、输出订阅、Windows presentation 与性能统计；资源上传、推理读回/提交和呈现控制也集中于此 |
+| [`engine/state.rs` 的 `Engine`](../crates/open_quartz/src/execution/engine/state.rs#L54) 与 [`engine/executor.rs` 的 `ExecutionEngine`](../crates/open_quartz/src/execution/engine/executor.rs#L11) | 前者维护 applied graph、revision/generation、生命周期和命令，后者维护 plan、dirty、Math 值和 feedback；状态包装与求值层确有不同角色，不应只因名字相近便合并或重命名 |
+
+后续应按真实职责切开实现与测试，再决定最少必要的文件/模块落点；下表是所有权方案，**尚未实施，不是新目录/API 名称**：
+
+| 职责 | 唯一所有内容 | 不应拥有 |
+|---|---|---|
+| 编译 | WGSL 解析/校验、图 topology 与可复用 execution plan | playback clock、GPU/ORT/video live handles |
+| 求值 | applied graph 的 dirty 传播、CPU Math、feedback 状态、按帧产生 typed work | 窗口/读回、文件下载、设备会话 |
+| 播放 | 一个播放 session 的时间线、Play/Pause/Stop/close 与取消失效规则 | 具体解码器、GPU 呈现和 ORT worker 的实现 |
+| 渲染 | GPU device/queue、纹理/lease、command 执行、显式 readback、presentation | 项目历史、模型下载、推理任务政策 |
+| 推理 | task 派发、ORT session/worker、pending/completion/cancellation 与推理资源 | 媒体播放控制、图 UI、显示窗口 |
+| 媒体 | video source/session/worker 与原生帧生命周期；独立 `oq-media` 继续拥有其后端 | NodeId、图 history、ONNX session |
+| 输出 | typed output contract、subscription、registry 和 delivery/backpressure | graph evaluation、设备初始化、另一套播放时钟 |
+
+允许一个**薄的播放协调者**按 typed 调用组合上述 owner，但不让它重新保存各组件已拥有的策略与资源实现。跨组件只共享明确的 graph revision、node generation 和 frame/content stamp，一次图替换、Stop/close 或资源替换后的迟到完成和旧 lease 必须按同一一致性规则失效。取消不能提前释放仍在设备上使用的资源。迁移应逐个转移生产调用方和 owning tests、删除旧组合中的重复状态与实现，不保留 shim，也不先造抽象 crate/trait。当前 `execution` 路径继续作为过渡布局，直到这些真实切分落地并有对应行为证据。
+
+#### 桌面是否需要 FFI？
+
+纯 Rust Slint 和独立 `.scr` 直接调用 root typed API 与 advanced host modules，不需要额外导出的 SDK C ABI、JNI 或语言桥；没有 JavaScript consumer，因此不需要保留 JS/WASM 值转换、导出或 IPC adapter。底层 graph/type/cycle 校验、WGSL 编译、catalog、资源意图和 ONNX typed 语义继续由 Rust 提供。
+
+“不需要 SDK FFI”不等于没有外部库 FFI。ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生设备后端必要的实现细节；本次移除产品/语言边界不能删除这些原生实现。
 
 ### 7.6 当前源码落点
 
 | 实现 | 当前位置 |
 |---|---|
-| 领域图、项目文件、ID/端口/错误 | `crates/open_quartz/src/domain/`，私有模块，由 root 选择导出 |
-| SDK aggregates 与状态契约 | `crates/open_quartz/src/sdk.rs`、`sdk_coverage_tests.rs` |
-| 图计划、执行状态与时钟/输出 | `crates/open_quartz/src/engine/`、`runtime/` |
-| WGSL/catalog 与 ONNX task/session | `crates/open_quartz/src/wgsl/`、`crates/open_quartz/src/catalog.rs`、`crates/open_quartz/src/onnx/` |
-| GPU、视频与资源计划/模型服务 | `crates/open_quartz/src/gpu/`、`native_video.rs`、`resources/` |
-| WASM/JSON SDK binding 与 browser 组合 | `crates/open_quartz/src/ffi/`、`wasm_environment.rs` |
-| 核心集成测试 | `crates/open_quartz/tests/`，保留迁入的领域、SDK 与执行行为断言 |
+| 唯一根源文件与公共 Rust 导出 | [`src/lib.rs`](../crates/open_quartz/src/lib.rs)：只组织模块和 root 类型导出，源码根部无其他 .rs 文件 |
+| 项目模型与目录语义 | [`project/model/`](../crates/open_quartz/src/project/model/)、[`project/catalog.rs`](../crates/open_quartz/src/project/catalog.rs) |
+| Project/history/layout/factory/screen saver | [`project/mod.rs`](../crates/open_quartz/src/project/mod.rs)、[`history.rs`](../crates/open_quartz/src/project/history.rs)、[`layout.rs`](../crates/open_quartz/src/project/layout.rs)、[`node_factory.rs`](../crates/open_quartz/src/project/node_factory.rs)、[`screen_saver.rs`](../crates/open_quartz/src/project/screen_saver.rs) |
+| Environment/OpenQuartz/Player/Output/Subscription | [`player/`](../crates/open_quartz/src/player/) |
+| 资源目录、typed plan 与模型 cache/service | [`resources/`](../crates/open_quartz/src/resources/)、[`plan.rs`](../crates/open_quartz/src/resources/plan.rs)、[`models.rs`](../crates/open_quartz/src/resources/models.rs) |
+| 图计划、运行状态、GPU、WGSL 与调度 | [`execution/engine/`](../crates/open_quartz/src/execution/engine/)、[`execution/runtime/`](../crates/open_quartz/src/execution/runtime/)、[`execution/gpu/`](../crates/open_quartz/src/execution/gpu/)、[`execution/shader/`](../crates/open_quartz/src/execution/shader/)、[`execution/schedule/`](../crates/open_quartz/src/execution/schedule/) |
+| 事件与日志 | [`execution/event.rs`](../crates/open_quartz/src/execution/event.rs)、[`execution/logging.rs`](../crates/open_quartz/src/execution/logging.rs) |
+| ONNX task/session/pipeline | [`inference/`](../crates/open_quartz/src/inference/) |
+| Native video worker | [`media/native.rs`](../crates/open_quartz/src/media/native.rs)；独立后端库仍为 [`oq-media`](../crates/oq-media/) |
+| Shader 唯一数据源 | [`project/shader_catalog.json`](../crates/open_quartz/src/project/shader_catalog.json)；native catalog 与 Shader automation 共用 |
+| 核心契约测试 | 各职责目录中的 coverage/unit tests 与 [`tests/`](../crates/open_quartz/tests/)；保留活跃领域、SDK 与执行行为断言 |
+| Slint app、图标与准备运行库 | [`apps/open_quartz_slint/`](../apps/open_quartz_slint/)、[`icons/`](../apps/open_quartz_slint/icons/)、[`runtime/`](../apps/open_quartz_slint/runtime/) |
+| 原生 Shader fixtures | [`tests/fixtures/`](../tests/fixtures/)；根 tests 不再是 Web unit suite |
 
 ### 7.7 构建与消费边界
 
@@ -1092,44 +1121,78 @@ Cargo feature 可加性意味着同一构建图中的其他消费者可能重新
 
 ### 7.8 验证矩阵与证据状态
 
-| 门槛 | 必须证明的行为 |
-|---|---|
-| 无设备 consumer | Project 创建/编辑/撤销/保存、节点工厂、WGSL 与 Runtime 状态；目标 normal/build 依赖无 wgpu/ORT/FFmpeg/reqwest/UI |
-| 独立能力组合 | native-runtime 无 ORT/FFmpeg/oq-media/reqwest；native-video 无 ORT/reqwest；native-onnx 无 wgpu/reqwest；model-cache 无 ORT/wgpu；另验 Windows D3D12 组合与平台 cfg |
-| Browser | wasm32 无原生库；真实 shader 像素、ImageBitmap、时钟、ONNX completion、close/output，以及 wire/stamp/generation 兼容 |
-| 产品 | Slint 共享纹理/交互、Tauri fallback build、`.scr` /s /p /c 与 Surface；未实测平台明确标记 |
-| 公共边界与覆盖率 | 保留 Rust root/JS/TS 名称；domain/sdk 私有，host advanced 模块明确；迁入业务/领域/执行断言不删除，不降低 SDK 阈值或扩大 ignore 掩盖缺口 |
+**本次 native-only 退役：下列功能/边界/产品检查通过；两项整体 100% coverage gate 均未通过。** 文档任务没有自行运行检查；表中仅记录主代理提供的本次结果，不复用旧测试数。已退役产品没有 Web/Tauri/WASM 验收门槛。执行/runtime 所有权方案尚未实施；这些结果不代表 public Player 已有真实 driver 或 graph_mut 已收紧。
 
+| 当前门槛 / 命令 | 必须证明的行为 | 本次结果 |
+|---|---|---|
+| 默认/完整原生核心与根 workspace | 图/项目/typed API、Runtime 状态与真实独立 media/exporter/stub 行为保留 | 默认 `open_quartz` 216 项/28 suites、原生根 workspace 221 项/34 suites、完整 native feature 核心 284 项通过；未单独运行 native-onnx-only 测试 |
+| 独立能力与 public boundaries：`npm run check:rust-boundaries` | default 与 native-runtime/video/onnx/model-cache 隔离；无旧 alias、bindings/browser feature/API；平台 cfg 按脚本范围 | 最终 native-only boundary rerun 通过；不等于 Windows/Linux runtime 或 `.scr` 实机验收 |
+| Slint：`npm run test:desktop` | 原生应用状态、资源、模型取消/迟到完成与 typed planner 行为 | 72 项通过 |
+| 真实窗口：`npm run test:desktop:ui` | graph/ports/history、共享纹理、AutoSize、播放时间/FPS、文件/资源交互；保留报告路径 | 18/18 通过；[本次交互报告](../test-results/slint-ui/interaction-2026-11-06T04-59-55-340Z/report.html) |
+| Shader：`npm run test:desktop:shaders` | canonical Rust catalog 的每个 Shader、真实图像/连接与 GPU 像素 | 34/34 通过；[本次 Shader 报告](../test-results/slint-ui/shaders-2026-11-06T04-59-55-107Z/report.html) |
+| 独立 editor：`npm run test:editor` | 组件无 OpenQuartz 依赖且编辑行为保留 | 10 项通过 |
+| 覆盖率：`npm run test:sdk-coverage` | 当前 production owning modules 行/函数/区域门槛；不降低阈值或扩大 ignore 掩盖缺口 | 最终默认 lib 121、完整 native lib 170 项测试全部通过；两项整体 100% gate 均失败，百分比见下表 |
+| 原生打包：`npm run build` | app icons/runtime 新路径、来源/许可证、架构匹配、package.json bundle version | macOS arm64 archive、ad-hoc 签名、runtime 与 `--help` startup 通过：`dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip`；`copy:ffmpeg` 使用 app-owned runtime；不代表 Windows stub 或搬迁实机验收 |
+| 平台实机 | 相机权限/采集，Windows/Linux GPU 与 `.scr` `/s` `/p` `/c`、Surface/独立运行 | 尚未验收；逐平台记录，不以 macOS 或编译代替 |
+
+最终 coverage 运行显式设置 `OPEN_QUARTZ_FFMPEG_PATH` 为 app-owned runtime 的 FFmpeg、`ORT_DYLIB_PATH` 为官方缓存运行库，再执行 `npm run test:sdk-coverage`。最初直接执行、未配置这些环境的 native coverage 有四项媒体 runtime fixture 失败；按原生脚本所需环境运行后测试全部通过，最终失败仅为覆盖阈值，不屏蔽失败或改变 ignore/阈值。模型运行库解析保留官方缓存路径 fallback。未单独执行 native-onnx-only 验收，完整 native 通过不替代该组合独立测试；Windows/`.scr` 与 Linux runtime 本轮未触及。
+
+| 本次覆盖范围 | Lines | Functions | Regions | 结果 |
+|---|---:|---:|---:|---|
+| 默认核心 | 98.91% | 99.06% | 98.85% | 未达到整体 100% gate |
+| 完整 native 核心 | 98.33% | 97.92% | 96.92% | 未达到整体 100% gate |
+| project/player/resources catalog+plan | 100% | 100% | 100% | 子范围通过，不替代整体 gate |
+
+默认配置的 pre/postprocess 因 browser-specific tests 退役存在覆盖缺口；完整 native 的 pre/postprocess/pipeline 达 100%。其余既存 GPU/video/provider 路径仍有缺口，未降低门槛或扩大 production exclusion。
+
+#### 退役前职责分组与 bindings 清理结果（归档）
+
+以下为上一阶段结果，**不是本次 native-only 产品验证**。当时默认核心 237、显式 `web-bindings` 243、workspace 317、Slint 72 与真实窗口 18/18 通过；[历史交互报告](../test-results/slint-ui/interaction-2026-11-06T03-56-10-150Z/report.html)。TS 704/tsc、Chrome 合约 5/5、WASM、Tauri library/render spike、binding/public boundary 及 release WASM SDK smoke 当时通过。Windows/Linux runtime 与 native release packaging 当时未重跑。
+
+当时 test-only helpers 迁至 owning-test `support.rs`，沿用既有 `/tests/` filename filter；三项整体 100% coverage gate 均失败。历史百分比如下，不推导本次 coverage：
+
+| 历史覆盖范围 | Lines | Functions | Regions | 当时结果 |
+|---|---:|---:|---:|---|
+| 默认核心 | 99.97% | 99.66% | 99.91% | 未达到 100% |
+| 显式 `web-bindings` | 99.97% | 99.69% | 99.92% | 未达到 100% |
+| 完整 native + `web-bindings` | 98.53% | 98.20% | 97.26% | 未达到 100% |
+| project/player/resources catalog+plan 与当时 bindings | 100% | 100% | 100% | 子范围通过，不替代整体 gate |
+
+#### 更早的单核心与 feature 隔离结果（归档）
+
+以下继续记录更早布局的结果，不应当作本次结果。
 迁移前审查基线：host API 收敛后 workspace 308、Slint 72、TS 704、类型检查、Rust boundary 与 WASM 编译通过。当时 `resources/plan.rs` 行/函数/区域均为 100%，execution 整体约为 98.13% / 97.37% / 96.50%，100% gate 失败于 GPU、VideoToolbox、native video 等实现，后续 package coverage 未执行。这些数值保留为迁移前证据。
 
-本轮单核心与 feature 隔离验收结果：
+**历史单核心与 feature 隔离验收结果（清理前布局）：**
 
 | 范围 | 实测结果 |
 |---|---|
-| 核心与工作区 | 默认核心 230 项通过；完整 workspace 原有 308 项保留套件通过，另加下述两项针对性能力回归 |
+| 核心与工作区 | 当时默认核心 230 项通过；完整 workspace 原有 308 项保留套件通过，另加下述两项针对性能力回归 |
 | native-runtime 单独启用 | 禁用 ONNX/video 的请求明确拒绝；保留原 plan、revision、generation 与真实蓝色 GPU 输出，针对性回归通过 |
 | native-onnx 单独启用 | 离线模型 transfer 与实际 scalar inference 通过，不依赖 GPU/HTTP |
-| Slint | 72 项测试、真实窗口交互 18/18 通过；[本轮交互报告](../test-results/slint-ui/interaction-2026-11-06T02-36-13-880Z/report.html) |
-| Web / 编译入口 | TS 704 项与 tsc 通过；browser/default wasm cargo check、独立 editor check、Tauri app --lib check 通过 |
-| 独立 feature 闭包 | 修复依赖泄漏后，独立 default + 四个能力组合的边界脚本通过 |
-| 实际浏览器 | Chrome 157 与匹配 driver 在临时目录运行，5/5 通过；修正旧 fixture 的 surface format 有效性/仅支持时优先 sRGB，以及 transfer 前初始化实际 OffscreenCanvas 2d context，保留像素断言 |
-| 未重跑范围 | Windows/Linux runtime 与 release packaging 本轮未重跑，不能据本轮结果声称通过 |
+| Slint | 当时 72 项测试、真实窗口交互 18/18 通过；[历史交互报告](../test-results/slint-ui/interaction-2026-11-06T02-36-13-880Z/report.html) |
+| Web / 编译入口 | 当时 TS 704 项与 tsc 通过；browser/default wasm cargo check、独立 editor check、Tauri app --lib check 通过 |
+| 独立 feature 闭包 | 当时修复依赖泄漏后，独立 default + 四个能力组合的边界脚本通过 |
+| 实际浏览器 | 当时 Chrome 157 与匹配 driver 在临时目录运行，5/5 通过；修正旧 fixture 的 surface format 有效性/仅支持时优先 sRGB，以及 transfer 前初始化实际 OffscreenCanvas 2d context，保留像素断言 |
+| 当时未重跑范围 | Windows/Linux runtime 与 release packaging 未重跑，不能据历史结果声称当前通过 |
 
-coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 ignore 范围；**两项整体 gate 均失败**，保留已有 execution 覆盖缺口：
+历史 coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 ignore 范围；**当时两项整体 gate 均失败**，保留 execution 覆盖缺口：
 
 | 统计范围 | Lines | Functions | Regions | 结论 |
 |---|---:|---:|---:|---|
 | 默认核心 | 99.97% | 99.69% | 99.92% | 未达到整体 100% gate |
 | 完整 native 核心 | 98.54% | 98.20% | 97.27% | 未达到整体 100% gate |
-| domain / sdk / ffi / planner | 100% | 100% | 100% | 各模块达到要求 |
+| 当时模块名 domain / sdk / ffi / planner（历史） | 100% | 100% | 100% | 清理前各模块达到要求；非当前目录或当前 coverage |
 | Prepared 实现（从已排除 cache 文件移出后现已计量） | 96.55% | 100% | 97.06% | provider 平台分支尚有缺口 |
 
-这些结果验证核心合并、能力隔离与既有行为保留，不代表公开 Player 已接通真实 driver、Project graph_mut 已收紧或 browser coordinator 已完成提取。
+这些历史结果只验证当时的核心合并、能力隔离与既有行为保留，不验证本次退役，也不代表公开 Player 已接通真实 driver、Project graph_mut 已收紧或执行所有权方案已落地。browser coordinator 随产品退役，不再需要提取。
 
 
 ---
 
 ## 8. 优化后的边界审计（迁移前快照）
+
+> **归档范围：第 8–12 节全部为退役前审计、规则、路线图与源码索引。** 其中“当前”指当时，不代表当前产品、路径、验证或继续维护 Web/Tauri 的承诺；当前规范与索引以第 0 节及 §7.3–7.8 为准。
 
 本节的 TypeScript/Rust 审计表保留薄层 cutover 前的证据与建议；其中“当前”表示该审计当时的状态，不是本轮迁移后的状态。最新 crate/module 归属见 §7.3–7.6，当前完成度见 §10.1，本轮集成与 coverage 结果见 §7.8。
 
@@ -1141,7 +1204,7 @@ coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 i
 
 1. **TypeScript 业务下沉（迁移前）**：TS local Project/Graph、Store mutation、Project I/O、screen saver transform、ORT task policy、resource reconcile和遗留算法当时仍需迁入Rust SDK。
 2. **Web 数据路径性能**：功能正确但存在已知问题；本轮暂缓专项修复，后续单独 profile。
-3. **Rust 模块与能力边界（当前已更新）**：领域、SDK 与执行实现现统一为单一 `open_quartz`；资源意图规划归属 `open_quartz::resources::plan`，设备实现由 feature 隔离。Android glue 已移除，不再为延期平台保留包装层。
+3. **Rust 模块与能力边界（当前）**：当前目录与 public advanced paths 见 §7.5–7.6；单核心职责清理本次验证通过，整体 coverage gate 结果独立记录于 §7.8。
 
 ### 8.2 迁移前逐项审计（历史快照）
 
@@ -1154,9 +1217,9 @@ coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 i
 | Browser main ↔ Worker | DOM media/transport合理；Worker仍扫描Graph建立output subscription和renderer mapping | **部分** | observation intent由Rust Output/Subscription提供 |
 | Browser execution/inference | shader/GPU在Rust；ORT task/pre-postprocess/output mapping仍在TS | **部分** | TS只运行ORT-Web，Rust拥有task/tensor/result语义 |
 | Native execution/resource | Runtime语义共享；`NativeHost`仍扫描完整Graph reconcile image/video/ONNX | **部分** | Rust产生typed provider intent，host只执行平台调用 |
-| Runtime ↔ binding | WASM FFI 保留在 `open_quartz::ffi`，Android/Java/JNI glue 已删除 | **保持** | 不为延期平台保留占位层 |
-| Domain boundary | `open_quartz/src/domain` 为私有模块，不依赖执行、binding 或 UI | **保持模块边界** | root 显式导出公共值类型 |
-| Rust public visibility | root 为 SDK aggregates；advanced host 模块显式公开，设备能力按 feature 启用 | **单核心** | 私有 domain/sdk，不恢复旧 package wrapper；资源规划归属 `open_quartz::resources::plan` |
+| Runtime ↔ binding | 当时 WASM FFI 位于 `open_quartz::ffi`，Android/Java/JNI glue 已删除（历史路径） | **保持边界** | 当前位置改为可选 bindings::wasm，见 §7.5 |
+| Domain boundary | 当时 `open_quartz/src/domain` 为私有模块（历史路径），不依赖执行、binding 或 UI | **保持模块边界** | 当前模型位于 project::model；root 显式导出公共值类型 |
+| Rust public visibility | 当时 root 为 SDK aggregates；advanced host 模块公开、设备按 feature 启用 | **历史单核心** | 当时 domain/sdk 私有；当前 project/player/execution 归属见 §7.5 |
 | Output observation | Rust registry + public Output；host events 为 projection | **保持/部分** | presentation/multi-output仍可完善 |
 | Web copy budget | shader GPU-only；preview/ORT/video 仍有显著 host cost | **未通过** | 暂缓修复，先建立 profile 基线 |
 | Project/screen saver/catalog | TS重复version/normalize/graph transform/Math formula/ONNX registry | **未完成** | 迁Rust并删除重复来源 |
@@ -1168,7 +1231,7 @@ coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 i
 - Rust `Engine` 继续作为 topology、dirty、feedback、Math、generation 和 work ordering 的唯一来源。
 - TypeScript provider 可持 DOM/ORT/session/transport，不得接收完整 Store 后自行 plan graph。
 - `OutputDeliveryBatch`、stamp 和 generation 是 async/output consistency source；Worker/Tauri 只是 transport projection。
-- 私有 domain 模块不依赖执行、binding 或 platform；普通 SDK root 与 advanced host 模块分开，不向 TypeScript proxy 泄漏执行对象。
+- 内部 `project::model` 不依赖执行、binding 或 platform；普通 SDK root 与 advanced host 模块分开，不向 TypeScript proxy 泄漏执行对象。
 - Web 性能优化不得用重新引入 `Compositor/WebGPUExecutionEngine`、把 live object 放入 Store或让 UI 逐帧发 command 的方式实现。
 - 平台类型如 `ImageBitmap`、ORT session、FFmpeg frame、D3D12 resource、HWND/Surface 必须留在 host/provider boundary。
 - Public TypeScript SDK不得导入React Flow，也不得自行维护domain revision/invariant。
@@ -1184,7 +1247,7 @@ coverage 脚本分别运行默认与完整 native 两个 100% gate，未扩大 i
 | P0 | Browser inference和NativeHost仍定义跨平台业务policy | 将task/resource intent下沉Rust，TS只保留平台执行 |
 | P1 | Project I/O、screen saver、catalog和遗留算法重复 | 分小步迁移；每步先补Rust regression再删除TS实现 |
 | P1 | Web frame/preview/inference/video性能不足 | 已记录并暂缓专项修复；迁移过程不得退化现有基线 |
-| P2 | 单核心 feature 闭包及独立 consumer 验收 | 本轮独立 default + 四个能力组合边界回归已通过；整体 coverage 缺口见 §7.8 |
+| P2 | 单核心 feature 闭包及独立 consumer 验收 | 当时独立 default + 四个能力组合边界回归通过；本次结果独立见 §7.8 |
 | P2 | 多output/presentation完整度 | 在真实产品需求下推进 |
 
 ---
@@ -1213,7 +1276,7 @@ platform implementation -> injected provider traits + platform APIs
 - Node/Port proxy getter 通过同步 IPC 逐属性读取，或 proxy 长期持有无生命周期保护的 native pointer。
 - Store 保存 SDK client/player/proxy object、GPU texture、decoder frame、ORT session/tensor 或 per-frame command。
 - 将 SDK class instance/native handle 序列化进 Project JSON。
-- `runtime` 依赖 `ffi`、Tauri、DOM 或具体 WebView event name。
+- `execution` 依赖 `bindings::wasm`、Tauri、DOM 或具体 WebView event name。
 - WGSL parser/compiler 依赖具体 GPU backend。
 - Tauri shell 重建 composition clock、subscription registry、generation 或 presentation policy。
 - 高频 pixel/frame 数据通过 JSON event 往返。
@@ -1256,7 +1319,7 @@ Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Gr
 | 3 WASM | **功能完成，性能未通过** | Rust wgpu Browser execution已生产使用；Web 性能问题已记录并暂缓 |
 | 4 TypeScript execution cutover | **完成** | React adapter、App/ScreenSaver cutover、legacy TS execution删除 |
 | 5 Android/Java/JNI | **已移除** | 专用 glue、源码与构建/对齐门槛已清理，不属于本仓产品 |
-| 6 Boundaries | **单核心实现与能力隔离回归通过** | schema/SDK/execution 统一为 open_quartz；domain/sdk 私有，独立 feature 闭包回归通过；整体 coverage gate 未通过，详见 §7.8 |
+| 6 Boundaries | **单核心职责/绑定清理完成** | 当前分组、root-only lib.rs 与无 alias advanced 路径已实施并通过本次 functional/boundary/product checks；三项整体 coverage gate 失败，当前和历史证据分列于 §7.8 |
 | 7 Thin TS convergence | **完成** | Rust-backed proxy、Store command、Project/screen saver/catalog/inference/resource policy下沉和TS遗留清理均已完成；Web剩余性能项已有benchmark基线 |
 
 以下Phase 0–7条目保留为历史实施规格；后续工作以桌面产品、Windows实机验证和基于测量的Web性能优化为准。
@@ -1357,10 +1420,12 @@ Phase 7薄TypeScript convergence已完成。TypeScript public objects、Store Gr
 旧 Phase 6 曾按 schema/execution/SDK/facade 拆包；第 7 节已取代该结构。当前以模块职责和 capability feature 固化单核心边界：
 
 ```text
-open_quartz root          public value/ID/error + Project/Graph/Player/Resource/Output
-  private domain + sdk    领域不变量与聚合实现
-  advanced modules        Runtime/Engine/WGSL/catalog/resources + optional GPU/video/ONNX/browser
-  ffi                     native/WASM language adaptation
+open_quartz root          仅 lib.rs；public value/ID/error + Project/Graph/Player/Resource/Output
+  project + player        模型不变量、项目与播放/输出聚合
+  resources               catalog / typed plan / models cache/download service
+  execution               engine/runtime/gpu/shader/schedule/event/logging
+  inference + media       ONNX / native video
+  bindings::wasm          可选 JS/WASM adapter；web-bindings，browser 增加设备组合
 ```
 
 **实现与验收：**
@@ -1454,7 +1519,7 @@ Phase 7不做一次性重写。每个change-set只迁移一个可观察contract�
 
 薄TS迁移完成后，一个重要副产物是：**几乎所有非GUI、非平台专属功能都可由Rust层unit/contract tests直接覆盖。** 这不是追求虚假的100%行覆盖，而是让业务功能的失败首先在Rust tests中出现，而不是依赖React/Worker/Tauri端到端测试才发现。
 
-`open_quartz` 的 SDK aggregate 实现保留既有 **100% 硬门禁**要求，而不是把“几乎所有功能可由Rust测试”当作模糊目标。CI使用单一lib coverage binary执行私有不变量和错误分支测试，并排除独立测试源码本身，强制production `sdk.rs`同时满足line、function和region coverage 100%。FFI/WASM/TypeScript测试继续验证marshalling和平台集成，但不能替代SDK层contract coverage；其他设备模块和整体 gate 的真实结果另行记录。
+`open_quartz` 的 SDK aggregate 实现保留既有 **100% 硬门禁**要求。coverage 按 project/player/resources 等生产职责计量，test-only support 沿用既有 `/tests/` 排除，不扩大 production exclusion。WASM/TypeScript 测试验证 marshalling 和平台集成，不能替代 Rust contract coverage。本次三项整体 gate 均失败，聚合/资源计划/保留 bindings 子范围 100%；当前百分比与历史结果分列于 §7.8。
 
 ```bash
 npm run test:sdk-coverage
@@ -1462,10 +1527,10 @@ npm run test:sdk-coverage
 
 测试归属遵循以下规则：
 
-1. `open_quartz/src/sdk.rs` 拥有 Project/Graph/Layout/node factory/Player/resource/output/screen saver 等业务契约测试。
-2. `open_quartz/src/ffi` 保留 FFI、WASM 和目标平台组合测试，不重复防守 SDK 内部业务分支。
+1. `project/`、`player/` 与 `resources/` 拥有 Project/Graph/Layout/node factory/Player/resource/output/screen saver 等业务契约测试。
+2. `bindings/wasm/` 保留可选 JS/WASM marshalling 和目标平台组合测试，不重复防守聚合内部业务分支。
 3. TypeScript Store/SDK tests只验证React Flow projection、transport、error mapping和语言conformance；任何跨平台业务断言必须先在Rust owning crate存在。
-4. 同一核心的 execution 模块防守执行及 `resources::plan` 的 resource intent/generation policy，domain 模块防守领域与 wire schema；测试按行为 owner 划分，不再按旧包分层。
+4. `execution`、`inference` 与 `media` 防守执行状态及设备生命周期，`resources::plan` 防守资源意图/generation，`project::model` 防守领域与持久化契约；测试按行为 owner 划分。
 
 ### 10.9 测试归属与 coverage gate
 
@@ -1473,13 +1538,13 @@ npm run test:sdk-coverage
 
 | 层 | 必须覆盖 | 测试位置 | 不应重复承担 |
 |---|---|---|---|
-| 核心 SDK aggregates | Project/Graph/Layout、node factory、revision/history、Player lifecycle、ResourceCatalog、Output/Subscription、screen saver graph transform | `crates/open_quartz/src/sdk_coverage_tests.rs` 与 `crates/open_quartz/tests/` | 不承担 DOM、React Flow、Worker、Tauri |
-| 核心执行模块 | Runtime/Engine/GPU/WGSL/ONNX/media execution与状态机；`resources::plan` 的 image/video/ONNX resource intent与generation policy | `crates/open_quartz/tests/`、`crates/open_quartz/src/resources/plan_coverage_tests.rs` | 不重复 aggregate 行为，不承担具体 DOM/Tauri/WebView2 调用 |
-| 核心 domain | wire names、serde round-trip、兼容性和 public boundary | `crates/open_quartz/tests/` 与 domain unit tests | 不承担设备执行语义 |
-| 核心 FFI | WASM/native FFI、binding marshalling、GPU/environment composition | `crates/open_quartz/tests/` | 不重复 SDK business contract |
+| 核心项目/播放/资源聚合 | Project/Graph/Layout、node factory、revision/history、Player lifecycle、ResourceCatalog、Output/Subscription、screen saver graph transform | `crates/open_quartz/src/{project,player,resources}/` 中的 coverage/unit tests 与 `crates/open_quartz/tests/` | 不承担 DOM、React Flow、Worker、Tauri |
+| 核心执行与设备模块 | Runtime/Engine/GPU/WGSL/ONNX/video execution 与状态机 | execution/inference/media 中的 unit tests 与 `crates/open_quartz/tests/` | 不重复 aggregate 行为，不承担具体 DOM/Tauri/WebView2 调用 |
+| 项目模型与资源计划 | wire names、serde round-trip、兼容性、public boundary、image/video/ONNX intent/generation | `project/model/`、`resources/plan_coverage_tests.rs` 与集成测试 | 不承担设备执行语义 |
+| 可选 WASM adapter | binding marshalling、Browser GPU/environment composition | `bindings/wasm/` 与 browser contract tests | 不重复 SDK business contract；无桌面 C/JNI FFI 层 |
 | TypeScript | React Flow projection、Store adapter、Worker/host transport、error mapping、UI interaction | `tests/sdk`、`tests/store`、`tests/components`、`tests/services` | 不再是跨平台业务规则的唯一防线 |
 
-`npm run test:sdk-coverage` 保留 100% 硬 gate，独立 coverage test source 使用 filename filter 排除，不把测试代码计入分母。本轮分别运行默认与完整 native gate，未扩大 ignore；domain/sdk/ffi/planner 的 lines/functions/regions 均为 100%，但默认整体为 99.97%/99.69%/99.92%，完整 native 整体为 98.54%/98.20%/97.27%，**两项整体 gate 均未通过**。已有 execution 缺口与新纳入计量的 Prepared 平台分支详见 §7.8；不能用 SDK 模块 100% 代替整体 gate 结论。
+`npm run test:sdk-coverage` 保留 100% 硬 gate，独立 coverage test source 使用 filename filter 排除，不把测试代码计入分母。上一轮默认/完整 native gate 均失败、当时 domain/sdk/ffi/planner 均 100% 的数值属于**历史单核心证据**，不是当前目录或本次清理结果；完整原始数值及 Prepared 平台分支见 §7.8。
 
 | 功能层 | 主要Rust测试 | 仍需语言/platform测试 |
 |---|---|---|
@@ -1587,7 +1652,7 @@ render thread -> video/completion -> Rust Runtime/Engine -> GpuExecutor -> prese
 
 ## 12. 架构验证与源码索引
 
-### 12.1 验证方法
+### 12.1 验证方法（历史流程说明；本次结果见 §7.8）
 
 仅文档更新至少执行：
 
@@ -1630,19 +1695,19 @@ npm run check:rust-boundaries
 | Browser ORT provider/resource | `src/sdk/internal/BrowserInferenceProvider.ts`、`src/sdk/internal/OnnxResourceRegistry.ts` |
 | Native TypeScript internal host | `src/sdk/internal/NativeHost.ts` |
 | Tauri command registration | `src-tauri/src/lib.rs` |
-| Tauri commands/events / execution | `src-tauri/src/native_runtime.rs`、`crates/open_quartz/src/runtime/execution.rs` |
-| Native video | `crates/open_quartz/src/native_video.rs`、`crates/oq-media` |
+| Tauri commands/events / execution | `src-tauri/src/native_runtime.rs`、`crates/open_quartz/src/execution/runtime/execution.rs` |
+| Native video | `crates/open_quartz/src/media/native.rs`、`crates/oq-media` |
 | WebView2 TextureStream | `src-tauri/src/webview_texture_stream.rs` |
-| Rust private domain | `crates/open_quartz/src/domain/` |
-| Rust SDK aggregates / root | `crates/open_quartz/src/sdk.rs`、`crates/open_quartz/src/lib.rs` |
-| Rust resource intent planner | `crates/open_quartz/src/resources/plan.rs` |
-| Runtime/Engine/GPU/ONNX execution | `crates/open_quartz/src/runtime/`、`engine/`、`gpu/`、`onnx/` |
-| Browser Rust wgpu environment | `crates/open_quartz/src/wasm_environment.rs`、`crates/open_quartz/src/ffi/browser_player.rs` |
+| Rust project model / aggregates | `crates/open_quartz/src/project/`、`crates/open_quartz/src/player/` |
+| Rust public root | `crates/open_quartz/src/lib.rs` (only root source module) |
+| Resource catalog, typed plan and cache | `crates/open_quartz/src/resources/` |
+| Execution / inference | `crates/open_quartz/src/execution/`、`crates/open_quartz/src/inference/` |
+| Browser Rust adapter/environment | `crates/open_quartz/src/bindings/wasm/` |
 | Boundary CI | `.github/workflows/dependency-boundaries.yml`、`scripts/check-rust-boundaries.mjs`、`tests/sdk/dependencyBoundary.test.ts` |
 
 ### 12.3 当前基线总结
 
-- **已成立**：Rust-backed public object API与薄TypeScript proxy；Rust/WASM wgpu Browser execution；Rust-owned Graph command、Project/screen saver/catalog、ONNX task与host resource intent；旧TS graph/GPU和重复业务算法删除。领域、SDK 与执行实现现归单一 open_quartz，资源规划位于 `open_quartz::resources::plan`；默认无设备与可选能力的功能/边界回归通过，实际 Browser 5/5、Slint 72 与交互 18/18 通过。默认/完整 native 整体 coverage gate 均未达到 100%；详细数值及未重跑平台见 §7.8。
+- **已实现并验证**：Rust-backed public object API、薄 TypeScript proxy 与 Rust-owned 图/项目/资源语义保留；单核心按 project/player/resources/execution/inference/media/bindings 分组，root 仅 lib.rs，advanced 路径不留旧 alias。桌面直接 typed 调用，Web 使用可选 bindings::wasm，Tauri 保留 JSON IPC。本次 functional/boundary/product checks 通过，但三项整体 coverage gate 仍失败；当前结果和历史单核心证据分列于 §7.8。Windows/Linux runtime 与 native release packaging 本次未重跑。
 - **已测量、继续优化**：Web preview Blob编码优先使用`FileReader`并保留等价fallback；Worker复用逐帧typed array。Node benchmark只证明fallback parity与allocation差异，不代表Browser PNG、ORT或video生产性能；后续必须在真实Browser API/GPU上profile ORT readback-upload、video `ImageBitmap` transfer和timer/GC。
 - **下一主线**：真实Browser/Native/Windows环境的功能、长稳和性能验证。
 - **尚未完成**：干净Windows VM的screen saver `/s`、`/p`、`/c`手工验证；真实video/ONNX graph长稳验证；真实Browser ONNX和preview性能smoke。

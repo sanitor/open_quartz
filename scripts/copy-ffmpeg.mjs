@@ -7,7 +7,7 @@ import installer from '@ffmpeg-installer/ffmpeg';
 import { prepareMediaSdk } from './prepare-media-sdk.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const runtimeDir = resolve(root, 'src-tauri', 'runtime');
+const runtimeDir = resolve(root, 'apps', 'open_quartz_slint', 'runtime');
 await mkdir(runtimeDir, { recursive: true });
 
 if (process.platform === 'win32' && process.arch === 'x64') {

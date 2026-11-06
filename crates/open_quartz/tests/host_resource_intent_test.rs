@@ -16,77 +16,8 @@ fn input_node(id: &str, data: Value) -> Value {
 }
 
 #[test]
-fn browser_video_intents_keep_decoder_for_same_key_and_replace_after_new_attach() {
-    let previous = json!({
-        "nodes": [input_node("video", json!({
-            "type": "input",
-            "inputMode": "video",
-            "inputDataType": "sampler2D",
-            "videoSourceType": "file",
-            "videoUrl": "blob:current",
-            "videoLoop": true,
-            "videoPlaybackRate": 1.0
-        }))],
-        "edges": []
-    });
-    let same = plan(json!({
-        "host": "browser",
-        "previousGraph": previous,
-        "graph": {
-            "nodes": [input_node("video", json!({
-                "type": "input",
-                "inputMode": "video",
-                "inputDataType": "sampler2D",
-                "videoSourceType": "file",
-                "videoUrl": "blob:current",
-                "videoLoop": false,
-                "videoPlaybackRate": 0.5
-            }))],
-            "edges": []
-        }
-    }));
-    assert_eq!(
-        same["intents"],
-        json!([{
-            "type": "update-video",
-            "nodeId": "video",
-            "key": "file:blob:current",
-            "looping": false,
-            "playbackRate": 0.5
-        }])
-    );
-
-    let replace = plan(json!({
-        "host": "browser",
-        "previousGraph": {
-            "nodes": [input_node("video", json!({
-                "type": "input",
-                "inputMode": "video",
-                "inputDataType": "sampler2D",
-                "videoSourceType": "file",
-                "videoUrl": "blob:current"
-            }))],
-            "edges": []
-        },
-        "graph": {
-            "nodes": [input_node("video", json!({
-                "type": "input",
-                "inputMode": "video",
-                "inputDataType": "sampler2D",
-                "videoSourceType": "file",
-                "videoUrl": "blob:replacement"
-            }))],
-            "edges": []
-        }
-    }));
-    assert_eq!(replace["intents"][0]["type"], "attach-video");
-    assert_eq!(replace["intents"][0]["source"], "blob:replacement");
-}
-
-#[test]
 fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback() {
     let first = plan(json!({
-        "host": "native",
         "graph": {
             "nodes": [input_node("video", json!({
                 "type": "input",
@@ -106,7 +37,6 @@ fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback(
     assert!(first["graph"]["nodes"][0]["data"].get("videoUrl").is_none());
 
     let same = plan(json!({
-        "host": "native",
         "previousGraph": {
             "nodes": [input_node("video", json!({
                 "type": "input",
@@ -131,7 +61,6 @@ fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback(
     assert_eq!(same["intents"], json!([]));
 
     let replace = plan(json!({
-        "host": "native",
         "previousGraph": {
             "nodes": [input_node("video", json!({
                 "type": "input",
@@ -167,7 +96,6 @@ fn native_video_replacement_and_replay_intents_are_keyed_by_source_and_playback(
 #[test]
 fn native_detaches_stale_video_before_uploading_replacement_image() {
     let result = plan(json!({
-        "host": "native",
         "previousGraph": {
             "nodes": [input_node("resource", json!({
                 "type": "input",
@@ -205,7 +133,6 @@ fn native_detaches_stale_video_before_uploading_replacement_image() {
 #[test]
 fn native_onnx_intent_uses_rust_catalog_task_defaults_and_integrity() {
     let result = plan(json!({
-        "host": "native",
         "graph": {
             "nodes": [json!({
                 "id": "onnx",
@@ -232,7 +159,6 @@ fn native_onnx_intent_uses_rust_catalog_task_defaults_and_integrity() {
 #[test]
 fn native_onnx_unloads_stale_model_when_removed() {
     let result = plan(json!({
-        "host": "native",
         "previousGraph": {
             "nodes": [json!({
                 "id": "onnx",

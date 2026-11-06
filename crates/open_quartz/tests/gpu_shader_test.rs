@@ -1,6 +1,6 @@
 #![cfg(feature = "gpu")]
 
-use open_quartz::gpu::{BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
+use open_quartz::execution::gpu::{BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
 
 #[test]
 fn fullscreen_shader_is_a_three_vertex_triangle_with_uv() {

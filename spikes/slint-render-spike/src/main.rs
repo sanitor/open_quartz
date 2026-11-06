@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use open_quartz::engine::{ExecutionEngine, FrameInputs};
-use open_quartz::gpu::{GpuBackend, GpuExecutor};
+use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
+use open_quartz::execution::gpu::{GpuBackend, GpuExecutor};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 use slint::wgpu_30::{wgpu, WGPUConfiguration};

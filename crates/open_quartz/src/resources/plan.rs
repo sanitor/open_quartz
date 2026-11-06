@@ -1,23 +1,15 @@
 use std::collections::BTreeMap;
 
-use crate::domain::OnnxTask;
+use crate::project::model::OnnxTask;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostResourceIntentRequest {
-    pub host: HostResourceTarget,
     #[serde(default)]
     pub previous_graph: Option<HostGraphSnapshot>,
     pub graph: HostGraphSnapshot,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum HostResourceTarget {
-    Browser,
-    Native,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -47,12 +39,6 @@ pub enum HostResourceIntent {
         key: String,
         kind: VideoSourceKind,
         source: String,
-        looping: bool,
-        playback_rate: f64,
-    },
-    UpdateVideo {
-        node_id: String,
-        key: String,
         looping: bool,
         playback_rate: f64,
     },
@@ -149,60 +135,17 @@ pub fn plan_host_resource_intents(
     request: HostResourceIntentRequest,
 ) -> Result<HostResourceIntentPlan, String> {
     let previous_graph = request.previous_graph.as_ref();
-    let graph = match request.host {
-        HostResourceTarget::Browser => request.graph.clone(),
-        HostResourceTarget::Native => strip_native_resource_payloads(&request.graph),
-    };
-    let intents = match request.host {
-        HostResourceTarget::Browser => browser_intents(previous_graph, &request.graph),
-        HostResourceTarget::Native => native_intents(previous_graph, &request.graph),
-    };
+    let graph = strip_native_resource_payloads(&request.graph);
+    let intents = native_intents(previous_graph, &request.graph);
     Ok(HostResourceIntentPlan { graph, intents })
-}
-
-fn browser_intents(
-    previous_graph: Option<&HostGraphSnapshot>,
-    graph: &HostGraphSnapshot,
-) -> Vec<HostResourceIntent> {
-    let previous = video_resources(previous_graph, HostResourceTarget::Browser);
-    let current = video_resources(Some(graph), HostResourceTarget::Browser);
-    let mut intents = Vec::new();
-    for (node_id, resource) in &current {
-        match previous.get(node_id) {
-            Some(prior) if prior.key == resource.key => {
-                intents.push(HostResourceIntent::UpdateVideo {
-                    node_id: node_id.clone(),
-                    key: resource.key.clone(),
-                    looping: resource.looping,
-                    playback_rate: resource.playback_rate,
-                });
-            }
-            _ => intents.push(HostResourceIntent::AttachVideo {
-                node_id: node_id.clone(),
-                key: resource.key.clone(),
-                kind: resource.kind,
-                source: resource.source.clone(),
-                looping: resource.looping,
-                playback_rate: resource.playback_rate,
-            }),
-        }
-    }
-    for node_id in previous.keys() {
-        if !current.contains_key(node_id) {
-            intents.push(HostResourceIntent::DetachVideo {
-                node_id: node_id.clone(),
-            });
-        }
-    }
-    intents
 }
 
 fn native_intents(
     previous_graph: Option<&HostGraphSnapshot>,
     graph: &HostGraphSnapshot,
 ) -> Vec<HostResourceIntent> {
-    let previous_video = video_resources(previous_graph, HostResourceTarget::Native);
-    let current_video = video_resources(Some(graph), HostResourceTarget::Native);
+    let previous_video = video_resources(previous_graph);
+    let current_video = video_resources(Some(graph));
     let previous_image = image_resources(previous_graph);
     let current_image = image_resources(Some(graph));
     let previous_onnx = onnx_resources(previous_graph);
@@ -273,10 +216,7 @@ fn native_intents(
     intents
 }
 
-fn video_resources(
-    graph: Option<&HostGraphSnapshot>,
-    target: HostResourceTarget,
-) -> BTreeMap<String, VideoResource> {
+fn video_resources(graph: Option<&HostGraphSnapshot>) -> BTreeMap<String, VideoResource> {
     let mut resources = BTreeMap::new();
     let Some(graph) = graph else {
         return resources;
@@ -297,25 +237,14 @@ fn video_resources(
             Some("camera") => VideoSourceKind::Camera,
             _ => VideoSourceKind::File,
         };
-        let source = match (target, kind) {
-            (HostResourceTarget::Browser, VideoSourceKind::Camera) => {
-                string_field(data, "videoDeviceId")
-                    .unwrap_or("default")
-                    .to_owned()
-            }
-            (HostResourceTarget::Browser, VideoSourceKind::File) => {
-                let Some(url) = string_field(data, "videoUrl") else {
-                    continue;
-                };
-                url.to_owned()
-            }
-            (HostResourceTarget::Native, VideoSourceKind::Camera) => {
+        let source = match kind {
+            VideoSourceKind::Camera => {
                 let Some(device_id) = string_field(data, "videoDeviceId") else {
                     continue;
                 };
                 device_id.to_owned()
             }
-            (HostResourceTarget::Native, VideoSourceKind::File) => {
+            VideoSourceKind::File => {
                 let Some(path) = string_field(data, "videoFilePath") else {
                     continue;
                 };
@@ -324,22 +253,16 @@ fn video_resources(
         };
         let looping = bool_field(data, "videoLoop").unwrap_or(true);
         let playback_rate = number_field(data, "videoPlaybackRate").unwrap_or(1.0);
-        let key = match target {
-            HostResourceTarget::Browser => match kind {
-                VideoSourceKind::Camera => format!("camera:{source}"),
-                VideoSourceKind::File => format!("file:{source}"),
+        let key = format!(
+            "{}|{}|{}|{}",
+            match kind {
+                VideoSourceKind::Camera => "camera",
+                VideoSourceKind::File => "file",
             },
-            HostResourceTarget::Native => format!(
-                "{}|{}|{}|{}",
-                match kind {
-                    VideoSourceKind::Camera => "camera",
-                    VideoSourceKind::File => "file",
-                },
-                source,
-                looping,
-                playback_rate
-            ),
-        };
+            source,
+            looping,
+            playback_rate
+        );
         resources.insert(
             node_id.to_owned(),
             VideoResource {
@@ -413,7 +336,7 @@ fn onnx_resources(graph: Option<&HostGraphSnapshot>) -> BTreeMap<String, OnnxRes
     let Some(graph) = graph else {
         return resources;
     };
-    let catalog = crate::catalog::onnx_models()
+    let catalog = crate::project::catalog::onnx_models()
         .into_iter()
         .map(|model| (model.id.clone(), model))
         .collect::<BTreeMap<_, _>>();

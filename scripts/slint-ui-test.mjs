@@ -124,7 +124,7 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
   let report;
   let scenarioReport;
   if (suite === 'shaders') {
-    const catalog = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../src/shaders/catalog.json', import.meta.url), 'utf8'));
+    const catalog = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url), 'utf8'));
     scenarioReport = { suite, caseDefinitions: catalog.groups.flatMap((group) => group.items.map((item) => ({
       id: `shader-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-$/, '')}`,
       title: `${group.category} · ${item.label}`, description: '真实图片输入、原生连接和 GPU 预览验证', screenshotPrefixes: [],

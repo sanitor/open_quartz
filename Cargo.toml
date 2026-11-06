@@ -4,6 +4,8 @@ members = [
     "crates/oq-media",
     "crates/open_quartz_screensaver",
     "crates/open-quartz-screensaver-stub",
-    "src-tauri",
 ]
 resolver = "2"
+
+[profile.release.package.open-quartz-screensaver-stub]
+opt-level = "s"

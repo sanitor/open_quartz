@@ -1,6 +1,6 @@
 # 跨平台硬件推理架构
 
-> 状态：**未来通用推理契约/后端拆分与硬件驻留仍是设计提案**；当前 ONNX task、ORT pipeline/session 与执行调度属于单一 `open_quartz` 核心。尚未实现独立推理层、Core ML 后端、设备 Tensor I/O 或硬件驻留推理。本设计不承诺任意模型都能在任意硬件上执行，也不把 EP 注册成功视为模型实际由 GPU/NPU 执行。
+> 状态：**未来通用推理契约/后端拆分与硬件驻留仍是设计提案**；当前产品仅为 Rust/Slint 原生应用与独立 Windows `.scr`，不保留 Web/Tauri fallback、WASM/bindings 功能或 API。当前 ONNX task、ORT pipeline/session 与执行调度仍属于单一 `open_quartz` 核心，是等待真实所有权拆分的过渡实现，并非已完成的新布局或真实 public Player driver。尚未实现独立推理层、Core ML 后端、设备 Tensor I/O 或硬件驻留推理。本设计不承诺任意模型都能在任意硬件上执行，也不把 EP 注册成功视为模型实际由 GPU/NPU 执行。
 
 ## 1. 决策摘要
 
@@ -19,7 +19,7 @@
 
 ## 2. 现状与问题
 
-当前原生实现位于 `crates/open_quartz/src/onnx/session.rs`、`onnx/pipeline.rs` 与 `onnx/task.rs`；`ExecutionRuntime` 管图和资源会话，Slint/Tauri 是宿主。应保留模型缓存/哈希验证、异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。若源码进一步调整位置，以 [`DESIGN.md` §7.6](./DESIGN.md#76-当前源码落点) 为当前索引。
+当前原生实现位于 [`inference/session.rs`](../crates/open_quartz/src/inference/session.rs)、[`pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs) 与 [`task.rs`](../crates/open_quartz/src/inference/task.rs)，公共 advanced 路径为 `open_quartz::inference`；[`execution::runtime::ExecutionRuntime`](../crates/open_quartz/src/execution/runtime/execution.rs) 管图和资源会话，[Slint 应用](../apps/open_quartz_slint/) 是原生桌面宿主，Windows `.scr` 保持独立宿主。模型下载/校验/缓存属于 `resources::models`，typed 意图属于 `resources::plan`。保留异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。完整当前分组以 [`DESIGN.md` §7.6](./DESIGN.md#76-当前源码落点) 为索引；职责所有权仍待实际拆分，不能把当前组合执行对象描述成已实现的目标 Player driver。
 
 目前设备路径是明确的：
 
@@ -27,15 +27,16 @@
 - `ExecutionRuntime::schedule_onnx()` 从 GPU 纹理执行同步 readback，把 `Vec<u8>` 捕获到 worker；CPU 预处理生成 `Vec<f32>`，ORT CPU 或 DirectML 执行，CPU 后处理生成 RGBA，再由 `drain_onnx_completions()` 上传 GPU。
 - `shared_onnx_wgpu_device` 明确为 `false`；`TensorRunner::run_f32(Vec<f32>, shape)` 不表达外部资源、设备归属或生命周期。
 - DirectML 执行结果被标记为配置的 `directml` 或 `directml+cpu`，但这不是逐算子执行位置的证明；部分算子可能回落到 CPU。
-- 浏览器已有各自的 ORT/WebGPU/WASM 路径；这说明跨端任务语义可复用，但不同运行时不因此具有可互操作的 buffer。
 
-所以产品是原生桌面壳和原生 ORT 调用，不是跨平台 GPU/NPU 驻留推理。视频硬解也不会自动让后续 ONNX 节点共享 CVPixelBuffer：目前图输入在推理边界会读回 CPU。
+所以当前产品是原生应用/独立屏保和原生 ORT 调用，不是跨平台 GPU/NPU 驻留推理。视频硬解也不会自动让后续 ONNX 节点共享 CVPixelBuffer：目前图输入在推理边界会读回 CPU。
 
 ## 3. 分层、依赖方向与所有权
 
+以下图示及公共契约描述未来目标；除明确标注的当前 ORT 路径外，planner、设备 lease、驻留前后处理和平台后端均不表示当前 driver 已接线。媒体与推理分别达到自身验收门槛，媒体硬解结果不替代推理驻留证明。
+
 ```mermaid
 flowchart TD
-    APP[Slint / Tauri / Browser host] --> GRAPH[Graph + ExecutionRuntime scheduler]
+    APP[Slint app / standalone Windows .scr host] --> GRAPH[Graph + ExecutionRuntime scheduler]
     GRAPH --> POLICY[Inference planner]
     POLICY --> PRE[Device preprocess / layout]
     POLICY --> BACKEND[Backend session]
@@ -52,7 +53,9 @@ flowchart TD
     BACKEND --> CUDA[CUDA / TensorRT]
 ```
 
-**当前实现：** Slint/Tauri 应用消费单一 `open_quartz` 核心；核心拥有 WASM binding、Rust SDK/domain、图执行调度、资源意图及可选 GPU/ORT/video 设备适配。应用与独立 `oq-media` 媒体组件继续保留各自边界。
+**当前实现：** Slint 应用直接消费单一 `open_quartz` 核心的 typed Rust API；源码根部只有 `lib.rs`，公共 typed aggregates/value types 继续 root 导出。项目/播放分别归 `project`/`player`，资源 catalog/plan/models 归 `resources`，调度/设备归 `execution`，ONNX 归 `inference`，native video 归 `media`。Web/Tauri、`bindings::wasm`、`web-bindings`/`browser` 特性及其 JS API 不再作为保留入口。当前执行组合仍是过渡实现，不能据模块分组声称真实所有权拆分或 public Player driver 已落地。独立 `oq-media`、编辑器、exporter、stub 与各应用保留各自边界，不以清理为由合并，也不创建占位 crate。
+
+原生 typed Rust SDK 不需要额外导出的 C/JNI/FFI 桥；这不意味着消除外部库/后端 FFI。ORT、FFmpeg、CoreVideo、Metal、D3D12 等必要调用仍属于媒体、推理与设备实现。
 
 **有条件的未来提取：** 只有具备真实独立 session/tensor/provider 实现、可运行的 ORT adapter、独立测试并消除 graph/runtime 反向依赖时，才考虑把稳定推理契约与后端 adapter 从核心分离。不是先创建契约 crate 再等待实现。
 
@@ -63,9 +66,11 @@ open_quartz (graph / SDK / Runtime / current ORT adapter / optional GPU interop)
                → optional platform adapters (Core ML / DirectML / CUDA / CPU)
 ```
 
-依赖规则：若后续达到提取门槛，backend 可依赖 inference contracts 与其平台 runtime；公共 graph/SDK/UI 不直接依赖 ORT/Core ML/DirectML 具体类型。当前 `open_quartz` 核心提供可选 wgpu import/export 和 GPU preprocess，平台 interop 可在 feature/cfg 私有模块中使用 wgpu HAL 与系统 API；domain/SDK/runtime 都是核心内部模块，而不是依赖链上的独立 crate。`oq-media` 保持独立并提供拥有的 `FrameLease`，不获得 ONNX 或 graph 依赖。
+依赖规则：若后续达到提取门槛，backend 可依赖 inference contracts 与其平台 runtime；公共 graph/SDK/UI 不直接依赖 ORT/Core ML/DirectML 具体类型。当前 `open_quartz` 的 `execution` 提供可选 wgpu import/export，`inference` 提供 ONNX task/session；平台 interop 可在 feature/cfg 私有模块中使用 wgpu HAL 与系统 API。project/player/execution/inference 是同一核心内的职责模块，不是已实现的独立 crate 依赖链。`oq-media` 保持独立并提供拥有的 `FrameLease`，不获得 ONNX 或 graph 依赖。
 
-宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制；wgpu/HAL interop 留在核心的可选适配模块，只有其自身形成独立可运行实现时才考虑另一个实包。
+未来由宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制；这不是当前已接通的设备驻留数据路径。wgpu/HAL interop 提议留在核心的可选适配模块，只有其自身形成独立可运行实现时才考虑另一个实包。
+
+本次原生单一路径清理保留 native Rust Engine 与 typed ONNX 前后处理、任务和资源规划，不保留 JS/browser/JSON worker exports 或对应绑定 API。原生测试/包/boundary 通过、两项整体 100% coverage gate 失败，见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)；最终覆盖运行测试无失败，完整 native pre/postprocess/pipeline 为 100%，默认 pre/postprocess 因浏览器专用测试退役存在缺口。未单独执行 native-onnx-only 验收，模型运行库解析保留官方缓存路径 fallback。此前结果仅为历史证据；文档任务未自行运行检查。
 
 未来抽取后的 inference core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 OpenQuartz frame stamp 的类型别名。graph revision、node generation 和 NodeId 由 OpenQuartz execution 保存为 request ID→图上下文映射，不进入独立库依赖。库错误也不依赖 SDK `SdkError`，在宿主边界转换。
 
@@ -264,7 +269,7 @@ Core ML conversion is a build/model-preparation concern, not a mandatory shippin
 | CUDA/TensorRT | Optional NVIDIA adapter when product deployment and package cost justify it | CUDA device Tensor/I/O Binding; D3D/Vulkan/wgpu interop is a separate explicit resource/synchronization adapter. Same GPU vendor alone is not same allocation. |
 | Other EPs | Add only for identified shipping hardware/model requirements | Each declares artifact, operator, I/O resource and verification scope; never claim generic acceleration from API registration. |
 
-Browser inference remains a separate adapter: WebGPU/ORT-Web or WebCodecs/browser surfaces. Its public task and result contracts can be shared, but native handles must not leak into WASM types.
+浏览器推理不属于当前产品，也没有保留的 WASM adapter。若未来另立浏览器产品，WebGPU/ORT-Web 或浏览器媒体资源必须作为独立提案重新评审并单独实现、验收；任务语义可作为参考，但本设计不承诺现有 buffer 互操作或绑定 API。
 
 ## 7. Graph and real-time scheduling
 
@@ -360,13 +365,13 @@ Add CUDA/TensorRT and other adapters only against a product support matrix, lice
 
 **Cross-platform**
 
-- Apple Silicon Core ML, Windows selected backend, browser backend and CPU fallback have independent adapter tests.
+- Apple Silicon Core ML、Windows 选定后端与 CPU fallback 按各自阶段独立验收；浏览器不计入当前产品支持矩阵，未来单独立项时另定 adapter 验收。
 - Per-platform package/license/cache/runtime relocation, clean environment launch and model lifecycle are verified.
 - No claim of Windows/Linux/mobile/CoreML/ANE support from macOS CPU or UI tests alone.
 
 ## 11. Decisions deliberately deferred
 
-- `oq-inference` 先在本仓孵化；独立仓库、公开发布、拆分后端包在首个独立消费者和兼容性验收后进行，不改变其无 OpenQuartz 依赖的边界。
+- `oq-inference` 仅在 §3 的真实独立实现门槛满足后考虑在本仓提取；独立仓库、公开发布和拆分后端包须待独立消费者及兼容性验收。当前不创建契约占位 crate，也不宣称已完成无 OpenQuartz 依赖的推理实现。
 - Which platform model artifacts are committed versus produced in a separate reproducible conversion pipeline; decide per licence and artifact size.
 - Whether Apple deployment guarantees macOS 12+ MLProgram/Core ML modes or retains older OS variants.
 - 首轮 policy 层级确定为：框架默认 → 项目默认 → 节点显式覆盖，解析为不可变 effective policy 后才准备；调用者硬约束只能显式修改，不能由低层 fallback 放宽。新实时图推荐 `HardwareAccelerated + PreferResident`，旧项目保留 legacy-compatible effective policy；`RequireResident` 和 `RequireAcceleratorOnly` 均为可独立选择的严格模式。新默认启用前必须完成 §10 验收，不静默改变旧项目行为。
@@ -378,7 +383,7 @@ These are explicit follow-up gates, not permission to silently claim support. Un
 
 首个验收对象必须含两类模型：一个 **identity/tiny deterministic** 模型验证 buffer/sync/精度协议，以及一个现有目录中的真实 **image→image** 模型（mask、去噪或风格等）验证优化价值。首轮评审具体锁定模型文件哈希、许可、静态输入 profile、FP32 CPU reference 和允许 FP16 误差；不得只用 identity 报告产品提速。
 
-1. 提取 `oq-inference` 核心与现有 ORT CPU adapter，支持命名多输入/输出、同步 CPU lease 和异步外壳；执行现有图回归，行为与存档兼容。
+1. 先在现有模块验证 Session/Tensor/provider 的独立所有权和可运行 ORT CPU adapter，支持命名多输入/输出、同步 CPU lease 和异步外壳；达到 §3 门槛后才提取真实 `oq-inference`，执行现有图回归并保持行为与存档兼容。
 2. 对现有 CPU 路径增加阶段时间、payload 字节数、推理完成数、排队和 generation 指标，得到真实 baseline。
 3. Apple 原生 Core ML adapter 准备图像 I/O，先证明 Metal 输入 → Core ML → 可供 Metal 采样的结果；若某模型只能输出 CPU MultiArray，严格驻留计划应拒绝该模型，不伪造设备张量。
 4. 在受控源/输出格式下跑离屏像素 reference，再用视频 → 预处理 → 模型 → 后处理 → Renderer 真窗口及无窗口离线流程验证。即时模式只替换 pending，离线模式保持所有帧；读回 reference 发生在独立测试出口，不混入驻留吞吐计时。

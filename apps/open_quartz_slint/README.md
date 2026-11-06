@@ -1,31 +1,47 @@
 # OpenQuartz Native Desktop (Slint)
 
-Phase 5 and Phase 7 are complete within the agreed macOS scope. This is the default
-desktop application; the separate Web application remains independently buildable,
-and Tauri remains an explicit fallback for one version. Native package relocation,
-real resource dialogs and the Tauri fallback `.app` build are verified. Actual
-camera capture, Windows/Linux acceptance and Phase 6 Android/iOS are deferred.
-An earlier intermittent winit startup abort remains a known risk. The changes are
-still Unreleased; local stage completion does not mean a tagged release was published.
+This is the native Rust Slint desktop application. Windows screen saver export
+produces `.scr` files with an independent stub. Web and Tauri are retired; there
+is no browser fallback. Windows/Linux runtime and screen saver acceptance, live
+camera capture, and Android/iOS delivery remain unverified or deferred. An earlier
+intermittent winit startup abort remains a known risk.
 
 The application is a standalone Rust workspace, with Slint and its build compiler
 pinned to **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
-The app consumes the single `open_quartz` core through its root SDK types and
-advanced host modules. The former schema/execution/SDK packages are removed;
-private `domain` and `sdk` modules live under `crates/open_quartz/src/` and have no
-compatibility crates. The core defaults to graph/project/WGSL/runtime state with
-`default = []`. Slint explicitly selects `native-runtime` (which enables only
-`gpu`), `native-video`, `native-onnx` and `model-cache`, plus
-`native-video-d3d12` on Windows. Browser/WASM uses its separate `browser` capability.
+The application consumes the single `open_quartz` core through its root typed
+API and explicit advanced host modules. The core's `src/` root contains only
+`lib.rs` for declarations and public exports. Implementation lives in `project`
+(model/catalog/project history/layout/factories), `player`
+(Environment/OpenQuartz/Player/Output/Subscription), `resources` (catalog/plan/models),
+`execution` (engine/runtime/gpu/shader/schedule/event/logging), `inference`, and
+`media`. The former schema/execution/SDK packages and old advanced root aliases
+are removed.
+
+Slint calls `open_quartz::execution::runtime::ExecutionRuntime` and
+`open_quartz::resources::{plan,models}` directly with Rust types. Other host paths
+include `execution::{engine,gpu,shader,schedule,event}`, `project::catalog`,
+`inference`, and `media::native`; see the [current source index](../../docs/DESIGN.md#76-当前源码落点).
+The core defaults to graph/project/WGSL/runtime state with `default = []`.
+Slint explicitly selects `native-runtime` (which enables only `gpu`),
+`native-video`, `native-onnx` and `model-cache`, plus `native-video-d3d12` on Windows.
 `oq-media`, `slint_code_editor`, the screen saver exporter and standalone stub
-remain independent components/products. Consolidation regression passes 72 Slint
-tests and 18/18 real-window interactions ([report](../../test-results/slint-ui/interaction-2026-11-06T02-36-13-880Z/report.html)).
-Core/default, workspace, browser, TypeScript and feature-boundary results are
-recorded in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
-Both overall default/full-native 100% coverage gates fail on execution gaps;
-domain/SDK/FFI/planner reach 100%. Windows/Linux runtime and release packaging were
-not rerun for this consolidation; historical acceptance below describes earlier changes.
+remain independent components/products. The execution layout is transitional,
+not an implemented split; see [Design](../../docs/DESIGN.md#75-模块调度与数据所有权)
+for the known `Project::graph_mut` and public `Player` limitations. The Slint
+render worker uses `ExecutionRuntime` directly; this is not a real Player driver.
+
+### Does the desktop need FFI?
+
+The pure Rust desktop uses the typed API directly; it needs no SDK C ABI, JNI
+bridge, or desktop language bridge. Native backend FFI remains necessary for
+ONNX Runtime, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM.
+
+Current native-only validation passed 72 Slint tests, 18/18 real-window interactions,
+34/34 catalog Shader cases and macOS arm64 release packaging. Core/workspace/editor
+results, reports, passing native boundaries, failed overall coverage thresholds and unverified platform gates are in
+[Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态). Earlier migration
+and cleanup results below remain historical; the execution ownership plan is not implemented.
 
 ## Run
 
@@ -33,6 +49,7 @@ From the repository root:
 
 ```sh
 npm ci
+npm run prepare:desktop
 npm run dev
 npm run dev -- --project /absolute/path/project.quartz.json
 npm run build
@@ -51,13 +68,12 @@ usage description and are ad-hoc signed, not notarized. Windows packages are uns
 extract the whole directory, including `runtime/` and executable-adjacent DLLs.
 Windows also includes the independently built screen saver stub.
 
-The macOS ZIP was extracted outside the workspace and launched without ORT/FFmpeg
-environment overrides. It used its own `Contents/Resources/runtime/ffmpeg`, rendered
-real 96×48 video through Metal, and exited normally with code 0. Extracted-bundle
-code signing and `--help` verification passed. `dist-desktop/` is ignored by Git.
-
-The retained Tauri shell also builds via `npm run package:tauri -- --bundles app`;
-its macOS bundle lives at the root workspace's `target/release/bundle/macos/`.
+The app owns its icons and prepared runtime under `apps/open_quartz_slint/icons/`
+and `apps/open_quartz_slint/runtime/`. The shader catalog source is
+`crates/open_quartz/src/project/shader_catalog.json`. The Windows stub is built
+under `target/screensaver-stub/` and staged in the app runtime for packaging.
+The macOS bundle uses a numeric version derived from root `package.json`.
+`dist-desktop/` is ignored by Git.
 
 Windows FFmpeg uses a dated BtbN FFmpeg 9.0.2 snapshot pinned by SHA-256 (ABI 63).
 Upstream snapshot retention is not guaranteed: keep the download cache for repeat/
@@ -101,20 +117,9 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   previews collapse. Runtime and project details are available through FILE →
   RUNTIME STATUS…. At 800×540 the toolbar shortens its brand and hides the
   version to preserve actions.
-- The native shader editor uses Slint TextInput, preserving platform caret,
-  selection, IME, clipboard, Unicode and read-only behavior. It adds byte-safe
-  line numbers, goto-line, UTF-8 find/next selection, live match counts and a
-  fixed Apply action. Syntax coloring is intentionally not provided because
-  Slint 1.18 has no rich editable text/span API.
-- Restoration verification: 66 Slint tests pass and the native application builds.
-  Real-window/shared-GPU smoke covers Shader and Renderer thumbnails, resolution
-  labels, collapse/expand, categorized shader creation, read-only presets,
-  Unicode drafts, live find metadata, exact GPU error status, failed-preview
-  clearing and Undo recovery. AppKit accessibility checks also opened and
-  cancelled native FILE → Open and Save As dialogs. A remaining limitation is
-  that this automation provider cannot reliably synthesize keyboard focus for
-  arbitrary TextInput key events; semantic set-value and the in-app smoke cover
-  the same model updates.
+- The native shader editor uses the independent `crates/slint_code_editor`
+  component with live WGSL highlighting. Its editing and accessibility limits are
+  described under [Inspector and WGSL editing](#inspector-and-wgsl-editing).
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
   computes padded scroll content bounds. Its origin offset keeps loaded nodes with
   negative coordinates reachable while preserving graph-space edge coordinates.
@@ -181,7 +186,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
 - A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
-  A separate render worker owns `open_quartz::runtime::ExecutionRuntime`;
+  A separate render worker owns `open_quartz::execution::runtime::ExecutionRuntime`;
   it directly composes shared Runtime rules and GPU/video/inference resources.
   The former native host crate and PlayerHost forwarding layer have been removed.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
@@ -262,6 +267,11 @@ into PNG assets in the export copy; the editor project is unchanged. Exported
 resources; their MSVC launcher uses a static CRT and delay-loads FFmpeg until after
 extraction. Independent Windows execution still requires platform acceptance.
 
+### Historical macOS package and dialog acceptance
+
+The following observations apply to the earlier migration build, not the current
+native-only retirement. Current results and remaining gates are in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
+
 The macOS production Controller/NativeHost smoke used the packaged FFmpeg and
 ORT 1.21.0 libraries: advancing 96×48 video, exact 2×2 blue/red PNGs, Renderer
 selection while paused, fullscreen/Escape, Stop/Play, Save/Open, ONNX cancellation,
@@ -329,22 +339,22 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   revision, history, and draft. SDK syntax errors can be committed when the graph
   remains valid; the stored `parseError` is shown in the panel. Apply valid source to
   clear it. GPU compilation failures carry their structured node ID back from
-  NativeHost: the affected node's status LED turns red, its stale texture preview
+  ExecutionRuntime: the affected node's status LED turns red, its stale texture preview
   clears, and the runtime status remains readable. Unrelated attached ONNX nodes
   are not marked failed.
 - Each changed Apply is one SDK history entry. No-op Apply creates no revision.
   Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
-  source/uniform/output-size edits and their history refresh the NativeHost graph.
+  source/uniform/output-size edits and their history refresh the runtime graph.
   Committed fields and parse errors round-trip through SDK Save/Open.
 - Sampling is its own draft group on Shader/Constant and sampler2D Input nodes.
   Filter supports Linear/Nearest; wrap supports Clamp/Repeat/Mirror. Apply rebuilds
-  the NativeHost graph and takes effect on the source sampler; Undo/Redo refreshes
+  the runtime graph and takes effect on the source sampler; Undo/Redo refreshes
   both the form and output.
 - Framebuffer Inputs expose all schema formats, required 1–8192 width/height, and
   optional positive-u32 stride (`blank` or `0` means auto). Video Inputs expose
   File/Camera source, native file/device selection, Loop, and finite 0.1–4.0 playback
   rate. Apply persists complete SDK `NodeData`; source switches preserve the saved
-  file path, and NativeHost reconciles committed source configuration. Raw buffer
+  file path, and ExecutionRuntime reconciles committed source configuration. Raw buffer
   resources are decoded by the file worker rather than on the Slint UI thread.
 
 ### Read-only ONNX metadata
@@ -388,10 +398,9 @@ The shader editor and project I/O do not require a loaded model session.
 - Select one ONNX node and explicitly **Load model**. A temporary local path
   overrides the saved custom path only for the current session. Without an
   override, the shell uses the custom path or the catalog download/cache planned by
-  the existing Rust host-intent API; task and effective parameters use that same
-  plan instead of duplicating the Web catalog/threshold logic.
-- Catalog downloads stream into a unique temporary file under the shared Tauri/
-  Slint `com.openquartz.app/models` cache and become visible only after completion.
+  the existing Rust host-intent API.
+- Catalog downloads stream into a unique temporary file under the
+  `com.openquartz.app/models` cache and become visible only after completion.
   A persistent per-model advisory lock coordinates reads/downloads across processes;
   the OS releases a lock when the process exits, so a stale lock file is harmless.
   Optional catalog SHA-256 is verified, including cache hits; an empty catalog
@@ -417,10 +426,9 @@ The shader editor and project I/O do not require a loaded model session.
   zero-copy. Windows requests DirectML with the existing CPU fallback; macOS/Linux
   use the existing CPU execution provider.
 
-The WGSL editor remains a native multiline `TextInput` with explicit Apply,
-UTF-8-safe line/find navigation, and platform caret/selection behavior. The macOS
-large-text assessment and decision, including diagnostic/IME/platform limits, are
-recorded in [`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
+The independent editor has explicit Apply and UTF-8-safe editing and navigation.
+The earlier macOS text-input assessment is historical; see
+[`SLINT_UI_REFACTOR.md` §7.3.1](../../docs/SLINT_UI_REFACTOR.md#731-macos-原生编辑体验评估).
 
 ## UI automation
 
@@ -441,14 +449,8 @@ Menus, toolbar buttons, Apply actions, ports, and node movement use simulated
 pointer input through the real Slint event loop. Node selection and editing
 use accessibility actions/values; this is not an OS keyboard/IME test.
 
-Local macOS/Apple M4 Pro acceptance passes all **18 UI checkpoints**, with
-**36,100/36,100** blue pixels in the Renderer preview ROI and both node thumbnails
-available. The 72 application tests and 237 execution/NativeHost test results pass.
-The suite exposed and now guards two production fixes: the sidebar resize strip
-previously intercepted centered Apply clicks, and repeated stopped graph edits
-discarded pending static Shader work before the first Play. Crash/timeout reports
-and targeted wrapper termination were also checked. Other CI platforms await
-their first run; local macOS success does not establish Linux/Windows acceptance.
+Current real-window acceptance passed 18/18; see the [current report](../../test-results/slint-ui/interaction-2026-11-06T04-59-55-340Z/report.html).
+Other results and remaining gates are in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态); older local acceptance below remains historical.
 
 
 Each run writes a readable **`report.html`**, PNG screenshots, application logs,
@@ -477,16 +479,14 @@ checks Filter→Renderer resolution through Auto→manual→Auto UI commits. It 
 checks positive render FPS and advancing time, frozen paused time, resumed time,
 zero paused FPS and reset time/FPS after Stop; screenshots retain actual GPU
 preview pixels. Run it with the ordinary `npm run test:desktop:ui` suite.
-Latest passing report: `test-results/slint-ui/interaction-2026-11-05T02-33-18-779Z/report.html`.
-The new case observes 96×48 → 320×180 → 96×48 output and verifies the actual
-blue preview pixels; render FPS assertions require a positive rate, not a
-machine-specific performance threshold.
+The case checks actual preview pixels; render FPS assertions require a positive
+rate, not a machine-specific performance threshold.
 
 
 ### All catalog shaders with real image fixtures
 
 Run `npm run test:desktop:shaders` to exercise every entry in
-`src/shaders/catalog.json` in a native Slint window. The suite loads edge-free
+`crates/open_quartz/src/project/shader_catalog.json` in a native Slint window. The suite loads edge-free
 projects containing the original catalog source, explicit non-degenerate uniforms,
 and real 64×64 PNG image resources. It then clicks every sampler/Renderer port,
 starts playback, pauses the real GPU preview for pixel inspection, and stops.
@@ -507,10 +507,8 @@ independent frames 1–200 (8/255 tolerance), quantizing its seed and every feed
 step to the runtime's RGBA8 format. Pixelate uses binary-exact 8×4 blocks to avoid
 platform-dependent nearest-sampler ties after division.
 
-On macOS/Metal, all 34 Shader cases passed their prior catalog acceptance;
-the latest ordinary interaction suite passes all 18 cases.
-Linux/macOS CI entries are configured; cross-platform CI results are not implied
-by this local acceptance.
+Earlier macOS/Metal catalog acceptance is historical; it does not establish the
+current native-only result or cross-platform acceptance.
 
 Every catalog entry must have a reference; adding a new entry fails preparation
 until its oracle is defined. Ordinary case failures are isolated and collected
@@ -539,7 +537,14 @@ cover native OS file-dialog interaction, IME composition, camera permission,
 or broad screenshot-baseline comparisons. Save uses a preassigned project path;
 reopen launches the actual application with `--project`.
 
-## Validation scope
+## Historical validation and migration records
+
+The following section preserves results from earlier builds and migration stages.
+Counts, paths, implementation names and acceptance statements are historical, not
+results for the native-only retirement; current results and remaining gates are in
+[Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
+
+### Validation scope and prior acceptance
 
 The crate contains unit coverage for multi-port edge endpoints, spatial bounds,
 persisted node movement, no-op revisions, atomic occupied-input replacement and

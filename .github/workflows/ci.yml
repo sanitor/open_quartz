@@ -10,52 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Frontend Test & Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npx tsc -b --noEmit
-
-      - name: Run tests with coverage
-        run: npm run test:coverage
-
-
-      - name: Upload coverage to Codecov
-        if: github.event_name == 'push'
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage/lcov.info
-          fail_ci_if_error: false
-
   rust-sdk-coverage:
     name: Rust SDK Coverage (${{ matrix.os }})
     strategy:
@@ -86,31 +40,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Prepare native FFmpeg runtime
-        run: npm run copy:ffmpeg
+      - name: Prepare native desktop runtimes
+        run: npm run prepare:desktop
+
+      - name: Configure Windows native dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "FFMPEG_DIR=$pwd\apps\open_quartz_slint\runtime\ffmpeg-shared" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "$pwd\node_modules\.cache\open-quartz\desktop-runtime-win32-x64" >> $env:GITHUB_PATH
 
       - name: Enforce 100% Rust SDK coverage
         run: npm run test:sdk-coverage
-
-  rust-sdk-wasm:
-    name: Rust SDK WASM Browser
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
-
-      - name: Run browser SDK tests
-        run: npm run test:sdk-wasm
 
   slint-app:
     name: Slint desktop (${{ matrix.os }})
@@ -182,7 +124,7 @@ jobs:
           path: test-results/slint-ui/
           if-no-files-found: warn
 
-      - name: Build and package native desktop (no Web/WASM)
+      - name: Build and package native desktop
         run: npm run build
 
       - uses: actions/upload-artifact@v4

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/icon.svg" width="96" height="96" alt="Open Quartz icon">
+  <img src="apps/open_quartz_slint/icons/icon.svg" width="96" height="96" alt="Open Quartz icon">
 </p>
 
 <h1 align="center">Open Quartz</h1>
@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses GPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph. The default desktop application is **Rust + Slint**, using the shared native GPU/runtime host directly. The React/Web application is retained separately, not ported to Slint; Tauri remains an explicit fallback for one version. Android/iOS delivery (Phase 6) is deferred by user decision.
+Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses GPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph. The current product is a **Rust + Slint** native desktop application plus an independent standalone Windows `.scr` screen saver runtime. Both use the shared native Rust core directly; there is no Web, Tauri, browser, WASM, or SDK bindings product. Android/iOS delivery remains deferred by user decision.
 
 ## Node Catalog
 
@@ -21,7 +21,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 | Node | Type | Output | Description |
 |------|------|--------|-------------|
 | **Image** | Input | `sampler2D` | Load images as GPU textures. Drag-and-drop or file picker. |
-| **Video** | Input | `sampler2D` | Native FFmpeg video files/cameras in Slint/Tauri; HTML media in the separate browser application. |
+| **Video** | Input | `sampler2D` | Native FFmpeg/VideoToolbox video files and cameras in the Slint application. |
 | **Framebuffer** | Input | `sampler2D` | Raw binary dump files with configurable format (RGBA8/RGBA32F/RG8/RG32F/R8/R32F/NV12), width, height, stride. |
 | **Time** | System | `float` | Elapsed time in seconds since Play. |
 | **Time Delta** | System | `float` | Frame delta time. |
@@ -66,7 +66,7 @@ Auto type inference from connected peers. CPU-only evaluation, results propagate
 | **Depth Estimation** | MiDaS v2.1 Small | 63MB | 256×256 fixed | `sampler2D` grayscale depth | Monocular relative depth |
 | **Custom** | User `.onnx` file | any | auto-introspected | auto-introspected | Load any ONNX model, ports generated from I/O metadata |
 
-Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime CPU or Windows DirectML with observable CPU fallback. The separate browser host uses adaptive WebGPU→WASM fallback. Loading, inference, and downstream GPU execution share the Rust host/runtime contracts.
+Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime CPU or Windows DirectML with observable CPU fallback. Loading, inference, and downstream GPU execution share the typed Rust core/runtime contracts.
 
 ### Output Nodes
 
@@ -74,43 +74,23 @@ Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime C
 |------|-------|-------------|
 | **Renderer** | `sampler2D` | Explicit output viewer (Quartz Composer QCView equivalent) with in-place preview and fullscreen output mirror. |
 
-## Retained Web/Tauri Interface Features
+## Native Editor Features
 
-The following editor details describe the retained React interface; they are not a claim that the Slint editor has CodeMirror/React Flow feature parity. See the [native app README](apps/open_quartz_slint/README.md) for the native controls and limitations.
-
-- **Worker-owned realtime rendering** — browser playback runs in a dedicated Worker with `OffscreenCanvas`; the Rust/WASM runtime owns clock, graph work batches, lifecycle, and output delivery. The React thread receives typed frame/output projections only.
-- **GPU-first output path** — the main realtime output stays on GPU; only selected preview or explicit screenshot/output requests perform readback.
-- **Multi-presenter GPU boundary** — Rust presentation sinks receive retained GPU handles through independent latest-frame mailboxes. Windows native consumers can acquire leased shared DXGI textures with NT resource/fence handles; a three-slot pool provides explicit backpressure without moving pixels through CPU memory.
-- **Feedback / Accumulator** — Rust-planned per-node ping-pong work is executed by the browser GPU adapter for temporal effects.
-
-### Node Graph Editor
-- Drag, connect, and arrange nodes on an infinite canvas (React Flow)
-- Bezier curve edges with type-safe connections — ports carry WGSL type metadata
-- MiniMap, box selection, fit-to-view
-
-### Node Inspector (Side Panel)
-- CodeMirror 6 shader editor with WGSL syntax highlighting, GPU validation (red squiggly lines via `createShaderModule`), and debounced port reparse
-- Read-only shader viewer for prebuilt catalog shaders (code visible for learning, not editable)
-- Port inspector with color-coded type indicators and inline uniform editing
-- Per-component vector editing (x/y/z/w) for vec2-4 uniforms
-- Per-node live preview readback for selected shader/input nodes, plus Renderer output mirrored between the graph node, Side Panel, and fullscreen view
-- Renderer Side Panel preview uses the browser PNG output, native bounded readback mirror, or the canonical Windows TextureStream consumer without starting a second runtime
-
-### Preview Lightbox
-- Full-screen viewer with scroll-to-zoom, drag-to-pan, double-click reset
-- Nearest-neighbor rendering for pixel inspection
-- Save as PNG, color picker with coordinate display
+- Native graph canvas with drag-to-connect typed ports, release-only node moves, zoom, Fit View, MiniMap, multi-selection and owned graph copy/paste.
+- Rust-owned project edits and undo/redo, native Open/Save/Save As dialogs and `.quartz.json` persistence.
+- Typed node inspectors, explicit Shader Apply, read-only catalog presets, per-node status and shared-GPU previews; see the [native app README](apps/open_quartz_slint/README.md) for precise controls and limitations.
+- One native render worker and shared wgpu device/queue. Renderer preview and fullscreen consume the same graph output texture; PNG capture is explicit readback.
 
 ### Project Management
 - Save / Save As / Load (`.quartz.json` files)
 - Rust-owned 50-level undo/redo with Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z
 - Windows `File → Export As Screen Saver…` packages a selected Renderer into a self-contained version-3 native `.scr` with its graph-required image/video/model/runtime resources; `/s`, `/p <HWND>`, and `/c` do not require an installed OpenQuartz app.
 
-## Default Native Desktop (Slint)
+## Native Desktop (Slint)
 - Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
 - Launches into an empty Untitled canvas with playback stopped. Opening/New also stop playback; editing nodes does not implicitly press Play. Manual node drags preserve the drop position even for a single-node graph; Fit View remains explicit.
-- Phase 5/7 are complete within the agreed macOS scope: default Slint launch/package, relocated native ZIP execution, independent Web production build, and explicit Tauri fallback `.app` build are verified. Actual camera, Windows/Linux, and mobile acceptance are deferred. Changes remain Unreleased; no tagged release has been published.
-- Slint and `open_quartz::runtime::ExecutionRuntime` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
+- Native-only core/workspace, boundaries, Slint unit/UI/Shader, editor and macOS release packaging passed. Both overall 100% coverage gates failed; exact results are in Design §7.8. Actual camera, Windows/Linux and mobile acceptance remain deferred. Changes remain Unreleased; no tagged release has been published.
+- Slint and `open_quartz::execution::runtime::ExecutionRuntime` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
 - Filter **Auto size** follows connected input texture dimensions; disabling it uses explicit width/height. The toolbar displays composition time, while Renderer cards and previews show graph **Render FPS** (not source video FPS or screen refresh); Pause freezes time and Stop resets it.
 - The native Shader editor uses the reusable `crates/slint_code_editor` component: cosmic-text shaping/editing with live WGSL colors, line numbers, goto/find/replace, selection and local undo/redo. Slint provides the UI and public desktop IME event bridge; no fork or WebView. Presets remain read-only and Apply is explicit. Full screen-reader caret/selection reporting and real IME/platform acceptance are not yet verified; completion and inline lint are not provided. Run `npm run dev:editor` for the independent WGSL/JSON demo.
 - Rust owns graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, previews/fullscreen, and Windows screen saver export. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
@@ -121,18 +101,20 @@ The following editor details describe the retained React interface; they are not
 - The reusable media crate is [`oq-media`](crates/oq-media/README.md) (`oq_media` in Rust), under `crates/oq-media`. `oq` denotes its OpenQuartz origin, not an OpenQuartz dependency; the application is a consumer of the library. Its README records 8K performance methods/results and the macOS NV12 OpenGL-compatibility fix.
 - ONNX remains the interchange format, not the cross-platform runtime contract. Native Core ML, DirectML/WinML, CUDA and CPU backends, plus strict device-residency policy, are an architecture proposal—not current capability. See [inference architecture and migration gates](docs/INFERENCE_ARCHITECTURE.md).
 - macOS packages include an icon and camera usage description. They are ad-hoc signed, **not notarized**; Windows packages are unsigned. Camera access still requires OS permission and a real device.
-- macOS packaging and production video/PNG/fullscreen/ONNX smoke pass; unlocked native Video/Image/Framebuffer dialogs and PNG save/cancel also pass. A fresh LaunchServices launch (including `--args --project …`) rendered bundled video successfully. An earlier winit startup abort remains unexplained and unreproduced; camera permission/capture and Windows/Linux runtime/`.scr` gates remain pending.
 
-### Tauri Fallback
-The prior React/Tauri shell and its native runtime remain available for one version through explicit commands. Windows WebView2 TextureStream and bounded readback presentation belong to this fallback, not the Slint renderer. Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint or Tauri application; camera inputs are not deterministic export sources.
+Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint application; camera inputs are not deterministic export sources. Earlier macOS package/video/dialog acceptance is recorded in the [migration archive](docs/SLINT_UI_REFACTOR.md); an earlier winit startup abort remains unexplained and unreproduced.
 
 ## Rust SDK and Structured Runtime
-- `open_quartz` is the single core implementation and Rust SDK, owning graph/domain, Project/history, WGSL/catalog, runtime state and optional device execution. The former schema, execution and SDK packages are removed without aliases or forwarding crates. Private `domain` and `sdk` modules expose their public types through the crate root; advanced host modules remain explicitly available. See the [implemented crate boundaries and verification gates](docs/DESIGN.md#7-crate-边界审查与重新设计).
+- `open_quartz` is the single core implementation and Rust SDK. Its root `src/lib.rs` is the only root source module: stable public value and aggregate names (`OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, `Player`, `Resource`, and `Output`) remain root exports, while implementation is grouped by responsibility. `project` owns model/catalog/project history/layout/factories; `player` owns `Environment`, `OpenQuartz`, `Player`, `Output`, and `Subscription`; `resources` owns catalog/plan/model-cache services; `execution` owns engine/runtime/GPU/WGSL/schedule/event/logging; `inference` owns ONNX; and `media` owns native video. No old root aliases such as `engine`, `runtime`, `gpu`, `catalog`, `onnx`, `ffi`, or `native_video` are retained.
+- Advanced Rust host paths are explicit: `open_quartz::execution::{engine,runtime,gpu,shader,schedule,event}`, `open_quartz::project::catalog`, `open_quartz::inference`, `open_quartz::media::native`, and `open_quartz::resources`. `project::model` and the aggregate implementation modules are internal (`pub(crate)` where applicable), not compatibility crates or public root aliases.
+- Desktop Rust uses the typed API directly: no exported SDK C ABI, JNI bridge or language FFI adapter is needed. Web/Tauri, JS object/worker exports, `bindings::wasm`, `web-bindings` and `browser` have been retired, not retained as opt-in compatibility paths.
+- Native ORT, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM FFI calls remain necessary backend implementation details; removing SDK bindings does not remove external-library FFI.
 - Rust-backed public `OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, and `Player` aggregates with atomic edits, revision/history ownership, serialization, and structured errors
 - Rust-backed production WGSL parser/compiler validation via `naga`
 - Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, feedback state preservation, catalog semantics, ONNX tasks, and host resource intents
-- Native `wgpu` primitives and `open_quartz::runtime::ExecutionRuntime`, shared by Slint and the retained Tauri render thread; resource planning and model services live in `open_quartz::resources::{plan, models}`, with no separate native host crate or forwarding PlayerHost
-- Consolidation regression: default core 230 tests, retained workspace 308 tests plus two targeted capability regressions, Slint 72 tests and 18/18 real-window interactions, TS 704 tests, type checking, independent feature boundaries and actual Chrome browser 5/5 pass. Default/browser WASM, standalone editor and Tauri app library compile checks pass. Overall default and full native 100% coverage gates both fail on execution gaps; domain/SDK/FFI/planner reach 100%. See [results and limits](docs/DESIGN.md#78-验证矩阵与证据状态); Windows/Linux runtime and release packaging were not rerun.
+- Slint uses native `wgpu` primitives and `open_quartz::execution::runtime::ExecutionRuntime`; resource planning and model services live in `open_quartz::resources::{plan,models}`, with no separate native host crate or forwarding PlayerHost.
+- The `execution` directory remains transitional: grouping engine/runtime/GPU/shader/schedule/event/logging did not resolve ownership. The [execution/runtime review](docs/DESIGN.md#executionruntime-职责复审与后续所有权方案) separates compilation, evaluation, playback, rendering, inference, media and output delivery as a plan, not an implemented split. Public `Player` still has no real device driver, and `Project::graph_mut` can bypass revision/history; this retirement does not fix either limitation.
+- Current results are in [Design §7.8](docs/DESIGN.md#78-验证矩阵与证据状态): default core 216 tests, native workspace 221, full-native core 284, Slint 72, real-window UI 18/18, catalog Shaders 34/34 and editor 10 passed, as did native boundaries and macOS arm64 release archive/signing/startup. Both overall 100% coverage gates failed: default lines/functions/regions 98.91%/99.06%/98.85%; full native 98.33%/97.92%/96.92%. Final coverage tests passed; thresholds and exclusions were not relaxed. Native-onnx-only was not separately run. Earlier Web/WASM/Tauri results are archival only.
 
 The core's `default = []` supports graph/project editing, WGSL tools and shared runtime state without GPU, ORT, FFmpeg, HTTP or UI dependencies. Consumers select capabilities explicitly:
 
@@ -144,9 +126,8 @@ The core's `default = []` supports graph/project editing, WGSL tools and shared 
 | `native-video-d3d12` | Windows D3D12 video; enables `native-video` and `gpu` |
 | `native-onnx` | Native ORT sessions/pipeline without requiring GPU or HTTP |
 | `model-cache` | Model download, checksum verification and file cache without requiring ORT/GPU |
-| `browser` | WASM/browser GPU environment and execution; enables `gpu`, not native runtimes |
 
-`oq-media`, `slint_code_editor`, the screen saver exporter and standalone `.scr` stub remain independent components/products, as do the Slint and Tauri applications. A future inference extraction remains conditional on a real independent implementation and its own tests; no empty provider/API packages are introduced.
+`oq-media`, `slint_code_editor`, the screen saver exporter, standalone `.scr` stub and Slint application remain independent components/products. A future inference extraction remains conditional on a real independent implementation and its own tests; no empty provider/API packages are introduced.
 
 ## Getting Started — Native Desktop
 
@@ -181,65 +162,39 @@ Linux packages still require the system desktop/font/Vulkan libraries; they are 
 
 Windows FFmpeg is a checksum-pinned, dated BtbN FFmpeg 9.0.2 snapshot (ABI 63), not a promise of permanent third-party hosting. BtbN may expire old snapshots; preserve the downloaded cache for repeat/offline builds. An unavailable asset or checksum mismatch stops preparation explicitly and requires updating the pinned dependency—there is no silent system/partial-runtime fallback.
 
-## Separate Web Application and Tauri Fallback
+Canonical source resources are [`apps/open_quartz_slint/icons/`](apps/open_quartz_slint/icons/) and generated/prepared [`apps/open_quartz_slint/runtime/`](apps/open_quartz_slint/runtime/), including SDK libraries, licenses and source notices. The packager derives the numeric macOS bundle version from `package.json`; Windows stub builds stage from `target/screensaver-stub/` into the app runtime. The Shader catalog is [`crates/open_quartz/src/project/shader_catalog.json`](crates/open_quartz/src/project/shader_catalog.json), shared by native catalog code and Shader automation. Native fixtures remain under `tests/fixtures/`.
 
-These paths require wasm-pack and `rustup target add wasm32-unknown-unknown`:
-
-```bash
-npm run dev:web                     # Vite at http://localhost:5173
-npm run build:web                   # TypeScript + Vite output in dist/
-npm run preview:web                 # preview the Web build
-npm run dev:tauri                   # explicit one-version fallback
-npm run package:tauri               # Tauri installers, not Slint artifacts
-```
-
-`npm run tauri -- dev` / `npm run tauri -- build` remain available. Tauri hooks deliberately call the Web commands (`dev:web` / `build:tauri` → `build:web`) and never recurse into the native default. `build:tauri` prepares the fallback frontend/stub; `package:tauri` invokes the actual installer build. Web is retained independently, not reimplemented with Slint WASM.
-
-The macOS fallback was verified with `npm run package:tauri -- --bundles app`;
-its output is `target/release/bundle/macos/Open Quartz.app` in the root Cargo
-workspace. Default Slint artifacts remain in `dist-desktop/`, which is ignored by Git.
 
 ## Testing and Acceptance
 
 ```bash
+cargo test --workspace               # core, media, exporter and stub workspace
 npm run test:desktop                 # Slint tests with native runtime preparation
-cargo test --workspace               # shared Rust workspace
-npm test                            # separate Web unit tests
-npm run test:sdk-coverage            # Rust SDK coverage
-npm run test:sdk-wasm                # WASM/browser contracts
-npm run test:models                  # real-model browser inference
-npm run test:shaders                 # real-GPU browser shader tests
+npm run test:desktop:ui              # real native-window interactions
+npm run test:desktop:shaders         # catalog Shader GPU/pixel acceptance
+npm run test:editor                 # independent Slint editor workspace
+npm run check:rust-boundaries        # default/native feature and public API boundaries
+npm run test:sdk-coverage            # Rust core coverage gates
 ```
 
-Recent local verification: the native Slint package builds and its **66 application tests** pass. Real shared-GPU smoke covers node thumbnails, resolution labels, collapse/expand, categorized Shader creation, read-only presets, Unicode editor navigation, exact GPU error status, stale-preview clearing and Undo recovery. Native FILE → Open and Save As dialogs were opened and cancelled successfully. Full Web, cross-platform and camera claims above remain separately scoped.
+Current observed results, reports, release archive, failed coverage thresholds and unverified platform gates are recorded in [Design §7.8](docs/DESIGN.md#78-验证矩阵与证据状态). Earlier migration results remain explicitly archival and do not replace current native acceptance.
 
 ## Tech Stack
 
-Rust · Slint 1.18.1 · wgpu 30 · naga · ort · FFmpeg; retained Web/Tauri: React 19 · TypeScript 6 · Vite 8 · React Flow 12 · Zustand 5 · CodeMirror 6 · Tailwind CSS 4 · Tauri 2 · onnxruntime-web/node
+Rust · Slint 1.18.1 · cosmic-text · wgpu 30 · naga · ort · FFmpeg / VideoToolbox. Node.js runs native development/packaging/automation helpers; it is not an application runtime or Web frontend.
 
 ## Roadmap
 
 ### Rust SDK and native runtime
 
-Open Quartz owns cross-platform graph, project, catalog, lifecycle, inference-task, and resource-intent semantics in Rust. TypeScript is limited to framework projection and required Browser/Tauri/WebView2/ORT-Web platform operations; production host selection remains explicit through `BrowserHost` and `NativeHost`.
-
-| Stage | What | Status |
-|-------|------|--------|
-| **A. Structured FFI contract** | API version/capabilities, typed errors/events, WASM package | Done |
-| **B. Stateless cutover** | Rust `naga` parser used by production UI | Done |
-| **C. Stateful Engine core** | Revisions, generations, dirty execution, typed frames, lifecycle | Done |
-| **D. Native GPU runtime** | Rust render thread, offscreen `GpuExecutor`, in-editor Renderer output | Done |
-| **E. Native resource/output parity** | Image/video resources, FFmpeg, preview/screenshot readback, packaging | Done |
-| **F. Native ONNX graph cutover** | Async texture/tensor execution, six-task parity, cascade, provider/output events | Done |
-| **G. Production switch** | `PipelineService` selects one explicit runtime per host | Done |
-| **H. Thin TypeScript convergence** | Rust-backed public proxies, Store graph commands, Project/screen saver/catalog/inference/resource policy, real crate boundaries | Done |
+Open Quartz owns graph, project, catalog, lifecycle, inference-task and resource-intent semantics in Rust. The current priorities are real execution ownership boundaries and independent platform acceptance, not another language adapter. See [Design §7](docs/DESIGN.md#7-crate-边界审查与重新设计) for current limitations and the proposed ownership plan; no new driver or component split is claimed here.
 
 ### Quartz Composer parity
 
 | Patch | Description | Complexity |
 |-------|-------------|------------|
-| **3D Object / Mesh** | Load and render 3D models (GLTF/OBJ) as scene nodes | Three.js WebGPU + node material |
-| **Lighting / Camera** | Directional, point, spot lights + perspective/ortho camera | Three.js built-in |
+| **3D Object / Mesh** | Load and render 3D models (GLTF/OBJ) as scene nodes | Native GPU scene/material implementation |
+| **Lighting / Camera** | Directional, point, spot lights + perspective/ortho camera | Native scene and camera model |
 | **Delay (1-frame)** | Read another node's previous frame output | Shares ping-pong infra with Accumulator |
 | **Image Transition** | Animated wipe/dissolve/push between two images | Shader preset + iTime |
 | **Iterator / Replicate** | Execute a sub-graph N times per frame with varying params | Graph engine loop construct |

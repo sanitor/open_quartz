@@ -1,38 +1,24 @@
-//! OpenQuartz project model, execution runtime, and language bindings.
+//! OpenQuartz project model, playback, and native rendering.
 //! Device capabilities are opt-in; project editing and shader planning are CPU-only.
 
-mod domain;
-mod sdk;
-mod logging;
-
-pub mod catalog;
-pub mod engine;
-pub mod error;
-pub mod event;
-pub mod ffi;
-pub mod graph;
-pub mod onnx;
+pub mod project;
+pub mod player;
+pub mod execution;
+pub mod inference;
+pub mod media;
 pub mod resources;
-pub mod runtime;
-pub mod wgsl;
-#[cfg(feature = "gpu")]
-pub mod gpu;
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-video"))]
-pub mod native_video;
-#[cfg(all(target_arch = "wasm32", feature = "browser"))]
-pub mod wasm_environment;
 
-pub use domain::{
-    DataType, Edge, FramebufferFormat, Graph, GraphChange, GraphCommand, GraphEdit, InputMode,
-    NodeData, NodeFactoryRequest, NodeId, NodeType, OnnxParamValue, OnnxSource, OnnxTask, Port,
-    PortDirection, PortId, PortKey, Position, ProjectFile, ProjectId, ProjectNode, ResourceId,
-    SdkError, SdkErrorCode, SubscriptionId, SystemSource, TextureFilter, TextureWrap,
-    VideoSourceType, PROJECT_FILE_VERSION,
+pub use project::{
+    DataType, Edge, FramebufferFormat, Graph, GraphChange, GraphCommand, GraphEdit, GraphLayout,
+    InputMode, NodeData, NodeFactoryRequest, NodeId, NodeType, OnnxParamValue, OnnxSource,
+    OnnxTask, Port, PortDirection, PortId, PortKey, Position, Project, ProjectFile, ProjectId,
+    ProjectNode, ResourceId, SdkError, SdkErrorCode, SubscriptionId, SystemSource,
+    TextureFilter, TextureWrap, VideoSourceType, PROJECT_FILE_VERSION,
 };
-pub use sdk::{
-    Environment, GraphLayout, OpenQuartz, Output, OutputPolicy, Player, PlayerBuilder, PlayerState,
-    Project, Resource, ResourceCatalog, ResourceKind, ResourceSource, Subscription,
+pub use player::{
+    Environment, OpenQuartz, Output, OutputPolicy, Player, PlayerBuilder, PlayerState, Subscription,
 };
+pub use resources::{Resource, ResourceCatalog, ResourceKind, ResourceSource};
 
 #[cfg(test)]
 extern crate self as open_quartz;
@@ -50,8 +36,8 @@ mod coverage_dxgi_shared_texture;
 #[path = "../tests/executor_test.rs"]
 mod coverage_executor;
 #[cfg(test)]
-#[path = "../tests/executor_ffi_test.rs"]
-mod coverage_executor_ffi;
+#[path = "../tests/engine_contract_test.rs"]
+mod coverage_engine_contract;
 #[cfg(all(test, feature = "gpu"))]
 #[path = "../tests/gpu_test.rs"]
 mod coverage_gpu;

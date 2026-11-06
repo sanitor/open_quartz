@@ -1,10 +1,10 @@
-//! The same shader source and creation metadata used by the React shader menu.
+//! Built-in shader source and creation metadata from the Rust project catalog.
 
 use std::sync::LazyLock;
 
 use serde_json::Value;
 
-const CATALOG_JSON: &str = include_str!("../../../src/shaders/catalog.json");
+const CATALOG_JSON: &str = include_str!("../../../crates/open_quartz/src/project/shader_catalog.json");
 
 #[derive(Debug)]
 pub(crate) struct ShaderPreset {

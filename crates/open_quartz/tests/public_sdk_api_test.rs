@@ -1,6 +1,4 @@
-use open_quartz::ffi::OpenQuartzBinding;
 use open_quartz::{Environment, OpenQuartz, PlayerState};
-use serde_json::Value;
 
 #[test]
 fn public_objects_create_an_independent_project_and_player() {
@@ -68,35 +66,4 @@ fn project_graph_rollback_restores_previous_snapshot_and_advances_revision() {
 
     assert_eq!(project.graph_snapshot(), original);
     assert_eq!(project.graph_revision(), 2);
-}
-
-#[test]
-fn binding_graph_and_player_contract_round_trips_errors_and_dispose() {
-    let sdk = OpenQuartzBinding::new();
-    let project = sdk.create_project("Binding");
-    let graph = project.graph();
-
-    assert_eq!(graph.revision(), 0);
-    assert_eq!(graph.snapshot_json().unwrap(), r#"{"nodes":[],"edges":[]}"#);
-    assert_eq!(
-        serde_json::from_str::<Value>(&graph.replace(r#"{"nodes":[],"edges":[]}"#, 0).unwrap())
-            .unwrap()["revision"],
-        1
-    );
-    let stale: Value =
-        serde_json::from_str(&graph.replace(r#"{"nodes":[],"edges":[]}"#, 0).unwrap_err()).unwrap();
-    assert_eq!(stale["code"], "stale-revision");
-
-    assert_eq!(
-        serde_json::from_str::<Value>(&graph.rollback(1).unwrap()).unwrap()["revision"],
-        2
-    );
-    let project_json = project.to_json().unwrap();
-    let reopened = sdk.open_project(&project_json).unwrap();
-    assert_eq!(reopened.name(), "Binding");
-
-    let mut player = project.create_player().unwrap();
-    player.close().unwrap();
-    let disposed: Value = serde_json::from_str(&player.play().unwrap_err()).unwrap();
-    assert_eq!(disposed["code"], "disposed");
 }

@@ -1,4 +1,4 @@
-use open_quartz::runtime::CompositionClock;
+use open_quartz::execution::runtime::CompositionClock;
 use open_quartz::SdkErrorCode;
 
 #[test]
@@ -23,12 +23,10 @@ fn composition_clock_freezes_pause_and_resets_stop_without_deadline_drift() {
     assert_eq!(clock.state().timeline_ns, 0);
     assert_eq!(clock.state().frame, 0);
 }
-use open_quartz::runtime::Runtime;
+use open_quartz::execution::runtime::Runtime;
 
-use open_quartz::runtime::{
-    ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState,
-    OutputSubscription, OutputTransport, RuntimeCapabilities, RuntimeFrameInput,
-};
+use open_quartz::execution::runtime::{ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState,
+OutputSubscription, OutputTransport, RuntimeCapabilities, RuntimeFrameInput,};
 use open_quartz::Graph;
 use serde_json::json;
 
