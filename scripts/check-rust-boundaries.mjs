@@ -30,15 +30,38 @@ function consumer(name, source, dependencies = dependency) {
 
 try {
   const publicConsumer = consumer('open_quartz_public_check', `
-use open_quartz::{DataType, Environment, Graph, OpenQuartz, PlayerState, ProjectFile, PROJECT_FILE_VERSION};
+use open_quartz::compiler::{shader::parse_shader, ExecutionPlan};
+use open_quartz::evaluation::{FrameInputs, GraphEvaluator};
+use open_quartz::{DataType, Environment, Graph, NodeFactoryRequest, OpenQuartz, PlayerState, ProjectFile, PROJECT_FILE_VERSION};
 fn main() {
     let sdk = OpenQuartz::new(Environment::headless());
-    let project = sdk.create_project("public");
+    let mut project = sdk.create_project("public");
+    let (renderer, _) = project.create_graph_node(
+        NodeFactoryRequest::Renderer { position: None }, project.graph_revision(),
+    ).unwrap();
     let _: ProjectFile = project.to_file();
     let _: Graph = project.graph_snapshot();
     let _: DataType = DataType::Float;
     let _: &str = PROJECT_FILE_VERSION;
     let _: PlayerState = sdk.player(project.graph()).build().unwrap().state();
+    let parsed = parse_shader("@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
+    assert!(parsed.parse_error.is_none());
+    assert_eq!(parsed.outputs.len(), 1);
+    let graph = project.graph_snapshot();
+    let mut evaluator = GraphEvaluator::prepare(graph.nodes, graph.edges);
+    let plan: &ExecutionPlan = evaluator.plan();
+    assert!(plan.nodes.iter().any(|node| node.id == renderer.id));
+    let frame = evaluator.run_frame(&FrameInputs {
+        time: 0.0,
+        delta: 0.0,
+        frame: 1,
+        date: [0.0; 4],
+        mouse: [0.0; 4],
+        resolution: [512.0, 512.0, 1.0],
+        video_nodes: Vec::new(),
+    });
+    assert_eq!(frame.frame, 1);
+    assert!(frame.commands.iter().any(|command| command.node_id == renderer.id && command.kind == "renderer"));
 }
 `);
   run('cargo', ['check', '--quiet', '--manifest-path', join(publicConsumer, 'Cargo.toml')], root);
@@ -58,9 +81,9 @@ fn main() {
       feature: 'native-runtime',
       forbidden: ['ort', 'ffmpeg-next', 'oq-media', 'reqwest'],
       source: `
-use open_quartz::execution::runtime::ExecutionRuntime;
+use open_quartz::NativePlayer;
 fn main() {
-    let _ = ExecutionRuntime::from_shared_wgpu;
+    let _ = NativePlayer::from_shared_wgpu;
 }
 `,
     },

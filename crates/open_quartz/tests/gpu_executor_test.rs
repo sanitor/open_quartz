@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
-use open_quartz::execution::gpu::{GpuBackend, GpuExecutor};
+use open_quartz::evaluation::{GraphEvaluator, FrameInputs};
+use open_quartz::rendering::{GpuBackend, GpuExecutor};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 
@@ -78,7 +78,7 @@ fn executes_shader_cascade_and_exposes_renderer_output() {
             {"id": "e2", "source": "copy", "sourceHandle": "copy_out", "target": "renderer", "targetHandle": "renderer_in"}
         ]))
         .unwrap();
-        let mut engine = ExecutionEngine::prepare(nodes, edges);
+        let mut engine = GraphEvaluator::prepare(nodes, edges);
         let result = engine.run_frame(&frame());
         let backend = request_backend().await;
         let mut executor = GpuExecutor::new(backend.clone());
@@ -105,7 +105,7 @@ fn renderer_reconnection_cannot_reuse_previous_source_texture() {
         })).unwrap();
         let backend = request_backend().await;
         let mut executor = GpuExecutor::new(backend);
-        let mut engine = ExecutionEngine::prepare(
+        let mut engine = GraphEvaluator::prepare(
             graph.nodes[..1]
                 .iter()
                 .chain(graph.nodes[2..].iter())
@@ -121,12 +121,12 @@ fn renderer_reconnection_cannot_reuse_previous_source_texture() {
         );
 
         graph.edges[0].source = "inference".into();
-        let plan = open_quartz::execution::engine::build_execution_plan(&graph.nodes, &graph.edges);
+        let plan = open_quartz::compiler::build_execution_plan(&graph.nodes, &graph.edges);
         executor.sync_plan(&plan).unwrap();
         assert!(executor.read_output_rgba("renderer").await.is_err());
 
         graph.edges[0].source = "color".into();
-        let mut engine = ExecutionEngine::prepare(
+        let mut engine = GraphEvaluator::prepare(
             graph.nodes[..1]
                 .iter()
                 .chain(graph.nodes[2..].iter())
@@ -140,7 +140,7 @@ fn renderer_reconnection_cannot_reuse_previous_source_texture() {
             executor.read_output_rgba("renderer").await.unwrap(),
             [0, 255, 0, 255]
         );
-        let plan = open_quartz::execution::engine::build_execution_plan(&graph.nodes, &[]);
+        let plan = open_quartz::compiler::build_execution_plan(&graph.nodes, &[]);
         executor.sync_plan(&plan).unwrap();
         assert!(executor.read_output_rgba("renderer").await.is_err());
     });
@@ -176,7 +176,7 @@ fn source_sampling_controls_filter_wrap_and_reset_for_uploaded_textures() {
                 .uniforms
                 .insert("at".into(), json!([x, 0.5]));
             executor.sync_sampling(&graph);
-            let mut engine = ExecutionEngine::prepare(graph.nodes.clone(), graph.edges.clone());
+            let mut engine = GraphEvaluator::prepare(graph.nodes.clone(), graph.edges.clone());
             let result = engine.run_frame(&frame());
             executor.execute(engine.plan(), &result).unwrap();
             let rgba = executor.read_output_rgba("sample").await.unwrap();
@@ -220,7 +220,7 @@ fn connected_system_time_updates_hue_uniform_on_native_gpu() {
             {"id": "time_to_hue", "source": "time", "sourceHandle": "time_out", "target": "hue", "targetHandle": "angle"},
             {"id": "hue_to_renderer", "source": "hue", "sourceHandle": "hue_out", "target": "renderer", "targetHandle": "renderer_in"}
         ])).unwrap();
-        let mut engine = ExecutionEngine::prepare(nodes, edges);
+        let mut engine = GraphEvaluator::prepare(nodes, edges);
         let backend = request_backend().await;
         let mut executor = GpuExecutor::new(backend.clone());
 
@@ -256,7 +256,7 @@ fn position_only_update_preserves_gpu_feedback_targets() {
             }
         }]))
         .unwrap();
-        let mut engine = ExecutionEngine::prepare(nodes.clone(), Vec::new());
+        let mut engine = GraphEvaluator::prepare(nodes.clone(), Vec::new());
         let backend = request_backend().await;
         let mut executor = GpuExecutor::new(backend.clone());
 
@@ -326,7 +326,7 @@ fn uploads_reuses_and_releases_image_texture_resources() {
         let reused_texture = executor.output_texture("image").unwrap().texture as *const _;
         assert_eq!(first_texture, reused_texture);
 
-        let mut engine = ExecutionEngine::prepare(nodes, edges);
+        let mut engine = GraphEvaluator::prepare(nodes, edges);
         let result = engine.run_frame(&frame());
         executor.execute(engine.plan(), &result).unwrap();
         let rgba = executor.read_output_rgba("renderer").await.unwrap();
@@ -371,15 +371,15 @@ fn native_runtime_gray_scott_seeds_then_evolves_through_renderer() {
             ],
             "edges":[{"id":"e","source":"feedback","sourceHandle":"out","target":"renderer","targetHandle":"in"}]
         })).unwrap();
-        let mut runtime = open_quartz::execution::runtime::Runtime::new_native(
-            open_quartz::execution::runtime::RuntimeCapabilities { data_paths: vec![] },
+        let mut runtime = open_quartz::player::PlaybackSession::new_native(
+            open_quartz::player::PlaybackCapabilities { data_paths: vec![] },
         );
         runtime.set_graph(&graph).unwrap();
         runtime.play(0).unwrap();
         let mut executor = GpuExecutor::new(request_backend().await);
         let mut frames = Vec::new();
         for number in 1..=3 {
-            let clock = runtime.advance(&open_quartz::execution::runtime::RuntimeFrameInput {
+            let clock = runtime.advance(&open_quartz::player::SessionFrameInput {
                 now_ns: (number - 1) * 16_666_667,
                 date: [0.0; 4], mouse: [0.0; 4], resolution: [32.0, 32.0, 1.0],
             }).unwrap();
@@ -464,8 +464,8 @@ fn native_runtime_auto_size_follows_live_sources_and_manual_filter_cascades() {
                     edge("cascade-output", "cascade", "cascade-renderer", "in")
                 ]
             })).unwrap();
-            let mut runtime = open_quartz::execution::runtime::Runtime::new_native(
-                open_quartz::execution::runtime::RuntimeCapabilities { data_paths: vec![] },
+            let mut runtime = open_quartz::player::PlaybackSession::new_native(
+                open_quartz::player::PlaybackCapabilities { data_paths: vec![] },
             );
             runtime.set_graph(&graph).unwrap();
             runtime.play(0).unwrap();
@@ -475,7 +475,7 @@ fn native_runtime_auto_size_follows_live_sources_and_manual_filter_cascades() {
             for (number, (width, height)) in [(1920, 1080), (640, 360)].into_iter().enumerate() {
                 executor.upload_rgba("source", &[64, 0, 0, 255].repeat((width * height) as usize), width, height).unwrap();
                 runtime.mark_dirty("source").unwrap();
-                runtime.advance(&open_quartz::execution::runtime::RuntimeFrameInput {
+                runtime.advance(&open_quartz::player::SessionFrameInput {
                     now_ns: number as u64 * 16_666_667,
                     date: [0.0; 4], mouse: [0.0; 4], resolution: [7.0, 9.0, 1.0],
                 }).unwrap();

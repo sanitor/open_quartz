@@ -3,7 +3,11 @@
 
 pub mod project;
 pub mod player;
-pub mod execution;
+pub mod compiler;
+pub mod evaluation;
+pub mod outputs;
+#[cfg(feature = "gpu")]
+pub mod rendering;
 pub mod inference;
 pub mod media;
 pub mod resources;
@@ -19,6 +23,8 @@ pub use player::{
     Environment, OpenQuartz, Output, OutputPolicy, Player, PlayerBuilder, PlayerState, Subscription,
 };
 pub use resources::{Resource, ResourceCatalog, ResourceKind, ResourceSource};
+#[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+pub use player::NativePlayer;
 
 #[cfg(test)]
 extern crate self as open_quartz;
@@ -36,8 +42,8 @@ mod coverage_dxgi_shared_texture;
 #[path = "../tests/executor_test.rs"]
 mod coverage_executor;
 #[cfg(test)]
-#[path = "../tests/engine_contract_test.rs"]
-mod coverage_engine_contract;
+#[path = "../tests/graph_instance_test.rs"]
+mod coverage_graph_instance;
 #[cfg(all(test, feature = "gpu"))]
 #[path = "../tests/gpu_test.rs"]
 mod coverage_gpu;
@@ -69,5 +75,5 @@ mod coverage_presentation;
 #[path = "../tests/presenter_test.rs"]
 mod coverage_presenter;
 #[cfg(test)]
-#[path = "../tests/runtime_contract_test.rs"]
-mod coverage_runtime_contract;
+#[path = "../tests/playback_session_test.rs"]
+mod coverage_playback_session;

@@ -1,4 +1,4 @@
-use open_quartz::execution::runtime::CompositionClock;
+use open_quartz::player::CompositionClock;
 use open_quartz::SdkErrorCode;
 
 #[test]
@@ -23,10 +23,10 @@ fn composition_clock_freezes_pause_and_resets_stop_without_deadline_drift() {
     assert_eq!(clock.state().timeline_ns, 0);
     assert_eq!(clock.state().frame, 0);
 }
-use open_quartz::execution::runtime::Runtime;
+use open_quartz::player::PlaybackSession;
 
-use open_quartz::execution::runtime::{ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState,
-OutputSubscription, OutputTransport, RuntimeCapabilities, RuntimeFrameInput,};
+use open_quartz::outputs::{ContentStamp, DataPathMode, DeliveryPolicy, FrameStamp, OutputKey, OutputPayload, OutputState, OutputSubscription, OutputTransport, PlaybackCapabilities};
+use open_quartz::player::{SessionFrameInput};
 use open_quartz::Graph;
 use serde_json::json;
 
@@ -90,7 +90,7 @@ fn state(generation: u64, value: f64) -> OutputState {
 
 #[test]
 fn latest_overwrites_pending_but_every_applies_backpressure() {
-    let mut runtime = Runtime::new(RuntimeCapabilities {
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities {
         data_paths: vec![DataPathMode::CpuCopy],
     });
     runtime.set_graph(&graph()).unwrap();
@@ -131,7 +131,7 @@ fn latest_overwrites_pending_but_every_applies_backpressure() {
 
 #[test]
 fn graph_change_invalidates_subscriptions_to_removed_ports() {
-    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("inspector", DeliveryPolicy::OnChange))
@@ -151,14 +151,14 @@ fn graph_change_invalidates_subscriptions_to_removed_ports() {
 
 #[test]
 fn math_result_is_published_using_its_real_port_id() {
-    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("math", DeliveryPolicy::OnChange))
         .unwrap();
     runtime.play(100).unwrap();
     runtime
-        .advance(&RuntimeFrameInput {
+        .advance(&SessionFrameInput {
             now_ns: 116,
             date: [2026.0, 8.0, 3.0, 0.0],
             mouse: [0.0; 4],
@@ -177,7 +177,7 @@ fn math_result_is_published_using_its_real_port_id() {
 
 #[test]
 fn invalid_output_and_duplicate_subscription_are_rejected() {
-    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("same", DeliveryPolicy::Latest))
@@ -193,7 +193,7 @@ fn invalid_output_and_duplicate_subscription_are_rejected() {
 
 #[test]
 fn output_contract_changes_invalidate_subscriptions_and_reject_wrong_payloads() {
-    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime
         .subscribe_output(subscription("typed", DeliveryPolicy::Latest))
@@ -215,11 +215,11 @@ fn output_contract_changes_invalidate_subscriptions_and_reject_wrong_payloads() 
 
 #[test]
 fn draining_work_consumes_each_planned_batch_once() {
-    let mut runtime = Runtime::new(RuntimeCapabilities { data_paths: vec![] });
+    let mut runtime = PlaybackSession::new(PlaybackCapabilities { data_paths: vec![] });
     runtime.set_graph(&graph()).unwrap();
     runtime.play(100).unwrap();
     runtime
-        .advance(&RuntimeFrameInput {
+        .advance(&SessionFrameInput {
             now_ns: 116,
             date: [0.0; 4],
             mouse: [0.0; 4],

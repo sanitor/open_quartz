@@ -42,7 +42,7 @@ impl PreparedOnnxModel {
     }
 
     #[cfg(feature = "native-runtime")]
-    pub fn attach(self, runtime: &mut crate::execution::runtime::ExecutionRuntime, node_id: String) -> Result<OnnxSessionInfo, String> {
+    pub fn attach(self, runtime: &mut crate::player::NativePlayer, node_id: String) -> Result<OnnxSessionInfo, String> {
         runtime.load_onnx(node_id, self.session, self.config)
     }
 }

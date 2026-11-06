@@ -59,7 +59,7 @@ impl Project {
                 shader_template_id,
                 ..
             } => {
-                let parsed = crate::execution::shader::parse_shader(&code);
+                let parsed = crate::compiler::shader::parse_shader(&code);
                 data.label = format!("{}_{}", normalize_label(&label), numeric_suffix(&id));
                 data.template_name = template_name.or_else(|| Some(label));
                 data.shader_template_id = shader_template_id;
@@ -73,7 +73,7 @@ impl Project {
                 ..
             } => {
                 let code = input_shader_code(data_type);
-                let parsed = crate::execution::shader::parse_shader(&code);
+                let parsed = crate::compiler::shader::parse_shader(&code);
                 data.shader_code = code;
                 data.input_data_type = Some(data_type);
                 data.input_mode = Some(input_mode.unwrap_or(if data_type == DataType::Sampler2d {
@@ -96,7 +96,7 @@ impl Project {
             NodeFactoryRequest::System { source, .. } => {
                 let data_type = system_data_type(source);
                 let code = system_shader_code(source);
-                let parsed = crate::execution::shader::parse_shader(&code);
+                let parsed = crate::compiler::shader::parse_shader(&code);
                 data.shader_code = code;
                 data.input_data_type = Some(data_type);
                 data.input_mode = Some(InputMode::System);
@@ -112,7 +112,7 @@ impl Project {
             }
             NodeFactoryRequest::Constant { .. } => {
                 let code = constant_shader_code();
-                let parsed = crate::execution::shader::parse_shader(&code);
+                let parsed = crate::compiler::shader::parse_shader(&code);
                 data.shader_code = code;
                 data.inputs = remap_ports(&id, parsed.inputs);
                 data.outputs = remap_ports(&id, parsed.outputs);

@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "macos", feature = "gpu", feature = "native-video"))]
 
-use open_quartz::execution::gpu::{GpuBackend, TextureFormat};
+use open_quartz::rendering::{GpuBackend, TextureFormat};
 use oq_media::{ColorMatrix, PixelFormat, Session};
 use std::{path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
 

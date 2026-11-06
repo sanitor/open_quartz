@@ -1,5 +1,4 @@
-use open_quartz::execution::runtime::{ContentStamp, FrameStamp, OutputKey, PresentationFit, PresentationPlanner,
-PresentationSubscription, PresentationViewport,};
+use open_quartz::outputs::{ContentStamp, FrameStamp, OutputKey, PresentationFit, PresentationPlanner, PresentationSubscription, PresentationViewport};
 use std::collections::BTreeMap;
 
 #[test]

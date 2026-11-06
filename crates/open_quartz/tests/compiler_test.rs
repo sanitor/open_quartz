@@ -1,4 +1,4 @@
-use open_quartz::execution::shader::{compile_shader, validate_shader, CompilePort, CompileRequest};
+use open_quartz::compiler::shader::{compile_shader, validate_shader, CompilePort, CompileRequest};
 use std::collections::BTreeMap;
 
 fn request(user_code: &str, ports: &[(&str, &str)]) -> CompileRequest {

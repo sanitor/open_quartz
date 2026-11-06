@@ -1,7 +1,7 @@
 use super::*;
 use std::thread;
 
-use crate::execution::runtime::RuntimeCapabilities;
+use crate::player::PlaybackCapabilities;
 use crate::player::{Environment, OpenQuartz};
 use crate::project::{NodeType, Project, ResourceId};
 use crate::resources::{ResourceKind, ResourceSource};
@@ -102,7 +102,7 @@ fn builder_and_graph_updates_validate_and_preserve_lifecycle_errors() {
 fn state_mapping_and_poisoned_player_cover_private_runtime_failures() {
     assert_eq!(map_player_state(EngineState::Empty), PlayerState::Empty);
 
-    let poisoned = Arc::new(Mutex::new(Runtime::new(RuntimeCapabilities {
+    let poisoned = Arc::new(Mutex::new(PlaybackSession::new(PlaybackCapabilities {
         data_paths: vec![],
     })));
     let worker_runtime = poisoned.clone();

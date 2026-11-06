@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
+use open_quartz::evaluation::{GraphEvaluator, FrameInputs};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 
@@ -32,7 +32,7 @@ fn implicit_builtins_use_identifier_tokens_not_comments_or_substrings() {
             "shaderCode":"// iTime iDate\n/* iMouse iResolution */\n@fragment fn main() -> @location(0) vec4f { let iFrameExtra = 0.0; return vec4f(iFrame, iTimeDelta, iFrameExtra, 1.0); }",
             "inputs":[],"outputs":[],"uniforms":{}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, vec![]);
+    let mut engine = GraphEvaluator::prepare(nodes, vec![]);
     let plan = &engine.plan().nodes[0];
     assert!(plan.validation_errors.is_empty(), "{:?}", plan.validation_errors);
     assert_eq!(plan.builtin_ports, ["iTimeDelta", "iFrame"]);
@@ -70,7 +70,7 @@ fn math_result(operation: &str, values: &[f64]) -> f64 {
             "mathOp": operation
         }
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes, Vec::new());
     engine
         .run_frame(&frame(1))
         .commands
@@ -116,7 +116,7 @@ fn builds_plan_with_default_size_upstream_and_renderer_output() {
         {"id": "e2", "source": "shader", "sourceHandle": "shader_out", "target": "renderer", "targetHandle": "renderer_in"}
     ]));
 
-    let engine = ExecutionEngine::prepare(nodes, edges);
+    let engine = GraphEvaluator::prepare(nodes, edges);
     let plan = engine.plan();
     assert_eq!(plan.sorted_ids, ["image", "shader", "renderer"]);
     assert_eq!((plan.default_width, plan.default_height), (640, 360));
@@ -142,7 +142,7 @@ fn static_graph_executes_once_then_stays_clean() {
             "inputs": [{"id": "gain", "label": "gain", "dataType": "float", "direction": "input"}],
             "outputs": [], "uniforms": {"gain": 0.5}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes, Vec::new());
 
     let first = engine.run_frame(&frame(1));
     assert_eq!(first.commands.len(), 1);
@@ -159,7 +159,7 @@ fn numeric_string_uniform_reaches_native_shader_command() {
             "inputs": [{"id": "angle", "label": "angle", "dataType": "float", "direction": "input"}],
             "outputs": [], "uniforms": {"angle": "2.094395"}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes, Vec::new());
 
     let work = engine.run_frame(&frame(1));
 
@@ -175,7 +175,7 @@ fn dynamic_builtin_reruns_each_frame_and_resolves_uniform() {
             "inputs": [{"id": "time", "label": "iTime", "dataType": "float", "direction": "input"}],
             "outputs": [], "uniforms": {}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes, Vec::new());
 
     let first = engine.run_frame(&frame(1));
     let second = engine.run_frame(&frame(2));
@@ -205,7 +205,7 @@ fn connected_time_source_updates_shader_uniform_each_frame() {
         "id": "time_to_hue", "source": "time", "sourceHandle": "time_out",
         "target": "hue", "targetHandle": "angle"
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, edges);
+    let mut engine = GraphEvaluator::prepare(nodes, edges);
 
     let first = engine.run_frame(&frame(120));
     let second = engine.run_frame(&frame(180));
@@ -222,7 +222,7 @@ fn feedback_swaps_read_write_targets_and_only_clears_first_frame() {
             "shaderCode": "@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return textureSample(previousFrame, previousFrameSampler, v_uv); }",
             "inputs": [], "outputs": [], "uniforms": {}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes, Vec::new());
 
     let first = engine.run_frame(&frame(1));
     let second = engine.run_frame(&frame(2));
@@ -252,7 +252,7 @@ fn position_only_graph_update_preserves_feedback_state() {
             "shaderCode": "@fragment fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f { return textureSample(previousFrame, previousFrameSampler, v_uv); }",
             "inputs": [], "outputs": [], "uniforms": {}}
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes.clone(), Vec::new());
+    let mut engine = GraphEvaluator::prepare(nodes.clone(), Vec::new());
     let first = engine.run_frame(&frame(1));
     assert_eq!(first.commands[0].feedback_write_index, Some(1));
 
@@ -396,7 +396,7 @@ fn math_nodes_compute_scalar_outputs() {
     let edges = parse_edges(json!([{
         "id": "e1", "source": "input", "sourceHandle": "value", "target": "math", "targetHandle": "math_a"
     }]));
-    let mut engine = ExecutionEngine::prepare(nodes, edges);
+    let mut engine = GraphEvaluator::prepare(nodes, edges);
     let result = engine.run_frame(&frame(1));
     let math = result
         .commands
@@ -432,7 +432,7 @@ fn native_video_plan_uses_sampled_texture_while_browser_uses_external_texture() 
         "target": "shader", "targetHandle": "shader_in"
     }]));
 
-    let browser = ExecutionEngine::prepare(nodes.clone(), edges.clone());
+    let browser = GraphEvaluator::prepare(nodes.clone(), edges.clone());
     let browser_shader = browser
         .plan()
         .nodes
@@ -446,7 +446,7 @@ fn native_video_plan_uses_sampled_texture_while_browser_uses_external_texture() 
         .external_texture_bindings
         .contains_key("inputImage"));
 
-    let native = ExecutionEngine::prepare_with_options(nodes, edges, false);
+    let native = GraphEvaluator::prepare_with_options(nodes, edges, false);
     let native_shader = native
         .plan()
         .nodes

@@ -1,10 +1,13 @@
+#[cfg(test)]
+#[path = "render_bridge_replacement_tests.rs"]
+mod replacement_tests;
+
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
-use open_quartz::execution::runtime::ExecutionRuntime;
-use open_quartz::Graph;
+use open_quartz::{Graph, NativePlayer};
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
 
@@ -19,6 +22,8 @@ pub struct RenderUpdate {
     pub previews: Option<BTreeMap<String, wgpu::Texture>>,
     pub node_error: Option<open_quartz::SdkError>,
     pub metrics: Option<PlaybackMetrics>,
+    #[cfg(test)]
+    rendered_revision: Option<u32>,
 }
 
 impl RenderUpdate {
@@ -32,6 +37,8 @@ impl RenderUpdate {
             previews: None,
             node_error: None,
             metrics: None,
+            #[cfg(test)]
+            rendered_revision: None,
         }
     }
 }
@@ -177,7 +184,7 @@ impl RenderBridge {
         .map_err(|error| {
             format!("Cannot initialize native rendering: GPU device request failed: {error}")
         })?;
-        let (host, info) = ExecutionRuntime::from_shared_wgpu(device.clone(), queue.clone(), &adapter)?;
+        let (host, info) = NativePlayer::from_shared_wgpu(device.clone(), queue.clone(), &adapter)?;
         let description = format!("{} · {}", info.adapter_name, info.backend);
         let configuration = WGPUConfiguration::Manual {
             instance,
@@ -349,6 +356,21 @@ fn publish_failure(
     }
 }
 
+fn publish_graph_rejection(updates: &Mutex<Option<RenderUpdate>>, generation: u64, error: &str) {
+    if let Ok(mut pending) = updates.lock() {
+        let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+        if update.generation != generation {
+            *update = RenderUpdate::new(generation);
+        }
+        let parsed = serde_json::from_str::<open_quartz::SdkError>(error).ok();
+        update.node_error = parsed.clone();
+        update.status = Some(format!(
+            "Graph replacement rejected; previous graph retained: {}",
+            parsed.as_ref().map_or(error, |error| error.message.as_str())
+        ));
+    }
+}
+
 fn publish_onnx(updates: &Mutex<Option<RenderUpdate>>, generation: u64, onnx: &OnnxRuntime) {
     if let Ok(mut pending) = updates.lock() {
         let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
@@ -360,7 +382,7 @@ fn publish_onnx(updates: &Mutex<Option<RenderUpdate>>, generation: u64, onnx: &O
 }
 
 fn render_worker(
-    mut host: ExecutionRuntime,
+    mut host: NativePlayer,
     description: String,
     receiver: mpsc::Receiver<Command>,
     updates: Arc<Mutex<Option<RenderUpdate>>>,
@@ -415,6 +437,55 @@ fn render_worker(
                 images,
                 play,
             }) => {
+                let preparation: Result<_, String> = (|| {
+                    let resource_plan = host_resource_plan(&graph)?;
+                    let mut prepared = host.prepare_graph(&graph)?;
+                    let next_video_configs = graph_video_configs(&resource_plan.intents);
+                    let mut next_video_pipelines = video_pipelines.clone();
+                    let mut next_video_previews = BTreeMap::new();
+                    for (node_id, config) in &video_configs {
+                        if reset_resources || next_video_configs.get(node_id) != Some(config) {
+                            prepared.stage_detach_video(node_id);
+                            next_video_pipelines.remove(node_id);
+                        }
+                    }
+                    for (node_id, config) in &next_video_configs {
+                        if reset_resources || video_configs.get(node_id) != Some(config)
+                            || (!play && !host.has_output_texture(node_id))
+                        {
+                            let info = prepared.stage_video(node_id, config.clone(), !play)?;
+                            if !play {
+                                next_video_previews.insert(node_id.clone(), Instant::now());
+                            }
+                            let path = match &info.fallback_reason {
+                                Some(reason) => format!("{}: {} (software fallback: {reason})", node_id, info.decoder),
+                                None => format!("{}: {}", node_id, info.decoder),
+                            };
+                            next_video_pipelines.insert(node_id.clone(), path);
+                        }
+                    }
+                    for (node_id, key) in &image_keys {
+                        if reset_resources || images.get(node_id).is_none_or(|image| image.key != *key) {
+                            prepared.stage_remove_texture(node_id);
+                        }
+                    }
+                    for (node_id, image) in &images {
+                        if reset_resources || image_keys.get(node_id) != Some(&image.key) {
+                            prepared.stage_image(node_id, &image.rgba, image.width, image.height)?;
+                        }
+                    }
+                    host.commit_graph(prepared)?;
+                    Ok((resource_plan, next_video_configs, next_video_pipelines, next_video_previews))
+                })();
+                let (resource_plan, next_video_configs, next_video_pipelines, next_video_previews) = match preparation {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        // UI generations identify requests; the accepted core graph revision stays intact.
+                        generation = next_generation;
+                        publish_graph_rejection(&updates, generation, &error);
+                        continue;
+                    }
+                };
                 generation = next_generation;
                 first_frame = true;
                 running = false;
@@ -423,74 +494,23 @@ fn render_worker(
                 ready_to_start = !play;
                 playback_requested = play;
                 publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
-                pending_video_previews.clear();
+                pending_video_previews = next_video_previews;
                 preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz::NodeType::Shader | open_quartz::NodeType::Constant | open_quartz::NodeType::Renderer)
                         || node.data.outputs.iter().any(|port| port.data_type == open_quartz::DataType::Sampler2d)
                 }).map(|node| node.id.clone()).collect();
                 preview_tick = Instant::now() - Duration::from_millis(100);
+                video_configs = next_video_configs;
+                video_pipelines = next_video_pipelines;
+                image_keys = images.iter().map(|(node_id, image)| (node_id.clone(), image.key)).collect();
+                for path in video_pipelines.values() {
+                    eprintln!("[video] {path}");
+                }
                 if reset_resources {
                     onnx.clear(&mut host);
                 }
+                onnx.sync(&resource_plan.intents, &mut host, false);
                 let result: Result<bool, String> = (|| {
-                    if host.has_graph() {
-                        host.stop()?;
-                    }
-                    let resource_plan = host_resource_plan(&graph)?;
-                    onnx.sync(&resource_plan.intents, &mut host, false);
-                    let next_video_configs = graph_video_configs(&resource_plan.intents);
-                    for node_id in video_configs
-                        .iter()
-                        .filter(|(id, config)| {
-                            reset_resources || next_video_configs.get(*id) != Some(*config)
-                        })
-                        .map(|(id, _)| id.clone())
-                        .collect::<Vec<_>>()
-                    {
-                        host.detach_video(&node_id)?;
-                        video_configs.remove(&node_id);
-                        video_pipelines.remove(&node_id);
-                    }
-                    host.set_graph_snapshot(&graph)?;
-                    for (node_id, config) in next_video_configs {
-                        if video_configs.get(&node_id) != Some(&config)
-                            || (!play && !host.has_output_texture(&node_id))
-                        {
-                            let info = if play {
-                                host.attach_video(&node_id, config.clone())?
-                            } else {
-                                let info = host.attach_video_preview(&node_id, config.clone())?;
-                                pending_video_previews.insert(node_id.clone(), Instant::now());
-                                info
-                            };
-                            let path = match &info.fallback_reason {
-                                Some(reason) => format!("{}: {} (software fallback: {reason})", node_id, info.decoder),
-                                None => format!("{}: {}", node_id, info.decoder),
-                            };
-                            eprintln!("[video] {path}");
-                            video_pipelines.insert(node_id.clone(), path);
-                            video_configs.insert(node_id, config);
-                        }
-                    }
-                    let stale_images = image_keys
-                        .iter()
-                        .filter(|(node_id, key)| {
-                            reset_resources
-                                || images.get(*node_id).is_none_or(|image| image.key != **key)
-                        })
-                        .map(|(node_id, _)| node_id.clone())
-                        .collect::<Vec<_>>();
-                    for node_id in stale_images {
-                        host.remove_texture(&node_id);
-                        image_keys.remove(&node_id);
-                    }
-                    for (node_id, image) in &images {
-                        if image_keys.get(node_id) == Some(&image.key) {
-                            continue;
-                        }
-                        host.upload_image(node_id, &image.rgba, image.width, image.height)?;
-                        image_keys.insert(node_id.clone(), image.key);
-                    }
                     // Frame events coalesce in the engine; clear graph/state history only on replacement.
                     let _ = host.drain_events();
                     if graph.nodes().is_empty() || !playback_requested {
@@ -745,8 +765,12 @@ fn render_worker(
         if !running {
             continue;
         }
+        #[cfg(test)]
+        let mut rendered_revision = None;
         let result: Result<Option<(wgpu::Texture, u32, u32)>, String> = (|| {
             let rendered = host.render_next()?;
+            #[cfg(test)]
+            { rendered_revision = Some(rendered.revision); }
             if let Some(metrics) = meter.frame(Instant::now(), rendered.timeline_ns, rendered.width > 0 && rendered.height > 0) {
                 publish_metrics(&updates, generation, metrics);
             }
@@ -785,6 +809,8 @@ fn render_worker(
                         *update = RenderUpdate::new(generation);
                     }
                     update.texture = Some(texture);
+                    #[cfg(test)]
+                    { update.rendered_revision = rendered_revision; }
                     if first_frame {
                         update.status = Some(format!("{description} · Rendering {width}×{height} · shared GPU texture"));
                         first_frame = false;
@@ -1080,17 +1106,23 @@ mod tests {
         let mut removed = project.graph_snapshot();
         removed.nodes.retain(|node| node.id != video.id);
         removed.edges.clear();
-        for (graph, failed) in [(invalid, true), (removed, false)] {
-            bridge.set_graph(graph, BTreeMap::new(), false).unwrap();
-            // A capture of a nonexistent output is a command barrier without producing pixels.
-            assert!(bridge.capture_png("missing-output".into(), capture.clone()).unwrap()
-                .recv_timeout(Duration::from_secs(5)).unwrap().is_err());
-            let update = bridge.take_update().unwrap();
-            assert_eq!(update.status.as_deref().unwrap().contains("failed"), failed);
-            assert!(!update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)));
-            thread::sleep(Duration::from_millis(250));
-            assert!(bridge.take_update().is_none(), "worker kept polling an errored or removed video");
-        }
+        bridge.set_graph(invalid, BTreeMap::new(), false).unwrap();
+        bridge.capture_png(video.id.clone(), capture.clone()).unwrap()
+            .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let update = bridge.take_update().unwrap();
+        assert!(update.status.as_deref().unwrap().contains("Graph replacement rejected"));
+        assert!(!update.clear_image);
+        let retained = image::open(&capture).unwrap().to_rgba8();
+        assert!(retained.pixels().all(|pixel| pixel[0] > 240 && pixel[1] < 10 && pixel[2] < 10));
+        bridge.set_graph(removed, BTreeMap::new(), false).unwrap();
+        // A capture of a nonexistent output is a command barrier without producing pixels.
+        assert!(bridge.capture_png("missing-output".into(), capture.clone()).unwrap()
+            .recv_timeout(Duration::from_secs(5)).unwrap().is_err());
+        let update = bridge.take_update().unwrap();
+        assert!(!update.status.as_deref().unwrap().contains("failed"));
+        assert!(!update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)));
+        thread::sleep(Duration::from_millis(250));
+        assert!(bridge.take_update().is_none(), "worker kept polling a removed video");
         drop(bridge);
         std::fs::remove_dir_all(directory).unwrap();
     }

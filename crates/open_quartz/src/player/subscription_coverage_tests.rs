@@ -2,7 +2,7 @@ use super::*;
 use std::sync::Arc;
 use std::thread;
 
-use crate::execution::runtime::RuntimeCapabilities;
+use crate::player::PlaybackCapabilities;
 use crate::player::{Environment, OpenQuartz, OutputPolicy};
 use crate::project::SdkErrorCode;
 
@@ -33,7 +33,7 @@ fn subscription_close_handles_disposed_and_dropped_owners() {
 
 #[test]
 fn poisoned_subscription_preserves_runtime_lock_errors() {
-    let poisoned = Arc::new(Mutex::new(Runtime::new(RuntimeCapabilities {
+    let poisoned = Arc::new(Mutex::new(PlaybackSession::new(PlaybackCapabilities {
         data_paths: vec![],
     })));
     let worker_runtime = poisoned.clone();

@@ -1,7 +1,7 @@
 use super::*;
 use std::thread;
 
-use crate::execution::runtime::RuntimeCapabilities;
+use crate::player::PlaybackCapabilities;
 use crate::player::{Environment, OpenQuartz};
 
 use super::super::test_support::{player_graph, recover_lock};
@@ -44,7 +44,7 @@ fn outputs_reject_dropped_players_and_missing_runtime_outputs() {
         SdkErrorCode::Disposed
     );
 
-    let missing_runtime = Arc::new(Mutex::new(Runtime::new(RuntimeCapabilities {
+    let missing_runtime = Arc::new(Mutex::new(PlaybackSession::new(PlaybackCapabilities {
         data_paths: vec![],
     })));
     recover_lock(&missing_runtime)
@@ -61,7 +61,7 @@ fn outputs_reject_dropped_players_and_missing_runtime_outputs() {
 
 #[test]
 fn poisoned_output_preserves_runtime_lock_errors() {
-    let poisoned = Arc::new(Mutex::new(Runtime::new(RuntimeCapabilities {
+    let poisoned = Arc::new(Mutex::new(PlaybackSession::new(PlaybackCapabilities {
         data_paths: vec![],
     })));
     let worker_runtime = poisoned.clone();

@@ -1,18 +1,18 @@
 use std::sync::{Mutex, Weak};
 
-use crate::execution::runtime::Runtime;
+use crate::player::PlaybackSession;
 use crate::project::SdkError;
 
 use super::playback::lock_runtime;
 
 pub struct Subscription {
-    runtime: Weak<Mutex<Runtime>>,
+    runtime: Weak<Mutex<PlaybackSession>>,
     subscription_id: String,
     closed: bool,
 }
 
 impl Subscription {
-    pub(super) fn new(runtime: Weak<Mutex<Runtime>>, subscription_id: String) -> Self {
+    pub(super) fn new(runtime: Weak<Mutex<PlaybackSession>>, subscription_id: String) -> Self {
         Self {
             runtime,
             subscription_id,

@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use open_quartz::execution::engine::{ExecutionEngine, FrameInputs};
-use open_quartz::execution::gpu::{GpuBackend, GpuExecutor};
+use open_quartz::evaluation::{FrameInputs, GraphEvaluator};
+use open_quartz::rendering::{GpuBackend, GpuExecutor};
 use open_quartz::{Edge, ProjectNode};
 use serde_json::json;
 use slint::wgpu_30::{wgpu, WGPUConfiguration};
@@ -256,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_engine(width: u32, height: u32, solid: bool) -> ExecutionEngine {
+fn build_engine(width: u32, height: u32, solid: bool) -> GraphEvaluator {
     let shader_code = if solid {
         "@fragment\nfn main() -> @location(0) vec4f {\n    return vec4f(0.25, 0.5, 0.75, 1.0);\n}\n"
     } else {
@@ -355,7 +355,7 @@ fn build_engine(width: u32, height: u32, solid: bool) -> ExecutionEngine {
         }
     ]))
     .expect("spike graph edges must deserialize");
-    ExecutionEngine::prepare(nodes, edges)
+    GraphEvaluator::prepare(nodes, edges)
 }
 
 fn parse_args() -> Result<Options, String> {

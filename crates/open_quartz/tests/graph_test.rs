@@ -1,4 +1,5 @@
-use open_quartz::execution::schedule::{topological_sort, DirtySet, GraphEdge, GraphNode};
+use open_quartz::compiler::topology::{topological_sort, GraphEdge, GraphNode};
+use open_quartz::evaluation::{DirtySet};
 
 fn nodes(ids: &[&str]) -> Vec<GraphNode> {
     ids.iter()

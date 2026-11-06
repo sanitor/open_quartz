@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[cfg(all(windows, feature = "native-video-d3d12"))]
-use crate::execution::gpu::D3d12VideoFrame;
+use crate::rendering::D3d12VideoFrame;
 #[cfg(test)]
 thread_local! {
     static FORCE_FFMPEG_ERROR: Cell<bool> = const { Cell::new(false) };

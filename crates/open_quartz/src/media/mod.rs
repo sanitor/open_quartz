@@ -2,3 +2,6 @@
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-video"))]
 pub mod native;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-video"))]
+pub(crate) mod sources;

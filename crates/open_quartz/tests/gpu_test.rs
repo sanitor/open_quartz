@@ -1,6 +1,6 @@
 #![cfg(feature = "gpu")]
 
-use open_quartz::execution::gpu::{align_bytes_per_row, copy_padded_rgba};
+use open_quartz::rendering::{align_bytes_per_row, copy_padded_rgba};
 
 #[test]
 fn aligns_copy_rows_to_webgpu_requirement() {

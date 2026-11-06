@@ -1,5 +1,8 @@
 use std::{sync::{Arc, Mutex, mpsc}, time::Duration};
-use open_quartz::{execution::gpu::{GpuBackend, GpuExecutor}, media::native::{NativeVideoSource, NativeVideoConfig, NativeVideoSourceKind, NativeVideoFrame}};
+use open_quartz::{
+    media::native::{NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind},
+    rendering::{GpuBackend, GpuExecutor},
+};
 use slint::ComponentHandle;
 
 slint::slint! {

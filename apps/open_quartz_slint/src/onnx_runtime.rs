@@ -14,12 +14,10 @@ use open_quartz::resources::plan::{
     plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentPlan,
     HostResourceIntentRequest, OnnxDownloadIntent,
 };
-use open_quartz::inference::PreparedOnnxModel;
+use open_quartz::inference::{NativeOnnxConfig, PreparedOnnxModel};
 use open_quartz::resources::models::ModelStore;
-use open_quartz::execution::runtime::{
-    ExecutionRuntime, NativeOnnxConfig, NativeOutputEvent,
-};
-use open_quartz::{Graph, OnnxTask};
+use open_quartz::player::NativeOutputEvent;
+use open_quartz::{Graph, NativePlayer, OnnxTask};
 
 use crate::render_bridge::Command;
 
@@ -79,7 +77,7 @@ pub struct OnnxRuntime {
 }
 
 impl OnnxRuntime {
-    pub fn clear(&mut self, host: &mut ExecutionRuntime) {
+    pub fn clear(&mut self, host: &mut NativePlayer) {
         let ids: std::collections::BTreeSet<_> = self
             .states
             .keys()
@@ -96,7 +94,7 @@ impl OnnxRuntime {
     pub fn sync(
         &mut self,
         intents: &[HostResourceIntent],
-        host: &mut ExecutionRuntime,
+        host: &mut NativePlayer,
         reset: bool,
     ) {
         let specs = model_specs(intents);
@@ -249,7 +247,7 @@ impl OnnxRuntime {
         changed
     }
 
-    pub fn receive(&mut self, message: ModelMessage, host: &mut ExecutionRuntime) -> bool {
+    pub fn receive(&mut self, message: ModelMessage, host: &mut NativePlayer) -> bool {
         let (node_id, ticket) = match &message {
             ModelMessage::Progress {
                 node_id, ticket, ..
@@ -302,7 +300,7 @@ impl OnnxRuntime {
         false
     }
 
-    pub fn unload(&mut self, node_id: &str, host: &mut ExecutionRuntime) {
+    pub fn unload(&mut self, node_id: &str, host: &mut NativePlayer) {
         self.cancel(node_id);
         host.unload_onnx(node_id);
         self.states.insert(

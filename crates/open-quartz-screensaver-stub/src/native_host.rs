@@ -4,15 +4,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use open_quartz::execution::gpu::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
-use open_quartz::execution::runtime::Runtime;
+use open_quartz::evaluation::ExecutionCommand;
+use open_quartz::outputs::{DataPathMode, PlaybackCapabilities};
+use open_quartz::player::{PlaybackSession, SessionFrameInput};
+use open_quartz::rendering::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
 use open_quartz::media::native::{
     NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
 };
 use open_quartz::inference::{
     run_native_image_task, NativeOnnxOptions, NativeOnnxProvider, OnnxSession, OnnxTask,
 };
-use open_quartz::execution::runtime::{DataPathMode, RuntimeCapabilities, RuntimeFrameInput};
 use open_quartz::{Graph, InputMode, NodeType, OnnxParamValue, VideoSourceType};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
@@ -80,7 +81,7 @@ pub fn run(
 }
 
 struct NativeRenderer {
-    runtime: Runtime,
+    runtime: PlaybackSession,
     executor: GpuExecutor,
     renderer_node_id: String,
     surface: wgpu::Surface<'static>,
@@ -153,7 +154,7 @@ impl NativeRenderer {
         let (present_bind_group_layout, present_pipeline) =
             create_present_pipeline(&backend, surface_config.format);
         let mut executor = GpuExecutor::new(backend);
-        let mut runtime = Runtime::new_native(RuntimeCapabilities {
+        let mut runtime = PlaybackSession::new_native(PlaybackCapabilities {
             data_paths: vec![DataPathMode::CpuCopy],
         });
         runtime.set_graph(&graph).map_err(|error| error.to_json())?;
@@ -210,7 +211,7 @@ impl NativeRenderer {
 
     fn execute_commands(
         &mut self,
-        commands: &[open_quartz::execution::engine::ExecutionCommand],
+        commands: &[ExecutionCommand],
     ) -> Result<(), String> {
         let mut batch = Vec::new();
         for command in commands {
@@ -281,7 +282,7 @@ impl NativeRenderer {
             .map(|plan| (plan.default_width.max(1), plan.default_height.max(1)))
             .unwrap_or((960, 540));
         self.runtime
-            .advance(&RuntimeFrameInput {
+            .advance(&SessionFrameInput {
                 now_ns,
                 date: date_uniform(SystemTime::now()),
                 mouse: [0.0; 4],

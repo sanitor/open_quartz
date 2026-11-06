@@ -5,6 +5,8 @@ pub mod preprocess;
 #[cfg(all(feature = "native-onnx", not(target_arch = "wasm32")))]
 pub mod session;
 pub mod types;
+#[cfg(all(any(feature = "native-runtime", feature = "native-onnx"), not(target_arch = "wasm32")))]
+pub(crate) mod tasks;
 #[cfg(all(feature = "native-onnx", not(target_arch = "wasm32")))]
 mod prepared;
 #[cfg(all(feature = "native-onnx", not(target_arch = "wasm32")))]

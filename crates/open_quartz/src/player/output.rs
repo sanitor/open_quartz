@@ -1,9 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::execution::runtime::{
-    DeliveryPolicy, OutputKey, OutputSubscription, OutputTransport, Runtime,
-};
+use crate::outputs::{DeliveryPolicy, OutputKey, OutputSubscription, OutputTransport};
+use crate::player::{PlaybackSession};
 use crate::project::{DataType, Graph, SdkError, SdkErrorCode};
 
 use super::playback::lock_runtime;
@@ -38,7 +37,7 @@ impl OutputPolicy {
 pub struct Output {
     key: OutputKey,
     data_type: DataType,
-    runtime: Weak<Mutex<Runtime>>,
+    runtime: Weak<Mutex<PlaybackSession>>,
     subscription_counter: Arc<AtomicU64>,
 }
 
@@ -74,7 +73,7 @@ impl Output {
 
 pub(super) fn build_outputs(
     graph: &Graph,
-    runtime: &Arc<Mutex<Runtime>>,
+    runtime: &Arc<Mutex<PlaybackSession>>,
     subscription_counter: &Arc<AtomicU64>,
 ) -> Vec<Output> {
     graph

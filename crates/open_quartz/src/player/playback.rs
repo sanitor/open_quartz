@@ -1,8 +1,8 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::execution::event::EngineState;
-use crate::execution::runtime::{Runtime, RuntimeFrameInput};
+use crate::evaluation::event::EngineState;
+use crate::player::{PlaybackSession, SessionFrameInput};
 use crate::project::{Graph, GraphChange, SdkError, SdkErrorCode};
 use crate::resources::{Resource, ResourceCatalog};
 
@@ -31,10 +31,10 @@ impl PlayerBuilder {
 
     pub fn build(self) -> Result<Player, SdkError> {
         self.graph.validate()?;
-        let mut runtime = Runtime::new(self.environment.capabilities());
+        let mut runtime = PlaybackSession::new(self.environment.capabilities());
         runtime
             .set_graph(&self.graph)
-            .expect("validated Graph should initialize the Runtime");
+            .expect("validated Graph should initialize the PlaybackSession");
         let runtime = Arc::new(Mutex::new(runtime));
         let subscription_counter = Arc::new(AtomicU64::new(1));
         let outputs = build_outputs(&self.graph, &runtime, &subscription_counter);
@@ -59,7 +59,7 @@ pub enum PlayerState {
 }
 
 pub struct Player {
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: Arc<Mutex<PlaybackSession>>,
     outputs: Vec<Output>,
     resources: Vec<Resource>,
     subscription_counter: Arc<AtomicU64>,
@@ -80,13 +80,13 @@ impl Player {
         let mut runtime = self.open_runtime()?;
         runtime.play(start)?;
         runtime
-            .advance(&RuntimeFrameInput {
+            .advance(&SessionFrameInput {
                 now_ns: first_frame,
                 date: [0.0; 4],
                 mouse: [0.0; 4],
                 resolution: [1.0, 1.0, 1.0],
             })
-            .expect("a newly playing Runtime should accept its first frame");
+            .expect("a newly playing PlaybackSession should accept its first frame");
         Ok(())
     }
 
@@ -109,7 +109,7 @@ impl Player {
         let revision = self
             .open_runtime()?
             .set_graph(graph)
-            .expect("validated Graph should update the Runtime");
+            .expect("validated Graph should update the PlaybackSession");
         self.outputs = build_outputs(graph, &self.runtime, &self.subscription_counter);
         Ok(revision)
     }
@@ -136,7 +136,7 @@ impl Player {
         &self.resources
     }
 
-    fn open_runtime(&self) -> Result<MutexGuard<'_, Runtime>, SdkError> {
+    fn open_runtime(&self) -> Result<MutexGuard<'_, PlaybackSession>, SdkError> {
         let runtime = lock_runtime(&self.runtime)?;
         if runtime.state() == EngineState::Disposed {
             return Err(SdkError::new(
@@ -164,7 +164,7 @@ fn map_player_state(state: EngineState) -> PlayerState {
     }
 }
 
-pub(super) fn lock_runtime(runtime: &Arc<Mutex<Runtime>>) -> Result<MutexGuard<'_, Runtime>, SdkError> {
+pub(super) fn lock_runtime(runtime: &Arc<Mutex<PlaybackSession>>) -> Result<MutexGuard<'_, PlaybackSession>, SdkError> {
     runtime.lock().map_err(|_| {
         SdkError::new(
             SdkErrorCode::InvalidState,

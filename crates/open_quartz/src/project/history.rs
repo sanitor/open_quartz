@@ -43,7 +43,7 @@ impl Project {
                             .for_node(node_id.as_str())
                     })?
                     .clone();
-                let parsed = crate::execution::shader::parse_shader(&shader_code);
+                let parsed = crate::compiler::shader::parse_shader(&shader_code);
                 let inputs = remap_ports_preserving_ids(&node.data.inputs, &node.id, parsed.inputs);
                 let outputs =
                     remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs);
@@ -81,7 +81,7 @@ impl Project {
                     .for_node(node_id.as_str()));
                 }
                 let shader_code = input_shader_code(data_type);
-                let parsed = crate::execution::shader::parse_shader(&shader_code);
+                let parsed = crate::compiler::shader::parse_shader(&shader_code);
                 let inputs = remap_ports_preserving_ids(&node.data.inputs, &node.id, parsed.inputs);
                 let outputs =
                     remap_ports_preserving_ids(&node.data.outputs, &node.id, parsed.outputs)

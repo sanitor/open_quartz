@@ -1,14 +1,14 @@
-use crate::execution::runtime::RuntimeCapabilities;
+use crate::player::PlaybackCapabilities;
 
 #[derive(Clone, Debug)]
 pub struct Environment {
-    capabilities: RuntimeCapabilities,
+    capabilities: PlaybackCapabilities,
 }
 
 impl Default for Environment {
     fn default() -> Self {
         Self {
-            capabilities: RuntimeCapabilities { data_paths: vec![] },
+            capabilities: PlaybackCapabilities { data_paths: vec![] },
         }
     }
 }
@@ -18,7 +18,7 @@ impl Environment {
         Self::default()
     }
 
-    pub(crate) fn capabilities(&self) -> RuntimeCapabilities {
+    pub(crate) fn capabilities(&self) -> PlaybackCapabilities {
         self.capabilities.clone()
     }
 }
