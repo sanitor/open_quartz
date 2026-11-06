@@ -89,8 +89,8 @@ Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime C
 ## Native Desktop (Slint)
 - Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
 - Launches into an empty Untitled canvas with playback stopped. Opening/New also stop playback; editing nodes does not implicitly press Play. Manual node drags preserve the drop position even for a single-node graph; Fit View remains explicit.
-- Native-only core/workspace, boundaries, Slint unit/UI/Shader, editor and macOS release packaging passed. Both overall 100% coverage gates failed; exact results are in Design §7.8. Actual camera, Windows/Linux and mobile acceptance remain deferred. Changes remain Unreleased; no tagged release has been published.
-- Slint and `open_quartz::execution::runtime::ExecutionRuntime` share one GPU device/queue. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback.
+- Ownership extraction is complete. Final results: workspace 234, full-native 315, Slint 73, UI 18/18, Shader 34/34, editor 10, native boundaries, independent ONNX/runtime configurations and macOS release packaging passed. Both overall 100% coverage gates failed; see Design [验证基线](docs/DESIGN.md#validation). Camera, Windows/Linux/.scr and mobile remain untested. Changes remain Unreleased.
+- Slint's native coordinator is `open_quartz::player::NativePlayer`; its `RenderDevice` uses the same wgpu device/queue instance on the existing render thread. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback. Extraction paths and implementation status are tracked in Design [源码索引](docs/DESIGN.md#source-map).
 - Filter **Auto size** follows connected input texture dimensions; disabling it uses explicit width/height. The toolbar displays composition time, while Renderer cards and previews show graph **Render FPS** (not source video FPS or screen refresh); Pause freezes time and Stop resets it.
 - The native Shader editor uses the reusable `crates/slint_code_editor` component: cosmic-text shaping/editing with live WGSL colors, line numbers, goto/find/replace, selection and local undo/redo. Slint provides the UI and public desktop IME event bridge; no fork or WebView. Presets remain read-only and Apply is explicit. Full screen-reader caret/selection reporting and real IME/platform acceptance are not yet verified; completion and inline lint are not provided. Run `npm run dev:editor` for the independent WGSL/JSON demo.
 - Rust owns graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, previews/fullscreen, and Windows screen saver export. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
@@ -104,24 +104,37 @@ Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime C
 
 Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint application; camera inputs are not deterministic export sources. Earlier macOS package/video/dialog acceptance is recorded in the [migration archive](docs/SLINT_UI_REFACTOR.md); an earlier winit startup abort remains unexplained and unreproduced.
 
-## Rust SDK and Structured Runtime
-- `open_quartz` is the single core implementation and Rust SDK. Its root `src/lib.rs` is the only root source module: stable public value and aggregate names (`OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, `Player`, `Resource`, and `Output`) remain root exports, while implementation is grouped by responsibility. `project` owns model/catalog/project history/layout/factories; `player` owns `Environment`, `OpenQuartz`, `Player`, `Output`, and `Subscription`; `resources` owns catalog/plan/model-cache services; `execution` owns engine/runtime/GPU/WGSL/schedule/event/logging; `inference` owns ONNX; and `media` owns native video. No old root aliases such as `engine`, `runtime`, `gpu`, `catalog`, `onnx`, `ffi`, or `native_video` are retained.
-- Advanced Rust host paths are explicit: `open_quartz::execution::{engine,runtime,gpu,shader,schedule,event}`, `open_quartz::project::catalog`, `open_quartz::inference`, `open_quartz::media::native`, and `open_quartz::resources`. `project::model` and the aggregate implementation modules are internal (`pub(crate)` where applicable), not compatibility crates or public root aliases.
-- Desktop Rust uses the typed API directly: no exported SDK C ABI, JNI bridge or language FFI adapter is needed. Web/Tauri, JS object/worker exports, `bindings::wasm`, `web-bindings` and `browser` have been retired, not retained as opt-in compatibility paths.
-- Native ORT, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM FFI calls remain necessary backend implementation details; removing SDK bindings does not remove external-library FFI.
-- Rust-backed public `OpenQuartz`, `Project`, `Graph`, `Node`, `Port`, and `Player` aggregates with atomic edits, revision/history ownership, serialization, and structured errors
-- Rust-backed production WGSL parser/compiler validation via `naga`
-- Topological planning, downstream dirty propagation, typed frame inputs, graph revisions, node resource generations, feedback state preservation, catalog semantics, ONNX tasks, and host resource intents
-- Slint uses native `wgpu` primitives and `open_quartz::execution::runtime::ExecutionRuntime`; resource planning and model services live in `open_quartz::resources::{plan,models}`, with no separate native host crate or forwarding PlayerHost.
-- The `execution` directory remains transitional: grouping engine/runtime/GPU/shader/schedule/event/logging did not resolve ownership. The [execution/runtime review](docs/DESIGN.md#executionruntime-职责复审与后续所有权方案) separates compilation, evaluation, playback, rendering, inference, media and output delivery as a plan, not an implemented split. Public `Player` still has no real device driver, and `Project::graph_mut` can bypass revision/history; this retirement does not fix either limitation.
-- Current results are in [Design §7.8](docs/DESIGN.md#78-验证矩阵与证据状态): default core 216 tests, native workspace 221, full-native core 284, Slint 72, real-window UI 18/18, catalog Shaders 34/34 and editor 10 passed, as did native boundaries and macOS arm64 release archive/signing/startup. Both overall 100% coverage gates failed: default lines/functions/regions 98.91%/99.06%/98.85%; full native 98.33%/97.92%/96.92%. Final coverage tests passed; thresholds and exclusions were not relaxed. Native-onnx-only was not separately run. Earlier Web/WASM/Tauri results are archival only.
+## Rust SDK and Native Ownership
 
-The core's `default = []` supports graph/project editing, WGSL tools and shared runtime state without GPU, ORT, FFmpeg, HTTP or UI dependencies. Consumers select capabilities explicitly:
+`open_quartz` remains the single core implementation and Rust SDK. `src/lib.rs` is the only root source module; public types such as `OpenQuartz`, `Project`, `Graph`, `ProjectNode`, `Port`, `Player`, `Resource`, and `Output` are root exports. State and production calls belong to the following concrete owners:
+
+| Module / owner | Responsibility |
+|---|---|
+| `project` / `resources` | Project/model/history/catalog/layout/factories; typed resource plans and background model cache/download services |
+| `compiler` | WGSL shader parsing/validation, topology and reusable graph plans |
+| `evaluation::GraphEvaluator` / `GraphInstance` | Pure dirty/Math/feedback evaluation; applied graph identity, revision, node generation and state |
+| `player::PlaybackSession` / `NativePlayer` | GraphInstance + clock + OutputHub; NativePlayer coordinates Slint's device owners, while standalone .scr drives PlaybackSession/evaluation/GpuExecutor in its own loop |
+| `outputs::OutputHub` | Output contracts, subscriptions/registry, presentation planning, resources/backend/capabilities |
+| `rendering::RenderDevice` | GPU executor/resources, explicit readback and Windows presenter on the shared device |
+| `media::sources::VideoSources` (internal) | Graph-source map and lifecycle; uploads through a callback using RenderDevice |
+| `inference::tasks::InferenceTasks` (internal) | Sessions, pending tasks, task IDs, channels/workers and accepted completions |
+
+Advanced paths use these responsibility modules, plus project::catalog and resources::{plan,models}. The old execution/runtime namespaces and class aliases are removed with the old directories; actual state, resources and production calls moved to their owners. [Design 模块与所有权](docs/DESIGN.md#module-ownership) and [源码索引](docs/DESIGN.md#source-map) define the interfaces and current file index.
+
+The Slint frame contract orders media upload, completion validation before texture mutation, graph evaluation/GPU work and inference dispatch. NativePlayer selects RenderDevice's presented output; OutputHub has an independent presentation backend path. Scalar advance preflights candidate graph/clock and the whole scalar batch, sharing static Arc data. PreparedNativeGraph stages fresh textures and owns prepared video handles; successful video open precedes candidate texture removal, while detach/obsolete-video removal clears staged textures before optional image upload. Aborted candidates preserve old source/pixels. UI request generation differs from accepted graph revision. Close invalidates pending work and releases descriptors/renderer outputs; active ORT workers retain Arc sessions until completion and InferenceTasks Drop joins them. Live GPU leases remain retained.
+
+The public headless `Player` still has no real device driver, and `Project::graph_mut` can bypass revision/history. NativePlayer is the real native production coordinator; this extraction does not change those public API limitations.
+
+Desktop Rust calls typed APIs directly. Web/Tauri, WASM, JS object/worker exports, `bindings::wasm`, `web-bindings` and `browser` remain retired with no opt-in compatibility adapter. SDK C ABI/JNI bridges are unnecessary; ORT, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM backend FFI remain necessary.
+
+[Design 验证基线](docs/DESIGN.md#validation) records the latest architecture verification baseline. Coverage tests passed (default 134, native 201), but both 100% gates failed: default lines/functions/regions 98.53%/97.88%/98.34%; native 97.70%/95.96%/96.38%. Thresholds were not relaxed; RenderDevice/InferenceTasks/VideoSources remain measured, with NativePlayer's existing facade exclusion unchanged.
+
+The core's `default = []` supports graph/project editing, compiler/evaluation and playback/output state without GPU, ORT, FFmpeg, HTTP or UI dependencies. Consumers select capabilities explicitly:
 
 | Feature | Capability |
 |---|---|
 | `gpu` | wgpu execution, textures, readback and presentation |
-| `native-runtime` | Native device coordination; enables `gpu`, not video, ONNX or downloads |
+| `native-runtime` | NativePlayer/RenderDevice coordination; enables gpu, not video, ONNX or downloads; existing feature name and behavior retained |
 | `native-video` | Native video sources and platform workers; macOS uses independent `oq-media` |
 | `native-video-d3d12` | Windows D3D12 video; enables `native-video` and `gpu` |
 | `native-onnx` | Native ORT sessions/pipeline without requiring GPU or HTTP |
@@ -177,7 +190,7 @@ npm run check:rust-boundaries        # default/native feature and public API bou
 npm run test:sdk-coverage            # Rust core coverage gates
 ```
 
-Current observed results, reports, release archive, failed coverage thresholds and unverified platform gates are recorded in [Design §7.8](docs/DESIGN.md#78-验证矩阵与证据状态). Earlier migration results remain explicitly archival and do not replace current native acceptance.
+Final evidence is in [Design 验证基线](docs/DESIGN.md#validation): workspace 234/34 suites, full-native 315/30 suites, Slint 73, UI 18/18, Shader 34/34, editor 10 and boundaries passed. Independent --no-default-features ONNX-only 247/30 suites and runtime-only 279/28 suites passed. npm run build passed runtime copy/signing/--help and produced dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip. Both overall coverage gates failed; platform acceptance and public API limitations remain explicit there.
 
 ## Tech Stack
 
@@ -185,9 +198,9 @@ Rust · Slint 1.18.1 · cosmic-text · wgpu 30 · naga · ort · FFmpeg / VideoT
 
 ## Roadmap
 
-### Rust SDK and native runtime
+### Rust SDK and native ownership
 
-Open Quartz owns graph, project, catalog, lifecycle, inference-task and resource-intent semantics in Rust. The current priorities are real execution ownership boundaries and independent platform acceptance, not another language adapter. See [Design §7](docs/DESIGN.md#7-crate-边界审查与重新设计) for current limitations and the proposed ownership plan; no new driver or component split is claimed here.
+Open Quartz owns graph/project/catalog/lifecycle/inference-task/resource semantics through concrete components. See [Design 系统总览](docs/DESIGN.md#architecture-overview) for current ownership/interfaces/files, final evidence, unchanged public Player/graph_mut limitations and untested platform gates.
 
 ### Quartz Composer parity
 

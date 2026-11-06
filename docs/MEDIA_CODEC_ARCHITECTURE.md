@@ -1,6 +1,6 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
-> 状态：架构提案；首轮 macOS VideoToolbox 闭环的实施与 Apple Silicon 验证属于历史证据（2026-11-03，见 §17.1），不代表本次退役验证结果。当前产品仅为 Rust/Slint 原生应用与独立 Windows `.scr`，不保留 Web/Tauri fallback、WASM/bindings 功能或 API。`oq_media::{Session, FrameLease, ActualPipeline}` 是已有原生实现；本文其余完整会话、编码和 Slint 组件 API 仍是提案，不代表已实现。先在本仓开发、验证，成熟后再拆仓；未创建仓库或发布。当前验证由 parent 汇总，见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)。
+> 状态：完整跨平台会话/编码/Slint 组件仍为提案，§17.1 的 macOS VideoToolbox 首轮验收是历史。已有 oq_media::Session/FrameLease/ActualPipeline 与本轮已完成的 VideoSources/RenderDevice 提取不代表所有提案 API 已实现。当前仅 Rust/Slint 与独立 .scr，WASM/Tauri/bindings/browser 退役；本轮最终证据见 DESIGN 验证基线，不复用旧结果。
 
 ## 1. 决策与目标
 
@@ -26,9 +26,9 @@
 | Rust `NativeVideoSource` 管理文件/摄像头、解码线程、暂停恢复和帧槽 | [`media/native.rs`](../crates/open_quartz/src/media/native.rs)，advanced 路径 `open_quartz::media::native` | 提取为媒体后端，不让 UI 拥有解码生命周期 |
 | Windows 有进程内 FFmpeg D3D12VA；初始化失败时回退到 FFmpeg 子进程 RGBA，运行中 decode 失败目前仅记录并停源 | 同上，`start_decoder` / `decode_d3d12_frames` | 复用基础但补齐可观察终态与恢复策略，不声称当前能自动处理中途故障 |
 | 设计起点时 macOS/Linux 都通过 FFmpeg executable 输出 RGBA；当前 macOS 文件已接入独立 oq-media/VideoToolbox，Linux/相机保留既有路径 | [`media/native.rs`](../crates/open_quartz/src/media/native.rs)；首轮证据见 §17.1 | 设计起点为历史基线，不能再据此声称 macOS 没有进程内硬解 |
-| ExecutionRuntime 上传解码帧并标记节点 dirty | [`execution/runtime/execution.rs`](../crates/open_quartz/src/execution/runtime/execution.rs)，`upload_video_frames` | 图执行适配留在 `open_quartz::execution::runtime`，解码核心不接收 NodeId |
-| Slint 与 ExecutionRuntime 共用 wgpu Device/Queue | [render_bridge.rs](../apps/open_quartz_slint/src/render_bridge.rs)，`initialize` | 保留共享设备设计；共享 UI/GPU 不意味着解码设备天然一致 |
-| Windows 已管理解码 fence、NV12/P010、纹理子资源与必要的 GPU detach copy | [`execution/gpu/dxgi.rs`](../crates/open_quartz/src/execution/gpu/dxgi.rs) | 新接口必须表达生命周期和同步，不能只传纹理指针 |
+| VideoSources 拥有图源 map/lifecycle，借用 upload callback 上传帧并返回 dirty/尺寸变化 | 内部 [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs) → callback → [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs) | NodeId 与图源映射留在 OpenQuartz adapter，oq-media decoder/session 不接收 NodeId |
+| Slint 与 RenderDevice 共用同一 wgpu Device/Queue 实例，NativePlayer 在原 render thread 驱动 | [`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs) 与 [`player/native.rs`](../crates/open_quartz/src/player/native.rs) | 共享 UI/GPU 不意味着解码设备天然一致；不为提取创建设备实例 |
+| Windows 管理解码 fence、NV12/P010、纹理子资源及必要 GPU detach copy | [`rendering/dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs)；[当前索引](./DESIGN.md#source-map) | 保留同步/lease，新接口不能只传纹理指针 |
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
 | 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
 | FFmpeg 打包不同：Windows 固定 shared 9.0.2 snapshot；其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs)，目标资源目录为 [`apps/open_quartz_slint/runtime/`](../apps/open_quartz_slint/runtime/) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
@@ -76,13 +76,13 @@ flowchart TD
 
 `media_core` 逻辑协议部分应可不启用 FFmpeg、wgpu、浏览器依赖而测试。初期 backend modules 可以共包，稳定后根据链接大小和分发需要拆包。FFmpeg 类型仅存在于后端，不从公共协议泄漏 `AVFrame*`。GPU 适配器是可选依赖；软件解码、离线编码、命令行和其他 UI 可独立使用核心。
 
-依赖方向为 **Slint → 媒体核心/GPU 适配**，不能让媒体核心反向依赖 Slint，也不能把解码器放进 OpenQuartz 的 `project` 或 `player` 聚合。当前核心源码 root 仅 `lib.rs`，按 project/player/resources/execution/inference/media 分组；媒体宿主位于 `media::native`，GPU importer 位于 `execution::gpu`，模型服务位于 `resources::models`。这是尚待真实所有权拆分的过渡实现，模块分组不证明目标布局或 public Player driver 已完成。Slint 版本升级不应迫使媒体核心重写，wgpu 升级只影响 GPU adapter。独立 `oq-media`、编辑器、exporter/stub 与各应用继续保留各自边界，不合并这些包，也不创建占位 crate。
+依赖方向为 **Slint → 媒体核心/GPU 适配**。独立 oq-media 拥有 decoder/session/FrameLease，不反向依赖 Slint、OpenQuartz NodeId、graph 或 inference。内部 media::sources::VideoSources 拥有 NodeId → NativeVideoSource map、source reconcile、预览/播放/替换生命周期；它经同步 upload callback 借用 rendering::RenderDevice，后者拥有 GPU executor/importer/readback/Windows presenter。player::NativePlayer 只协调这些 owner，PlaybackSession 保存 GraphInstance+clock+OutputHub，compiler/evaluation 保持编译与纯求值边界。模型服务继续在 resources::models。root 类型保留，旧 execution/runtime namespace 与类 alias 不保留；实际文件见 [DESIGN 模块与所有权](./DESIGN.md#module-ownership) 与 [源码索引](./DESIGN.md#source-map)。
 
-原生 Rust 桌面直接调用 typed API，不需要额外导出的 SDK C/JNI/FFI 桥。Web/Tauri IPC、`bindings::wasm`、`web-bindings`/`browser` 及其 JS/object/worker API 均已退役。原生 Engine、媒体 frame lease/generation 与 typed 资源规划保留，不宣称新增 driver wiring。本次原生测试/包/boundary 通过、两项整体 100% coverage gate 失败，见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)；配置所需 FFmpeg/ORT 环境后最终覆盖测试全部通过，既存 GPU/video/provider 覆盖缺口仍保留，未放宽门槛。此前职责/绑定清理、单核心与 §17.1 媒体验收均为历史证据；文档任务未自行运行检查。
+最终证据见 [DESIGN 验证基线](./DESIGN.md#validation)：workspace 234、full-native 315、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary、独立 ONNX-only 247/runtime-only 279 与 macOS release 包通过。默认/native coverage 测试 134/201 通过，但整体 100% gates 均失败（Lines/Functions/Regions 默认 98.53/97.88/98.34%，native 97.70/95.96/96.38%），阈值未放宽，RenderDevice/InferenceTasks/VideoSources 保持计量，NativePlayer 仅沿用 facade exclusion。相机/Windows/Linux/.scr/移动端未实测，公开 Player driver/graph_mut 限制未改变。
 
 无需导出 SDK 桥不意味着移除必要的外部库/后端 FFI：FFmpeg、ORT、AVFoundation/CoreVideo、Metal、D3D12/COM 等原生调用仍保留在媒体、推理与设备实现中。
 
-**公共类型只定义一次。** `media_core` 是 SessionId/epoch、命令/事件、时间/色彩元数据、源能力与 frame lease 接口的唯一所有者；平台后端实现该接口。`media_wgpu` 拥有依赖 wgpu 的 `GpuFrameLease`，不要求核心返回 `GpuOutputHandle`。当前单一 `open_quartz` 的 runtime/GPU 模块消费媒体实现并进行节点与句柄映射；媒体公共契约不能反向引用核心的 domain、SDK 或执行类型。早期 `execution::media` 外部帧 facade 已删除，不保留 alias、re-export 或转发 wrapper，也不复制第二套规范类型。依赖边界必须禁止 `media_core → open_quartz/slint/wgpu`；可选 GPU adapter 单独承担 wgpu 依赖，不能只按包名判断是否独立。
+**公共类型只定义一次。** 未来 media_core 是 SessionId/epoch、命令/事件、时间/色彩元数据、源能力与 frame lease 的唯一 owner；media_wgpu 拥有依赖 wgpu 的 GpuFrameLease。已有 oq-media 媒体所有权保留；VideoSources 映射图源，RenderDevice 消费 retained frame 并管理 GPU 资源，经同步 upload callback/lease 交接，NativeVideoFrame 借用不逃逸 callback。媒体公共契约不反向引用 SDK/domain/求值类型。早期 execution::media facade 已删除，不恢复 alias/re-export/wrapper 或第二套帧类型；未来媒体核心不依赖 OpenQuartz/Slint/wgpu，可选 GPU adapter 单独承担 wgpu 依赖。
 
 ## 4. 对象、所有权与来源
 
@@ -217,7 +217,7 @@ GPU 创建必须先汇总 Slint renderer、图执行和媒体导入所需的 **o
 | 平台 | 解码/编码候选 | 帧交换候选 | 当前事实 / 门槛 |
 |---|---|---|---|
 | Windows | 解码沿用 D3D12VA；编码按 FFmpeg 实际支持探测 NVENC/QSV/AMF 等，不预设 D3D12VA 是编码器 | D3D12 / NV12 / P010 / fence；必要时 GPU copy | 当前已有解码路径。验证 adapter LUID、surface 生命周期、codec/profile 与 encoder device 互操作 |
-| macOS | FFmpeg VideoToolbox 解码及 `*_videotoolbox` 编码 | CVPixelBuffer → CoreVideo Metal texture planes → host wgpu | §17.1 为首轮解码/导入历史证据；本次原生回归与包结果见 DESIGN §7.8。编码、完整会话和跨设备语义仍需独立实现与验收 |
+| macOS | FFmpeg VideoToolbox 解码及 `*_videotoolbox` 编码 | CVPixelBuffer → CoreVideo Metal texture planes → host wgpu | §17.1 为首轮解码/导入历史证据；本次原生回归与包结果见 DESIGN 验证基线。编码、完整会话和跨设备语义仍需独立实现与验收 |
 | Linux | 优先 VAAPI；可选 Vulkan Video，按设备追加 QSV/CUDA | VAAPI 导出 DRM PRIME/DMA-BUF → Vulkan；或同设备 Vulkan 帧；CUDA 需额外互操作 | 不承诺一个 backend 覆盖所有 GPU。DRM node/PCI identity、modifier、external memory/semaphore、驱动支持分别探测 |
 | Android | FFmpeg MediaCodec 或直接系统 adapter；编码按平台能力 | Surface/AHardwareBuffer/外部纹理 | 设计保留，实施按用户既有优先级延后；无桌面子进程假设 |
 | iOS | VideoToolbox | CoreVideo/Metal | 设计保留；静态链接、权限、应用生命周期、分发单独评审 |
@@ -385,16 +385,16 @@ controller 投影 `state`、`position`、可选 `duration`、`seekable`、`video
 ```text
 SDK Project（持久化 source 与选项）
   → HostResourceIntent
-  → open_quartz::execution::runtime::ExecutionRuntime media registry：NodeId → MediaSession
-  → shared video frame / graph input
-  → Runtime dirty + 图执行
+  → 内部 media::sources::VideoSources：NodeId → NativeVideoSource / source lifecycle
+  → upload callback → rendering::RenderDevice（shared frame / GPU input）
+  → evaluation::GraphInstance / GraphEvaluator dirty + GPU work
   → output lease
   → 节点/Inspector/fullscreen 的 Slint presenter
 ```
 
-`RenderBridge` 继续是 UI 与执行线程之间的窗口适配，当前源码见 [`apps/open_quartz_slint/src/render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)，不包含 FFmpeg 解码策略或跨平台表面解析。单一核心 `open_quartz` 的 `ExecutionRuntime` 直接组合节点资源对齐、graph dirty、帧时钟与 GPU 执行；原独立 NativeHost crate 和 PlayerHost 转发层已移除，但这不代表新的 public Player driver 已接线。提议中的 `media_core` 返回帧和状态，既不知道节点也不会发布 SDK command。原生运行资源位于 [`apps/open_quartz_slint/runtime/`](../apps/open_quartz_slint/runtime/)；核心 Shader 目录数据以 [`project/shader_catalog.json`](../crates/open_quartz/src/project/shader_catalog.json) 为准，Slint 只作适配。
+RenderBridge 桥接 Slint UI/render thread，NativePlayer 选择图输出交给 RenderDevice present；OutputHub 另有 backend，独立 .scr 自行组合 PlaybackSession/evaluation/GpuExecutor。PreparedNativeGraph 拥有 prepared video handles 与 stage_images 新纹理。stage_video 成功打开新源后才清候选纹理；stage_detach/prepare_graph obsolete-video removal 在可选 image upload 前清 staged texture，失败候选保留旧 source/像素。UI request generation 与 accepted revision 分开。close 释放 descriptors/outputs，ORT worker Arc session 活到完成，InferenceTasks Drop join；GPU lease 保持安全生命周期。detached texture 修复后 full-native 315/Slint 73 回归通过，详见 验证基线。
 
-首轮已落实独立 `oq-media` 的 retained `FrameLease` 与 macOS VideoToolbox 后端，OpenQuartz `NativeVideoSource` 持有宿主节点和播放策略，GPU 导入仍是平台执行适配。**历史删除记录：** 合包前旧 `open_quartz_execution::media` 外部帧 facade 完全没有生产消费者；核对当时仓内调用及重复模拟测试后，已随切换删除。该旧包路径不是当前源码入口。避免执行层同时保留第二套 `ExternalVideoFrame`、同步和 importer 契约。未来跨平台抽取如需新公共协议，应由实际第二平台实现验证后再定义，不先留空抽象。
+独立 oq-media 已拥有 retained FrameLease 与 macOS VideoToolbox 后端；OpenQuartz VideoSources 拥有图源与播放策略，NativeVideoSource 管平台 source/worker，RenderDevice 拥有 GPU 导入。NativePlayer 提取不改变公开 Player driver 或 graph_mut 限制。提议的 media_core 返回帧/状态，不知道节点或 SDK command。应用运行库仍在 [`runtime/`](../apps/open_quartz_slint/runtime/)，Shader 唯一源仍为 [`project/shader_catalog.json`](../crates/open_quartz/src/project/shader_catalog.json)。**历史删除记录：** 旧 open_quartz_execution::media 外部帧 facade 无生产消费者，合包前已删除；不恢复第二份 ExternalVideoFrame/sync/importer 契约。未来新协议须由实际平台实现验证，不先留空抽象。
 
 前期 FFmpeg 子进程 fallback 可保留在 backend adapter，report `backend=ffmpeg-process / software / cpu-upload`。它是可观测迁移手段，不是让新接口把硬解承诺打折；`Require` 模式绝不走该 fallback。新平台 libav 路径通过后再逐平台移除子进程默认路径，CLI probe 也逐步用 libav stream info 替换正则解析 stderr。
 
@@ -471,7 +471,7 @@ A 阶段把 B/C 所需的最小 Slint presenter POC 一起做，C 才将 API 整
 
 ### 17.1 首轮实现与验收（历史证据）
 
-以下保留 2026-11-03 首轮实施记录，其中“已验证”“当前”和命令/结果均指当时基线，不是本次原生单一路径退役的验收；本次已观察结果与剩余门槛由主代理在 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态) 汇总。
+以下保留 2026-11-03 首轮实施记录，其中“已验证”“当前”和命令/结果均指当时基线，不是本次原生单一路径退役的验收；本次结果与剩余门槛见 [DESIGN 验证基线](./DESIGN.md#validation)。
 
 - `crates/oq-media` 不依赖 Slint、OpenQuartz 图或 wgpu；macOS `videotoolbox` feature 提供文件解封装、严格硬解、保留 AVFrame/CVPixelBuffer 的帧 lease、PTS、source/timeline epoch、reset、取消及 I/O deadline。独立示例：`cargo run -p oq-media --features videotoolbox --example decode -- VIDEO`。
 - `scripts/prepare-media-sdk.mjs` 校验并构建 FFmpeg 8.1.1 的 LGPL-only 动态 libav SDK。随包提供对应源码、硬解约束补丁、许可证及构建选项；不依赖 Homebrew。补丁让 H.264/HEVC 都要求 VideoToolbox 硬件解码；未验证的 libav 构建不能声称硬解成功。原 FFmpeg executable 保留为独立的相机/软件 fallback。
@@ -494,4 +494,4 @@ A 阶段把 B/C 所需的最小 Slint presenter POC 一起做，C 才将 API 整
 - [WebCodecs specification](https://www.w3.org/TR/webcodecs/)：当前产品之外的浏览器提案参考；不要求实现特定 codec，不提供完整容器播放器。
 - [Slint Web platform](https://docs.slint.dev/latest/docs/slint/guide/platforms/web/)：当前产品之外的浏览器呈现提案参考；不表示保留或已实现 Slint Web 产品。
 
-外部 FFmpeg trunk/Slint latest 文档仅用于架构依据，实施以锁定版本源码和运行探针为准。首轮硬解历史证据见 §17.1；编码器和跨平台验收尚未执行，架构图不作为实现证据。浏览器参考只服务于当前产品之外的未来提案；当前退役验证仍待 parent 在 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态) 汇总。
+外部 FFmpeg trunk/Slint latest 文档仅为架构依据；实施以锁定源码和实际证据为准。§17.1 是首轮硬解历史，本轮 native 提取结果见 [DESIGN 验证基线](./DESIGN.md#validation)。编码器/跨平台完整会话仍未实现或验收，架构图不作实现证据，browser 只属于未来另立项提案。

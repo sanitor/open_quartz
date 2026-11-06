@@ -4,40 +4,42 @@
 
 当前产品仅为 `apps/open_quartz_slint` 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 已退役。`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。没有 Vite/Web/Tauri 构建入口。`dist-desktop/` 是可重新生成的忽略产物；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
 
-本次原生测试、boundary、真实窗口/Shader、editor 与 macOS release 包通过；两项整体 100% coverage gate 均失败，精确结果见 [设计 §7.8](DESIGN.md#78-验证矩阵与证据状态)。先前 macOS 包搬迁、原生交互以及当时 Web/Tauri 结果只作历史证据；真实相机、Windows/Linux（含 `.scr`）和移动端仍需独立验收。历史记录与启动风险见 [Slint 迁移记录](SLINT_UI_REFACTOR.md)。下文历史 Web/Tauri 测试规划中的命令、路径和 CI 示例不代表当前实现。
+本轮 owner 提取与生产调用已完成。最终结果：workspace 234/34 suites、完整 native 315/30 suites、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary 与 macOS release 包通过；独立 ONNX-only 247/30 suites、runtime-only 279/28 suites 通过。两项整体 100% coverage gate 失败，完整矩阵/报告见 [设计 验证基线](DESIGN.md#validation)。相机、Windows/Linux/.scr 和移动端未实测，下文 Web/Tauri 规划仍为历史。
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
-媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:runtime` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
+媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
 跨平台硬件推理系统的目标分层、设备缓冲契约、执行方案策略与迁移验收见 [推理架构设计](INFERENCE_ARCHITECTURE.md)。当前 ONNX/ORT 读回路径与计划架构明确区分；Core ML、Windows 设备驻留和零 CPU 图像传输在通过各自平台门槛前不视为已实现。
 
-核心实现为单一 `open_quartz`，原 schema/execution/SDK 包全部移除，无 alias 或兼容转发层；详见 [设计第 7 节](DESIGN.md#7-crate-边界审查与重新设计)。`crates/open_quartz/src/` 根部仅 `lib.rs`，负责模块声明与公共 Rust 类型导出；实现位于 `project`（model/catalog/Project/history/layout/node factory/screen saver）、`player`（Environment/OpenQuartz/Player/Output/Subscription）、`resources`（catalog/plan/models）、`execution`（engine/runtime/gpu/shader/schedule/event/logging）、`inference` 和 `media`。`bindings`、`web-bindings` 与 `browser` 不再是可选能力。根/Slint/editor 三个实际 workspace 各自维护需要的 profile 与 lockfile；`oq-media`、编辑器、屏保 exporter/stub 与应用保持独立，不新增空壳 crate。
+核心仍为单一 open_quartz，根部仅 lib.rs，root 类型保留，无占位 crate。当前 owner：compiler shader/topology/plan；GraphEvaluator dirty/Math/feedback；GraphInstance identity/generation/state；PlaybackSession graph+clock+OutputHub；NativePlayer Slint 协调；OutputHub contract/registry/presentation/resources/backend/capabilities；RenderDevice GPU/readback/Windows presenter；VideoSources 图源 map/lifecycle/upload callback；InferenceTasks sessions/pending/task id/channels/workers/accepted completions。Project/history 与资源规划/模型服务仍分别归 project/resources。
 
-Rust host 使用 `open_quartz::execution::{engine,runtime,gpu,shader,schedule,event}`、`open_quartz::project::catalog`、`open_quartz::inference`、`open_quartz::media::native` 和 `open_quartz::resources`；普通业务仍消费 root 导出的 typed aggregates。`project::model` 和聚合实现模块是内部实现。完整源码链接见 [设计 §7.6](DESIGN.md#76-当前源码落点)。
+advanced host 路径为 open_quartz::{compiler,evaluation,player,outputs,rendering,inference,media,resources} 与 project::catalog。Slint 使用 NativePlayer；独立 .scr 在自有 Win32 loop 中直接组合 PlaybackSession、evaluation work 与 GpuExecutor。内部 media::sources / inference::tasks 拥有 VideoSources/InferenceTasks，不新增 root alias。实现与生产调用随 owner 迁移，不保留 execution/runtime namespace 或类 alias，实际路径见 [设计 源码索引](DESIGN.md#source-map)。root 类型、既有 feature、独立组件边界保持，WASM/Tauri/bindings/browser 不恢复。
+
+Slint NativePlayer/RenderDevice 保持原 render thread 与同一 Device/Queue；session.validate_completion 在纹理修改之前，候选 graph/clock 与整批 scalar preflight 在 commit 之前，静态数据以 Arc 共享。NativePlayer 选择图输出 present，OutputHub 另支持 backend。PreparedNativeGraph 暂存新纹理/自有视频 handles；stage_video 打开成功后清候选纹理，detach/obsolete video 在可选 image upload 前清 staged texture，失败候选保留旧 source/像素。UI request generation 与 accepted revision 分开。close 释放 descriptors/outputs，活跃 ORT worker 的 Arc session 保留到完成，InferenceTasks Drop join；这些生命周期回归结果见 验证基线。
 
 ### 桌面是否需要 FFI？
 
 纯 Rust/Slint 桌面和 `.scr` 直接调用 typed Rust API，不需要额外导出的 SDK C ABI、JNI 或语言 FFI 桥；已移除 JS/WASM adapter 和 Tauri IPC 产品边界，不提供兼容 bindings feature/API。
 
-这里的“无需 SDK FFI”不等于无需外部库 FFI：ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生后端必要的实现细节。typed planner、图校验、WGSL/catalog/ONNX 语义及原生 Rust `Engine` 保留。
+这里的“无需 SDK FFI”不等于无需外部库 FFI：ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生后端必要的实现细节。typed planner、图校验、compiler/WGSL/catalog/ONNX 语义继续保留，旧 Engine/Runtime 的状态归属见 模块与所有权。
 
 ### 核心能力选择与验收
 
-- `default = []`：Graph/Project 编辑、WGSL/catalog 和共享 Runtime 状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出使用无设备配置。
-- `gpu`：wgpu executor/纹理/readback/presentation。`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或模型下载。
+- `default = []`：Graph/Project、compiler、GraphEvaluator/GraphInstance、PlaybackSession/OutputHub 的纯状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出采用无设备配置。
+- `gpu`：RenderDevice 的 executor/纹理/readback/presenter；`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或下载，保留既有 feature 名称与行为。
 - `native-video`：平台视频 source/worker，macOS 选择独立 oq-media；`native-video-d3d12` 蕴含 native-video 与 gpu，供 Windows D3D12 路径显式选择。
 - `native-onnx`：ORT session/pipeline，可独立于 GPU 和 HTTP 使用。`model-cache`：下载/哈希/文件缓存，可独立于 ORT/GPU 使用。纯 task/pre/postprocess 不随 native-onnx 关闭。
 
 Cargo feature 可加，完整 workspace 构建会因应用重新打开设备依赖；默认无设备闭包与每个独立能力必须分别用 consumer invocation 和目标 normal/build dependency tree 验收。默认纯核心不需要先准备原生运行库；显式 native video/ONNX 的直接 Cargo 调用仍需对应 SDK/运行库。
 
-本次功能/边界/包结果、两项失败的整体 100% coverage gate 与未实测平台见 [设计 §7.8](DESIGN.md#78-验证矩阵与证据状态)，未降低阈值或扩大 ignore；不把先前 Web/WASM/Tauri 结果当作当前验收。`execution` 仍是过渡性组合目录，目录分组不足以完成所有权设计；Runtime 是机制而非业务领域，编译/求值/播放/渲染/推理/媒体/输出职责方案见 §7.5。公开真实 Player driver 尚未接通，`Project::graph_mut` 仍可绕过 revision/history，本次不声称修复。
+本次默认 coverage 134 测试、完整 native 201 测试通过，但两项 100% gate 失败：Lines/Functions/Regions 分别为默认 98.53/97.88/98.34%，native 97.70/95.96/96.38%。阈值未放宽，提取的 RenderDevice/InferenceTasks/VideoSources 保持计量，NativePlayer 只沿用旧 facade exclusion。git diff --check 与无旧 namespace/class alias 扫描通过，旧 execution 目录已删除。公开 headless Player driver 与 graph_mut history 限制仍在范围之外，详见设计 验证基线。
 
 ### 当前命令与资源索引
 
 ```sh
 npm ci
-npm run prepare:runtime              # 准备原生库；直接 Cargo 前同样需要
+npm run prepare:desktop              # 准备原生库；直接 Cargo 前同样需要
 npm run dev
 npm run build
 cargo test --workspace               # 根核心/媒体/exporter/stub workspace

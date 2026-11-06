@@ -1,6 +1,6 @@
 # 跨平台硬件推理架构
 
-> 状态：**未来通用推理契约/后端拆分与硬件驻留仍是设计提案**；当前产品仅为 Rust/Slint 原生应用与独立 Windows `.scr`，不保留 Web/Tauri fallback、WASM/bindings 功能或 API。当前 ONNX task、ORT pipeline/session 与执行调度仍属于单一 `open_quartz` 核心，是等待真实所有权拆分的过渡实现，并非已完成的新布局或真实 public Player driver。尚未实现独立推理层、Core ML 后端、设备 Tensor I/O 或硬件驻留推理。本设计不承诺任意模型都能在任意硬件上执行，也不把 EP 注册成功视为模型实际由 GPU/NPU 执行。
+> 状态：通用推理契约/独立后端/硬件驻留仍为提案；单一 open_quartz 内 InferenceTasks 的 session/task/worker 所有权已实际提取，与 NativePlayer/GraphInstance/RenderDevice 按 DESIGN 模块与所有权、源码索引 协作。当前产品仅 Rust/Slint 与独立 .scr，WASM/Tauri/bindings/browser 退役，公开 headless Player driver 未改变。没有实现独立推理库、Core ML、设备 Tensor I/O 或硬件驻留推理；本轮原生验收不证明这些未来能力。
 
 ## 1. 决策摘要
 
@@ -19,16 +19,18 @@
 
 ## 2. 现状与问题
 
-当前原生实现位于 [`inference/session.rs`](../crates/open_quartz/src/inference/session.rs)、[`pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs) 与 [`task.rs`](../crates/open_quartz/src/inference/task.rs)，公共 advanced 路径为 `open_quartz::inference`；[`execution::runtime::ExecutionRuntime`](../crates/open_quartz/src/execution/runtime/execution.rs) 管图和资源会话，[Slint 应用](../apps/open_quartz_slint/) 是原生桌面宿主，Windows `.scr` 保持独立宿主。模型下载/校验/缓存属于 `resources::models`，typed 意图属于 `resources::plan`。保留异步加载、ticket/generation/revision 失效、ONNX 任务与图执行解耦、取消/卸载生命周期，以及结构化 `roi`、`json` 和图像输出。完整当前分组以 [`DESIGN.md` §7.6](./DESIGN.md#76-当前源码落点) 为索引；职责所有权仍待实际拆分，不能把当前组合执行对象描述成已实现的目标 Player driver。
+当前 ORT 实现在 [`inference/session.rs`](../crates/open_quartz/src/inference/session.rs)、[`pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs) 与 [`types.rs`](../crates/open_quartz/src/inference/types.rs)，advanced 路径为 open_quartz::inference。本轮内部 owner 位于 [`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)：InferenceTasks 拥有 sessions、pending、task id、channels、workers 与 accepted completions；[`player/native.rs`](../crates/open_quartz/src/player/native.rs) 的 NativePlayer 只协调 session/设备 owner。模型服务仍归 resources::models，意图规划归 resources::plan，roi/json 与图像输出保留。实际索引见 [DESIGN 源码索引](./DESIGN.md#source-map)；不保留旧 execution/runtime namespace 或 ExecutionRuntime 类 alias。
 
 目前设备路径是明确的：
 
 - `NativeOnnxProvider::default()` 是 CPU；macOS/Linux 只有 CPU 后端。Windows 可选择 DirectML，当前启用 CPU fallback。
-- `ExecutionRuntime::schedule_onnx()` 从 GPU 纹理执行同步 readback，把 `Vec<u8>` 捕获到 worker；CPU 预处理生成 `Vec<f32>`，ORT CPU 或 DirectML 执行，CPU 后处理生成 RGBA，再由 `drain_onnx_completions()` 上传 GPU。
+- 目前数据通路仍是 GPU texture → RenderDevice 同步 readback → `Vec<u8>` → InferenceTasks worker 的 CPU 预处理 `Vec<f32>` → ORT CPU/DirectML → CPU 后处理 RGBA → accepted completion → RenderDevice GPU upload。提取改变资源与任务 owner，不宣称消除 CPU 搬运。
 - `shared_onnx_wgpu_device` 明确为 `false`；`TensorRunner::run_f32(Vec<f32>, shape)` 不表达外部资源、设备归属或生命周期。
 - DirectML 执行结果被标记为配置的 `directml` 或 `directml+cpu`，但这不是逐算子执行位置的证明；部分算子可能回落到 CPU。
 
 所以当前产品是原生应用/独立屏保和原生 ORT 调用，不是跨平台 GPU/NPU 驻留推理。视频硬解也不会自动让后续 ONNX 节点共享 CVPixelBuffer：目前图输入在推理边界会读回 CPU。
+
+completion 先匹配 revision/generation/current pending task id，再由 session.validate_completion 校验 envelope，全部先于 GPU texture mutation，保留提交 stamp。旧任务不清新 pending，模型准备用独立 ticket。close 释放 descriptors/outputs，活跃 ORT worker 保留 Arc session 到完成，InferenceTasks Drop join；不承诺非阻塞或立即释放全部资源。ExecutionCommand/FrameStamp、RGBA read_source callback、AcceptedInferenceCompletion 为真实 typed 接口；失败原子性和旧 source/像素保留已纳入本轮回归，证据见 验证基线。
 
 ## 3. 分层、依赖方向与所有权
 
@@ -36,7 +38,7 @@
 
 ```mermaid
 flowchart TD
-    APP[Slint app / standalone Windows .scr host] --> GRAPH[Graph + ExecutionRuntime scheduler]
+    APP[Slint NativePlayer / standalone .scr own loop] --> GRAPH[PlaybackSession / GraphInstance + evaluation work]
     GRAPH --> POLICY[Inference planner]
     POLICY --> PRE[Device preprocess / layout]
     POLICY --> BACKEND[Backend session]
@@ -53,26 +55,26 @@ flowchart TD
     BACKEND --> CUDA[CUDA / TensorRT]
 ```
 
-**当前实现：** Slint 应用直接消费单一 `open_quartz` 核心的 typed Rust API；源码根部只有 `lib.rs`，公共 typed aggregates/value types 继续 root 导出。项目/播放分别归 `project`/`player`，资源 catalog/plan/models 归 `resources`，调度/设备归 `execution`，ONNX 归 `inference`，native video 归 `media`。Web/Tauri、`bindings::wasm`、`web-bindings`/`browser` 特性及其 JS API 不再作为保留入口。当前执行组合仍是过渡实现，不能据模块分组声称真实所有权拆分或 public Player driver 已落地。独立 `oq-media`、编辑器、exporter、stub 与各应用保留各自边界，不以清理为由合并，也不创建占位 crate。
+**本轮核心所有权目标：** compiler 拥有 shader/topology/plan，evaluation 的 GraphEvaluator 拥有纯 dirty/Math/feedback，GraphInstance 拥有图身份/generation/state；PlaybackSession 拥有图实例、clock 与 OutputHub。OutputHub 拥有 contract/registry/presentation/resources/backend/capabilities，RenderDevice 拥有 GPU/readback/Windows presenter，VideoSources 拥有图源 map/lifecycle/upload callback，InferenceTasks 拥有推理任务与资源。NativePlayer 是生产薄协调者，保持原 render thread 与 Slint 同一 wgpu Device/Queue 实例。root typed API 保留，advanced 路径随真实提取改变。独立 oq-media/editor/exporter/stub/应用保持原边界，不新增空契约 crate；公开 Player driver 与 graph_mut 限制不因提取消失。
 
 原生 typed Rust SDK 不需要额外导出的 C/JNI/FFI 桥；这不意味着消除外部库/后端 FFI。ORT、FFmpeg、CoreVideo、Metal、D3D12 等必要调用仍属于媒体、推理与设备实现。
 
-**有条件的未来提取：** 只有具备真实独立 session/tensor/provider 实现、可运行的 ORT adapter、独立测试并消除 graph/runtime 反向依赖时，才考虑把稳定推理契约与后端 adapter 从核心分离。不是先创建契约 crate 再等待实现。
+**有条件的未来提取：** 只有具备真实独立 session/tensor/provider 实现、可运行的 ORT adapter 与独立测试，并把 NodeId、graph generation 和 SDK error 的转换留在 OpenQuartz adapter，才考虑独立推理库。当前 InferenceTasks 是 OpenQuartz 的图任务 owner，与未来通用推理后端库不是同一边界；不先创建契约 crate 等待实现。
 
 ```text
-open_quartz (graph / SDK / Runtime / current ORT adapter / optional GPU interop)
+open_quartz (compiler / evaluation / player / outputs / rendering / current inference adapter)
      └─ future extraction only after independent implementation gate
           → oq-inference contracts + usable ORT adapter (conditional, not current)
                → optional platform adapters (Core ML / DirectML / CUDA / CPU)
 ```
 
-依赖规则：若后续达到提取门槛，backend 可依赖 inference contracts 与其平台 runtime；公共 graph/SDK/UI 不直接依赖 ORT/Core ML/DirectML 具体类型。当前 `open_quartz` 的 `execution` 提供可选 wgpu import/export，`inference` 提供 ONNX task/session；平台 interop 可在 feature/cfg 私有模块中使用 wgpu HAL 与系统 API。project/player/execution/inference 是同一核心内的职责模块，不是已实现的独立 crate 依赖链。`oq-media` 保持独立并提供拥有的 `FrameLease`，不获得 ONNX 或 graph 依赖。
+依赖规则：未来 backend 可依赖独立 inference contracts 与平台库；公共 graph/SDK/UI 不直接依赖 ORT/Core ML/DirectML 类型。单一核心内，`rendering` 提供可选 wgpu import/export/readback，`inference` 提供 typed ONNX task、session/pipeline 与 InferenceTasks，NativePlayer 协调二者。平台 interop 可在 feature/cfg 私有实现中使用 wgpu HAL/系统 API；这不是独立 crate 依赖链。oq-media 保持独立并提供自有 FrameLease，不获得 ONNX 或 graph 依赖。
 
 未来由宿主桥接 `FrameLease` 与推理 image lease，不复制媒体会话控制；这不是当前已接通的设备驻留数据路径。wgpu/HAL interop 提议留在核心的可选适配模块，只有其自身形成独立可运行实现时才考虑另一个实包。
 
-本次原生单一路径清理保留 native Rust Engine 与 typed ONNX 前后处理、任务和资源规划，不保留 JS/browser/JSON worker exports 或对应绑定 API。原生测试/包/boundary 通过、两项整体 100% coverage gate 失败，见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)；最终覆盖运行测试无失败，完整 native pre/postprocess/pipeline 为 100%，默认 pre/postprocess 因浏览器专用测试退役存在缺口。未单独执行 native-onnx-only 验收，模型运行库解析保留官方缓存路径 fallback。此前结果仅为历史证据；文档任务未自行运行检查。
+最终证据见 [DESIGN 验证基线](./DESIGN.md#validation)：workspace 234、full-native 315、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary、macOS release 包通过；独立 ONNX-only 247/30 suites、runtime-only 279/28 suites 通过。默认/native coverage 测试 134/201 通过，但两项 100% gate 失败，Lines/Functions/Regions 默认 98.53/97.88/98.34%，native 97.70/95.96/96.38%；阈值未放宽，提取 owner 保持计量，NativePlayer 只沿用旧 facade exclusion。相机/Windows/Linux/.scr/移动端未实测，public Player driver 与 graph_mut 限制保留。
 
-未来抽取后的 inference core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不是 OpenQuartz frame stamp 的类型别名。graph revision、node generation 和 NodeId 由 OpenQuartz execution 保存为 request ID→图上下文映射，不进入独立库依赖。库错误也不依赖 SDK `SdkError`，在宿主边界转换。
+未来独立 inference core 自有 `RequestStamp { stream_id, epoch, sequence, timeline_ns, source_content_id }`，不作为 OpenQuartz frame stamp 的 alias。OpenQuartz adapter 在 request ID → 图上下文映射中保存 NodeId/revision/generation/task id；通用库不依赖它们或 SDK SdkError，错误在 typed 宿主边界转换。
 
 The model descriptor, task schema, and serialized project record **logical model identity and parameters**, not transient pointers, command queues, device addresses, or runtime session handles. The `open_quartz` resource store maps logical identity plus immutable model/version/configuration and selected execution plan to live sessions and caches.
 
@@ -328,7 +330,7 @@ Performance comparisons pin model hash, artifact, input sequence, shape, precisi
 ### Phase D — Windows interop decision and backend
 
 - Benchmark ORT DirectML queue-sharing/device tensor support against WinML for target models and package requirements.
-- Implement same-device D3D12 resource and fence sharing only when ExecutionRuntime wgpu adapter identity and queue ownership are compatible; test adapter mismatch/device loss. Treat standalone DXGI shared presentation as a separate boundary.
+- Implement same-device D3D12 resource and fence sharing only when RenderDevice's wgpu adapter identity and queue ownership are compatible; test adapter mismatch/device loss. Treat standalone DXGI shared presentation as a separate boundary.
 - Expose fallback/strict policy explicitly. Keep current behavior until an acceptance-tested backend is selected.
 
 ### Phase E — Graph integration and product rollout

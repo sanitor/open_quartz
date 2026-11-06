@@ -4,29 +4,29 @@
 > 不保留 browser、WASM bindings 或 Web fallback。Windows/Linux runtime、
 > `.scr` 独立运行、真实相机及 Android/iOS 验收仍未完成或延后。
 >
-> 当前 native-only 原生测试、boundary、真实窗口/Shader、editor 与 macOS release 包通过；两项整体 100% coverage gate 均失败，精确结果与未实测平台见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)；此前迁移结果仅为历史记录。
+> 最终证据见 [DESIGN 验证基线](./DESIGN.md#validation)：workspace 234、full-native 315、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary、独立 ONNX/runtime 与 macOS release 包通过。两项整体 100% coverage gate 均失败；历史结果继续归档。
 >
 > 本文基线为 v0.20.0b（2026-10-25）。第 0 节与 §13.1–13.2 是当前摘要和索引；第 1–12、14–15 节保留历史方案和验证，不是当前产品承诺。
-> 当前源码落点也见 [DESIGN §7.6](./DESIGN.md#76-当前源码落点)。
+> 当前源码落点也见 [DESIGN 源码索引](./DESIGN.md#source-map)。
 
 ## 0. 结论摘要
 
 | 问题 | 结论 |
 |---|---|
 | 平台状态 | Slint 支持多平台；Windows/Linux runtime、真实相机与 Android/iOS 验收仍未完成或延后 |
-| 原生纹理传输 | Slint 与 ExecutionRuntime 共享 `wgpu::Device/Queue` 并直接导入纹理；历史 macOS 记录不代表当前包或其他平台验收 |
+| 原生纹理传输 | Slint 与 RenderDevice 使用同一 wgpu Device/Queue 实例，NativePlayer 留在原 render thread；真实共享纹理路径保留，历史结果不代替本轮或其他平台验收 |
 | 是否有现成 WGSL 编辑器 | 没有直接依赖的成熟 Slint 组件；本仓已实现 `crates/slint_code_editor`，组合公开 UI API 与 cosmic-text 排版/编辑，提供实时高亮；完整 AT 和平台 IME 验收仍有缺口 |
 | 节点图 | 本仓已有 Slint 图元实现和 Rust graph projection，编辑、连线、缩放与 MiniMap 由应用维护 |
 | 产品边界 | 原生 Rust Slint 桌面与 Windows `.scr`；Web/Tauri、WASM 和绑定 API 已退役 |
-| 当前验收 | Slint 72、真实窗口 18/18、Shader 34/34、原生 boundary 与 macOS release 包通过；两项整体 coverage gate 失败，未实测平台见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)，不复用历史结果 |
+| 当前验收 | 本轮功能/边界/独立能力/包通过，默认 coverage 134 测试、native 201 测试通过但两项整体 100% gate 失败；Lines/Functions/Regions 默认 98.53/97.88/98.34%，native 97.70/95.96/96.38%，阈值未放宽；平台未实测范围见 DESIGN 验证基线 |
 
-Slint render worker 直接使用 `open_quartz::execution::runtime::ExecutionRuntime`
-和 typed Rust 资源服务。当前 execution 布局是过渡状态，不代表真正的
-crate 拆分已实施；公开 `Player` 尚无真实设备 driver，`Project::graph_mut`
-亦有已知限制，详见 [DESIGN](./DESIGN.md#75-模块调度与数据所有权)。
-`oq-media`、`slint_code_editor`、屏保 exporter、独立 stub 和应用各自独立，
-不增加占位 crate。纯 Rust 桌面无需 SDK C ABI/JNI/FFI 语言桥，但 ORT、
-FFmpeg、CoreVideo、Metal、D3D12 等后端仍需要平台 FFI。
+Slint 生产协调者是 player::NativePlayer；PlaybackSession 只持有 GraphInstance/clock/OutputHub。compiler/evaluation、OutputHub、RenderDevice、VideoSources 与 InferenceTasks 的字段、资源和调用已转给各自 owner，不保留旧 execution/runtime namespace 或类 alias。实际文件与 typed 接口见 [DESIGN 模块与所有权](./DESIGN.md#module-ownership) 与 [源码索引](./DESIGN.md#source-map)。
+
+本轮回归覆盖候选失败保留旧图/播放/资源、generation/task id/stamp 接受规则、GPU upload 前验证、Stop/close 与共享设备；证据见 验证基线。公开 headless Player driver 与 graph_mut history 限制仍在本次范围外，平台未实测边界保持。
+
+NativePlayer 只协调 Slint，独立 .scr 直接组合 PlaybackSession/evaluation/GpuExecutor。NativePlayer 选择 RenderDevice 输出，OutputHub 另有 backend；scalar batch preflight 后 commit，静态数据 Arc 共享，completion validate 在纹理修改前。PreparedNativeGraph 用新纹理/自有视频 handles，stage_video 成功打开后清候选纹理，detach/obsolete-video removal 在 image upload 前清 staged texture，失败候选保留旧 source/像素。UI request generation 与 accepted revision 分开。close 释放 descriptors/outputs，ORT worker Arc session 保留到完成，Drop join；detached texture 修复后的 full-native 315/Slint 73 回归结果见 验证基线。
+
+oq-media、slint_code_editor、屏保 exporter、独立 stub 和应用各自独立，不新增占位 crate。纯 Rust 桌面无需 SDK C ABI/JNI 语言桥，ORT/FFmpeg/CoreVideo/Metal/D3D12 仍需要后端 FFI。WASM/Tauri/bindings/browser 保持退役。
 
 从仓库根目录运行 `npm ci`、`npm run prepare:desktop`、`npm run dev`；
 `npm run build` 打包。资源位于 `apps/open_quartz_slint/icons/` 和
@@ -122,8 +122,8 @@ flowchart TD
 - Windows 主 Renderer 已走 DXGI shared texture → WebView2 TextureStream，正常帧无 CPU pixel copy：`src-tauri/src/native_runtime.rs:978-999`、`src-tauri/src/webview_texture_stream.rs`。
 - 非 Windows 在 `src-tauri/src/native_runtime.rs:366-375` 关闭 shared texture 能力，前端退回 `readPreview(..., 960)` + `putImageData/drawImage`，每帧 GPU readback：`src/sdk/internal/NativeHost.ts:571-597`、`src/services/PipelineService.ts:229-243`。
 - 侧栏预览约 5Hz（200ms 节流）：`src/sdk/internal/NativeHost.ts:782-785`。
-- Browser 路径约 15Hz PNG/base64：`docs/DESIGN.md:1514`。
-- Native ONNX 仍是 GPU readback → CPU ORT → 上传，换 Slint 不会消除：`docs/DESIGN.md:1519`。
+- Browser 路径约 15Hz PNG/base64（历史：该说明来自已移除的 Web/Tauri 时代 DESIGN.md 内容；原位置 `docs/DESIGN.md:1514`）。
+- Native ONNX 仍是 GPU readback → CPU ORT → 上传，换 Slint 不会消除：见 [DESIGN 输出与资源传递](./DESIGN.md#outputs)。
 
 ### 2.3 Tauri / DOM 耦合点
 
@@ -233,7 +233,7 @@ apps/open_quartz_slint/
 
 这里的“无需桌面 FFI”指没有额外导出的 SDK C/JNI 桥，不删除 FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等设备后端 FFI 调用。
 
-本次移除八个 dead wrappers 和 Engine JS 类导出；native Rust Engine、API version/capabilities 对象、活跃 typed object/browser/JSON worker 导出与 graph/resource/inference 语义保留。`oq-media`、`slint_code_editor`、exporter/stub 与各应用保持独立。当前清理的功能/边界/产品检查完成；整体覆盖率门槛失败，见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)。历史测试数与报告不复用。
+本次移除八个 dead wrappers 和 Engine JS 类导出；native Rust Engine、API version/capabilities 对象、活跃 typed object/browser/JSON worker 导出与 graph/resource/inference 语义保留。`oq-media`、`slint_code_editor`、exporter/stub 与各应用保持独立。当前清理的功能/边界/产品检查完成；整体覆盖率门槛失败，见 [DESIGN 验证基线](./DESIGN.md#validation)。历史测试数与报告不复用。
 
 ### 3.3 单向数据流
 
@@ -992,21 +992,25 @@ Rust:
 
 ### 13.1 当前
 
+索引为已完成提取的真实 owner 文件，既有 feature 名称/行为保持，旧 execution 目录已删除且无 namespace/class alias。生产回归/边界/editor/独立能力均有本次证据，详见 DESIGN 验证基线；未实测平台不由这些结果替代。
+
 | 主题 | 当前源码 |
 |---|---|
 | Slint app / UI | [`apps/open_quartz_slint/`](../apps/open_quartz_slint/)、[`ui/`](../apps/open_quartz_slint/ui/) |
 | Rust root / project / player | [`lib.rs`](../crates/open_quartz/src/lib.rs)（唯一根 .rs）、[`project/`](../crates/open_quartz/src/project/)、[`player/`](../crates/open_quartz/src/player/) |
-| Native execution / resource services | [`execution/runtime/execution.rs`](../crates/open_quartz/src/execution/runtime/execution.rs)、[`resources/`](../crates/open_quartz/src/resources/) |
-| Runtime/Engine/GPU/WGSL / ONNX | [`execution/`](../crates/open_quartz/src/execution/)、[`inference/`](../crates/open_quartz/src/inference/) |
+| Native coordinator / session / resource services | [`player/native.rs`](../crates/open_quartz/src/player/native.rs)、[`session.rs`](../crates/open_quartz/src/player/session.rs)；[`resources/`](../crates/open_quartz/src/resources/) |
+| Shader / topology / plan; graph evaluation / identity | [`compiler/`](../crates/open_quartz/src/compiler/)；[`evaluation/evaluator.rs`](../crates/open_quartz/src/evaluation/evaluator.rs)、[`instance.rs`](../crates/open_quartz/src/evaluation/instance.rs) |
+| Output contract / registry / backend; GPU / readback / presenter | [`outputs/hub.rs`](../crates/open_quartz/src/outputs/hub.rs)；[`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs) |
+| ONNX sessions / pending / workers / accepted completions | 内部 InferenceTasks：[`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)；[`inference/`](../crates/open_quartz/src/inference/) |
 | Typed resource planning | [`resources/plan.rs`](../crates/open_quartz/src/resources/plan.rs) |
-| Native video / independent media | [`media/native.rs`](../crates/open_quartz/src/media/native.rs)、[`oq-media/`](../crates/oq-media/) |
+| Graph video sources / platform source / independent media | 内部 VideoSources：[`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)；[`media/native.rs`](../crates/open_quartz/src/media/native.rs)；[`oq-media/`](../crates/oq-media/) |
 | Screen saver | [`project/screen_saver.rs`](../crates/open_quartz/src/project/screen_saver.rs)、`crates/open-quartz-screensaver-stub/` |
 | Slint UI app | `apps/open_quartz_slint/` |
 | Slint AppController / Graph projection / Render bridge | `apps/open_quartz_slint/src/app_controller.rs`、`graph_view_model.rs`、`render_bridge.rs` |
 | Shader catalog | [`project/shader_catalog.json`](../crates/open_quartz/src/project/shader_catalog.json) |
 | App resources | `apps/open_quartz_slint/icons/`、`apps/open_quartz_slint/runtime/` |
 | Independent editor | `crates/slint_code_editor/` |
-| Architecture baseline | `docs/DESIGN.md` §7.6 |
+| Architecture baseline | `docs/DESIGN.md` 源码索引 |
 
 ### 13.2 Slint product entrypoints
 
@@ -1017,7 +1021,7 @@ Rust:
 | Graph projection | `apps/open_quartz_slint/src/graph_view_model.rs` |
 | Render bridge | `apps/open_quartz_slint/src/render_bridge.rs` |
 | Core typed API / project / player | [`lib.rs`](../crates/open_quartz/src/lib.rs)、[`project/`](../crates/open_quartz/src/project/)、[`player/`](../crates/open_quartz/src/player/) |
-| Native execution / model resources | [`execution/runtime/execution.rs`](../crates/open_quartz/src/execution/runtime/execution.rs)、[`resources/`](../crates/open_quartz/src/resources/) |
+| Native coordinator / typed model resources | [`player/native.rs`](../crates/open_quartz/src/player/native.rs)、[`session.rs`](../crates/open_quartz/src/player/session.rs)；[`resources/`](../crates/open_quartz/src/resources/)；OutputHub/RenderDevice 详见 DESIGN 源码索引 |
 | Platform adapters / app services | `apps/open_quartz_slint/src/`、`apps/open_quartz_slint/src/services/` |
 | App icons / prepared runtime | `apps/open_quartz_slint/icons/`、`apps/open_quartz_slint/runtime/` |
 | Shader catalog | `crates/open_quartz/src/project/shader_catalog.json` |
@@ -1038,7 +1042,7 @@ Rust:
 
 ### 14.2 本文历史迁移验证状态
 
-下表记录早期 Slint 迁移/spike 的验收，旧名称与路径仅为历史证据，不代表当前实现或本次 native-only 结果；本次已观察结果与剩余门槛见 [DESIGN §7.8](./DESIGN.md#78-验证矩阵与证据状态)。
+下表记录早期 Slint 迁移/spike 的验收，旧名称与路径仅为历史证据，不代表当前实现或本次 native-only 结果；本次已观察结果与剩余门槛见 [DESIGN 验证基线](./DESIGN.md#validation)。
 
 | 项 | 状态 |
 |---|---|

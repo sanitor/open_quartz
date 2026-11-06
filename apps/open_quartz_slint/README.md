@@ -9,27 +9,53 @@ intermittent winit startup abort remains a known risk.
 The application is a standalone Rust workspace, with Slint and its build compiler
 pinned to **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device integration.
 
-The application consumes the single `open_quartz` core through its root typed
-API and explicit advanced host modules. The core's `src/` root contains only
-`lib.rs` for declarations and public exports. Implementation lives in `project`
-(model/catalog/project history/layout/factories), `player`
-(Environment/OpenQuartz/Player/Output/Subscription), `resources` (catalog/plan/models),
-`execution` (engine/runtime/gpu/shader/schedule/event/logging), `inference`, and
-`media`. The former schema/execution/SDK packages and old advanced root aliases
-are removed.
+The application consumes the single `open_quartz` core through root typed APIs
+and explicit advanced modules. `src/lib.rs` remains the only source root file,
+and public `Project`, `Graph`, `Player`, `Resource`, `Output` and other root types
+are preserved. The extraction target assigns shader/topology/plan to `compiler`,
+pure dirty/Math/feedback to `evaluation::GraphEvaluator`, and applied graph
+identity/revision/generation/state to `evaluation::GraphInstance`.
 
-Slint calls `open_quartz::execution::runtime::ExecutionRuntime` and
-`open_quartz::resources::{plan,models}` directly with Rust types. Other host paths
-include `execution::{engine,gpu,shader,schedule,event}`, `project::catalog`,
-`inference`, and `media::native`; see the [current source index](../../docs/DESIGN.md#76-当前源码落点).
-The core defaults to graph/project/WGSL/runtime state with `default = []`.
-Slint explicitly selects `native-runtime` (which enables only `gpu`),
-`native-video`, `native-onnx` and `model-cache`, plus `native-video-d3d12` on Windows.
-`oq-media`, `slint_code_editor`, the screen saver exporter and standalone stub
-remain independent components/products. The execution layout is transitional,
-not an implemented split; see [Design](../../docs/DESIGN.md#75-模块调度与数据所有权)
-for the known `Project::graph_mut` and public `Player` limitations. The Slint
-render worker uses `ExecutionRuntime` directly; this is not a real Player driver.
+Slint's production coordinator is `open_quartz::player::NativePlayer` on the
+existing render worker. PlaybackSession owns only GraphInstance, composition
+clock and OutputHub. `outputs::OutputHub` owns contracts, subscriptions/registry,
+presentation planning, resources/backend/capabilities. `rendering::RenderDevice`
+owns GPU execution/readback/Windows presentation and uses the **same wgpu
+Device/Queue instance** as Slint. The internal `media::sources::VideoSources`
+owns the graph-source map/lifecycle/upload callback; `inference::tasks::InferenceTasks`
+owns sessions, pending tasks, task IDs, channels/workers and accepted completions.
+Project/history/catalog remain in `project`; resource intents and background
+model preparation remain in `resources::{plan,models}`.
+
+The frame contract uploads current media, validates inference completions through
+`session.validate_completion` before changing GPU textures, advances/evaluates,
+and flushes upstream GPU work before ONNX readback/dispatch. NativePlayer selects
+the graph output for RenderDevice to present; OutputHub also supports an independent
+presentation backend path. Scalar advance preflights a candidate graph/clock and
+the whole scalar batch before commit; shared Arc graph/plan data avoids per-frame
+WGSL deep copies. PreparedNativeGraph stages images in fresh textures and owns
+prepared video handles; UI request generation differs from accepted graph revision.
+
+Close invalidates pending tasks and releases session/source descriptors and
+renderer outputs. Active ORT workers keep Arc sessions until completion, and
+InferenceTasks Drop currently joins them; it is not guaranteed nonblocking.
+Live GPU leases remain retained. Failure atomicity and detached-video texture
+cleanup regressions pass after the fix: successful video open precedes staged
+texture removal, detach/obsolete-video removal clears before optional image upload,
+and aborted candidates preserve old source/pixels. Standalone .scr directly drives
+PlaybackSession/evaluation/GpuExecutor in its own loop. See Design [验证基线](../../docs/DESIGN.md#validation) for evidence.
+
+Advanced paths use these modules without old execution/runtime namespaces or
+class aliases; the old directories are removed. Actual state, resources and calls
+have moved to their owners. Confirmed files are in the
+[source index](../../docs/DESIGN.md#source-map).
+The default remains device-free; Slint explicitly selects `native-runtime`
+(enables gpu only), `native-video`, `native-onnx`, `model-cache`, and Windows
+`native-video-d3d12`, retaining the existing feature names and behavior.
+oq-media, the editor, exporter and standalone stub remain
+independent. NativePlayer is the real native production coordinator; the public
+headless `Player` driver is unchanged and `Project::graph_mut` can still bypass
+revision/history. See [Design 模块与所有权](../../docs/DESIGN.md#module-ownership).
 
 ### Does the desktop need FFI?
 
@@ -37,11 +63,21 @@ The pure Rust desktop uses the typed API directly; it needs no SDK C ABI, JNI
 bridge, or desktop language bridge. Native backend FFI remains necessary for
 ONNX Runtime, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM.
 
-Current native-only validation passed 72 Slint tests, 18/18 real-window interactions,
-34/34 catalog Shader cases and macOS arm64 release packaging. Core/workspace/editor
-results, reports, passing native boundaries, failed overall coverage thresholds and unverified platform gates are in
-[Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态). Earlier migration
-and cleanup results below remain historical; the execution ownership plan is not implemented.
+Final evidence is in [Design 验证基线](../../docs/DESIGN.md#validation):
+workspace 234/34 suites, full-native 315/30 suites, Slint 73, editor 10, boundaries,
+ONNX-only 247/30 suites and runtime-only 279/28 suites passed. Real-window UI
+passed [18/18](../../test-results/slint-ui/interaction-2026-11-06T07-04-55-208Z/report.html),
+and catalog Shaders passed [34/34](../../test-results/slint-ui/shaders-2026-11-06T07-05-10-565Z/report.html).
+npm run build passed runtime copy/signing/--help and produced
+dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip.
+
+Both overall 100% coverage gates **failed**, despite default/native coverage tests
+134/201 passing. Lines/functions/regions: default 98.53%/97.88%/98.34%, native
+97.70%/95.96%/96.38%. Thresholds were not relaxed; extracted RenderDevice,
+InferenceTasks and VideoSources remain counted, with only the existing NativePlayer
+facade exclusion retained.
+Camera, Windows/Linux/.scr and mobile remain untested; public headless Player driver
+and graph_mut history limitations remain unchanged. Earlier results below are archival.
 
 ## Run
 
@@ -270,7 +306,7 @@ extraction. Independent Windows execution still requires platform acceptance.
 ### Historical macOS package and dialog acceptance
 
 The following observations apply to the earlier migration build, not the current
-native-only retirement. Current results and remaining gates are in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
+native-only retirement. Current results and remaining gates are in [Design 验证基线](../../docs/DESIGN.md#validation).
 
 The macOS production Controller/NativeHost smoke used the packaged FFmpeg and
 ORT 1.21.0 libraries: advancing 96×48 video, exact 2×2 blue/red PNGs, Renderer
@@ -450,7 +486,7 @@ pointer input through the real Slint event loop. Node selection and editing
 use accessibility actions/values; this is not an OS keyboard/IME test.
 
 Current real-window acceptance passed 18/18; see the [current report](../../test-results/slint-ui/interaction-2026-11-06T04-59-55-340Z/report.html).
-Other results and remaining gates are in [Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态); older local acceptance below remains historical.
+Other results and remaining gates are in [Design 验证基线](../../docs/DESIGN.md#validation); older local acceptance below remains historical.
 
 
 Each run writes a readable **`report.html`**, PNG screenshots, application logs,
@@ -542,7 +578,7 @@ reopen launches the actual application with `--project`.
 The following section preserves results from earlier builds and migration stages.
 Counts, paths, implementation names and acceptance statements are historical, not
 results for the native-only retirement; current results and remaining gates are in
-[Design §7.8](../../docs/DESIGN.md#78-验证矩阵与证据状态).
+[Design 验证基线](../../docs/DESIGN.md#validation).
 
 ### Validation scope and prior acceptance
 
