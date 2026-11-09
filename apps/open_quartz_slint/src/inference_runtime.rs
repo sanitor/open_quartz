@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[path = "onnx_runtime_tests.rs"]
+#[path = "inference_runtime_tests.rs"]
 mod tests;
 
 use std::collections::BTreeMap;
@@ -12,12 +12,12 @@ use std::thread::{self, JoinHandle};
 
 use open_quartz::resources::plan::{
     plan_host_resource_intents, HostGraphSnapshot, HostResourceIntent, HostResourceIntentPlan,
-    HostResourceIntentRequest, OnnxDownloadIntent,
+    HostResourceIntentRequest, InferenceDownloadIntent,
 };
-use open_quartz::inference::{NativeOnnxConfig, PreparedOnnxModel};
+use open_quartz::inference::{ExecutionPolicy, InferenceConfig, PreparedInferenceModel};
 use open_quartz::resources::models::ModelStore;
-use open_quartz::player::NativeOutputEvent;
-use open_quartz::{Graph, NativePlayer, OnnxTask};
+use open_quartz::player::InferenceOutputEvent;
+use open_quartz::{Graph, NativePlayer, InferenceTask};
 
 use crate::render_bridge::Command;
 
@@ -25,20 +25,24 @@ use crate::render_bridge::Command;
 struct ModelSpec {
     key: String,
     model_id: String,
-    task: OnnxTask,
+    task: InferenceTask,
     path: Option<String>,
     target_size: u32,
     score: f64,
     iou: f64,
-    download: Option<OnnxDownloadIntent>,
+    policy: ExecutionPolicy,
+    download: Option<InferenceDownloadIntent>,
 }
 
 #[derive(Clone, Default)]
-pub struct LiveOnnxState {
+pub struct LiveInferenceState {
     pub status: String,
     pub backend: String,
+    pub execution: String,
+    pub artifact: String,
     pub inputs: String,
     pub outputs: String,
+    pub interface: String,
     pub result: String,
     pub loading: bool,
     pub attached: bool,
@@ -55,7 +59,7 @@ pub enum ModelMessage {
     Ready {
         node_id: String,
         ticket: u64,
-        result: Result<PreparedOnnxModel, String>,
+        result: Result<PreparedInferenceModel, String>,
     },
 }
 
@@ -68,15 +72,15 @@ impl ModelMessage {
 }
 
 #[derive(Default)]
-pub struct OnnxRuntime {
+pub struct InferenceRuntime {
     specs: BTreeMap<String, ModelSpec>,
-    pub states: BTreeMap<String, LiveOnnxState>,
+    pub states: BTreeMap<String, LiveInferenceState>,
     requests: BTreeMap<String, (u64, Arc<AtomicBool>)>,
     next_ticket: u64,
     workers: Vec<(String, u64, JoinHandle<()>)>,
 }
 
-impl OnnxRuntime {
+impl InferenceRuntime {
     pub fn clear(&mut self, host: &mut NativePlayer) {
         let ids: std::collections::BTreeSet<_> = self
             .states
@@ -86,7 +90,7 @@ impl OnnxRuntime {
             .collect();
         for id in ids {
             self.cancel(&id);
-            host.unload_onnx(&id);
+            host.unload_inference(&id);
         }
         self.states.clear();
         self.specs.clear();
@@ -106,7 +110,7 @@ impl OnnxRuntime {
             .collect();
         for id in removed {
             self.cancel(&id);
-            host.unload_onnx(&id);
+            host.unload_inference(&id);
             self.states.remove(&id);
         }
         for (id, state) in &mut self.states {
@@ -126,7 +130,7 @@ impl OnnxRuntime {
         sender: mpsc::Sender<Command>,
     ) -> Result<(), String> {
         let Some(spec) = self.specs.get(&node_id).cloned() else {
-            let error = "No model ID is configured for this ONNX node".to_owned();
+            let error = "No model ID is configured for this Inference node".to_owned();
             self.fail(&node_id, error.clone());
             return Err(error);
         };
@@ -138,7 +142,7 @@ impl OnnxRuntime {
             .insert(node_id.clone(), (ticket, cancelled.clone()));
         self.states.insert(
             node_id.clone(),
-            LiveOnnxState {
+            LiveInferenceState {
                 status: "Loading model…".into(),
                 loading: true,
                 ..Default::default()
@@ -150,18 +154,19 @@ impl OnnxRuntime {
             .spawn(move || {
                 let result = (|| {
                     check_cancelled(&cancelled)?;
-                    require_ort_library()?;
-                    let config = NativeOnnxConfig {
+                    let config = InferenceConfig {
                         model_id: spec.model_id.clone(),
                         task: spec.task,
                         target_size: spec.target_size,
                         score_threshold: spec.score as f32,
                         iou_threshold: spec.iou as f32,
+                        policy: spec.policy,
                     };
+                    config.policy.validate().map_err(|error| error.to_string())?;
                     if !path_override.trim().is_empty() {
-                        PreparedOnnxModel::open(&PathBuf::from(path_override.trim()), config, true)
+                        PreparedInferenceModel::open_with_policy(&PathBuf::from(path_override.trim()), config)
                     } else if let Some(path) = &spec.path {
-                        PreparedOnnxModel::open(&PathBuf::from(path), config, true)
+                        PreparedInferenceModel::open_with_policy(&PathBuf::from(path), config)
                     } else {
                         let base = directories::BaseDirs::new()
                             .ok_or("Cannot resolve application data directory")?;
@@ -197,7 +202,7 @@ impl OnnxRuntime {
                             )?;
                         }
                         check_cancelled(&cancelled)?;
-                        store.open_cached(&spec.model_id, config, true)
+                        store.open_cached(&spec.model_id, config)
                     }
                 })();
                 let _ = sender.send(Command::Model(ModelMessage::Ready {
@@ -278,15 +283,30 @@ impl OnnxRuntime {
                 node_id, result, ..
             } => {
                 self.requests.remove(&node_id);
-                match result.and_then(|prepared| prepared.attach(host, node_id.clone())) {
-                    Ok(info) => {
+                let prepared = result.and_then(|prepared| {
+                    let contract = prepared.task_contract()?;
+                    let interface = serde_json::to_string_pretty(&serde_json::json!({
+                        "model": prepared.info(), "taskContract": contract,
+                    })).map_err(|error| format!("Cannot describe model interface: {error}"))?;
+                    prepared.attach(host, node_id.clone()).map(|info| (info, interface))
+                });
+                match prepared {
+                    Ok((info, interface)) => {
                         self.states.insert(
                             node_id,
-                            LiveOnnxState {
+                            LiveInferenceState {
                                 status: "Loaded · waiting for inference output".into(),
                                 backend: info.backend,
-                                inputs: info.input_names.join(", "),
-                                outputs: info.output_names.join(", "),
+                                execution: format!(
+                                    "Configured {:?}; provider placement {:?}; resident buffer transfer path {:?}; per-frame host pixel/tensor bytes: 0",
+                                    info.plan.configured_backend,
+                                    info.plan.provider_placement,
+                                    info.plan.transfer_path,
+                                ),
+                                artifact: format!("{} · {} bytes · SHA-256 {}", info.artifact.format, info.artifact.byte_length, info.artifact.sha256),
+                                inputs: info.inputs.iter().map(|tensor| format!("{} · {:?} · {:?}", tensor.name, tensor.element_type, tensor.dimensions)).collect::<Vec<_>>().join("\n"),
+                                outputs: info.outputs.iter().map(|tensor| format!("{} · {:?} · {:?}", tensor.name, tensor.element_type, tensor.dimensions)).collect::<Vec<_>>().join("\n"),
+                                interface,
                                 attached: true,
                                 ..Default::default()
                             },
@@ -302,17 +322,17 @@ impl OnnxRuntime {
 
     pub fn unload(&mut self, node_id: &str, host: &mut NativePlayer) {
         self.cancel(node_id);
-        host.unload_onnx(node_id);
+        host.unload_inference(node_id);
         self.states.insert(
             node_id.into(),
-            LiveOnnxState {
+            LiveInferenceState {
                 status: "Unloaded · no session attached".into(),
                 ..Default::default()
             },
         );
     }
 
-    pub fn output(&mut self, event: NativeOutputEvent) {
+    pub fn output(&mut self, event: InferenceOutputEvent) {
         let Some(state) = self
             .states
             .get_mut(&event.node_id)
@@ -323,10 +343,7 @@ impl OnnxRuntime {
         state.status = format!("Inference output · {}×{}", event.width, event.height);
         state.failed = false;
         state.backend = event.backend;
-        state.result = event
-            .data
-            .map(|data| serde_json::to_string_pretty(&data).expect("JSON value serializes"))
-            .unwrap_or_else(|| "Texture output · no structured result for this task".into());
+        state.result = "Resident GPU texture output · no host pixels or tensors".into();
     }
 
     pub fn render_failed(&mut self, error: &str) {
@@ -344,7 +361,7 @@ impl OnnxRuntime {
         self.cancel(node_id);
         self.states.insert(
             node_id.into(),
-            LiveOnnxState {
+            LiveInferenceState {
                 status: format!("Model load failed: {error}"),
                 failed: true,
                 ..Default::default()
@@ -359,7 +376,7 @@ impl OnnxRuntime {
     }
 }
 
-impl Drop for OnnxRuntime {
+impl Drop for InferenceRuntime {
     fn drop(&mut self) {
         for (_, cancelled) in self.requests.values() {
             cancelled.store(true, Ordering::Release);
@@ -377,18 +394,6 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
     }
 }
 
-fn require_ort_library() -> Result<(), String> {
-    let path = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from)
-        .ok_or("ONNX Runtime is not configured. Set ORT_DYLIB_PATH to the native runtime library before launching Slint.")?;
-    if !path.is_file() {
-        return Err(format!(
-            "ONNX Runtime library does not exist: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) fn host_resource_plan(graph: &Graph) -> Result<HostResourceIntentPlan, String> {
     let graph: HostGraphSnapshot =
         serde_json::from_value(serde_json::to_value(graph).map_err(|e| e.to_string())?)
@@ -403,7 +408,7 @@ fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
     intents
         .iter()
         .filter_map(|intent| match intent {
-            HostResourceIntent::LoadOnnx {
+            HostResourceIntent::LoadInference {
                 node_id,
                 key,
                 model_id,
@@ -412,6 +417,7 @@ fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
                 target_size,
                 score_threshold,
                 iou_threshold,
+                policy,
                 download,
             } => Some((
                 node_id.clone(),
@@ -423,6 +429,7 @@ fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
                     target_size: *target_size,
                     score: *score_threshold,
                     iou: *iou_threshold,
+                    policy: policy.clone(),
                     download: download.clone(),
                 },
             )),
@@ -433,14 +440,14 @@ fn model_specs(intents: &[HostResourceIntent]) -> BTreeMap<String, ModelSpec> {
 
 #[cfg(test)]
 mod error_tests {
-    use super::{LiveOnnxState, OnnxRuntime};
+    use super::{LiveInferenceState, InferenceRuntime};
     use open_quartz::{SdkError, SdkErrorCode};
 
     #[test]
-    fn render_error_only_marks_the_attributed_onnx_node_failed() {
-        let mut runtime = OnnxRuntime::default();
+    fn render_error_only_marks_the_attributed_inference_node_failed() {
+        let mut runtime = InferenceRuntime::default();
         for id in ["model_a", "model_b"] {
-            runtime.states.insert(id.into(), LiveOnnxState {
+            runtime.states.insert(id.into(), LiveInferenceState {
                 attached: true,
                 ..Default::default()
             });

@@ -49,6 +49,7 @@ fn dxgi_export_opens_resource_and_signals_shared_fence() {
                 width: source.width,
                 height: source.height,
                 format: source.format,
+                lease: source.lease,
             },
         };
         let exported = exporter.export(&frame).expect("DXGI export must succeed");
@@ -101,6 +102,7 @@ fn dxgi_pool_requires_consumer_release_before_reuse() {
             width: source.width,
             height: source.height,
             format: source.format,
+            lease: source.lease,
         };
         let mut exporter = DxgiSharedTextureExporter::new(backend).unwrap();
         let mut leases = Vec::new();

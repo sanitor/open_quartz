@@ -80,3 +80,14 @@ fn segmentation_rejects_invalid_and_boundary_tensors() {
     assert!(letterbox_preprocess(&[0; 4], 1, 1, 0).is_err());
     assert!(rgba_to_chw(&[0; 3], 1, 1).is_err());
 }
+
+#[test]
+fn inference_configuration_defaults_to_resident_policy_with_generic_task_metadata() {
+    use open_quartz::inference::{InferenceConfig, InferenceTask, ExecutionPolicy};
+    let config = InferenceConfig::default();
+    assert_eq!(config.task, InferenceTask::Generic);
+    assert_eq!(config.target_size, 640);
+    assert_eq!(config.score_threshold, 0.25);
+    assert_eq!(config.iou_threshold, 0.45);
+    assert_eq!(config.policy, ExecutionPolicy::resident());
+}

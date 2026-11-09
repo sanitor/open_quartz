@@ -51,9 +51,11 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
             "-f",
             "lavfi",
             "-i",
-            "color=c=blue:s=16x16:r=5",
+            "color=c=blue:s=64x64:r=10",
             "-frames:v",
-            "2",
+            "8",
+            "-c:v",
+            "libx264",
             "-pix_fmt",
             "yuv420p",
             "-y",
@@ -113,7 +115,7 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
             },
         )
         .unwrap();
-    assert_eq!((info.width, info.height), (16, 16));
+    assert_eq!((info.width, info.height), (64, 64));
     host.start_playback().unwrap();
     assert_eq!(host.videos.node_ids(), ["source"]);
     assert!(host.videos.is_active());
@@ -131,8 +133,8 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
     assert!(metrics.decoded_frames > 0);
     assert!(metrics.uploaded_frames > 0);
     let (video_pixels, width, height) = host.render_device.read_output_rgba("source").unwrap();
-    assert_eq!((width, height), (16, 16));
-    assert_eq!(video_pixels.len(), 16 * 16 * 4);
+    assert_eq!((width, height), (64, 64));
+    assert_eq!(video_pixels.len(), 64 * 64 * 4);
     assert!(host.videos.is_active(), "looping decoder must still be active");
 
     let mut input = SessionFrameInput {
@@ -198,7 +200,7 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
     ));
     assert_eq!(
         host.render_device.read_output_rgba("source").unwrap(),
-        (video_pixels.clone(), 16, 16)
+        (video_pixels.clone(), 64, 64)
     );
     assert!(Arc::ptr_eq(
         &unchanged_texture.texture,

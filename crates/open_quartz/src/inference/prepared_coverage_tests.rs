@@ -1,86 +1,56 @@
 use super::*;
-use crate::inference::OnnxTask;
+use crate::inference::{InferenceTask, PlacementPolicy, ResidencyPolicy};
 
-fn config() -> NativeOnnxConfig {
-    NativeOnnxConfig {
-        model_id: "offline-identity".to_owned(),
-        task: OnnxTask::Generic,
-        target_size: 1,
-        score_threshold: 0.25,
-        iou_threshold: 0.45,
-    }
+fn config() -> InferenceConfig {
+    InferenceConfig { model_id: "super-resolution-3x".to_owned(), task: InferenceTask::SuperResolution,
+        target_size: 224, policy: ExecutionPolicy::resident(), ..Default::default() }
 }
-
 #[test]
-fn offline_model_file_preserves_session_and_config_ownership() {
-    const CHILD: &str = "OPEN_QUARTZ_PREPARED_MODEL_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let runtime = std::env::var_os("ORT_DYLIB_PATH")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                let architecture = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
-                let (platform, library) = if cfg!(target_os = "windows") {
-                    ("win32", "onnxruntime.dll")
-                } else if cfg!(target_os = "macos") {
-                    ("darwin", "libonnxruntime.1.21.0.dylib")
-                } else {
-                    ("linux", "libonnxruntime.so.1.21.0")
-                };
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../node_modules/.cache/open-quartz")
-                    .join(format!("desktop-runtime-{platform}-{architecture}"))
-                    .join(library)
-            });
-        assert!(runtime.is_file(), "ORT runtime library does not exist: {}", runtime.display());
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .env(CHILD, "1")
-            .env("ORT_DYLIB_PATH", runtime)
-            .arg("inference::prepared::tests::offline_model_file_preserves_session_and_config_ownership")
-            .arg("--exact")
-            .arg("--nocapture")
-            .status()
-            .unwrap();
-        assert!(status.success(), "offline prepared model child failed: {status}");
-        return;
+fn unsupported_policy_wins_over_missing_model_before_io() {
+    let missing = Path::new("missing-inference-model-for-policy-test.onnx");
+    for policy in [ExecutionPolicy::default(),
+        ExecutionPolicy { residency: ResidencyPolicy::RequireResident, ..ExecutionPolicy::default() },
+        ExecutionPolicy { placement: PlacementPolicy::AcceleratorOnly, ..ExecutionPolicy::default() },
+        ExecutionPolicy { fallback: FallbackPolicy::AllowCpu, ..ExecutionPolicy::resident() }] {
+        let mut config = config(); config.policy = policy;
+        let error = PreparedInferenceModel::open_with_policy(missing, config).err().unwrap();
+        assert!(error.contains("hardware-resident"), "{error}");
+        assert!(!error.contains("Cannot read"), "{error}");
     }
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("identity.onnx");
-    fs::write(&path, include_bytes!("../../tests/data/identity.onnx")).unwrap();
-    let prepared = PreparedOnnxModel::open(&path, config(), false).unwrap();
-    assert_eq!(prepared.info().input_names, ["input"]);
-    assert_eq!(prepared.info().output_names, ["output"]);
-    assert_eq!(prepared.info().backend, "cpu");
-    let info = prepared.info().clone();
-    let (mut session, owned_config) = prepared.into_parts();
-    assert_eq!(session.info(), &info);
-    assert_eq!(owned_config.model_id, "offline-identity");
-    assert_eq!(owned_config.task, OnnxTask::Generic);
-    assert_eq!(owned_config.target_size, 1);
-    assert_eq!(owned_config.score_threshold, 0.25);
-    assert_eq!(owned_config.iou_threshold, 0.45);
-    let output = session.run_f32(vec![42.0], vec![1]).unwrap();
-    assert_eq!(output.data, [42.0]);
-    assert_eq!(output.shape, [1]);
-
-    let preferred = PreparedOnnxModel::open(&path, config(), true).unwrap();
-    assert_eq!(preferred.info().input_names, ["input"]);
-    assert_eq!(preferred.info().output_names, ["output"]);
-    assert_eq!(preferred.info().backend, if cfg!(windows) { "directml+cpu" } else { "cpu" });
-
-    let missing = directory.path().join("missing.onnx");
-    let error = match PreparedOnnxModel::open(&missing, config(), false) {
-        Err(error) => error,
-        Ok(_) => panic!("nonexistent model unexpectedly opened"),
-    };
-    assert!(error.starts_with("Cannot read ONNX model "), "{error}");
-    assert!(error.contains("missing.onnx"), "{error}");
-
-    let invalid = directory.path().join("invalid.onnx");
-    fs::write(&invalid, b"not an ONNX model").unwrap();
-    let error = match PreparedOnnxModel::open(&invalid, config(), false) {
-        Err(error) => error,
-        Ok(_) => panic!("invalid model unexpectedly opened"),
-    };
-    assert!(error.starts_with("Cannot load ONNX model:"), "{error}");
+    let error = PreparedInferenceModel::open(missing, config(), true).err().unwrap();
+    assert!(error.contains("DirectML"), "{error}");
+    assert!(!error.contains("Cannot read"), "{error}");
+}
+#[test]
+fn model_preparation_preserves_source_facts_without_runtime_or_gpu() {
+    let bytes = crate::inference::resident_test_model::sr3_model();
+    let prepared = PreparedInferenceModel::from_memory(&bytes, config()).unwrap();
+    let info = prepared.info();
+    assert_eq!(info.backend, "metal");
+    assert_eq!(info.input_names, ["input"]);
+    assert_eq!(info.output_names, ["output"]);
+    assert_eq!(info.inputs[0].dimensions[0], TensorDimension::Symbol("batch_size".to_owned()));
+    assert_eq!(info.source_interface, Some(oq_inference::inspect_onnx(&bytes).unwrap()));
+    assert_eq!(info.source_interface.as_ref().unwrap().inputs.len(), 9);
+    assert_eq!(info.overridable_initializers.len(), 8);
+    assert_eq!(info.artifact.byte_length, bytes.len() as u64);
+    assert_eq!(info.artifact.sha256.len(), 64);
+    assert_eq!(info.model.producer_name.as_deref(), Some("open-quartz-resident-test"));
+    assert_eq!(info.plan.provider_placement, oq_inference::ProviderPlacement::Gpu);
+    assert_eq!(info.plan.transfer_path, oq_inference::TransferPath::Device);
+    assert_eq!(prepared.task_contract().unwrap().adapter, crate::inference::ImageTaskAdapter::LuminanceSuperResolution3x);
+    let (model, owned_config) = prepared.into_parts();
+    assert_eq!(model.plan.source_byte_length, bytes.len() as u64);
+    assert_eq!(owned_config.policy, ExecutionPolicy::resident());
+}
+#[test]
+fn unsupported_tasks_and_invalid_graphs_never_become_reference_fallbacks() {
+    let missing = Path::new("missing.onnx");
+    let mut unsupported = config(); unsupported.task = InferenceTask::Detection;
+    let error = PreparedInferenceModel::open_with_policy(missing, unsupported).err().unwrap();
+    assert!(error.contains("capability"), "{error}");
+    let mut unsupported = config(); unsupported.model_id = "realesrgan-x4".to_owned();
+    assert!(PreparedInferenceModel::open_with_policy(missing, unsupported).err().unwrap().contains("capability"));
+    assert!(PreparedInferenceModel::from_memory(b"not ONNX", config()).is_err());
+    assert!(PreparedInferenceModel::from_memory(include_bytes!("../../tests/data/image_identity.onnx"), config()).is_err());
 }

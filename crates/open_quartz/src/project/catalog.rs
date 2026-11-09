@@ -1,15 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{DataType, OnnxTask, Port, PortDirection};
+use super::{DataType, InferenceTask, Port, PortDirection};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogSnapshot {
     pub math_categories: Vec<MathCategory>,
     pub math_ops: Vec<MathDescriptor>,
-    pub onnx_categories: Vec<String>,
-    pub onnx_models: Vec<OnnxModelDescriptor>,
+    #[serde(alias = "onnxCategories")]
+    pub inference_categories: Vec<String>,
+    #[serde(alias = "onnxModels")]
+    pub inference_models: Vec<InferenceModelDescriptor>,
     pub shader_groups: Vec<ShaderGroupDescriptor>,
 }
 
@@ -47,23 +49,23 @@ pub struct ParamDescriptor {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OnnxIoDescriptor {
+pub struct InferenceIoDescriptor {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OnnxModelDescriptor {
+pub struct InferenceModelDescriptor {
     pub id: String,
     pub label: String,
-    pub task: OnnxTask,
+    pub task: InferenceTask,
     pub category: String,
     pub download_url: String,
     pub file_size: u64,
     pub sha256: String,
     #[serde(rename = "expectedIO")]
-    pub expected_io: OnnxIoDescriptor,
+    pub expected_io: InferenceIoDescriptor,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_params: Option<std::collections::BTreeMap<String, ParamDescriptor>>,
 }
@@ -92,18 +94,18 @@ pub struct ShaderPortDescriptor {
 }
 
 pub fn catalog_snapshot() -> CatalogSnapshot {
-    let onnx_models = onnx_models();
-    let mut onnx_categories = onnx_models
+    let inference_models = inference_models();
+    let mut inference_categories = inference_models
         .iter()
         .map(|entry| entry.category.clone())
         .collect::<Vec<_>>();
-    onnx_categories.sort();
-    onnx_categories.dedup();
+    inference_categories.sort();
+    inference_categories.dedup();
     CatalogSnapshot {
         math_categories: math_categories(),
         math_ops: math_ops(),
-        onnx_categories,
-        onnx_models,
+        inference_categories,
+        inference_models,
         shader_groups: shader_groups(),
     }
 }
@@ -253,12 +255,12 @@ pub fn evaluate_math(operation: &str, input: &[f64]) -> f64 {
     }
 }
 
-pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
+pub fn inference_models() -> Vec<InferenceModelDescriptor> {
     vec![
-        onnx_model::<2>(
+        inference_model::<2>(
             "yolov8n",
             "YOLOv8n Detector",
-            OnnxTask::Detection,
+            InferenceTask::Detection,
             "Detection",
             "https://raw.githubusercontent.com/caozisheng/rimeflow-yolov8n/main/models/yolov8n.onnx",
             12_851_098,
@@ -273,22 +275,22 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
                 ("iouThreshold", float_param(0.45, 0.0, 1.0, 0.05, "IoU Threshold")),
             ]),
         ),
-        onnx_model::<0>(
+        inference_model::<0>(
             "super-resolution-3x",
             "Super Resolution 3×",
-            OnnxTask::SuperResolution,
+            InferenceTask::SuperResolution,
             "Super-Resolution",
             "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx",
             240_078,
-            "",
+            "85f36ff88cc504a24af5e0602148bc56a8aa09a58eca8c0da2756f3e8186035e",
             vec![port("onnx_in_image", "image", DataType::Sampler2d, PortDirection::Input)],
             vec![port("onnx_out_upscaled", "upscaled", DataType::Sampler2d, PortDirection::Output)],
             None,
         ),
-        onnx_model::<0>(
+        inference_model::<0>(
             "realesrgan-x4",
             "Real-ESRGAN 4×",
-            OnnxTask::SuperResolution,
+            InferenceTask::SuperResolution,
             "Super-Resolution",
             "https://huggingface.co/Samo629/real-esrgan-onnx/resolve/main/realesr-general-x4v3.onnx",
             4_866_421,
@@ -297,10 +299,10 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
             vec![port("onnx_out_upscaled", "upscaled", DataType::Sampler2d, PortDirection::Output)],
             None,
         ),
-        onnx_model::<0>(
+        inference_model::<0>(
             "u2netp",
             "U²Net-P (Background)",
-            OnnxTask::BackgroundRemoval,
+            InferenceTask::BackgroundRemoval,
             "Background Removal",
             "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
             4_574_861,
@@ -309,10 +311,10 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
             vec![port("onnx_out_foreground", "foreground", DataType::Sampler2d, PortDirection::Output)],
             None,
         ),
-        onnx_model::<0>(
+        inference_model::<0>(
             "modnet",
             "MODNet (Portrait)",
-            OnnxTask::BackgroundRemoval,
+            InferenceTask::BackgroundRemoval,
             "Background Removal",
             "https://huggingface.co/onnx-community/modnet-webnn/resolve/main/onnx/model.onnx",
             25_888_640,
@@ -321,10 +323,10 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
             vec![port("onnx_out_foreground", "foreground", DataType::Sampler2d, PortDirection::Output)],
             None,
         ),
-        onnx_model::<0>(
+        inference_model::<0>(
             "midas-small",
             "MiDaS v2.1 Small (Depth)",
-            OnnxTask::DepthEstimation,
+            InferenceTask::DepthEstimation,
             "Depth Estimation",
             "https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx",
             66_389_153,
@@ -333,10 +335,10 @@ pub fn onnx_models() -> Vec<OnnxModelDescriptor> {
             vec![port("onnx_out_depth", "depth", DataType::Sampler2d, PortDirection::Output)],
             None,
         ),
-        onnx_model::<2>(
+        inference_model::<2>(
             "yolo26n-sem",
             "YOLO26n Semantic Seg",
-            OnnxTask::Segmentation,
+            InferenceTask::Segmentation,
             "Segmentation",
             "https://github.com/caozisheng/rimeflow-yolo26n-sem/raw/refs/heads/master/models/yolo26n-sem.onnx",
             6_284_385,
@@ -649,10 +651,10 @@ fn float_param(default: f64, min: f64, max: f64, step: f64, label: &str) -> Para
     }
 }
 
-fn onnx_model<const N: usize>(
+fn inference_model<const N: usize>(
     id: &str,
     label: &str,
-    task: OnnxTask,
+    task: InferenceTask,
     category: &str,
     download_url: &str,
     file_size: u64,
@@ -660,8 +662,8 @@ fn onnx_model<const N: usize>(
     inputs: Vec<Port>,
     outputs: Vec<Port>,
     default_params: Option<[(&str, ParamDescriptor); N]>,
-) -> OnnxModelDescriptor {
-    OnnxModelDescriptor {
+) -> InferenceModelDescriptor {
+    InferenceModelDescriptor {
         id: id.to_owned(),
         label: label.to_owned(),
         task,
@@ -669,7 +671,7 @@ fn onnx_model<const N: usize>(
         download_url: download_url.to_owned(),
         file_size,
         sha256: sha256.to_owned(),
-        expected_io: OnnxIoDescriptor { inputs, outputs },
+        expected_io: InferenceIoDescriptor { inputs, outputs },
         default_params: default_params.map(|params| {
             params
                 .into_iter()

@@ -87,6 +87,54 @@ fn rust_factory_creates_typed_nodes_and_owns_ids() {
 }
 
 #[test]
+fn inference_factory_uses_canonical_names_and_new_id_prefix() {
+    let mut project = empty_project();
+    let (node, _) = project
+        .create_graph_node(
+            NodeFactoryRequest::Inference {
+                position: None,
+                label: "Detector".to_owned(),
+                template_name: Some("YOLOv8n".to_owned()),
+                model_id: Some("yolov8n".to_owned()),
+                catalog_id: Some("yolov8n".to_owned()),
+                inputs: vec![port("onnx_in_image", DataType::Sampler2d, PortDirection::Input)],
+                outputs: vec![port("onnx_out_overlay", DataType::Sampler2d, PortDirection::Output)],
+            },
+            project.graph_revision(),
+        )
+        .unwrap();
+
+    assert_eq!(node.id, "inference_1");
+    assert_eq!(node.node_type, NodeType::Inference);
+    assert_eq!(node.data.node_type, NodeType::Inference);
+    assert_eq!(node.data.inference_model_id.as_deref(), Some("yolov8n"));
+    assert_eq!(node.data.inference_catalog_id.as_deref(), Some("yolov8n"));
+    assert_eq!(node.data.inputs[0].id, "inference_1_onnx_in_image");
+    assert_eq!(node.data.outputs[0].id, "inference_1_onnx_out_overlay");
+    let wire = serde_json::to_value(node).unwrap();
+    assert_eq!(wire["type"], "inference");
+    assert_eq!(wire["data"]["type"], "inference");
+    assert_eq!(wire["data"]["inferenceModelId"], "yolov8n");
+    assert!(wire["data"].get("onnxModelId").is_none());
+
+    assert_eq!(serde_json::from_value::<NodeFactoryRequest>(serde_json::json!({
+        "kind": "onnx", "label": "Legacy", "inputs": [], "outputs": []
+    })).unwrap(), NodeFactoryRequest::Inference {
+        position: None,
+        label: "Legacy".to_owned(),
+        template_name: None,
+        model_id: None,
+        catalog_id: None,
+        inputs: vec![],
+        outputs: vec![],
+    });
+    assert_eq!(serde_json::from_value::<NodeFactoryRequest>(serde_json::json!({
+        "kind": "customOnnx"
+    })).unwrap(), NodeFactoryRequest::CustomInference { position: None });
+    assert_eq!(serde_json::to_value(NodeFactoryRequest::CustomInference { position: None }).unwrap()["kind"], "customInference");
+}
+
+#[test]
 fn typed_commands_connect_disconnect_and_remove_cascade() {
     let mut graph = Graph {
         nodes: vec![

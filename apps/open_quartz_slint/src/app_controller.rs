@@ -10,6 +10,9 @@ use open_quartz::{
     DataType, Environment, FramebufferFormat, GraphCommand, InputMode, NodeFactoryRequest, NodeId,
     NodeType, OpenQuartz, PortId, PortKey, Position, Project, SdkError,
 };
+use open_quartz::inference::{
+    BackendPreference, ExecutionPolicy, FallbackPolicy, PlacementPolicy, ResidencyPolicy,
+};
 use slint::{ComponentHandle, Model};
 
 use crate::graph_clipboard::GraphClipboard;
@@ -107,14 +110,14 @@ impl InspectorChange {
 struct NodeFactoryOption {
     label: String,
     request: NodeFactoryRequest,
-    onnx_params: Option<BTreeMap<String, open_quartz::OnnxParamValue>>,
+    inference_params: Option<BTreeMap<String, open_quartz::InferenceParamValue>>,
 }
 
 fn node_factory_options() -> Vec<NodeFactoryOption> {
     let mut options = vec![NodeFactoryOption {
         label: "Constant · Vector/color".into(),
         request: NodeFactoryRequest::Constant { position: None },
-        onnx_params: None,
+        inference_params: None,
     }];
     for (label, data_type) in [
         ("Float", DataType::Float),
@@ -141,7 +144,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                 data_type,
                 input_mode: None,
             },
-            onnx_params: None,
+            inference_params: None,
         });
     }
     options.extend(crate::shader_catalog::presets().iter().map(|preset| NodeFactoryOption {
@@ -153,7 +156,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
             template_name: Some(preset.template_name.to_owned()),
             shader_template_id: preset.shader_template_id.map(str::to_owned),
         },
-        onnx_params: None,
+        inference_params: None,
     }));
     for (label, input_mode) in [
         ("Image", open_quartz::InputMode::Image),
@@ -167,7 +170,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                 data_type: DataType::Sampler2d,
                 input_mode: Some(input_mode),
             },
-            onnx_params: None,
+            inference_params: None,
         });
     }
     for source in [
@@ -183,7 +186,7 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                 position: None,
                 source,
             },
-            onnx_params: None,
+            inference_params: None,
         });
     }
     options.extend(
@@ -195,16 +198,16 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                     position: None,
                     op: operation.id,
                 },
-                onnx_params: None,
+                inference_params: None,
             }),
     );
     options.push(NodeFactoryOption {
         label: "Renderer".into(),
         request: NodeFactoryRequest::Renderer { position: None },
-        onnx_params: None,
+        inference_params: None,
     });
     options.extend(
-        open_quartz::project::catalog::onnx_models()
+        open_quartz::project::catalog::inference_models()
             .into_iter()
             .map(|model| {
                 let params = model.default_params.as_ref().map(|defaults| {
@@ -218,8 +221,8 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                         .collect::<BTreeMap<_, _>>()
                 });
                 NodeFactoryOption {
-                    label: format!("ONNX · {}", model.label),
-                    request: NodeFactoryRequest::Onnx {
+                    label: format!("Inference · {}", model.label),
+                    request: NodeFactoryRequest::Inference {
                         position: None,
                         label: model.label.clone(),
                         template_name: Some(model.label),
@@ -228,16 +231,56 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
                         inputs: model.expected_io.inputs,
                         outputs: model.expected_io.outputs,
                     },
-                    onnx_params: params,
+                    inference_params: params,
                 }
             }),
     );
     options.push(NodeFactoryOption {
-        label: "ONNX · Custom model".into(),
-        request: NodeFactoryRequest::CustomOnnx { position: None },
-        onnx_params: None,
+        label: "Inference · Custom Model".into(),
+        request: NodeFactoryRequest::CustomInference { position: None },
+        inference_params: None,
     });
     options
+}
+
+const INFERENCE_TASK_CHOICES: [(open_quartz::InferenceTask, &str); 8] = [
+    (open_quartz::InferenceTask::Generic, "Generic"),
+    (open_quartz::InferenceTask::SuperResolution, "Super Resolution"),
+    (open_quartz::InferenceTask::BackgroundRemoval, "Background Removal"),
+    (open_quartz::InferenceTask::Detection, "Detection"),
+    (open_quartz::InferenceTask::Segmentation, "Segmentation"),
+    (open_quartz::InferenceTask::StyleTransfer, "Style Transfer"),
+    (open_quartz::InferenceTask::Denoising, "Denoising"),
+    (open_quartz::InferenceTask::DepthEstimation, "Depth Estimation"),
+];
+
+fn inference_menu_entry(request: &NodeFactoryRequest) -> Option<(String, String)> {
+    use open_quartz::InferenceTask;
+
+    match request {
+        NodeFactoryRequest::Inference { catalog_id, label, .. } => {
+            let task = open_quartz::project::catalog::inference_models()
+                .into_iter()
+                .find(|model| Some(&model.id) == catalog_id.as_ref())
+                .map(|model| model.task)
+                .unwrap_or(InferenceTask::Generic);
+            let category = match task {
+                InferenceTask::SuperResolution => "SUPER RESOLUTION",
+                InferenceTask::BackgroundRemoval => "BACKGROUND REMOVAL",
+                InferenceTask::Detection => "DETECTION",
+                InferenceTask::Segmentation => "SEGMENTATION",
+                InferenceTask::StyleTransfer => "STYLE TRANSFER",
+                InferenceTask::Denoising => "DENOISING",
+                InferenceTask::DepthEstimation => "DEPTH ESTIMATION",
+                InferenceTask::Generic => "GENERIC",
+            };
+            Some((category.to_owned(), label.clone()))
+        }
+        NodeFactoryRequest::CustomInference { .. } => {
+            Some(("GENERIC".to_owned(), "Custom Model".to_owned()))
+        }
+        _ => None,
+    }
 }
 
 
@@ -255,7 +298,7 @@ pub struct AppController {
     window: slint::Weak<AppWindow>,
     project: Arc<Project>,
     renderer: Option<RenderBridge>,
-    onnx_states: BTreeMap<String, crate::onnx_runtime::LiveOnnxState>,
+    inference_states: BTreeMap<String, crate::inference_runtime::LiveInferenceState>,
     selected_node_ids: BTreeSet<String>,
     inspector_draft: Option<InspectorDraft>,
     inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
@@ -263,7 +306,8 @@ pub struct AppController {
     graph_nodes: Rc<slint::VecModel<crate::GraphNode>>,
     graph_edges: Rc<slint::VecModel<crate::GraphEdge>>,
     node_previews: BTreeMap<String, slint::Image>,
-    renderer_texture: Option<wgpu::Texture>,
+    node_preview_handles: BTreeMap<String, open_quartz::rendering::GpuOutputHandle>,
+    renderer_texture: Option<open_quartz::rendering::GpuOutputHandle>,
     node_errors: BTreeMap<String, String>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
@@ -342,7 +386,7 @@ impl AppController {
             window: window.as_weak(),
             project: Arc::new(project),
             renderer,
-            onnx_states: BTreeMap::new(),
+            inference_states: BTreeMap::new(),
             selected_node_ids: BTreeSet::new(),
             inspector_draft: None,
             inspector_uniforms: Rc::new(slint::VecModel::from(
@@ -352,6 +396,7 @@ impl AppController {
             graph_nodes: Rc::new(slint::VecModel::default()),
             graph_edges: Rc::new(slint::VecModel::default()),
             node_previews: BTreeMap::new(),
+            node_preview_handles: BTreeMap::new(),
             renderer_texture: None,
             node_errors: BTreeMap::new(),
             image_assets: BTreeMap::new(),
@@ -391,7 +436,6 @@ impl AppController {
         window.set_io_status("Ready".into());
         let node_factories = node_factory_options();
         let math_catalog = open_quartz::project::catalog::math_ops();
-        let onnx_catalog = open_quartz::project::catalog::onnx_models();
         let mut menu_groups = Vec::<crate::FactoryGroup>::new();
         for (index, option) in node_factories.iter().enumerate() {
             let (section, category, label) = match &option.request {
@@ -457,25 +501,10 @@ impl AppController {
                 NodeFactoryRequest::Shader { label, .. } => {
                     ("SHADER", crate::shader_catalog::find(label).expect("shader factory preset").category.to_owned(), label.clone())
                 }
-                NodeFactoryRequest::Onnx { catalog_id, .. } => {
-                    let category = onnx_catalog
-                        .iter()
-                        .find(|model| Some(&model.id) == catalog_id.as_ref())
-                        .map(|model| model.category.as_str())
-                        .unwrap_or_default();
-                    (
-                        "ONNX",
-                        category.to_uppercase(),
-                        option
-                            .label
-                            .split(" · ")
-                            .last()
-                            .unwrap_or(&option.label)
-                            .to_owned(),
-                    )
-                }
-                NodeFactoryRequest::CustomOnnx { .. } => {
-                    ("ONNX", "CUSTOM".to_owned(), "Custom model".to_owned())
+                NodeFactoryRequest::Inference { .. } | NodeFactoryRequest::CustomInference { .. } => {
+                    let (category, label) = inference_menu_entry(&option.request)
+                        .expect("inference factory has a task group");
+                    ("INFERENCE", category, label)
                 }
             };
             let group_index = menu_groups
@@ -828,11 +857,23 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
-        window.on_inspector_load_onnx(move |path| {
+        window.on_inspector_load_inference(move |path| {
             if let Some(controller) = weak.upgrade() {
                 controller
                     .borrow_mut()
-                    .change_onnx_session(Some(path.to_string()));
+                    .change_inference_session(Some(path.to_string()));
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_inference_backend_changed(move |index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().change_inference_policy(index);
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        window.on_inspector_inference_task_changed(move |index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().change_inference_task(index);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -898,9 +939,9 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
-        window.on_inspector_unload_onnx(move || {
+        window.on_inspector_unload_inference(move || {
             if let Some(controller) = weak.upgrade() {
-                controller.borrow_mut().change_onnx_session(None);
+                controller.borrow_mut().change_inference_session(None);
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -1738,6 +1779,13 @@ impl AppController {
 
     fn publish_project(&mut self) {
         self.node_previews.clear();
+        // Replace GUI images before releasing their pooled GPU output leases.
+        self.publish_node_previews();
+        self.node_preview_handles.clear();
+        if let Some(window) = self.window.upgrade() {
+            window.set_renderer_image(slint::Image::default());
+            window.set_has_renderer_image(false);
+        }
         self.renderer_texture = None;
         self.node_errors.clear();
         if self.graph_stress_count.is_none() {
@@ -1749,10 +1797,9 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        window.set_renderer_image(slint::Image::default());
-        window.set_has_renderer_image(false);
         window.set_playback_time("00:00:00.0".into());
         window.set_render_fps("0.0".into());
+        window.set_inspector_inference_metrics_summary("All inference nodes · no execution recorded".into());
         if let Some(requested_count) = self.graph_stress_count {
             window.set_runtime_status(
                 format!("Graph stress mode · projection only · requested {requested_count} nodes")
@@ -1811,8 +1858,8 @@ impl AppController {
                 Err(error) => window.set_runtime_status(error.into()),
             }
         }
-        self.onnx_states.clear();
-        self.publish_onnx_runtime();
+        self.inference_states.clear();
+        self.publish_inference_runtime();
     }
 
     fn publish_graph_projection(&mut self) -> Option<ProjectionStats> {
@@ -1835,7 +1882,7 @@ impl AppController {
                         let size = image.size();
                         node.resolution = format!("{}×{}", size.width, size.height).into();
                     }
-                    if let Some(state) = self.onnx_states.get(node.node_id.as_str()) {
+                    if let Some(state) = self.inference_states.get(node.node_id.as_str()) {
                         node.status = if state.failed { "error" } else if state.attached { "ready" } else { "not-ready" }.into();
                     }
                     if self.node_errors.contains_key(node.node_id.as_str()) {
@@ -2007,10 +2054,15 @@ impl AppController {
             self.inspector_draft = None;
             window.set_inspector_has_selection(false);
             window.set_inspector_node_id("".into());
-            window.set_inspector_onnx_config(slint::ModelRc::default());
-            window.set_inspector_onnx_saved(slint::ModelRc::default());
-            window.set_inspector_onnx_live(slint::ModelRc::default());
-            window.set_inspector_onnx_path("".into());
+            window.set_inspector_inference_config(slint::ModelRc::default());
+            window.set_inspector_inference_saved(slint::ModelRc::default());
+            window.set_inspector_inference_live(slint::ModelRc::default());
+            window.set_inspector_inference_path("".into());
+            window.set_inspector_inference_policy_valid(false);
+            window.set_inspector_inference_policy_summary("".into());
+            window.set_inspector_inference_backend_index(-1);
+            window.set_inspector_inference_custom(false);
+            window.set_inspector_inference_task_index(-1);
             window.set_inspector_image_input(false);
             window.set_inspector_image_name("".into());
             window.set_inspector_image_size("".into());
@@ -2037,7 +2089,7 @@ impl AppController {
             != Some(node.id.as_str())
         {
             self.inspector_draft = Some(InspectorDraft::from_node(node));
-            window.set_inspector_onnx_path("".into());
+            window.set_inspector_inference_path("".into());
         }
         let draft = self
             .inspector_draft
@@ -2114,9 +2166,21 @@ impl AppController {
         window.set_inspector_output_width(draft.output_width);
         window.set_inspector_output_height(draft.output_height);
         window.set_inspector_validation_message(draft.validation_message.as_str().into());
-        let (configuration, saved) = crate::inspector_onnx::inspect(node, self.project.graph());
-        window.set_inspector_onnx_config(slint::ModelRc::new(slint::VecModel::from(configuration)));
-        window.set_inspector_onnx_saved(slint::ModelRc::new(slint::VecModel::from(saved)));
+        let (configuration, saved) = crate::inspector_inference::inspect(node, self.project.graph());
+        window.set_inspector_inference_config(slint::ModelRc::new(slint::VecModel::from(configuration)));
+        window.set_inspector_inference_saved(slint::ModelRc::new(slint::VecModel::from(saved)));
+        self.publish_inference_policy(&node.data);
+        window.set_inspector_inference_custom(
+            node.node_type == NodeType::Inference
+                && node.data.inference_source == Some(open_quartz::InferenceSource::Custom),
+        );
+        window.set_inspector_inference_task_options(slint::ModelRc::new(slint::VecModel::from(
+            INFERENCE_TASK_CHOICES.iter().map(|(_, label)| slint::SharedString::from(*label)).collect::<Vec<_>>(),
+        )));
+        window.set_inspector_inference_task_index(
+            INFERENCE_TASK_CHOICES.iter().position(|(task, _)| Some(*task) == node.data.inference_task)
+                .map(|index| index as i32).unwrap_or(-1),
+        );
         window.set_inspector_ports(slint::ModelRc::new(slint::VecModel::from(
             node.data
                 .inputs
@@ -2133,30 +2197,30 @@ impl AppController {
         self.publish_uniforms();
         self.publish_forms();
         self.publish_inspector_dirty();
-        self.publish_onnx_runtime();
+        self.publish_inference_runtime();
         self.publish_video_devices();
     }
 
-    fn publish_onnx_runtime(&self) {
+    fn publish_inference_runtime(&self) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
         for index in 0..self.graph_nodes.row_count() {
             if let Some(mut node) = self.graph_nodes.row_data(index) {
-                if let Some(state) = self.onnx_states.get(node.node_id.as_str()) {
+                if let Some(state) = self.inference_states.get(node.node_id.as_str()) {
                     node.status = if state.failed || self.node_errors.contains_key(node.node_id.as_str()) { "error" } else if state.attached { "ready" } else { "not-ready" }.into();
                     self.graph_nodes.set_row_data(index, node);
                 }
             }
         }
         let id = window.get_inspector_node_id();
-        let state = self.onnx_states.get(id.as_str());
-        window.set_inspector_onnx_available(
+        let state = self.inference_states.get(id.as_str());
+        window.set_inspector_inference_available(
             self.renderer.is_some() && self.graph_stress_count.is_none(),
         );
-        window.set_inspector_onnx_loading(state.is_some_and(|state| state.loading));
-        window.set_inspector_onnx_attached(state.is_some_and(|state| state.attached));
-        window.set_inspector_onnx_status(
+        window.set_inspector_inference_loading(state.is_some_and(|state| state.loading));
+        window.set_inspector_inference_attached(state.is_some_and(|state| state.attached));
+        window.set_inspector_inference_status(
             state
                 .map(|state| state.status.as_str())
                 .unwrap_or(if self.renderer.is_some() {
@@ -2170,28 +2234,31 @@ impl AppController {
             .map(|state| {
                 [
                     ("Live backend", &state.backend),
+                    ("Execution", &state.execution),
+                    ("Model artifact", &state.artifact),
                     ("Session inputs", &state.inputs),
                     ("Session outputs", &state.outputs),
+                    ("Complete model interface (JSON)", &state.interface),
                     ("Latest inference result", &state.result),
                 ]
                 .into_iter()
                 .filter(|(_, value)| !value.is_empty())
-                .map(|(label, value)| crate::InspectorOnnxRow {
+                .map(|(label, value)| crate::InspectorInferenceRow {
                     label: label.into(),
                     value: value.as_str().into(),
                 })
                 .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        window.set_inspector_onnx_live(slint::ModelRc::new(slint::VecModel::from(rows)));
+        window.set_inspector_inference_live(slint::ModelRc::new(slint::VecModel::from(rows)));
     }
 
-    fn change_onnx_session(&mut self, path: Option<String>) {
+    fn change_inference_session(&mut self, path: Option<String>) {
         if self.edits_blocked() || self.selected_node_ids.len() != 1 {
             return;
         }
         let Some(node) = self.project.graph().nodes().iter().find(|node| {
-            node.node_type == NodeType::Onnx && self.selected_node_ids.contains(&node.id)
+            node.node_type == NodeType::Inference && self.selected_node_ids.contains(&node.id)
         }) else {
             return;
         };
@@ -2200,11 +2267,111 @@ impl AppController {
             return;
         };
         let result = match path {
-            Some(path) => renderer.load_onnx(id, path),
-            None => renderer.unload_onnx(id),
+            Some(path) => renderer.load_inference(id, path),
+            None => renderer.unload_inference(id),
         };
         if let Err(error) = result {
             self.set_edit_status(&error);
+        }
+    }
+
+    fn publish_inference_policy(&self, data: &open_quartz::NodeData) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let options = vec!["Metal GPU", "Auto Hardware"];
+        window.set_inspector_inference_backend_options(slint::ModelRc::new(
+            slint::VecModel::from(options.into_iter().map(slint::SharedString::from).collect::<Vec<_>>()),
+        ));
+        match inference_policy(data) {
+            Ok(policy) => {
+                let (index, backend) = match policy.backend {
+                    BackendPreference::MetalGpu => (0, "Metal GPU"),
+                    BackendPreference::Auto => (1, "Auto Hardware"),
+                    BackendPreference::OrtCpu => (-1, "Rejected legacy CPU backend"),
+                    BackendPreference::OrtDirectMl => (-1, "Rejected legacy DirectML EP backend"),
+                    BackendPreference::OrtCoreMl => (-1, "Rejected legacy Core ML EP backend"),
+                };
+                let fallback = if policy.fallback == FallbackPolicy::AllowCpu { "Rejected legacy CPU fallback" } else { "Forbidden" };
+                let residency = match policy.residency {
+                    ResidencyPolicy::CpuTransfersAllowed => "CPU transfers allowed",
+                    ResidencyPolicy::RequireResident => "Resident execution required",
+                };
+                let placement = match policy.placement {
+                    PlacementPolicy::Any => "Any",
+                    PlacementPolicy::HardwareAccelerated => "Hardware acceleration required",
+                    PlacementPolicy::AcceleratorOnly => "Accelerator only",
+                };
+                let (valid, validation) = inference_policy_validation(&policy);
+                window.set_inspector_inference_backend_index(if valid { index } else { -1 });
+                window.set_inspector_inference_policy_summary(format!(
+                    "Requested: {backend} · fallback: {fallback}\nResidency: {residency} · placement: {placement}{validation}",
+                ).into());
+                window.set_inspector_inference_policy_valid(valid);
+            }
+            Err(error) => {
+                window.set_inspector_inference_backend_index(-1);
+                window.set_inspector_inference_policy_summary(format!("{error}\nSelect Metal GPU or Auto Hardware to explicitly replace the saved policy with resident GPU execution.").into());
+                window.set_inspector_inference_policy_valid(false);
+            }
+        }
+    }
+
+    fn change_inference_policy(&mut self, backend: i32) {
+        if self.edits_blocked() || self.selected_node_ids.len() != 1 {
+            return;
+        }
+        let Some(node) = self.project.graph().nodes().iter().find(|node| {
+            node.node_type == NodeType::Inference && self.selected_node_ids.contains(&node.id)
+        }) else {
+            return;
+        };
+        if self.inference_states.get(&node.id).is_some_and(|state| state.loading) {
+            return;
+        }
+        let id = node.id.clone();
+        let data = match inference_policy_edit(&node.data, backend) {
+            Ok(data) => data,
+            Err(error) => {
+                self.set_edit_status(&error);
+                self.publish_inspector();
+                return;
+            }
+        };
+        if data == node.data {
+            return;
+        }
+        if self.apply_resource_data(&id, data) {
+            self.publish_project();
+            self.set_edit_status("Execution policy saved. Load the model to apply it.");
+        }
+    }
+
+    fn change_inference_task(&mut self, index: i32) {
+        if self.edits_blocked() || self.selected_node_ids.len() != 1 {
+            return;
+        }
+        let Some((task, _)) = usize::try_from(index).ok()
+            .and_then(|index| INFERENCE_TASK_CHOICES.get(index)) else {
+            return;
+        };
+        let Some(node) = self.project.graph().nodes().iter().find(|node| {
+            node.node_type == NodeType::Inference
+                && node.data.inference_source == Some(open_quartz::InferenceSource::Custom)
+                && self.selected_node_ids.contains(&node.id)
+        }) else {
+            return;
+        };
+        if node.data.inference_task == Some(*task)
+            || self.inference_states.get(&node.id).is_some_and(|state| state.loading) {
+            return;
+        }
+        let id = node.id.clone();
+        let mut data = node.data.clone();
+        data.inference_task = Some(*task);
+        if self.apply_resource_data(&id, data) {
+            self.publish_project();
+            self.set_edit_status("Model task saved. Load the model to apply it.");
         }
     }
 
@@ -2633,16 +2800,16 @@ impl AppController {
                 return;
             }
         };
-        if let Some(params) = option.onnx_params.filter(|params| !params.is_empty()) {
+        if let Some(params) = option.inference_params.filter(|params| !params.is_empty()) {
             let mut data = node.data.clone();
-            data.onnx_params = Some(params.clone());
-            data.onnx_score_threshold =
+            data.inference_params = Some(params.clone());
+            data.inference_score_threshold =
                 params.get("scoreThreshold").and_then(|value| match value {
-                    open_quartz::OnnxParamValue::Number(value) => Some(*value),
+                    open_quartz::InferenceParamValue::Number(value) => Some(*value),
                     _ => None,
                 });
-            data.onnx_iou_threshold = params.get("iouThreshold").and_then(|value| match value {
-                open_quartz::OnnxParamValue::Number(value) => Some(*value),
+            data.inference_iou_threshold = params.get("iouThreshold").and_then(|value| match value {
+                open_quartz::InferenceParamValue::Number(value) => Some(*value),
                 _ => None,
             });
             if let Err(error) = candidate.apply_graph_command(
@@ -2970,7 +3137,7 @@ impl AppController {
                     window.set_busy(false);
                     self.project = Arc::new(project);
                     self.selected_renderer_id = None;
-                    self.onnx_states.clear();
+                    self.inference_states.clear();
                     self.image_assets.clear();
                     self.framebuffer_assets.clear();
                     self.pending_resources.clear();
@@ -3051,26 +3218,47 @@ impl AppController {
                     self.node_errors.insert(node_id, error.message);
                 }
             }
-            if let Some(states) = update.onnx {
-                self.onnx_states = states;
-                self.publish_onnx_runtime();
+            if let Some(states) = update.inference {
+                self.inference_states = states;
+                self.publish_inference_runtime();
+            }
+            if let Some(metrics) = update.inference_metrics {
+                let latency = if metrics.accepted == 0 {
+                    "last GPU submission wall time: not recorded".to_owned()
+                } else {
+                    format!("last GPU submission wall time: {:.2} ms (not GPU execution timing)", metrics.last_inference_ns as f64 / 1_000_000.0)
+                };
+                let gpu_timing = metrics.gpu_time_ns.map(|ns| format!("{:.2} ms", ns as f64 / 1_000_000.0))
+                    .unwrap_or_else(|| "not measured".into());
+                window.set_inspector_inference_metrics_summary(format!(
+                    "All inference nodes · submitted {} · completed {} · accepted {} · failed {} · rejected {} · stale {} · cancelled {} · in flight {} · queue depth {} · device submissions {} · compute dispatches {}\nPer-frame host bytes: readback {} · upload {} · tensor input {} · tensor output {}\n{latency} · GPU execution: {gpu_timing}",
+                    metrics.submitted, metrics.completed, metrics.accepted, metrics.failed,
+                    metrics.rejected, metrics.stale, metrics.cancelled, metrics.in_flight,
+                    metrics.queue_depth, metrics.device_submissions, metrics.compute_dispatches,
+                    metrics.readback_bytes, metrics.upload_bytes, metrics.input_cpu_bytes, metrics.output_cpu_bytes,
+                ).into());
             }
             if let Some(status) = update.status {
                 window.set_runtime_status(status.into());
             }
             if let Some(previews) = update.previews {
+                // Keep every old owner until all corresponding GUI images have
+                // been replaced or cleared below. This is bounded to one update.
+                let previous_handles = std::mem::take(&mut self.node_preview_handles);
                 self.node_previews.retain(|id, _| previews.contains_key(id));
                 if !previews.is_empty() {
                     // Pixels can change in-place without changing the image identity.
                     window.window().request_redraw();
                 }
-                for (id, texture) in previews {
-                    if self.node_previews.get(&id).and_then(slint::Image::to_wgpu_30_texture).as_ref() == Some(&texture) {
+                for (id, handle) in previews {
+                    if self.node_previews.get(&id).and_then(slint::Image::to_wgpu_30_texture).as_ref() == Some(handle.texture.as_ref()) {
+                        self.node_preview_handles.insert(id, handle);
                         continue;
                     }
-                    match slint::Image::try_from(texture) {
+                    match slint::Image::try_from((*handle.texture).clone()) {
                         Ok(image) => {
-                            self.node_previews.insert(id, image);
+                            self.node_previews.insert(id.clone(), image);
+                            self.node_preview_handles.insert(id, handle);
                         }
                         Err(error) => {
                             self.node_previews.remove(&id);
@@ -3079,26 +3267,29 @@ impl AppController {
                     }
                 }
                 self.publish_node_previews();
+                drop(previous_handles);
             }
             if update.clear_image {
-                self.renderer_texture = None;
                 window.set_renderer_image(slint::Image::default());
                 window.set_has_renderer_image(false);
+                self.renderer_texture = None;
             }
-            if let Some(texture) = update.texture {
+            if let Some(handle) = update.texture {
                 window.window().request_redraw();
-                if self.renderer_texture.as_ref() == Some(&texture) {
+                if self.renderer_texture.as_ref().is_some_and(|current| current.texture == handle.texture) {
+                    self.renderer_texture = Some(handle);
                     return;
                 }
-                match slint::Image::try_from(texture.clone()) {
+                match slint::Image::try_from((*handle.texture).clone()) {
                     Ok(image) => {
-                        self.renderer_texture = Some(texture);
                         window.set_renderer_image(image);
                         window.set_has_renderer_image(true);
+                        self.renderer_texture = Some(handle);
                     }
                     Err(error) => {
                         window.set_renderer_image(slint::Image::default());
                         window.set_has_renderer_image(false);
+                        self.renderer_texture = None;
                         window.set_runtime_status(format!("Native renderer stopped: shared GPU texture import failed: {error:?}").into());
                         if let Some(renderer) = &mut self.renderer {
                             renderer.pause_after_import_error();
@@ -3243,9 +3434,47 @@ fn commit_inspector(
             }
         }
     };
+
     project
         .apply_graph_command(command, project.graph_revision())
         .map(|_| true)
+}
+
+fn inference_policy(data: &open_quartz::NodeData) -> Result<ExecutionPolicy, String> {
+    let serialized = serde_json::to_value(data)
+        .map_err(|error| format!("Invalid saved inference policy: {error}"))?;
+    open_quartz::resources::effective_inference_policy(&serialized)
+}
+
+fn inference_policy_validation(policy: &ExecutionPolicy) -> (bool, String) {
+    if !matches!(policy.backend, BackendPreference::MetalGpu | BackendPreference::Auto)
+        || policy.fallback != FallbackPolicy::Forbid
+        || policy.residency != ResidencyPolicy::RequireResident
+        || policy.placement != PlacementPolicy::AcceleratorOnly
+    {
+        return (false, "\nSaved host policy is not supported in production. Select Metal GPU or Auto Hardware to explicitly require resident GPU buffers, accelerator-only placement, and no CPU fallback.".into());
+    }
+    match policy.validate() {
+        Ok(()) => (true, String::new()),
+        Err(error) => (false, format!("\n{error}")),
+    }
+}
+
+fn inference_policy_edit(
+    data: &open_quartz::NodeData,
+    backend: i32,
+) -> Result<open_quartz::NodeData, String> {
+    // An explicit backend choice replaces rejected or malformed legacy metadata;
+    // inspecting/loading a saved policy never silently weakens or repairs it.
+    let mut policy = ExecutionPolicy::resident();
+    policy.backend = match backend {
+        0 => BackendPreference::MetalGpu,
+        1 => BackendPreference::Auto,
+        _ => return Err("Unsupported inference backend choice".to_owned()),
+    };
+    let mut updated = data.clone();
+    updated.inference_policy = Some(policy);
+    Ok(updated)
 }
 
 fn uniform_shape(data_type: DataType) -> Option<usize> {
@@ -3884,6 +4113,8 @@ mod tests {
     use super::{
         commit_connection, commit_inspector, commit_node_position, graph_stress_project,
         node_factory_options, sample_project, GraphViewModel, InspectorChange, InspectorDraft,
+        inference_menu_entry, inference_policy, inference_policy_edit, BackendPreference,
+        ExecutionPolicy, FallbackPolicy,
     };
 
     #[test]
@@ -3899,8 +4130,8 @@ mod tests {
         for operation in open_quartz::project::catalog::math_ops() {
             assert!(labels.contains(format!("Math · {}", operation.label).as_str()));
         }
-        for model in open_quartz::project::catalog::onnx_models() {
-            assert!(labels.contains(format!("ONNX · {}", model.label).as_str()));
+        for model in open_quartz::project::catalog::inference_models() {
+            assert!(labels.contains(format!("Inference · {}", model.label).as_str()));
         }
         for source in ["Time", "TimeDelta", "Frame", "Mouse", "Resolution"] {
             assert!(labels.contains(format!("System · {source}").as_str()));
@@ -3909,7 +4140,7 @@ mod tests {
             assert!(labels.contains(format!("Input · {source}").as_str()));
         }
         assert!(labels.contains("Renderer"));
-        assert!(labels.contains("ONNX · Custom model"));
+        assert!(labels.contains("Inference · Custom Model"));
     }
 
     #[test]
@@ -3947,36 +4178,167 @@ mod tests {
     }
 
     #[test]
-    fn catalog_onnx_defaults_are_applied_with_the_single_node_history_entry() {
+    fn inference_menu_groups_keep_catalog_models_and_custom_model() {
+        let options = node_factory_options();
+        for model in open_quartz::project::catalog::inference_models() {
+            let option = options.iter().find(|option| {
+                matches!(&option.request, NodeFactoryRequest::Inference { catalog_id: Some(id), .. } if id == &model.id)
+            }).unwrap();
+            assert_eq!(inference_menu_entry(&option.request).unwrap().1, model.label);
+            let expected_group = match model.task {
+                open_quartz::InferenceTask::Detection => "DETECTION",
+                open_quartz::InferenceTask::SuperResolution => "SUPER RESOLUTION",
+                open_quartz::InferenceTask::BackgroundRemoval => "BACKGROUND REMOVAL",
+                open_quartz::InferenceTask::Segmentation => "SEGMENTATION",
+                open_quartz::InferenceTask::StyleTransfer => "STYLE TRANSFER",
+                open_quartz::InferenceTask::Denoising => "DENOISING",
+                open_quartz::InferenceTask::DepthEstimation => "DEPTH ESTIMATION",
+                open_quartz::InferenceTask::Generic => "GENERIC",
+            };
+            assert_eq!(inference_menu_entry(&option.request).unwrap().0, expected_group);
+        }
+        let custom = options.iter().find(|option| matches!(option.request, NodeFactoryRequest::CustomInference { .. })).unwrap();
+        assert_eq!(inference_menu_entry(&custom.request).unwrap(), ("GENERIC".to_owned(), "Custom Model".to_owned()));
+    }
+
+    #[test]
+    fn inference_policy_and_custom_task_controls_are_saved_and_undoable() {
+        let mut controller = controller_for_uniforms(uniform_project(&[]));
+        controller.inspector_draft = None;
+        controller.add_node(node_factory_options().into_iter()
+            .find(|option| matches!(option.request, NodeFactoryRequest::CustomInference { .. }))
+            .unwrap());
+        let id = controller.selected_node_ids.iter().next().unwrap().clone();
+        let initial = controller.project.graph_snapshot();
+        let node = initial.nodes.iter().find(|node| node.id == id).unwrap();
+        assert_eq!(inference_policy(&node.data).unwrap(), ExecutionPolicy::resident());
+        controller.change_inference_policy(1);
+        controller.change_inference_task(1);
+        let configured = controller.project.graph_snapshot();
+        let node = configured.nodes.iter().find(|node| node.id == id).unwrap();
+        let policy = node.data.inference_policy.unwrap();
+        assert_eq!(policy.backend, BackendPreference::Auto);
+        assert_eq!(policy.fallback, FallbackPolicy::Forbid);
+        assert_eq!(node.data.inference_task, Some(open_quartz::InferenceTask::SuperResolution));
+        assert_eq!(node.data.inputs, initial.nodes.iter().find(|node| node.id == id).unwrap().data.inputs);
+        assert_eq!(node.data.outputs, initial.nodes.iter().find(|node| node.id == id).unwrap().data.outputs);
+        for _ in 0..2 { controller.restore_edit(false); }
+        assert_eq!(controller.project.graph_snapshot(), initial);
+        for _ in 0..2 { controller.restore_edit(true); }
+        assert_eq!(controller.project.graph_snapshot(), configured);
+        let saved = serde_json::to_value(controller.project.to_file()).unwrap();
+        let saved_node = saved["graph"]["nodes"].as_array().unwrap().iter()
+            .find(|node| node["id"] == id).unwrap();
+        assert_eq!(saved_node["type"], "inference");
+        assert_eq!(saved_node["data"]["inferenceTask"], "super-resolution");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["backend"], "auto");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["fallback"], "forbid");
+    }
+
+    #[test]
+    fn legacy_inference_preference_is_preserved_until_explicit_backend_edit() {
+        let mut data = open_quartz::NodeData::default();
+        data.extra.insert("onnxPreferDirectMl".into(), serde_json::json!(true));
+        assert_eq!(inference_policy(&data).unwrap().backend, BackendPreference::OrtDirectMl);
+        assert!(!super::inference_policy_validation(&inference_policy(&data).unwrap()).0);
+        let updated = inference_policy_edit(&data, 0).unwrap();
+        assert_eq!(updated.inference_policy.unwrap(), ExecutionPolicy::resident());
+        assert_eq!(data.extra["onnxPreferDirectMl"], serde_json::json!(true));
+        assert!(inference_policy_edit(&data, 2).is_err());
+        data.extra.insert("onnxPreferDirectMl".into(), serde_json::json!("invalid"));
+        assert!(inference_policy(&data).is_err());
+        let repaired = inference_policy_edit(&data, 0).unwrap();
+        assert_eq!(inference_policy(&repaired).unwrap(), ExecutionPolicy::resident());
+        assert_eq!(repaired.inputs, data.inputs);
+        assert_eq!(repaired.outputs, data.outputs);
+    }
+
+    #[test]
+    fn inspector_inference_policy_rejects_host_policies_without_rewriting_them() {
+        use open_quartz::inference::{PlacementPolicy, ResidencyPolicy};
+        let resident = ExecutionPolicy::resident();
+        assert_eq!(super::inference_policy_validation(&resident), (true, String::new()));
+        for rejected in [
+            ExecutionPolicy::default(),
+            ExecutionPolicy { fallback: FallbackPolicy::AllowCpu, ..resident },
+            ExecutionPolicy { residency: ResidencyPolicy::CpuTransfersAllowed, ..resident },
+            ExecutionPolicy { placement: PlacementPolicy::Any, ..resident },
+        ] {
+            let original = rejected;
+            let (valid, error) = super::inference_policy_validation(&rejected);
+            assert!(!valid);
+            assert!(error.contains("Select Metal GPU or Auto Hardware"), "{error}");
+            assert_eq!(rejected, original);
+        }
+    }
+
+    #[test]
+    fn inference_policy_edits_preserve_strict_saved_requirements() {
+        use open_quartz::inference::{PlacementPolicy, ResidencyPolicy};
+        let mut project = uniform_project(&[]);
+        let (node, _) = project.create_graph_node(
+            NodeFactoryRequest::CustomInference { position: None },
+            project.graph_revision(),
+        ).unwrap();
+        let mut data = node.data.clone();
+        let mut strict = ExecutionPolicy::default();
+        strict.residency = ResidencyPolicy::RequireResident;
+        strict.placement = PlacementPolicy::AcceleratorOnly;
+        strict.fallback = FallbackPolicy::Forbid;
+        data.inference_policy = Some(strict);
+        let updated = inference_policy_edit(&data, 1).unwrap();
+        let persisted = serde_json::to_value(&updated).unwrap();
+        assert_eq!(persisted["inferencePolicy"]["backend"], "auto");
+        assert_eq!(persisted["inferencePolicy"]["fallback"], "forbid");
+        assert_eq!(persisted["inferencePolicy"]["residency"], "require-resident");
+        assert_eq!(persisted["inferencePolicy"]["placement"], "accelerator-only");
+        let restored: open_quartz::NodeData = serde_json::from_value(persisted).unwrap();
+        assert_eq!(restored.inference_policy.unwrap(), ExecutionPolicy {
+            backend: BackendPreference::Auto,
+            fallback: FallbackPolicy::Forbid,
+            residency: ResidencyPolicy::RequireResident,
+            placement: PlacementPolicy::AcceleratorOnly,
+        });
+        assert!(inference_policy(&restored).unwrap().validate().is_ok());
+        project.apply_graph_command(
+            GraphCommand::UpdateNodeData {
+                node_id: NodeId::new(&node.id),
+                data: restored,
+            },
+            project.graph_revision(),
+        ).unwrap();
+        let applied = project.graph().nodes().iter().find(|current| current.id == node.id).unwrap();
+        let mut draft = InspectorDraft::from_node(applied);
+        draft.label = "Custom Model with saved policy".to_owned();
+        assert!(commit_inspector(&mut project, &draft, InspectorChange::Label).unwrap());
+        assert!(commit_node_position(&mut project, &node.id, 123.0, 456.0).unwrap());
+        let saved = serde_json::to_value(project.to_file()).unwrap();
+        let saved_node = saved["graph"]["nodes"].as_array().unwrap().iter()
+            .find(|saved_node| saved_node["id"] == node.id).unwrap();
+        assert_eq!(saved_node["type"], "inference");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["backend"], "auto");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["fallback"], "forbid");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["residency"], "require-resident");
+        assert_eq!(saved_node["data"]["inferencePolicy"]["placement"], "accelerator-only");
+        assert_eq!(saved_node["data"]["label"], draft.label);
+    }
+
+    #[test]
+    fn catalog_inference_defaults_are_applied_with_the_single_node_history_entry() {
         let mut controller = controller_for_uniforms(uniform_project(&[]));
         controller.inspector_draft = None;
         let revision = controller.project.graph_revision();
-        let option = node_factory_options()
-            .into_iter()
-            .find(|option| option.label == "ONNX · YOLOv8n Detector")
-            .unwrap();
-
+        let option = node_factory_options().into_iter()
+            .find(|option| option.label == "Inference · YOLOv8n Detector").unwrap();
         controller.add_node(option);
-
         assert_eq!(controller.project.graph_revision(), revision + 1);
         assert_eq!(controller.undo_edits.len(), 1);
-        let node = controller
-            .project
-            .graph()
-            .nodes()
-            .iter()
-            .find(|node| node.node_type == NodeType::Onnx)
-            .unwrap();
-        assert_eq!(node.data.onnx_score_threshold, Some(0.25));
-        assert_eq!(node.data.onnx_iou_threshold, Some(0.45));
-        assert_eq!(
-            node.data.onnx_params.as_ref().unwrap()["scoreThreshold"],
-            open_quartz::OnnxParamValue::Number(0.25)
-        );
-        assert_eq!(
-            node.data.onnx_params.as_ref().unwrap()["iouThreshold"],
-            open_quartz::OnnxParamValue::Number(0.45)
-        );
+        let node = controller.project.graph().nodes().iter()
+            .find(|node| node.node_type == NodeType::Inference).unwrap();
+        assert_eq!(node.data.inference_score_threshold, Some(0.25));
+        assert_eq!(node.data.inference_iou_threshold, Some(0.45));
+        assert_eq!(node.data.inference_params.as_ref().unwrap()["scoreThreshold"], open_quartz::InferenceParamValue::Number(0.25));
+        assert_eq!(node.data.inference_params.as_ref().unwrap()["iouThreshold"], open_quartz::InferenceParamValue::Number(0.45));
     }
 
     #[test]
@@ -4247,7 +4609,7 @@ mod tests {
             window: slint::Weak::default(),
             project: std::sync::Arc::new(project),
             renderer: None,
-            onnx_states: std::collections::BTreeMap::new(),
+            inference_states: std::collections::BTreeMap::new(),
             selected_node_ids: [node_id].into_iter().collect(),
             inspector_draft: Some(draft),
             inspector_uniforms: std::rc::Rc::new(slint::VecModel::from(Vec::<
@@ -4257,6 +4619,7 @@ mod tests {
             graph_nodes: std::rc::Rc::new(slint::VecModel::default()),
             graph_edges: std::rc::Rc::new(slint::VecModel::default()),
             node_previews: std::collections::BTreeMap::new(),
+            node_preview_handles: std::collections::BTreeMap::new(),
             renderer_texture: None,
             node_errors: std::collections::BTreeMap::new(),
             image_assets: std::collections::BTreeMap::new(),

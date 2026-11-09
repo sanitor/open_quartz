@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-#[cfg(feature = "native-onnx")]
-use crate::inference::PreparedOnnxModel;
-#[cfg(feature = "native-onnx")]
-use crate::inference::NativeOnnxConfig;
+#[cfg(feature = "native-runtime")]
+use crate::inference::PreparedInferenceModel;
+#[cfg(feature = "native-runtime")]
+use crate::inference::InferenceConfig;
 use sha2::{Digest, Sha256};
 
 /// Disk/HTTP policy shared by native shells. Call from a blocking resource worker.
@@ -59,18 +59,18 @@ impl ModelStore {
             .map_err(|e| format!("Cannot open model cache lock: {e}"))
     }
 
-    #[cfg(feature = "native-onnx")]
+    #[cfg(feature = "native-runtime")]
     /// Open a cached model under the same lock held by downloads and Tauri readers.
     pub fn open_cached(
         &self,
         model_id: &str,
-        config: NativeOnnxConfig,
-        prefer_direct_ml: bool,
-    ) -> Result<PreparedOnnxModel, String> {
+        config: InferenceConfig,
+    ) -> Result<PreparedInferenceModel, String> {
+        crate::inference::prepared::validate_resident_config(&config)?;
         let lock = self.lock_model(model_id)?;
         lock.lock_shared()
             .map_err(|e| format!("Cannot acquire shared model cache lock: {e}"))?;
-        PreparedOnnxModel::open(&self.path(model_id)?, config, prefer_direct_ml)
+        PreparedInferenceModel::open_with_policy(&self.path(model_id)?, config)
     }
 
     /// an empty digest means integrity is not verified, not that a hash matched.

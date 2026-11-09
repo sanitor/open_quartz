@@ -1,12 +1,12 @@
-use open_quartz::{Graph, NodeType, OnnxSource, ProjectNode};
+use open_quartz::{Graph, InferenceSource, InferenceTask, NodeType, ProjectNode};
 use serde_json::Value;
 
-/// Recorded project metadata only; live ONNX sessions are projected separately.
+/// Recorded project metadata only; live inference sessions are projected separately.
 pub(crate) fn inspect(
     node: &ProjectNode,
     graph: &Graph,
-) -> (Vec<crate::InspectorOnnxRow>, Vec<crate::InspectorOnnxRow>) {
-    if node.node_type != NodeType::Onnx {
+) -> (Vec<crate::InspectorInferenceRow>, Vec<crate::InspectorInferenceRow>) {
+    if node.node_type != NodeType::Inference {
         return (Vec::new(), Vec::new());
     }
     let data = &node.data;
@@ -21,25 +21,38 @@ pub(crate) fn inspect(
         })
         .count();
     let mut configuration = vec![
+        row("Model", &data.label),
+        row("Resident capability", "Metal GPU · super-resolution-3x / Super Resolution only (Conv, ReLU, PixelShuffle). Other models and tasks fail preparation; no host execution fallback."),
+        row("Task", match data.inference_task {
+            Some(InferenceTask::SuperResolution) => "Super resolution",
+            Some(InferenceTask::BackgroundRemoval) => "Background removal",
+            Some(InferenceTask::Detection) => "Object detection",
+            Some(InferenceTask::Segmentation) => "Segmentation",
+            Some(InferenceTask::StyleTransfer) => "Style transfer",
+            Some(InferenceTask::Denoising) => "Denoising",
+            Some(InferenceTask::DepthEstimation) => "Depth estimation",
+            Some(InferenceTask::Generic) => "Generic",
+            None => "Not recorded · metadata does not select a task",
+        }),
         row(
             "Source",
-            match data.onnx_source {
-                Some(OnnxSource::Catalog) => "Catalog",
-                Some(OnnxSource::Custom) => "Custom",
+            match data.inference_source {
+                Some(InferenceSource::Catalog) => "Catalog",
+                Some(InferenceSource::Custom) => "Custom",
                 None => "Not recorded",
             },
         ),
         row(
             "Model ID",
-            data.onnx_model_id.as_deref().unwrap_or("Not recorded"),
+            data.inference_model_id.as_deref().unwrap_or("Not recorded"),
         ),
         row(
             "Catalog ID",
-            data.onnx_catalog_id.as_deref().unwrap_or("Not recorded"),
+            data.inference_catalog_id.as_deref().unwrap_or("Not recorded"),
         ),
         row(
             "Custom path (not checked)",
-            data.onnx_custom_path.as_deref().unwrap_or("Not recorded"),
+            data.inference_model_path.as_deref().unwrap_or("Not recorded"),
         ),
         row(
             "Input connections",
@@ -49,46 +62,46 @@ pub(crate) fn inspect(
     for (label, value) in [
         (
             "Saved score threshold",
-            data.onnx_score_threshold.map(|v| v.to_string()),
+            data.inference_score_threshold.map(|v| v.to_string()),
         ),
         (
             "Saved IoU threshold",
-            data.onnx_iou_threshold.map(|v| v.to_string()),
+            data.inference_iou_threshold.map(|v| v.to_string()),
         ),
         (
             "Saved target size",
-            data.onnx_target_size.map(|v| v.to_string()),
+            data.inference_target_size.map(|v| v.to_string()),
         ),
     ] {
         configuration.push(row(label, value.as_deref().unwrap_or("Not recorded")));
     }
-    if let Some(params) = &data.onnx_params {
+    if let Some(params) = &data.inference_params {
         for (name, value) in params {
             let value =
-                serde_json::to_string(value).expect("ONNX parameter is a finite number or boolean");
+                serde_json::to_string(value).expect("Inference parameter is a finite number or boolean");
             configuration.push(row(&format!("Saved parameter · {name}"), &value));
         }
     }
     let mut saved = Vec::new();
-    for (key, label) in [
-        ("onnxCustomFileName", "Saved file name"),
-        ("onnxStatus", "Saved status"),
-        ("onnxBackend", "Saved backend"),
-        ("onnxNativeBackend", "Saved native backend"),
-        ("onnxError", "Saved error"),
+    for (key, legacy_key, label) in [
+        ("inferenceCustomFileName", "onnxCustomFileName", "Saved file name"),
+        ("inferenceStatus", "onnxStatus", "Saved status"),
+        ("inferenceBackend", "onnxBackend", "Saved backend"),
+        ("inferenceNativeBackend", "onnxNativeBackend", "Saved native backend"),
+        ("inferenceError", "onnxError", "Saved error"),
     ] {
-        if let Some(value) = data.extra.get(key) {
+        if let Some(value) = data.extra.get(key).or_else(|| data.extra.get(legacy_key)) {
             saved.push(row(label, &saved_value(value)));
         }
     }
-    if let Some(value) = data.extra.get("onnxProgress") {
+    if let Some(value) = data.extra.get("inferenceProgress").or_else(|| data.extra.get("onnxProgress")) {
         saved.push(row("Saved download progress", &saved_progress(value)));
     }
     (configuration, saved)
 }
 
-fn row(label: &str, value: &str) -> crate::InspectorOnnxRow {
-    crate::InspectorOnnxRow {
+fn row(label: &str, value: &str) -> crate::InspectorInferenceRow {
+    crate::InspectorInferenceRow {
         label: label.into(),
         value: value.into(),
     }

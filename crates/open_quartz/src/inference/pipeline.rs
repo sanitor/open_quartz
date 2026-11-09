@@ -4,23 +4,106 @@ use serde_json::{json, Value};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
     apply_alpha_mask, detect_postprocess, letterbox_preprocess, midas_preprocess,
-    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, OnnxSession, OnnxTask, TensorRunner,
+    rgb_output_to_rgba, rgba_to_chw, segment_postprocess, InferenceSession, InferenceTask, TensorOutput, RequestStamp,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
-pub struct NativeOnnxImageOutput {
+pub struct InferenceImageOutput {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub data: Option<Value>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+pub(crate) trait TensorRunner {
+    fn validate_image(&self) -> Result<(), String> { Ok(()) }
+    fn run_f32(&mut self, input: Vec<f32>, shape: Vec<i64>) -> Result<TensorOutput, String>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InferenceImageMetrics {
+    pub preprocess_ns: u64,
+    pub runtime_ns: u64,
+    pub postprocess_ns: u64,
+    pub input_cpu_bytes: u64,
+    pub output_cpu_bytes: u64,
+}
+
+pub fn validate_image_session(session: &InferenceSession) -> Result<(), String> {
+    session.validate_single_image().map_err(|error| error.to_string())?;
+    session.validate_image_shape().map_err(|error| error.to_string())
+}
+
+
+use super::contract::*;
+pub fn validate_image_task_session(
+    session: &InferenceSession,
+    config: &super::InferenceConfig,
+) -> Result<ImageTaskContract, String> {
+    // Task validation checks the one input and explicitly selected output, not
+    // the generic single-output image convenience API's cardinality gate.
+    image_task_contract(config, session.info())
+}
+
+struct StampedImageRunner<'a> {
+    session: &'a mut InferenceSession,
+    contract: ImageTaskContract,
+    stamp: RequestStamp,
+    metrics: InferenceImageMetrics,
+    stage_started: std::time::Instant,
+}
+
+fn duration_ns(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
+}
+
+impl TensorRunner for StampedImageRunner<'_> {
+    fn validate_image(&self) -> Result<(), String> {
+        validate_declared_shape(&self.contract.input, &self.contract.input_shape, &self.contract.input.dimensions)?;
+        validate_declared_shape(&self.contract.output, &self.contract.output_shape, &self.contract.input.dimensions)
+    }
+
+    fn run_f32(&mut self, input: Vec<f32>, shape: Vec<i64>) -> Result<TensorOutput, String> {
+        self.contract.validate_input(&shape, input.len())?;
+        let input_shape: [i64; 4] = shape.as_slice().try_into()
+            .map_err(|_| "image task input requires rank 4".to_owned())?;
+        self.metrics.preprocess_ns = self.metrics.preprocess_ns.saturating_add(duration_ns(self.stage_started.elapsed()));
+        let result = self.session.invoke(self.stamp,
+            vec![super::NamedTensor { name: self.contract.input.name.clone(), data: input, shape }],
+            std::slice::from_ref(&self.contract.output.name))
+            .map_err(|error| error.to_string())?;
+        self.stage_started = std::time::Instant::now();
+        if result.stamp != self.stamp {
+            return Err("image invocation returned a different request stamp".to_owned());
+        }
+        self.metrics.runtime_ns = self.metrics.runtime_ns.saturating_add(duration_ns(result.metrics.runtime_duration));
+        self.metrics.input_cpu_bytes = self.metrics.input_cpu_bytes.saturating_add(result.metrics.input_cpu_bytes);
+        self.metrics.output_cpu_bytes = self.metrics.output_cpu_bytes.saturating_add(result.metrics.output_cpu_bytes);
+        let output = single_image_output(result.outputs, &self.contract.output.name)?;
+        self.contract.validate_output(&output, &input_shape)?;
+        Ok(output)
+    }
+}
+
+fn single_image_output(mut outputs: Vec<super::NamedTensor>, expected_name: &str) -> Result<TensorOutput, String> {
+    if outputs.len() != 1 {
+        return Err(format!("image invocation requires exactly one output, received {}", outputs.len()));
+    }
+    let output = outputs.pop().expect("one output was checked");
+    if output.name != expected_name {
+        return Err(format!("image invocation expected output {expected_name:?}, received {:?}", output.name));
+    }
+    Ok(TensorOutput { data: output.data, shape: output.shape })
+}
+
+/// Run an image task with the caller's independent request identity. The backend
+/// must return the same request and session generation and exactly one named output.
 #[allow(clippy::too_many_arguments)]
-pub fn run_native_image_task(
-    session: &mut OnnxSession,
-    task: OnnxTask,
+pub fn run_image_task_with_request(
+    session: &mut InferenceSession,
+    stamp: RequestStamp,
+    task: InferenceTask,
     model_id: &str,
     source_rgba: &[u8],
     source_width: u32,
@@ -28,18 +111,72 @@ pub fn run_native_image_task(
     target_size: u32,
     score_threshold: f32,
     iou_threshold: f32,
-) -> Result<NativeOnnxImageOutput, String> {
-    run_native_image_task_with_runner(
-        session, task, model_id, source_rgba, source_width, source_height,
+) -> Result<InferenceImageOutput, String> {
+    run_image_task_with_request_and_metrics(session, stamp, task, model_id, source_rgba,
+        source_width, source_height, target_size, score_threshold, iou_threshold)
+        .map(|(image, _)| image)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_image_task_with_request_and_metrics(
+    session: &mut InferenceSession,
+    stamp: RequestStamp,
+    task: InferenceTask,
+    model_id: &str,
+    source_rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_size: u32,
+    score_threshold: f32,
+    iou_threshold: f32,
+) -> Result<(InferenceImageOutput, InferenceImageMetrics), String> {
+    let config = super::InferenceConfig {
+        model_id: model_id.to_owned(), task, target_size, score_threshold, iou_threshold,
+        policy: session.plan().requested_policy,
+    };
+    let contract = validate_image_task_session(session, &config)?;
+    if stamp.session_generation != session.generation() {
+        return Err("image request belongs to a different session generation".to_owned());
+    }
+    let mut runner = StampedImageRunner {
+        session, contract, stamp, metrics: InferenceImageMetrics::default(),
+        stage_started: std::time::Instant::now(),
+    };
+    let image = run_image_task_with_runner(&mut runner, task, model_id, source_rgba,
+        source_width, source_height, target_size, score_threshold, iou_threshold)?;
+    runner.metrics.postprocess_ns = duration_ns(runner.stage_started.elapsed());
+    Ok((image, runner.metrics))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+pub fn run_image_task(
+    session: &mut InferenceSession,
+    task: InferenceTask,
+    model_id: &str,
+    source_rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_size: u32,
+    score_threshold: f32,
+    iou_threshold: f32,
+) -> Result<InferenceImageOutput, String> {
+    static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let stamp = RequestStamp {
+        request_id: NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        session_generation: session.generation(),
+    };
+    run_image_task_with_request(
+        session, stamp, task, model_id, source_rgba, source_width, source_height,
         target_size, score_threshold, iou_threshold,
     )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
-fn run_native_image_task_with_runner(
+fn run_image_task_with_runner(
     session: &mut impl TensorRunner,
-    task: OnnxTask,
+    task: InferenceTask,
     model_id: &str,
     source_rgba: &[u8],
     source_width: u32,
@@ -47,16 +184,17 @@ fn run_native_image_task_with_runner(
     target_size: u32,
     score_threshold: f32,
     iou_threshold: f32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
+    session.validate_image()?;
     match task {
-        OnnxTask::SuperResolution => {
+        InferenceTask::SuperResolution => {
             run_super_resolution(session, model_id, source_rgba, source_width, source_height)
         }
-        OnnxTask::BackgroundRemoval => {
+        InferenceTask::BackgroundRemoval => {
             run_background_removal(session, model_id, source_rgba, source_width, source_height)
         }
-        OnnxTask::DepthEstimation => run_depth(session, source_rgba, source_width, source_height),
-        OnnxTask::Detection => run_detection(
+        InferenceTask::DepthEstimation => run_depth(session, source_rgba, source_width, source_height),
+        InferenceTask::Detection => run_detection(
             session,
             source_rgba,
             source_width,
@@ -65,14 +203,14 @@ fn run_native_image_task_with_runner(
             score_threshold,
             iou_threshold,
         ),
-        OnnxTask::Segmentation => run_segmentation(
+        InferenceTask::Segmentation => run_segmentation(
             session,
             source_rgba,
             source_width,
             source_height,
             target_size.max(1),
         ),
-        OnnxTask::StyleTransfer | OnnxTask::Denoising | OnnxTask::Generic => {
+        InferenceTask::StyleTransfer | InferenceTask::Denoising | InferenceTask::Generic => {
             run_generic(session, source_rgba, source_width, source_height)
         }
     }
@@ -84,12 +222,12 @@ fn run_generic(
     rgba: &[u8],
     width: u32,
     height: u32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     let tensor = rgba_to_chw(rgba, width, height)?;
     let output = session.run_f32(tensor, vec![1, 3, height as i64, width as i64])?;
-    let (output_width, output_height) = output_size(&output.shape, width, height);
-    let rgba = tensor_to_rgba(&output.data, output_width, output_height)?;
-    Ok(NativeOnnxImageOutput {
+    let (output_width, output_height) = image_output_size(&output, 3, false)?;
+    let rgba = rgb_output_to_rgba(&output.data, output_width, output_height)?;
+    Ok(InferenceImageOutput {
         rgba,
         width: output_width,
         height: output_height,
@@ -104,7 +242,7 @@ fn run_super_resolution(
     rgba: &[u8],
     width: u32,
     height: u32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     if model_id == "super-resolution-3x" {
         const INPUT: u32 = 224;
         let resized = resize_rgba(rgba, width, height, INPUT, INPUT)?;
@@ -121,14 +259,8 @@ fn run_super_resolution(
             cr[index] = 0.5 * red - 0.419 * green - 0.081 * blue + 0.5;
         }
         let output = session.run_f32(y, vec![1, 1, INPUT as i64, INPUT as i64])?;
-        let (model_width, model_height) = output_size(&output.shape, INPUT * 3, INPUT * 3);
-        let expected = (model_width * model_height) as usize;
-        if output.data.len() < expected {
-            return Err(
-                "super-resolution luminance tensor is smaller than its declared dimensions"
-                    .to_owned(),
-            );
-        }
+        validate_output_shape(&output, &[Some(1), Some(1), Some(672), Some(672)])?;
+        let (model_width, model_height) = (672, 672);
         let mut model_rgba = vec![0; (model_width * model_height * 4) as usize];
         for output_y in 0..model_height {
             for output_x in 0..model_width {
@@ -156,7 +288,7 @@ fn run_super_resolution(
             output_height,
         )
         .expect("generated model RGBA dimensions are valid");
-        return Ok(NativeOnnxImageOutput {
+        return Ok(InferenceImageOutput {
             rgba,
             width: output_width,
             height: output_height,
@@ -166,12 +298,8 @@ fn run_super_resolution(
 
     let tensor = rgba_to_chw(rgba, width, height)?;
     let output = session.run_f32(tensor, vec![1, 3, height as i64, width as i64])?;
-    let (output_width, output_height) = output_size(
-        &output.shape,
-        width.saturating_mul(4),
-        height.saturating_mul(4),
-    );
-    Ok(NativeOnnxImageOutput {
+    let (output_width, output_height) = image_output_size(&output, 3, false)?;
+    Ok(InferenceImageOutput {
         rgba: rgb_output_to_rgba(&output.data, output_width, output_height)?,
         width: output_width,
         height: output_height,
@@ -186,20 +314,20 @@ fn run_background_removal(
     rgba: &[u8],
     width: u32,
     height: u32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     let input_size = if model_id == "u2netp" { 320 } else { 512 };
     let resized = resize_rgba(rgba, width, height, input_size, input_size)?;
     let tensor =
         rgba_to_chw(&resized, input_size, input_size).expect("resized RGBA dimensions are valid");
     let output = session.run_f32(tensor, vec![1, 3, input_size as i64, input_size as i64])?;
-    let (mask_width, mask_height) = output_size(&output.shape, input_size, input_size);
+    let (mask_width, mask_height) = image_output_size(&output, 1, false)?;
     let resized_mask_source =
         resize_rgba(&resized, input_size, input_size, mask_width, mask_height)
             .expect("validated RGBA can always be resized");
     let mask_rgba = apply_alpha_mask(&resized_mask_source, &output.data, mask_width, mask_height)?;
     let rgba = resize_rgba(&mask_rgba, mask_width, mask_height, width, height)
         .expect("generated alpha mask dimensions are valid");
-    Ok(NativeOnnxImageOutput {
+    Ok(InferenceImageOutput {
         rgba,
         width,
         height,
@@ -213,18 +341,15 @@ fn run_depth(
     rgba: &[u8],
     width: u32,
     height: u32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     const INPUT: u32 = 256;
     let resized = resize_rgba(rgba, width, height, INPUT, INPUT)?;
     let tensor =
         midas_preprocess(&resized, INPUT, INPUT).expect("resized depth RGBA dimensions are valid");
     let output = session.run_f32(tensor, vec![1, 3, INPUT as i64, INPUT as i64])?;
-    let (depth_width, depth_height) = output_size(&output.shape, INPUT, INPUT);
-    let count = (depth_width * depth_height) as usize;
-    if output.data.len() < count {
-        return Err("depth output tensor is smaller than its declared dimensions".to_owned());
-    }
-    let depth = &output.data[..count];
+    let (depth_width, depth_height) = image_output_size(&output, 1, true)?;
+    let count = output.data.len();
+    let depth = &output.data;
     let minimum = depth.iter().copied().fold(f32::INFINITY, f32::min);
     let maximum = depth.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let range = (maximum - minimum).max(f32::EPSILON);
@@ -235,7 +360,7 @@ fn run_depth(
     }
     let rgba = resize_rgba(&depth_rgba, depth_width, depth_height, width, height)
         .expect("generated depth RGBA dimensions are valid");
-    Ok(NativeOnnxImageOutput {
+    Ok(InferenceImageOutput {
         rgba,
         width,
         height,
@@ -253,7 +378,7 @@ fn run_detection(
     target_size: u32,
     score_threshold: f32,
     iou_threshold: f32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     let input = letterbox_preprocess(rgba, width, height, target_size)?;
     let output = session.run_f32(
         input.tensor,
@@ -263,6 +388,8 @@ fn run_detection(
             .map(|dimension| *dimension as i64)
             .collect(),
     )?;
+    // The existing COCO decoder has a fixed 8400-box channel stride.
+    validate_output_shape(&output, &[Some(1), Some(84), Some(8400)])?;
     let detections = detect_postprocess(
         &output.data,
         width,
@@ -283,7 +410,7 @@ fn run_detection(
             [255, 59, 48, 255],
         );
     }
-    Ok(NativeOnnxImageOutput {
+    Ok(InferenceImageOutput {
         rgba: overlay,
         width,
         height,
@@ -298,7 +425,7 @@ fn run_segmentation(
     width: u32,
     height: u32,
     target_size: u32,
-) -> Result<NativeOnnxImageOutput, String> {
+) -> Result<InferenceImageOutput, String> {
     let input = letterbox_preprocess(rgba, width, height, target_size)?;
     let output = session.run_f32(
         input.tensor,
@@ -308,6 +435,10 @@ fn run_segmentation(
             .map(|dimension| *dimension as i64)
             .collect(),
     )?;
+    let (mask_width, mask_height) = image_output_size(&output, 19, false)?;
+    if mask_width != mask_height {
+        return Err("Cityscapes decoder requires a square [1,19,H,H] output".to_owned());
+    }
     let segmentation = segment_postprocess(
         &output.data,
         width as usize,
@@ -328,7 +459,7 @@ fn run_segmentation(
             segmentation.mask_rgba[index * 4 + 2],
         );
     }
-    Ok(NativeOnnxImageOutput {
+    Ok(InferenceImageOutput {
         rgba: overlay,
         width,
         height,
@@ -342,32 +473,33 @@ fn run_segmentation(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tensor_to_rgba(data: &[f32], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let pixels = (width * height) as usize;
-    if data.len() >= pixels * 3 {
-        return rgb_output_to_rgba(data, width, height);
+fn validate_output_shape(output: &TensorOutput, expected: &[Option<i64>]) -> Result<(), String> {
+    if output.shape.len() != expected.len() {
+        return Err(format!("task output requires shape {expected:?}, received {:?}", output.shape));
     }
-    if data.len() < pixels {
-        return Err("ONNX output tensor does not contain an image".to_owned());
+    let mut length = 1usize;
+    for (&actual, expected) in output.shape.iter().zip(expected) {
+        if actual <= 0 || actual > u32::MAX as i64 || expected.is_some_and(|expected| expected != actual) {
+            return Err(format!("task output requires shape {expected:?}, received {:?}", output.shape));
+        }
+        length = length.checked_mul(actual as usize)
+            .ok_or_else(|| "task output tensor size overflow".to_owned())?;
     }
-    let mut rgba = vec![0; pixels * 4];
-    for index in 0..pixels {
-        let value = to_byte(data[index]);
-        rgba[index * 4..index * 4 + 4].copy_from_slice(&[value, value, value, 255]);
+    if length != output.data.len() {
+        return Err(format!("task output has {} values, expected {length}", output.data.len()));
     }
-    Ok(rgba)
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn output_size(shape: &[i64], fallback_width: u32, fallback_height: u32) -> (u32, u32) {
-    if shape.len() >= 2 {
-        let height = shape[shape.len() - 2];
-        let width = shape[shape.len() - 1];
-        if width > 0 && height > 0 {
-            return (width as u32, height as u32);
-        }
+fn image_output_size(output: &TensorOutput, channels: i64, allow_depth_rank3: bool) -> Result<(u32, u32), String> {
+    if allow_depth_rank3 && output.shape.len() == 3 {
+        validate_output_shape(output, &[Some(1), None, None])?;
+    } else {
+        validate_output_shape(output, &[Some(1), Some(channels), None, None])?;
     }
-    (fallback_width, fallback_height)
+    let rank = output.shape.len();
+    Ok((output.shape[rank - 1] as u32, output.shape[rank - 2] as u32))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

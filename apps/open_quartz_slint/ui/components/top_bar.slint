@@ -121,9 +121,9 @@ export component TopBar inherits Rectangle {
             clicked => { file-menu.show(); }
         }
         Divider {}
-        for section in ["SOURCE", "MATH", "SHADER", "ONNX"]: ToolButton {
+        for section in ["SOURCE", "MATH", "SHADER", "INFERENCE"]: ToolButton {
             text: section + " ▾";
-            icon-path: section == "SOURCE" ? "M7.5 8H14 M7.5 8A3 3 0 1 1 1.5 8A3 3 0 1 1 7.5 8" : section == "SHADER" ? "M3.5 3.5H12.5V12.5H3.5Z M5 1V3.5 M8 1V3.5 M11 1V3.5 M5 12.5V15 M8 12.5V15 M11 12.5V15 M1 5H3.5 M1 8H3.5 M1 11H3.5 M12.5 5H15 M12.5 8H15 M12.5 11H15" : section == "ONNX" ? "M14 8A6 6 0 1 1 2 8A6 6 0 1 1 14 8 M5 8L8 5L11 8L8 11Z" : "";
+            icon-path: section == "SOURCE" ? "M7.5 8H14 M7.5 8A3 3 0 1 1 1.5 8A3 3 0 1 1 7.5 8" : section == "SHADER" ? "M3.5 3.5H12.5V12.5H3.5Z M5 1V3.5 M8 1V3.5 M11 1V3.5 M5 12.5V15 M8 12.5V15 M11 12.5V15 M1 5H3.5 M1 8H3.5 M1 11H3.5 M12.5 5H15 M12.5 8H15 M12.5 11H15" : section == "INFERENCE" ? "M14 8A6 6 0 1 1 2 8A6 6 0 1 1 14 8 M5 8L8 5L11 8L8 11Z" : "";
             glyph: "±"; enabled: !root.busy;
             clicked => { root.open-node-menu(section, self.x); }
         }

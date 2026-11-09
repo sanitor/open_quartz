@@ -2,6 +2,7 @@
 members = [
     "crates/open_quartz",
     "crates/oq-media",
+    "crates/oq-inference",
     "crates/open_quartz_screensaver",
     "crates/open-quartz-screensaver-stub",
 ]

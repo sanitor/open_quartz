@@ -30,14 +30,14 @@ impl Project {
                 (NodeType::Math, position, math_label(op).unwrap_or("math"))
             }
             NodeFactoryRequest::Renderer { position } => (NodeType::Renderer, position, "renderer"),
-            NodeFactoryRequest::Onnx {
+            NodeFactoryRequest::Inference {
                 position, label, ..
-            } => (NodeType::Onnx, position, label.as_str()),
-            NodeFactoryRequest::CustomOnnx { position } => {
-                (NodeType::Onnx, position, "custom_onnx")
+            } => (NodeType::Inference, position, label.as_str()),
+            NodeFactoryRequest::CustomInference { position } => {
+                (NodeType::Inference, position, "custom_inference")
             }
         };
-        let id = next_node_id(&self.graph, node_type, label_base);
+        let id = next_node_id(&self.graph, node_type);
         let position = position
             .as_ref()
             .copied()
@@ -150,7 +150,7 @@ impl Project {
                     description: None,
                 }];
             }
-            NodeFactoryRequest::Onnx {
+            NodeFactoryRequest::Inference {
                 label,
                 template_name,
                 model_id,
@@ -161,19 +161,22 @@ impl Project {
             } => {
                 data.label = format!("{}_{}", normalize_label(&label), numeric_suffix(&id));
                 data.template_name = template_name.or_else(|| Some(label));
-                data.onnx_model_id = model_id;
-                data.onnx_catalog_id = catalog_id;
-                data.onnx_source = Some(OnnxSource::Catalog);
+                data.inference_model_id = model_id;
+                data.inference_catalog_id = catalog_id;
+                data.inference_source = Some(InferenceSource::Catalog);
+                data.inference_policy = Some(crate::inference::ExecutionPolicy::resident());
                 data.extra.insert(
-                    "onnxStatus".to_owned(),
+                    "inferenceStatus".to_owned(),
                     Value::String("not-downloaded".to_owned()),
                 );
                 data.inputs = remap_ports(&id, inputs);
                 data.outputs = remap_ports(&id, outputs);
             }
-            NodeFactoryRequest::CustomOnnx { .. } => {
-                data.label = "Custom ONNX".to_owned();
-                data.onnx_source = Some(OnnxSource::Custom);
+            NodeFactoryRequest::CustomInference { .. } => {
+                data.label = "Custom Model".to_owned();
+                data.template_name = Some("Custom Model".to_owned());
+                data.inference_source = Some(InferenceSource::Custom);
+                data.inference_policy = Some(crate::inference::ExecutionPolicy::resident());
                 data.inputs = Vec::new();
                 data.outputs = Vec::new();
             }
@@ -188,18 +191,12 @@ impl Project {
     }
 }
 
-fn next_node_id(graph: &Graph, node_type: NodeType, label_base: &str) -> String {
+fn next_node_id(graph: &Graph, node_type: NodeType) -> String {
     let prefix = match node_type {
         NodeType::Shader => "shader",
         NodeType::Input => "input",
         NodeType::Constant => "constant",
-        NodeType::Onnx => {
-            if label_base == "custom_onnx" {
-                "onnx"
-            } else {
-                "onnx"
-            }
-        }
+        NodeType::Inference => "inference",
         NodeType::Renderer => "renderer",
         NodeType::Math => "math",
     };

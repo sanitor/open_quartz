@@ -49,6 +49,8 @@ pub struct GpuOutputHandle {
     pub texture: Arc<wgpu::Texture>,
     pub view: Arc<wgpu::TextureView>,
     pub sampler: Arc<wgpu::Sampler>,
+    /// Retains the external resource owner; cloning the texture alone is insufficient.
+    pub lease: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
@@ -264,6 +266,7 @@ impl GpuExecutor {
                 texture: texture.texture,
                 view: texture.view,
                 sampler: texture.sampler,
+                lease: texture.lease,
                 width: texture.width,
                 height: texture.height,
                 format: texture.format,
@@ -332,6 +335,7 @@ impl GpuExecutor {
                 width: target.width,
                 height: target.height,
                 format: target.format,
+                lease: None,
             });
         }
         self.textures.get(resolved).map(|texture| GpuOutputHandle {
@@ -346,6 +350,7 @@ impl GpuExecutor {
             width: texture.width,
             height: texture.height,
             format: texture.format,
+            lease: texture.lease.clone(),
         })
     }
 
@@ -493,10 +498,10 @@ impl GpuExecutor {
                         .insert(command.node_id.clone(), source.clone());
                 }
                 "math" => {}
-                "onnx" => {
+                "inference" => {
                     return Err(GpuExecutionError::for_node(
                         &command.node_id,
-                        "ONNX GPU execution belongs to the inference adapter and is not connected yet",
+                        "Inference GPU execution belongs to the inference adapter and is not connected yet",
                     ));
                 }
                 other => {

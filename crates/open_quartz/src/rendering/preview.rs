@@ -194,6 +194,7 @@ impl GpuPreviewReader {
             texture: target.texture.clone(),
             view: target.view.clone(),
             sampler: source.sampler.clone(),
+            lease: None,
             width,
             height,
             format: TextureFormat::Rgba8Unorm,

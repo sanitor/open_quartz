@@ -1,10 +1,10 @@
-#[cfg(all(test, not(feature = "native-onnx"), not(feature = "native-video")))]
+#[cfg(all(test, not(feature = "native-video")))]
 #[path = "native_feature_coverage_tests.rs"]
 mod feature_tests;
-#[cfg(all(test, feature = "native-onnx"))]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "inference_lifecycle_tests.rs"]
 mod inference_lifecycle_tests;
-#[cfg(all(test, feature = "native-onnx"))]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "inference_output_validation_tests.rs"]
 mod inference_output_validation_tests;
 #[cfg(all(test, feature = "native-video"))]
@@ -24,8 +24,7 @@ use crate::rendering::SharedTextureFrame;
 use crate::media::native::{NativeVideoConfig, NativeVideoFrame, NativeVideoInfo, NativeVideoMetrics};
 #[cfg(feature = "native-video")]
 use crate::media::sources::VideoSources;
-#[cfg(feature = "native-onnx")]
-use crate::inference::{tasks::InferenceTasks, OnnxSession};
+use crate::inference::tasks::InferenceTasks;
 use crate::outputs::{DataPathMode, FrameStamp};
 use crate::player::{PlaybackCapabilities, PlaybackSession, SessionFrameInput};
 use crate::project::model::{Graph, NodeType};
@@ -33,7 +32,7 @@ use crate::SdkError;
 use serde::Serialize;
 use support::{utc_date_uniform, NativeRenderPerf};
 
-pub use crate::inference::{tasks::NativeOutputEvent, NativeOnnxConfig};
+pub use crate::inference::{tasks::{InferenceMetrics, InferenceOutputEvent}, InferenceConfig};
 
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,9 +42,9 @@ pub struct NativePlayerInfo {
     pub backend: String,
     pub device_type: String,
     pub output_mode: String,
-    pub native_onnx_cpu: bool,
-    pub native_onnx_direct_ml: bool,
-    pub shared_onnx_wgpu_device: bool,
+    pub native_inference_cpu: bool,
+    pub native_inference_direct_ml: bool,
+    pub shared_inference_wgpu_device: bool,
     pub native_video: bool,
     pub video_data_path: String,
     pub tensor_data_path: String,
@@ -71,8 +70,9 @@ pub struct NativePlayer {
     mouse: [f32; 4],
     #[cfg(feature = "native-video")]
     videos: VideoSources,
-    #[cfg(feature = "native-onnx")]
     inference: InferenceTasks,
+    inference_sampler: Arc<wgpu::Sampler>,
+    inference_available: bool,
     perf: NativeRenderPerf,
 }
 
@@ -155,20 +155,22 @@ impl NativePlayer {
     fn from_render_device(render_device: RenderDevice, device_info: RenderDeviceInfo) -> (Self, NativePlayerInfo) {
         let required_features = render_device.device().features();
         let shared_texture = device_info.shared_texture;
+        let metal_inference = cfg!(target_os = "macos") && device_info.backend == "Metal";
+        let inference_sampler = Arc::new(render_device.device().create_sampler(&wgpu::SamplerDescriptor::default()));
         let info = NativePlayerInfo {
             adapter_name: device_info.adapter_name,
             backend: device_info.backend,
             device_type: device_info.device_type,
             output_mode: device_info.output_mode,
-            native_onnx_cpu: cfg!(feature = "native-onnx"),
+            native_inference_cpu: false,
             native_video: {
                 #[cfg(feature = "native-video")]
                 { crate::media::native::find_ffmpeg().is_ok() }
                 #[cfg(not(feature = "native-video"))]
                 { false }
             },
-            native_onnx_direct_ml: cfg!(all(feature = "native-onnx", target_os = "windows")),
-            shared_onnx_wgpu_device: false,
+            native_inference_direct_ml: false,
+            shared_inference_wgpu_device: metal_inference,
             video_data_path: if !cfg!(feature = "native-video") {
                 "disabled".to_owned()
             } else if cfg!(all(windows, feature = "native-video-d3d12"))
@@ -179,7 +181,7 @@ impl NativePlayer {
             } else {
                 "cpu-copy".to_owned()
             },
-            tensor_data_path: if cfg!(feature = "native-onnx") { "cpu-copy" } else { "disabled" }.to_owned(),
+            tensor_data_path: if metal_inference { "device" } else { "unsupported" }.to_owned(),
             shared_texture,
         };
         (Self {
@@ -191,8 +193,9 @@ impl NativePlayer {
             mouse: [0.0; 4],
             #[cfg(feature = "native-video")]
             videos: VideoSources::new(),
-            #[cfg(feature = "native-onnx")]
             inference: InferenceTasks::new(),
+            inference_sampler,
+            inference_available: metal_inference,
             perf: NativeRenderPerf::new(),
         }, info)
     }
@@ -211,9 +214,21 @@ impl NativePlayer {
 
     /// Validate and allocate a replacement without changing live playback or resource owners.
     pub fn prepare_graph(&self, graph: &Graph) -> Result<PreparedNativeGraph, String> {
-        #[cfg(not(feature = "native-onnx"))]
-        if graph.nodes.iter().any(|node| node.node_type == NodeType::Onnx) {
-            return Err("Native ONNX graph execution requires the native-onnx feature".to_owned());
+        for node in graph.nodes.iter().filter(|node| node.node_type == NodeType::Inference) {
+            let data = serde_json::to_value(&node.data).map_err(|error| {
+                runtime_error(SdkError::new(crate::project::model::SdkErrorCode::InvalidResource,
+                    format!("Cannot serialize inference policy: {error}")).for_node(&node.id))
+            })?;
+            let policy = crate::resources::effective_inference_policy(&data).map_err(|error| {
+                runtime_error(SdkError::new(crate::project::model::SdkErrorCode::InvalidResource, error).for_node(&node.id))
+            })?;
+            crate::inference::prepared::validate_resident_policy(&policy).map_err(|error| {
+                runtime_error(SdkError::new(crate::project::model::SdkErrorCode::InvalidResource,
+                    error).for_node(&node.id))
+            })?;
+            if !self.inference_available {
+                return Err(format!("Inference node {} requires the supported Metal GPU backend", node.id));
+            }
         }
         #[cfg(not(feature = "native-video"))]
         if graph.nodes.iter().any(|node| node.node_type == NodeType::Input && node.data.input_mode == Some(crate::project::model::InputMode::Video)) {
@@ -271,7 +286,6 @@ impl NativePlayer {
             self.session.mark_dirty(&node_id)
                 .expect("staged image node belongs to the committed graph");
         }
-        #[cfg(feature = "native-onnx")]
         self.inference.sync_graph(graph, &mut self.session)?;
         #[cfg(feature = "native-video")]
         {
@@ -351,8 +365,8 @@ impl NativePlayer {
     #[cfg(feature = "native-video")]
     pub fn upload_video_frames(&mut self) -> Result<(), String> {
         let render_device = &mut self.render_device;
-        let dirty = self.videos.upload_frames(|node_id, frame, width, height| match frame {
-            NativeVideoFrame::Rgba(rgba) => render_device.upload_rgba(node_id, rgba, width, height).map_err(|error| error.to_string()),
+        let dirty = self.videos.upload_frames(|node_id, frame, _, _| match frame {
+            NativeVideoFrame::Rgba(_) => Err("Hardware-resident video required; CPU frame upload is forbidden".to_owned()),
             #[cfg(target_os = "macos")]
             NativeVideoFrame::VideoToolbox(frame) => render_device.upload_videotoolbox(node_id, frame).map_err(|error| error.to_string()),
             #[cfg(all(windows, feature = "native-video-d3d12"))]
@@ -375,37 +389,55 @@ impl NativePlayer {
         self.clock_origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
-    #[cfg(feature = "native-onnx")]
-    pub fn load_onnx(&mut self, node_id: String, session: OnnxSession, config: NativeOnnxConfig) -> Result<crate::inference::OnnxSessionInfo, String> {
-        self.session.node_generation(&node_id).map_err(runtime_error)?;
-        let info = self.inference.load(node_id.clone(), session, config);
+    pub fn load_resident_inference(&mut self, node_id: String, session: oq_inference::gpu::GpuImageSession,
+        config: InferenceConfig) -> Result<crate::inference::InferenceSessionInfo, String> {
+        crate::inference::prepared::validate_resident_config(&config)?;
+        let backend = self.render_device.backend();
+        if !Arc::ptr_eq(session.device_owner().device(), &backend.device)
+            || !Arc::ptr_eq(session.device_owner().queue(), &backend.queue) {
+            return Err("Inference session must use the renderer's exact GPU device and queue".to_owned());
+        }
+        if !self.session.execution_plan().is_some_and(|plan| plan.nodes.iter().any(|node| node.id == node_id && node.node_type == NodeType::Inference)) {
+            return Err(format!("Inference node {node_id} does not exist in the current graph"));
+        }
+        let info = crate::inference::prepared::resident_session_info(session.model_plan(), &config)?;
+        let info = self.inference.load(node_id.clone(), session, config, info)?;
         self.render_device.remove_texture(&node_id);
         self.session.mark_dirty(&node_id).map_err(runtime_error)?;
         Ok(info)
     }
 
-    #[cfg(feature = "native-onnx")]
-    pub fn unload_onnx(&mut self, node_id: &str) {
+    pub fn unload_inference(&mut self, node_id: &str) {
         self.inference.unload(node_id);
         self.render_device.remove_texture(node_id);
     }
 
-    #[cfg(feature = "native-onnx")]
     fn drain_inference_completions(&mut self) -> Result<(), String> {
         while let Some(accepted) = self.inference.next_completion(&self.session)? {
-            self.session.validate_completion(&accepted.envelope).map_err(runtime_error)?;
-            self.render_device.upload_rgba(
-                &accepted.node_id,
-                &accepted.image.rgba,
-                accepted.image.width,
-                accepted.image.height,
-            ).map_err(|error| error.to_string())?;
-            self.session.submit_completion(accepted.envelope.clone()).map_err(runtime_error)?;
+            if let Err(error) = self.session.validate_completion(&accepted.envelope) {
+                self.inference.record_rejection();
+                return Err(runtime_error(error));
+            }
+            if let Err(error) = self.render_device.register_external_texture(
+                &accepted.node_id, accepted.image.handle(self.inference_sampler.clone()),
+            ) {
+                self.inference.record_rejection();
+                return Err(error.to_string());
+            }
+            if let Err(error) = self.session.submit_completion(accepted.envelope.clone()) {
+                self.inference.record_rejection();
+                return Err(runtime_error(error));
+            }
             let deliveries = self.session.drain_deliveries();
             self.inference.record_delivery(
                 accepted,
                 deliveries.deliveries.into_iter().map(|delivery| delivery.subscription_id),
             );
+        }
+        for node_id in self.inference.take_ready_nodes() {
+            if self.session.node_generation(&node_id).is_ok() {
+                self.session.mark_dirty(&node_id).map_err(runtime_error)?;
+            }
         }
         Ok(())
     }
@@ -413,21 +445,12 @@ impl NativePlayer {
     fn execute_commands(&mut self, commands: &[ExecutionCommand], input_stamp: &FrameStamp) -> Result<(), String> {
         let mut batch = Vec::new();
         for command in commands {
-            if command.kind == "onnx" {
+            if command.kind == "inference" {
                 if !batch.is_empty() {
                     self.session.execute_gpu(&mut self.render_device, &batch).map_err(runtime_error)?;
                     batch.clear();
                 }
-                #[cfg(feature = "native-onnx")]
-                {
-                    let render_device = &self.render_device;
-                    self.inference.schedule(command, input_stamp, &self.session, |source_id| {
-                        if !render_device.has_output_texture(source_id) { return Ok(None); }
-                        render_device.read_output_rgba(source_id).map(Some)
-                    })?;
-                }
-                #[cfg(not(feature = "native-onnx"))]
-                return Err("Native ONNX execution requires the native-onnx feature".to_owned());
+                self.inference.schedule(command, input_stamp, &self.session, &self.render_device)?;
                 continue;
             }
             if command.texture_inputs.values().all(|source_id| self.render_device.has_output_texture(source_id)) {
@@ -460,11 +483,17 @@ impl NativePlayer {
         self.render_device.release_shared_texture(lease_id)
     }
 
-    pub fn take_output_events(&mut self) -> Vec<NativeOutputEvent> {
-        #[cfg(feature = "native-onnx")]
-        { self.inference.take_output_events() }
-        #[cfg(not(feature = "native-onnx"))]
-        { Vec::new() }
+    pub fn take_inference_events(&mut self) -> Vec<InferenceOutputEvent> {
+        self.inference.take_output_events()
+    }
+
+    pub fn inference_metrics(&self) -> InferenceMetrics {
+        self.inference.metrics()
+    }
+
+    pub fn inference_capabilities(&self) -> Result<oq_inference::InferenceCapabilities, String> {
+        Ok(oq_inference::InferenceCapabilities { cpu: false, direct_ml: false, core_ml: false,
+            shared_wgpu_device: self.inference_available })
     }
 
     pub fn render_next(&mut self) -> Result<NativeFrameRendered, String> {
@@ -506,7 +535,6 @@ impl NativePlayer {
         #[cfg(feature = "native-video")]
         self.videos.pause();
         self.session.stop().map_err(runtime_error)?;
-        #[cfg(feature = "native-onnx")]
         self.inference.cancel_pending();
         Ok(())
     }
@@ -515,7 +543,6 @@ impl NativePlayer {
         self.session.dispose().map_err(runtime_error)?;
         #[cfg(feature = "native-video")]
         self.videos.clear();
-        #[cfg(feature = "native-onnx")]
         self.inference.clear();
         self.render_device.reset()
     }
@@ -546,7 +573,6 @@ impl NativePlayer {
         self.upload_video_frames()?;
         let upload_video = upload_started.elapsed();
         let engine_started = Instant::now();
-        #[cfg(feature = "native-onnx")]
         self.drain_inference_completions()?;
         let clock = self.session.advance(&SessionFrameInput {
             now_ns,
@@ -574,7 +600,6 @@ impl NativePlayer {
             Some(dimensions) => dimensions,
             None => {
                 let pending = false;
-                #[cfg(feature = "native-onnx")]
                 let pending = pending || self.inference.has_pending();
                 #[cfg(feature = "native-video")]
                 let pending = pending || self.videos.is_active();
@@ -673,6 +698,50 @@ mod tests {
         host.render_next().unwrap();
         assert_eq!(host.read_output("renderer").unwrap(), payload);
         host.stop().unwrap();
+    }
+
+    #[test]
+    fn strict_inference_policy_rejects_preparation_before_allocation_or_readback() {
+        let (mut host, _) = pollster::block_on(NativePlayer::new()).unwrap();
+        let graph: crate::Graph = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id":"image", "type":"input", "position":{"x":0,"y":0},
+                "data":{"type":"input", "label":"Image", "shaderCode":"", "inputs":[],
+                    "outputs":[{"id":"out","label":"image","dataType":"sampler2D","direction":"output"}],
+                    "uniforms":{}, "inputMode":"image", "inputDataType":"sampler2D"}}],
+            "edges":[]
+        })).unwrap();
+        let revision = host.set_graph_snapshot(&graph).unwrap();
+        host.upload_image("image", &[1, 2, 3, 255], 1, 1).unwrap();
+        let generation = host.session.node_generation("image").unwrap();
+        let plan = serde_json::to_value(host.session.execution_plan().unwrap()).unwrap();
+        let state = host.session.state();
+        let mut candidate = graph.clone();
+        let mut inference = candidate.nodes[0].clone();
+        inference.id = "strict_model".to_owned();
+        inference.node_type = crate::NodeType::Inference;
+        inference.data.node_type = crate::NodeType::Inference;
+        inference.data.width = Some(host.render_device.device().limits().max_texture_dimension_2d + 1);
+        inference.data.auto_size = Some(false);
+        inference.data.inference_policy = Some(crate::inference::ExecutionPolicy {
+            residency: crate::inference::ResidencyPolicy::RequireResident,
+            ..crate::inference::ExecutionPolicy::default()
+        });
+        candidate.nodes.push(inference);
+
+        let error = match host.prepare_graph(&candidate) {
+            Ok(_) => panic!("strict residency must be rejected before render preparation"),
+            Err(error) => error,
+        };
+        assert!(error.contains("strict_model"), "{error}");
+        assert!(error.to_lowercase().contains("residen"), "{error}");
+        assert_eq!(host.session.revision(), revision);
+        assert_eq!(host.session.node_generation("image").unwrap(), generation);
+        assert_eq!(host.session.state(), state);
+        assert_eq!(serde_json::to_value(host.session.execution_plan().unwrap()).unwrap(), plan);
+        assert!(host.has_output_texture("image"));
+        assert!(!host.has_output_texture("strict_model"));
+        assert_eq!(host.inference_metrics().readback_bytes, 0);
+        assert_eq!(host.inference_metrics().submitted, 0);
     }
 
 

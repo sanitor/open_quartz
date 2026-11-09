@@ -147,7 +147,7 @@ fn native_onnx_intent_uses_rust_catalog_task_defaults_and_integrity() {
             "edges": []
         }
     }));
-    assert_eq!(result["intents"][0]["type"], "load-onnx");
+    assert_eq!(result["intents"][0]["type"], "load-inference");
     assert_eq!(result["intents"][0]["task"], "detection");
     assert_eq!(result["intents"][0]["targetSize"], 640);
     assert_eq!(result["intents"][0]["scoreThreshold"], 0.25);
@@ -156,6 +156,44 @@ fn native_onnx_intent_uses_rust_catalog_task_defaults_and_integrity() {
     assert_eq!(result["intents"][0]["download"]["expectedSize"], 12_851_098);
 }
 
+#[test]
+fn mixed_legacy_and_canonical_inference_fields_use_canonical_precedence() {
+    let result = plan(json!({
+        "graph": {"nodes": [{"id":"mixed","type":"onnx","data": {
+            "type":"inference", "onnxModelId":"legacy", "inferenceModelId":"canonical",
+            "onnxTargetSize":320, "inferenceTargetSize":512,
+            "onnxParams":{"scoreThreshold":0.1}, "inferenceParams":{"scoreThreshold":0.2},
+            "onnxPolicy":{"backend":"ort-cpu"},
+            "inferencePolicy":{"backend":"ort-direct-ml","fallback":"allow-cpu","residency":"cpu-transfers-allowed","placement":"any"}
+        }}], "edges": []}
+    }));
+    let intent = &result["intents"][0];
+    assert_eq!(intent["type"], "load-inference");
+    assert_eq!(intent["modelId"], "canonical");
+    assert_eq!(intent["targetSize"], 512);
+    assert_eq!(intent["scoreThreshold"], 0.2);
+    assert_eq!(intent["policy"]["backend"], "ort-direct-ml");
+    assert_eq!(result["graph"]["nodes"][0]["type"], "inference");
+    assert_eq!(result["graph"]["nodes"][0]["data"]["type"], "inference");
+    assert_eq!(result["graph"]["nodes"][0]["data"]["inferenceModelId"], "canonical");
+    assert!(result["graph"]["nodes"][0]["data"].get("onnxModelId").is_none());
+}
+
+#[test]
+fn legacy_directml_policy_is_preserved_and_invalid_policy_is_rejected() {
+    let first = json!({"id":"model","data":{"type":"onnx","onnxModelId":"custom","onnxParams":{"preferDirectMl":true}}});
+    let second = json!({"id":"model","data":{"type":"inference","inferenceModelId":"custom","inferencePolicy":{"backend":"ort-cpu"}}});
+    let result = plan(json!({
+        "previousGraph":{"nodes":[first],"edges":[]},
+        "graph":{"nodes":[second],"edges":[]}
+    }));
+    assert_eq!(result["intents"][0]["type"], "unload-inference");
+    assert_eq!(result["intents"][1]["type"], "load-inference");
+    let invalid: HostResourceIntentRequest = serde_json::from_value(json!({
+        "graph":{"nodes":[{"id":"bad","data":{"type":"inference","inferenceModelId":"custom","inferencePolicy":{"backend":"mystery"}}}],"edges":[]}
+    })).unwrap();
+    assert!(plan_host_resource_intents(invalid).is_err());
+}
 #[test]
 fn native_onnx_unloads_stale_model_when_removed() {
     let result = plan(json!({
@@ -176,6 +214,6 @@ fn native_onnx_unloads_stale_model_when_removed() {
     }));
     assert_eq!(
         result["intents"],
-        json!([{ "type": "unload-onnx", "nodeId": "onnx" }])
+        json!([{ "type": "unload-inference", "nodeId": "onnx" }])
     );
 }

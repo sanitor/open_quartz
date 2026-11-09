@@ -1,6 +1,6 @@
 # Open Quartz 架构设计
 
-本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。以模块所有权、线程边界和数据交接为主线；媒体与推理的后续方案分别见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。Web、Tauri、WASM 与语言绑定产品已退役，不属于本文架构。
+本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。以模块所有权、线程边界和数据交接为主线；媒体与推理的实现及扩展边界分别见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。Web、Tauri、WASM 与语言绑定产品已退役，不属于本文架构。
 
 阅读顺序：
 
@@ -18,9 +18,9 @@
 <a id="architecture-overview"></a>
 ## 系统总览
 
-Open Quartz 用节点图组合 GPU Shader、CPU Math、视频输入和 ONNX 推理。桌面应用负责编辑、窗口与交互；`open_quartz` 负责项目语义、编译、求值、播放状态、输出以及可选设备实现。桌面与独立屏保直接调用 typed Rust API。
+Open Quartz 用节点图组合 GPU Shader、CPU Math、硬件视频与 resident 推理。桌面负责编辑/窗口；`open_quartz` 负责图与播放适配；独立 `oq-inference/gpu` 拥有 GPU 模型编译、session 与硬件图像执行，ORT 命名 FP32 Tensor 仅供显式 reference/诊断。ONNX 是模型产物格式，不是生产后端。
 
-下图箭头表示**编译依赖**，不是每帧数据流。Slint 应用和编辑器组件使用各自的 workspace；根 workspace 包含核心、媒体库、屏保打包库与屏保 stub。
+下图箭头表示**编译依赖**，不是每帧数据流。Slint 应用和编辑器组件使用各自的 workspace；根 workspace 包含核心、媒体库、独立推理库、屏保打包库与屏保 stub。
 
 ```mermaid
 flowchart TB
@@ -29,6 +29,7 @@ flowchart TB
     EXPORT["open_quartz_screensaver<br/>包格式、资源打包与导出校验"]
     CORE["open_quartz<br/>共享核心与 Rust API"]
     MEDIA["oq-media<br/>独立媒体解码与原生帧"]
+    INFER["oq-inference<br/>策略、自省、GPU compiler/session 与 reference ORT"]
     EDITOR["slint_code_editor<br/>独立代码编辑组件"]
 
     APP --> CORE
@@ -37,6 +38,7 @@ flowchart TB
     SCR --> CORE
     EXPORT --> CORE
     CORE -->|macOS native-video| MEDIA
+    CORE --> INFER
 ```
 
 | 组件 | 责任 | 边界 |
@@ -44,11 +46,12 @@ flowchart TB
 | `apps/open_quartz_slint` | 图编辑器、Inspector、文件交互、窗口、预览、模型准备与渲染线程桥接 | 消费核心规则，不重建 topology、dirty 或执行计划 |
 | `open_quartz` | 项目、编译、求值、播放、输出、资源计划与设备能力 | 不依赖应用 UI；公共领域类型从 crate root 导出 |
 | `oq-media` | 解码会话、帧元数据、原生帧及 lease；已落地 macOS VideoToolbox 后端 | 不依赖 OpenQuartz 图、NodeId、Slint 或 wgpu |
+| `oq-inference` | ONNX 源自省、策略、`gpu` feature 的实际 GPU compiler/GpuImageSession；显式 reference Tensor/ORT adapters | 不依赖 OpenQuartz、NodeId/revision、Slint 或 oq-media；仅 gpu feature 引入 wgpu |
 | `slint_code_editor` | cosmic-text 排版与编辑，Slint 输入和绘制，语法高亮、查找替换与本地历史 | 不依赖 OpenQuartz；Shader Apply 由应用提交 |
 | `open_quartz_screensaver` | `.scr` 包格式、资源闭包与导出校验 | 可使用无设备核心，不启动桌面应用 |
 | `open-quartz-screensaver-stub` | Win32 窗口、消息循环、Surface、包资源解压和独立执行 | 不依赖已安装的 Slint 应用 |
 
-核心采用一个实现 crate，通过模块和 capability feature 隔离职责。独立组件因其可复用实现、依赖闭包或产品入口而独立，不增加仅转发接口的壳包。
+图语义采用一个实现 crate，通过模块和 capability feature 隔离职责。媒体与推理因具有独立可运行实现和依赖闭包而独立，编辑器与宿主因可复用组件或产品入口而独立；不增加仅转发接口的壳包。
 
 <a id="module-ownership"></a>
 ## 模块与所有权
@@ -99,10 +102,15 @@ flowchart TB
 | `OutputHub` | 输出契约、订阅、registry、presentation planner、resource registry、HostBackend 与 capabilities | typed 输出交付与独立的 presentation backend 接口 |
 | `RenderDevice` | GpuExecutor、共享 wgpu Device/Queue、纹理/lease、显式读回、平台导入与呈现 | 执行 GPU work；不拥有图接受政策、视频源 map 或 ORT session |
 | `VideoSources`（内部） | NodeId → NativeVideoSource 的 map、预览、播放控制与源替换 | 借用上传 callback，返回实际上传后变脏的节点；decoder/FrameLease 归媒体后端 |
-| `InferenceTasks`（内部） | ORT sessions、pending、单调 task id、channels/workers、已接受的完成结果 | 接收命令、提交时 stamp 与 RGBA 输入；筛选任务身份后返回 envelope，完整输出契约校验由 NativePlayer 调用 PlaybackSession 执行 |
+| `InferenceTasks`（内部） | resident 模型/session、图任务身份与有效输出 | 图契约与 NodeId/revision 留在 OpenQuartz，GPU 图像执行归独立库；不派发生产 ORT host-image worker |
 | `resources` | catalog、typed resource plan、模型下载/缓存/校验服务 | 表达资源意图和准备资源，不调度每帧求值 |
+| `oq_inference::GpuImageSession` / `InferenceSession` | 前者执行 resident GPU 网络，后者保留显式 reference ORT/FP32 Tensor | 不拥有图/UI 身份；生产只用硬件图像路径 |
 
 `GraphInstance` 的图快照和 `GraphEvaluator` 的静态 nodes/plan 使用共享 `Arc`；帧事务复制动态状态，不逐帧深拷贝 WGSL 源码。`VideoSources` 和 `InferenceTasks` 是核心内部 owner，不是新增的公共 root API。
+
+模型事实与图任务契约分别建模：`inspect_onnx(model)` 无需 ORT，session `source_interface` 保留 IR/producer/model versions、domain、graph name、模型/图/值 descriptions/custom properties 和 opset imports。递归源类型包括 Tensor/SparseTensor/Sequence/Map/Optional/Opaque/Unknown，保留精确 dtype codes、UnknownRank 与 scalar 的区别、静态/符号/dynamic 维度及 denotation。Required/Optional/OverridableInitializer 输入、dense/sparse initializer 与 external-data 引用均可报告，不复制或加载权重。运行时 `ValueKind`/元素分类、metadata 与原始源声明分开；opset 从源解析，不以 ORT API 21 不支持查询作统一缺失理由，也不把 runtime model-version sentinel 当作源版本。产物 SHA-256/字节数/格式是独立事实。
+
+typed `ImageTaskContract` 保留精确命名输入/选定输出、layout、preprocessing/resize/decoder、声明及实际 shape 约束；source facts 与 taskContract 分开报告。U²Net-P 七输出 `1959`–`1965`、显式 mask `1959` 与 COCO `[1,84,8400]` 契约仍保留，历史 reference 数值成功不表示这些模型可 resident 执行。生产仅 SR3，其他模型在 frame access 前拒绝；完整字段见[推理架构](INFERENCE_ARCHITECTURE.md)。
 
 <a id="control-flow"></a>
 ## 项目编辑与控制流
@@ -136,7 +144,7 @@ sequenceDiagram
 
 应用层的责任是把用户意图转成核心命令、维护表单草稿和投影 UI 模型。节点工厂、类型/环校验、连接替换、history 和图序列化由 Rust 核心提供。拖动完成、Shader Apply 或一组节点编辑按各自事务提交，不能在 UI 重建另一套图规则。
 
-项目/文件 I/O、图片与 framebuffer 准备、模型下载和 session 构建通过应用服务及后台任务完成。`resources::plan` 生成 typed resource intents，供视频与 ONNX 同步共用。视频源打开仍属于候选图的 stage 步骤，不能把该步骤描述为完全无 I/O 的渲染循环。
+项目/文件 I/O、图片与 framebuffer 准备、模型下载和 session 构建通过应用服务及后台任务完成。`resources::plan` 生成 typed resource intents，供视频与推理同步共用。视频源打开仍属于候选图的 stage 步骤，不能把该步骤描述为完全无 I/O 的渲染循环。
 
 图与资源在宿主间以 Rust 类型交接；JSON 用于项目文件、屏保包元数据和部分诊断序列化。准备失败时，UI 可以保留用户已编辑的项目，并显示“旧图仍在执行”；不能把编辑 revision、UI 请求 generation 和渲染图 revision 当成同一计数器。
 
@@ -152,13 +160,13 @@ flowchart TD
     CTRL["处理控制消息、候选图提交<br/>及模型准备结果"]
     VIDEO["VideoSources 轮询有效帧<br/>RenderDevice 上传，标记 dirty"]
     COMPLETE["接收此前派发的推理结果<br/>校验身份与输出契约"]
-    ACCEPT["仅有效结果上传、交付输出<br/>并传播 dirty"]
+    ACCEPT["仅有效 resident 结果交付输出<br/>并传播 dirty"]
     ADVANCE["PlaybackSession::advance<br/>候选 clock / graph 与标量输出预检"]
     WORK["取得有序 ExecutionCommand"]
     LOOP{"还有命令？"}
     KIND{"命令类型"}
     BATCH["累计可执行 GPU work"]
-    ONNX["先 flush 上游 GPU batch<br/>再读回输入并派发 ORT task"]
+    INFER["先提交上游 GPU batch<br/>同 queue texture → 完整 GPU 推理"]
     FLUSH["执行余下 GPU batch"]
     PRESENT["选择图输出，调用 RenderDevice 呈现"]
     UI["共享纹理交给 Slint<br/>节点卡、Renderer、全屏"]
@@ -166,18 +174,18 @@ flowchart TD
     CTRL --> VIDEO --> COMPLETE --> ACCEPT --> ADVANCE --> WORK --> LOOP
     LOOP -->|有| KIND
     KIND -->|GPU| BATCH
-    KIND -->|ONNX| ONNX
+    KIND -->|Inference| INFER
     BATCH --> LOOP
-    ONNX --> LOOP
+    INFER --> LOOP
     LOOP -->|无| FLUSH --> PRESENT --> UI
 ```
 
 执行顺序由图计划和命令序列决定：
 
 1. 上传当前视频源的有效帧，再将实际内容变更传播为 dirty。被替换的源不能继续提供旧帧。
-2. 在推进本帧时钟之前处理推理完成结果。revision、generation、task id 和输出契约通过后，才允许上传和交付。
+2. 在推进本帧时钟之前处理有效输出。revision、generation、task id、输出契约与交付容量通过后才允许发布；不是 CPU 结果上传。
 3. `PlaybackSession::advance` 使用候选 clock/graph 求值；整批标量输出通过契约和交付容量预检后提交。拒绝该批输出时保留可重试的时钟、dirty work 和交付状态。
-4. 依次消费命令，遇到 ONNX 命令先提交此前累计的 GPU work，再获取其上游输入并派发任务，最后执行剩余 GPU work。缺少输入纹理的 GPU 命令等待资源就绪。
+4. 依次消费命令，遇到推理命令先提交此前累计的 GPU work，再获取其上游输入并派发任务，最后执行剩余 GPU work。缺少输入纹理的 GPU 命令等待资源就绪。
 5. 选择图输出交给 RenderDevice，Slint 导入同一 Device/Queue 上的输出纹理。
 
 图计划优先采用显式 Renderer 输出，也支持没有 Renderer 的末端纹理输入节点。资源尚在解码或推理时，可以暂时没有可呈现纹理；不能用空输出累计有效 Render FPS。
@@ -198,13 +206,15 @@ Slint 的图输出由 NativePlayer 交给 RenderDevice 呈现，当前生产路�
 |---|---|---|
 | CPU Math / 标量输出 | 值 → OutputHub → 订阅交付 | 契约与整批容量预检；支持 OnChange、Latest、Every 政策 |
 | Shader / 预览 | GPU work → 输出纹理 → Slint texture Image | 同一 wgpu Device/Queue；实时预览不经 PNG/base64 |
-| 视频输入 | decoder frame/lease → 上传 callback → GPU 纹理 | macOS 原生面可直接供 GPU 导入/颜色转换；其他源保留各自软件或平台路径 |
-| Slint ONNX 图像任务 | GPU readback → RGBA → ORT worker → 完成校验 → GPU upload | 有 CPU 搬运，不是端到端设备驻留推理 |
+| 视频输入 | hardware decoder frame/lease → GPU import/转换 → texture | 无 FFmpeg RGBA 软件 fallback；不支持的相机/Linux/无 D3D12 Windows 拒绝 |
+| Slint 推理图像任务 | texture → GPU BT.601/resize224 → 四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA | 同 Slint wgpu30 Metal Device/Queue；无逐帧 CPU preprocessing/Tensor/readback/upload |
 | PNG capture | 显式 GPU readback → 编码 → 文件 | 用户操作或验证使用；不作为普通预览通道 |
 
 `OutputKey` 以 node/port 标识输出；`OutputState` 携带 graph revision、output generation、evaluation/content stamp 和 payload。payload 类型可以表达值、bytes、resource 或 tensor handle，类型存在不代表所有设备传输路径已接通。
 
 GPU 纹理和原生帧通过 handle/lease 保持有效，直到提交与消费者使用完成。实际图像尺寸参与 Auto size 传播；Filter 自动尺寸沿声明顺序的连接输入传播，手动尺寸保留显式设置。composition time 表示图播放时间，Render FPS 统计有效图输出，不能用源视频 FPS 或屏幕刷新率替代。
+
+生产仅 SR3 固定 224→672 网络 profile，任意源尺寸仍缩到 224 后执行，输出源尺寸 ×3；没有 window tiling 或大图全分辨率质量/提速承诺。模型文件/weights 解析与 initial upload、scalar controls 属于准备边界；文件图片/framebuffer 一次性 CPU decode-ingress 与初始上传允许，不能推广到逐帧像素。输出 lease 沿 `TextureHandle` / `GpuOutputHandle` / `RenderUpdate` / Slint 当前 handles 保留 owner；最多三槽，全部被消费者持有时显式 backpressure，释放后才复用。queue order/fences 保证提交与消费顺序。
 
 <a id="graph-lifecycle"></a>
 ## 图替换与生命周期
@@ -255,11 +265,11 @@ sequenceDiagram
 | Pause | 冻结 composition time，暂停媒体轮询，保留图与预览 |
 | Stop | 重置 clock/图播放状态，取消 pending 推理身份，暂停连续媒体轮询；保留重新 Play 所需配置 |
 | close / dispose | 将 session 置为 disposed，清除图源与推理 owner 的配置，重置渲染输出 |
-| owner Drop | 释放其资源；InferenceTasks 会 join 活跃 ORT workers |
+| owner Drop | 释放资源；GPU lease 必须持续到提交与消费者使用完成 |
 
 停止/暂停的单帧视频预览是独立上传路径。它不调用 `render_next` 或 `start_playback`，也不推进 composition clock。
 
-关闭使旧结果无法发布，不保证不可中断的底层调用立即退出。正在运行的 ORT worker 持有 `Arc` session 直到完成；`InferenceTasks::Drop` 可能等待这些 worker。GPU lease 同样必须活到提交与消费者使用结束。
+关闭使旧结果无法发布，不代表可以提前释放 GPU 或消费者仍使用的 lease。ORT worker 生命周期仅属于显式 reference/诊断，不是生产图路径。
 
 <a id="threading"></a>
 ## 线程与异步任务
@@ -268,35 +278,11 @@ sequenceDiagram
 |---|---|---|
 | Slint UI thread | 窗口、输入、表单草稿、AppController、UI model 与共享纹理导入 | typed 控制命令下发，读取 RenderUpdate |
 | RenderBridge render worker | NativePlayer、图准备/提交、播放控制、上传、GPU work、完成结果接收与呈现 | 协调者与 GPU 操作留在此线程，使用与 Slint 相同的 Device/Queue 实例 |
-| 项目 / 文件 / 模型准备任务 | 文件服务、图片或 framebuffer 准备、下载/缓存校验、ORT session 构建 | 完成消息携带请求身份，接受后才能挂到当前节点 |
-| ORT inference workers | 借助共享的 `Arc<Mutex<OnnxSession>>` 执行已派发的图像任务 | session handle 随任务进入 worker，通过 channel 返回 task id、提交时 stamp 与结果 |
+| 项目 / 文件 / 模型准备任务 | 文件/图片/framebuffer、下载/缓存、模型 topology/weights 解析与 GPU 初始化上传 | 携带请求身份，接受后挂到当前节点；不逐帧访问模型文件 |
+| resident GPU inference | render worker 在同 Slint Device/Queue 提交 GPU 前处理/完整网络/后处理 | 无生产 host Tensor worker；输出以 lease 交付 |
 | 媒体后端 | 平台源/decoder 与 frame lease | 向 VideoSources 提供有效帧，由上传 callback 借用消费 |
 
-模型准备和逐帧推理是两种异步操作：模型请求通过 ticket/cancel 规则控制是否发布；帧推理由 InferenceTasks 的 pending/task id 管理。取消发布不等于立即终止下载、构建或 ORT 调用。
-
-```mermaid
-sequenceDiagram
-    participant N as NativePlayer
-    participant T as InferenceTasks
-    participant W as ORT worker
-    participant S as PlaybackSession
-    participant R as RenderDevice
-
-    N->>T: 命令、输入 RGBA、FrameStamp 与图上下文
-    T->>W: 派发 task id
-    W-->>T: 完成结果，保留提交身份和 stamp
-    N->>T: next_completion(session)
-    T->>T: 匹配 pending task、revision、generation，丢弃过期结果
-    T-->>N: AcceptedInferenceCompletion（通过身份筛选）
-    N->>S: validate_completion，校验契约与交付容量
-    alt 契约或容量校验失败
-        N->>N: 返回错误，不修改纹理、输出或 dirty
-    else 完整校验通过
-        N->>R: 上传结果图像
-        N->>S: submit_completion
-        S-->>N: 输出交付与 dirty 传播
-    end
-```
+模型准备 ticket/cancel 与 GPU 输出 request/task、图 revision/node/session generation 分别控制接受和发布。模型替换、卸载、停止、关闭或过期结果不得恢复旧输出。先验证契约与交付容量，再发布 resident handle/dirty；取消发布不等于抢占已提交 GPU work，输出 owner 持续到所有消费者释放。
 
 身份与时间字段各有用途：
 
@@ -315,18 +301,20 @@ sequenceDiagram
 <a id="capabilities"></a>
 ## 能力与编译边界
 
-核心 `default = []`。项目编辑、catalog、WGSL 编译、拓扑/计划、纯求值、PlaybackSession/OutputHub 和纯 ONNX task/pre/postprocess 可以在无设备配置下使用。
+核心 `default = []`。项目编辑、catalog、WGSL 编译、拓扑/计划、纯求值、PlaybackSession/OutputHub 和纯推理 task/pre/postprocess 可以在无设备配置下使用。独立 `oq-inference` 默认也不启用 ORT，策略/元数据与实际 runtime 的依赖分开。
 
 | Feature | 启用内容 | 依赖关系 |
 |---|---|---|
 | `gpu` | wgpu executor、纹理、读回与平台 GPU 能力 | 设备能力入口；WGSL compiler 不依赖它 |
-| `native-runtime` | NativePlayer 与原生播放协调 | 蕴含 `gpu`；不自动启用视频、ONNX 或下载 |
+| `native-runtime` | NativePlayer 与原生播放协调 | 蕴含 `gpu`；不自动启用视频、推理或下载 |
 | `native-video` | NativeVideoSource、图源 owner 与平台媒体路径 | macOS 选择 `oq-media`；不强制 GPU 或 native-runtime |
 | `native-video-d3d12` | Windows D3D12 视频细化路径 | 蕴含 `native-video` 与 `gpu` |
-| `native-onnx` | ORT session 和 native pipeline | 不要求 GPU 或 HTTP |
+| `native-onnx` | 图推理适配与独立库 `gpu` resident 模型执行 | 名称保留；生产需要共享 GPU，ORT 仅显式 reference/诊断 opt-in |
 | `model-cache` | 下载、哈希校验与缓存发布 | reqwest/sha2；不要求 ORT 或 GPU |
 
 feature 与平台 `cfg` 共同约束实现。Slint 显式选择 native-runtime、native-video、native-onnx 和 model-cache；Windows 增加对应视频能力。项目编辑与屏保打包库可消费无设备核心。
+
+生产政策为 MetalGpu / Metal、GPU placement / Device path，强制 RequireResident、AcceleratorOnly、Forbid CPU。UI 仅 Metal GPU / Auto Hardware；Auto 不准退到 ORT/CPU/CoreML EP。不支持模型/平台或旧 CPU 政策在 frame access 前明确拒绝。推理完成率、host completion wall、GPU 时间与 Render FPS 分开；没有真实 GPU timestamp 不伪造计时。
 
 Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打开设备依赖。因此，默认核心及独立 feature 的依赖闭包必须以独立 consumer 验证，不能从一次 workspace 构建推断。独立编辑器也应保持无 OpenQuartz normal/build dependency。
 
@@ -337,9 +325,9 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 
 ### Windows 屏保
 
-桌面导出选择一个 Renderer，打包其图所需图片、文件视频、模型与运行库；相机不是确定性导出源，相关图拒绝导出。包格式与资源闭包由 `open_quartz_screensaver` 管理。
+桌面导出选择 Renderer 并打包其非推理图所需图片、文件视频与运行库；相机为非确定性源，推理缺少合格 resident backend，相关图拒绝导出。包格式与资源闭包由 `open_quartz_screensaver` 管理。
 
-独立 `.scr` stub 解压包资源后，在自己的 Win32 消息循环/Surface 中直接组合 `PlaybackSession`、evaluation work、`GpuExecutor`、视频源和 ONNX session；它不经过 Slint 的 NativePlayer/InferenceTasks 路径。当前屏保的 ONNX readback → run → upload 在宿主循环中同步执行，不能套用 Slint 的异步时序图。`/s`、`/p <HWND>`、`/c` 对应独立运行、预览与配置入口，不启动主应用进程。实际 Windows 设备验收状态见[已知限制](#known-limitations)。
+独立 `.scr` stub 在自己的 Win32 loop/Surface 驱动 PlaybackSession/evaluation/GpuExecutor，不依赖 Slint。当前无合格 resident 推理 backend，推理导出与 stub 推理明确不可用，禁止同步 readback → CPU → upload；非推理 Shader/硬件视频导出保留。`/s`、`/p <HWND>`、`/c` 为独立运行/预览/配置入口。
 
 ### 桌面运行库与包布局
 
@@ -364,7 +352,7 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 2. 纯 compiler/evaluation 不依赖 live GPU、视频源、ORT session 或 UI。
 3. Slint 与 RenderDevice 使用同版本 wgpu 和同一 Device/Queue 实例；GPU 上传、执行和呈现保持原渲染线程边界。
 4. 图准备失败保留已应用图；过期异步结果在改变纹理和输出前被拒绝。请求身份、图身份和内容时间不可混用。
-5. 普通预览共享纹理，截图与当前推理输入显式读回；性能结论必须注明传输路径与实际测量范围。
+5. 实时绘制/推理 payload 仅 hardware buffer/texture；普通预览无 CPU 像素，capture/reference/test readback 必须显式 opt in。性能结论注明实际测量范围。
 6. 资源释放遵守 worker、frame 与 GPU lease 的真实生命周期；取消发布不伪装成底层调用立即退出。
 7. 默认依赖闭包和 capability 组合分别检查；覆盖率跟随生产实现，不通过降低阈值或扩大 exclusion 隐藏缺口。
 
@@ -373,7 +361,7 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 公共 headless `Player` | 具备图、播放状态与输出 API，但尚未连接实际设备 driver；Slint 使用 NativePlayer |
 | `Project::graph_mut` | 仍可绕过 revision/history；需要受控编辑语义的调用使用项目命令/事务 |
 | 整帧回滚 | 标量预检和候选图准备有明确拒绝边界；已提交的 GPU/backend 操作没有通用回滚 |
-| 推理数据通路 | 当前图像任务仍有 readback/CPU/上传；通用平台后端与严格设备驻留见独立推理提案 |
+| 推理数据通路 | 生产同 Slint Metal Device/Queue 的完整 SR3 GPU 网络；固定 224→672 profile 后输出源尺寸 ×3，不是 tiling。其他模型/平台拒绝；ORT/CPU/CoreML EP 仅显式 reference，不是 fallback |
 | 媒体能力 | oq-media 的实际后端和平台覆盖以媒体文档为准；完整跨平台会话、编码与独立 Slint 播放器仍属后续方案 |
 | 输入与辅助技术 | 原生编辑器的系统 IME、完整 screen-reader caret/selection 与 Windows/Linux 输入仍需实机验收 |
 | 平台验证 | 相机、Windows/Linux GPU、独立 `.scr` 与移动端未完成本轮实机验证；移动端交付暂缓 |
@@ -383,30 +371,68 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 <a id="validation"></a>
 ## 验证基线
 
-以下为 2026-11-06 职责重构完成时的本地基线，版本仍为 Unreleased。它记录该次运行结果，不代表每次文档修改都重跑，或远端 CI、其他平台和发布均已完成。
+### 2026-11-09 resident cutover
 
-| 范围 / 命令 | 已记录结果 |
+本轮 macOS / Apple M4 Pro 实测如下；2026-11-07 的 ORT/CoreML 记录仍单列为历史，不复用为本轮结果。版本仍 Unreleased。
+
+| 范围 / 命令 | 实测结果 |
 |---|---|
-| 根 workspace：`cargo test --locked --workspace` | 234 项通过 / 34 suites |
-| 完整 native 核心：native-runtime,native-video,native-onnx,model-cache | 315 项通过 / 30 suites |
-| 独立 `native-onnx` / `native-runtime`，均 `--no-default-features` | 247 项 / 30 suites；279 项 / 28 suites |
-| `npm run test:desktop` | Slint 73 项通过，含失败图替换保留资源和同尺寸视频像素替换 |
-| `npm run test:desktop:ui` | 18/18；[交互报告](../test-results/slint-ui/interaction-2026-11-06T07-04-55-208Z/report.html) |
-| `npm run test:desktop:shaders` | 34/34；[Shader 报告](../test-results/slint-ui/shaders-2026-11-06T07-05-10-565Z/report.html) |
-| `npm run test:editor` | 10 项通过：5 syntax + 5 editing |
-| `npm run check:rust-boundaries` | single-core API、default 与独立 feature 依赖边界通过 |
-| `npm run build` | macOS arm64 runtime copy、ad-hoc 签名、`--help` 启动与 ZIP 通过 |
+| `cargo test --locked --workspace` | 270 通过 / 36 suites |
+| 完整 native 核心 + `oq-inference` | 372 通过 / 30 suites，1 ignored；包含输出池背压释放后重试与真实 Metal 数值/设备/lease 生命周期 |
+| `npm run test:desktop` | 79 通过，2 opt-in ignored |
+| opt-in `cached_` 桌面模型测试 | 2 通过；真实 SR3 graph-worker 与显式 CPU reference 像素比较 |
+| 不存在的 `ORT_DYLIB_PATH` | 真实 SR3 graph-worker 1 通过；生产驻留路径不加载 ORT |
+| `npm run check:rust-boundaries` | 通过；核心 API、feature 与独立推理契约/backend 边界 |
+| `npm run test:desktop:ui` | 18/18；[真实窗口交互报告](../test-results/slint-ui/interaction-2026-11-09T08-05-44-801Z/report.html) |
+| `npm run test:desktop:shaders` | 34/34；[真实窗口 Shader 像素报告](../test-results/slint-ui/shaders-2026-11-09T08-06-13-425Z/report.html) |
+| SR3 原生窗口 smoke | GPU Shader 8×8 → 实际模型 → Renderer 24×24，Play/Pause 均显示共享纹理；不存在的 ORT 路径；[画面](../test-results/slint-ui/resident-2026-11-09-playing.png)、[状态/零传输证据](../test-results/slint-ui/resident-2026-11-09-evidence.json) |
+| `npm run build` | macOS portable 包、运行库签名、`--help` 与 `dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip` 生成通过 |
 
-覆盖率脚本 `npm run test:sdk-coverage` 的测试全部通过，但两项整体 100% 门槛失败：
+`npm run test:sdk-coverage` 的测试全部通过，但两项整体 **100% gates 均失败**；未放宽阈值或既有排除范围。
+
+| 范围 | 测试通过 | Lines | Functions | Regions | 100% gate |
+|---|---:|---:|---:|---:|---|
+| 默认核心 + 推理契约 | 142 + 16 | 96.96% | 96.07% | 97.00% | 失败 |
+| 完整 native + 推理 backend | 223 + 27，1 ignored | 95.97% | 91.55% | 94.84% | 失败 |
+
+上述窗口为静态源，仅提交一次推理、六次 compute dispatch；完成指 publication-ready，不是物理 GPU fence 完成；显示的 submission wall 不是 GPU 执行时间。没有据此声称实时视频模型吞吐、其他平台 resident 支持或完整分辨率大图质量。
+
+本轮已观察 `resident_compare`：Apple M4 Pro / Metal，GPU 生成 8×8 texture（无 COPY_DST），完整网络输出 24×24，与显式 ORT CPU reference max/mean byte error 0/0；host image bytes 0，六 dispatch，scratch 26,292,224 B，weights 238,628 B。wrong-device 在 submit 前拒绝；三槽 pool 饱和及 released-lease 复用已观察。首个 completion wall 69.494292 ms **包括诊断 copy 与首次 pipeline compilation**，不是吞吐/GPU 时间/大图性能承诺。持久命令见[推理架构](INFERENCE_ARCHITECTURE.md#resident-数值与所有权证据)。
+
+### 2026-11-07 ORT/CoreML 历史基线
+
+
+以下仅为 2026-11-07 源自省、typed task contract 与 ORT CoreML EP 阶段的历史结果，不代表 resident cutover 验收。版本仍 Unreleased；不推断其他平台实机支持。
+
+| 范围 / 命令 | 实测结果 |
+|---|---|
+| 默认 workspace | 270 项通过 / 36 suites |
+| 完整 native 核心与 `oq-inference` backend | 362 项通过 / 31 suites |
+| `npm run test:desktop` | 78 项通过 |
+| opt-in 真实 SR graph-worker | 1 项通过；包含 source/runtime JSON、task contract 与 CoreML backend 输出 |
+| 真实 catalog U²Net-P | 下载模型的 `input.1 [1,3,320,320]` 与全部 7 个输出 `1959`–`1965` 已自省；任务绑定 `1959`，409600 字节 RGBA 与直接命名调用 `1959` 的结果精确一致 |
+| `npm run check:rust-boundaries` | 通过；默认/native feature 与独立推理依赖边界 |
+| `npm run test:desktop:ui` | 18/18；[交互报告](../test-results/slint-ui/interaction-2026-11-07T08-00-55-697Z/report.html) |
+| `npm run test:desktop:shaders` | 34/34；[Shader 报告](../test-results/slint-ui/shaders-2026-11-07T08-01-12-929Z/report.html) |
+| macOS release 最终打包 | 通过；运行库、签名、`--help` 与 ZIP |
+| release `coreml_compare` | 真实 super-resolution-3x；CPU reference 误差与实际 provider dispatch 已验证，见下 |
+
+覆盖率同时计量 `open_quartz` 与独立 `oq-inference`，测试通过，但两项整体 100% gates 仍失败：
 
 | 范围 | 测试 | Lines | Functions | Regions | 100% gate |
 |---|---:|---:|---:|---:|---|
-| 默认核心 | 134 通过 | 98.53% | 97.88% | 98.34% | 失败 |
-| 完整 native | 201 通过 | 97.70% | 95.96% | 96.38% | 失败 |
+| 默认核心 + 推理契约 | 141 + 16 通过 | 97.10% | 96.06% | 97.07% | 失败 |
+| 完整 native + 推理 backend | 219 + 20 通过 | 95.49% | 92.26% | 94.36% | 失败 |
 
-阈值未放宽。RenderDevice、InferenceTasks 和 VideoSources 计入生产覆盖率；NativePlayer 协调文件及模型下载文件沿用脚本既有排除范围，具体规则以 [`test-sdk-coverage.mjs`](../scripts/test-sdk-coverage.mjs) 为准。功能测试通过不能替代覆盖率或平台设备验收。
+阈值和既有 production exclusion 未放宽，独立库实际 runtime 仍计入门槛。旧 `customPath + params` 与 canonical 项目读取/保存、稳定 ID/资源 key、异步身份与完成校验边界保持；不修改像素 oracle 来接受失败。
 
-原生测试需要准备对应 FFmpeg/ORT 运行库；开发脚本会配置环境，直接运行 Cargo 时按开发指南设置 `OPEN_QUARTZ_FFMPEG_PATH` 与 `ORT_DYLIB_PATH`。测试和 fixtures 随行为 owner 维护，显式保留像素、状态、迟到结果、资源释放和失败后重试断言。
+比较模型 SHA-256：`85f36ff88cc504a24af5e0602148bc56a8aa09a58eca8c0da2756f3e8186035e`，输入 `[1,1,224,224]`，输出 `[1,1,672,672]`；max/mean absolute error 为 0.000496149 / 0.0000568557。独立 profiling session 单次调用记录 CoreMLExecutionProvider 3 个、CPUExecutionProvider 7 个执行事件；配置 CoreML/CPU，无 fallback reason。这是混合执行证据，不是 ANE-only 或驻留证明。确定性 `image_identity` fixture 用于接口/生命周期，不代替真实模型。
+
+历史准备耗时 95.408833 ms；无 profiling 的 5 次 warmed median：CPU 13.401333 ms、CoreML/CPU 17.151125 ms。当时混合路径更慢，计时仅宿主 FP32 Tensor 调用；旧 CPU 默认已被生产 hardware-only 约束取代。临时 JSON/trace 不作为持久仓库报告链接。
+
+相机、Windows/Linux GPU、独立 `.scr` 与移动端没有本轮实机证据。独立编辑器未修改，不复用历史测试数声称重跑；公开 headless Player driver 与 graph_mut history 限制仍在范围之外。
+
+原生测试需要准备对应 FFmpeg/ORT 运行库；开发脚本配置环境，直接运行 Cargo 时按开发指南设置 `OPEN_QUARTZ_FFMPEG_PATH` 与 `ORT_DYLIB_PATH`。
 
 <a id="source-map"></a>
 ## 源码索引
@@ -421,9 +447,9 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 输出、订阅与 presentation | [`outputs/`](../crates/open_quartz/src/outputs/) |
 | GPU 执行、资源与平台导入 | [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs)、[`executor.rs`](../crates/open_quartz/src/rendering/executor.rs)、[`videotoolbox.rs`](../crates/open_quartz/src/rendering/videotoolbox.rs)、[`dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs) |
 | 视频源与媒体后端 | [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)、[`native.rs`](../crates/open_quartz/src/media/native.rs)、[`oq-media`](../crates/oq-media/) |
-| 推理任务与 session/pipeline | [`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)、[`inference/`](../crates/open_quartz/src/inference/) |
+| 推理图任务与独立 runtime | [`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)、[`inference/pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs)、[`oq-inference/src/artifact.rs`](../crates/oq-inference/src/artifact.rs)、[`lib.rs`](../crates/oq-inference/src/lib.rs)、[`runtime.rs`](../crates/oq-inference/src/runtime.rs) |
 | 资源计划、模型准备与缓存 | [`resources/plan.rs`](../crates/open_quartz/src/resources/plan.rs)、[`models.rs`](../crates/open_quartz/src/resources/models.rs) |
-| 桌面控制与渲染桥 | [`app_controller.rs`](../apps/open_quartz_slint/src/app_controller.rs)、[`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)、[`onnx_runtime.rs`](../apps/open_quartz_slint/src/onnx_runtime.rs) |
+| 桌面控制与渲染桥 | [`app_controller.rs`](../apps/open_quartz_slint/src/app_controller.rs)、[`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)、[`inference_runtime.rs`](../apps/open_quartz_slint/src/inference_runtime.rs)、[`inspector_inference.rs`](../apps/open_quartz_slint/src/inspector_inference.rs) |
 | 项目与文件服务 | [`services/`](../apps/open_quartz_slint/src/services/) |
 | 独立代码编辑器 | [`slint_code_editor`](../crates/slint_code_editor/) |
 | 屏保导出与独立宿主 | [`open_quartz_screensaver`](../crates/open_quartz_screensaver/)、[`native_host.rs`](../crates/open-quartz-screensaver-stub/src/native_host.rs) |

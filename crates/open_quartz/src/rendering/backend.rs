@@ -15,6 +15,8 @@ pub struct TextureHandle {
     pub texture: Arc<wgpu::Texture>,
     pub view: Arc<wgpu::TextureView>,
     pub sampler: Arc<wgpu::Sampler>,
+    /// Keeps an external pooled texture reserved while this handle is alive.
+    pub lease: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
@@ -98,6 +100,7 @@ impl GpuBackend {
             texture: Arc::new(texture),
             view: Arc::new(view),
             sampler: Arc::new(sampler),
+            lease: None,
             width,
             height,
             format,

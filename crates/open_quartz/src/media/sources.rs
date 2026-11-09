@@ -16,11 +16,7 @@ pub struct PreparedVideoSource {
 
 impl PreparedVideoSource {
     pub fn open(config: NativeVideoConfig, preview_only: bool) -> Result<Self, String> {
-        let source = if preview_only {
-            NativeVideoSource::open_preview(config)?
-        } else {
-            NativeVideoSource::open(config)?
-        };
+        let source = NativeVideoSource::open_hardware_required(config, preview_only)?;
         Ok(Self { source })
     }
 
@@ -66,8 +62,8 @@ impl VideoSources {
         self.sources.keys().cloned().collect()
     }
 
-    /// Upload runs synchronously while the source holds its frame-slot borrow.
-    /// Native surfaces cannot escape the callback or outlive their decoder frame.
+    /// The callback runs while the source holds its frame-slot borrow. GPU consumers
+    /// must retain native surfaces until their submitted work completes.
     pub fn upload_frames(
         &mut self,
         mut upload: impl for<'frame> FnMut(
@@ -80,6 +76,9 @@ impl VideoSources {
         let mut dirty = Vec::new();
         for (node_id, source) in &mut self.sources {
             if source.upload_latest(&mut |frame, width, height| {
+                if matches!(&frame, NativeVideoFrame::Rgba(_)) {
+                    return Err(format!("Hardware-resident video is required for node {node_id}; CPU RGBA upload is disabled"));
+                }
                 upload(node_id, frame, width, height)
             })? {
                 dirty.push(node_id.clone());

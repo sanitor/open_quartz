@@ -2,8 +2,8 @@ mod app_controller;
 mod graph_clipboard;
 mod graph_view_model;
 mod inspector_forms;
-mod inspector_onnx;
-mod onnx_runtime;
+mod inspector_inference;
+mod inference_runtime;
 mod render_bridge;
 mod shader_catalog;
 mod services {

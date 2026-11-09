@@ -152,6 +152,7 @@ mod windows_host {
     }
 
     fn launch_renderer(manifest: &ScreenSaverManifest, parent: Option<HWND>) -> Result<(), String> {
+        crate::native_host::validate_project(&manifest.project_json)?;
         let settings = read_settings(&settings_path(&manifest.export_id)?)?;
         let package_path = env::current_exe().map_err(|error| error.to_string())?;
         let resources = extract_resources(&package_path, manifest)?;
@@ -168,6 +169,7 @@ mod windows_host {
         package_path: &Path,
         manifest: &ScreenSaverManifest,
     ) -> Result<HashMap<String, String>, String> {
+        crate::native_host::validate_project(&manifest.project_json)?;
         let root = env::temp_dir()
             .join("OpenQuartz")
             .join("ScreenSavers")
@@ -198,8 +200,6 @@ mod windows_host {
             if resource.kind == "runtime" {
                 if resource.file_name.eq_ignore_ascii_case("ffmpeg.exe") {
                     env::set_var("OPEN_QUARTZ_FFMPEG_PATH", &target);
-                } else if resource.file_name.eq_ignore_ascii_case("onnxruntime.dll") {
-                    env::set_var("ORT_DYLIB_PATH", &target);
                 }
             }
             if let Some(node_id) = &resource.node_id {
@@ -391,7 +391,7 @@ mod windows_host {
                 version: 3,
                 export_id: format!("resource-test-{}", std::process::id()),
                 name: "Test".to_owned(),
-                project_json: "{}".to_owned(),
+                project_json: r#"{"nodes":[],"edges":[]}"#.to_owned(),
                 renderer_node_id: "renderer".to_owned(),
                 exposed_inputs: Vec::new(),
                 resources: vec![
@@ -421,6 +421,39 @@ mod windows_host {
                 b"ffmpeg"
             );
             fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_legacy_inference_before_settings_or_package_resource_io() {
+            let manifest = ScreenSaverManifest {
+                version: 3,
+                export_id: "../must-not-resolve-settings".to_owned(),
+                name: "Legacy inference saver".to_owned(),
+                project_json: serde_json::json!({
+                    "nodes": [{
+                        "id": "model", "type": "onnx", "position": {"x": 0, "y": 0},
+                        "data": {
+                            "type": "onnx", "label": "Model", "shaderCode": "",
+                            "inputs": [], "outputs": [], "uniforms": {},
+                            "onnxModelId": "yolov8n", "onnxCustomPath": "missing.onnx"
+                        }
+                    }], "edges": []
+                }).to_string(),
+                renderer_node_id: "renderer".to_owned(),
+                exposed_inputs: Vec::new(),
+                resources: vec![ScreenSaverResource {
+                    node_id: Some("model".to_owned()), kind: "onnx-model".to_owned(),
+                    file_name: "missing.onnx".to_owned(), offset: 0, length: 10,
+                    task: Some("generic".to_owned()),
+                }],
+            };
+            for error in [
+                extract_resources(Path::new("missing-package.scr"), &manifest).unwrap_err(),
+                launch_renderer(&manifest, None).unwrap_err(),
+            ] {
+                assert!(error.contains("Windows resident inference backend unavailable"));
+                assert!(error.contains("CPU fallback forbidden"));
+            }
         }
     }
 }

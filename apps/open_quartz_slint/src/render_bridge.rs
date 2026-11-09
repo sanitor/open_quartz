@@ -2,24 +2,30 @@
 #[path = "render_bridge_replacement_tests.rs"]
 mod replacement_tests;
 
+#[cfg(test)]
+#[path = "inference_render_tests.rs"]
+mod inference_tests;
+
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz::{Graph, NativePlayer};
+use open_quartz::rendering::GpuOutputHandle;
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
 
-use crate::onnx_runtime::{host_resource_plan, LiveOnnxState, ModelMessage, OnnxRuntime};
+use crate::inference_runtime::{host_resource_plan, LiveInferenceState, ModelMessage, InferenceRuntime};
 use std::collections::BTreeMap;
 pub struct RenderUpdate {
     generation: u64,
     pub status: Option<String>,
-    pub texture: Option<wgpu::Texture>,
+    pub texture: Option<GpuOutputHandle>,
     pub clear_image: bool,
-    pub onnx: Option<BTreeMap<String, LiveOnnxState>>,
-    pub previews: Option<BTreeMap<String, wgpu::Texture>>,
+    pub inference: Option<BTreeMap<String, LiveInferenceState>>,
+    pub inference_metrics: Option<open_quartz::player::InferenceMetrics>,
+    pub previews: Option<BTreeMap<String, GpuOutputHandle>>,
     pub node_error: Option<open_quartz::SdkError>,
     pub metrics: Option<PlaybackMetrics>,
     #[cfg(test)]
@@ -33,7 +39,8 @@ impl RenderUpdate {
             status: None,
             texture: None,
             clear_image: false,
-            onnx: None,
+            inference: None,
+            inference_metrics: None,
             previews: None,
             node_error: None,
             metrics: None,
@@ -109,12 +116,12 @@ pub(crate) enum Command {
         images: BTreeMap<String, ImageUpload>,
         play: bool,
     },
-    LoadOnnx {
+    LoadInference {
         generation: u64,
         node_id: String,
         path: String,
     },
-    UnloadOnnx {
+    UnloadInference {
         generation: u64,
         node_id: String,
     },
@@ -238,9 +245,9 @@ impl RenderBridge {
         self.reset_resources = true;
     }
 
-    pub fn load_onnx(&self, node_id: String, path: String) -> Result<(), String> {
+    pub fn load_inference(&self, node_id: String, path: String) -> Result<(), String> {
         self.sender
-            .send(Command::LoadOnnx {
+            .send(Command::LoadInference {
                 generation: self.generation,
                 node_id,
                 path,
@@ -248,9 +255,9 @@ impl RenderBridge {
             .map_err(|_| "Native render thread is no longer available".to_owned())
     }
 
-    pub fn unload_onnx(&self, node_id: String) -> Result<(), String> {
+    pub fn unload_inference(&self, node_id: String) -> Result<(), String> {
         self.sender
-            .send(Command::UnloadOnnx {
+            .send(Command::UnloadInference {
                 generation: self.generation,
                 node_id,
             })
@@ -371,13 +378,27 @@ fn publish_graph_rejection(updates: &Mutex<Option<RenderUpdate>>, generation: u6
     }
 }
 
-fn publish_onnx(updates: &Mutex<Option<RenderUpdate>>, generation: u64, onnx: &OnnxRuntime) {
+fn publish_inference(updates: &Mutex<Option<RenderUpdate>>, generation: u64, inference: &InferenceRuntime) {
     if let Ok(mut pending) = updates.lock() {
         let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
         if update.generation != generation {
             *update = RenderUpdate::new(generation);
         }
-        update.onnx = Some(onnx.states.clone());
+        update.inference = Some(inference.states.clone());
+    }
+}
+
+fn publish_inference_metrics(
+    updates: &Mutex<Option<RenderUpdate>>,
+    generation: u64,
+    metrics: open_quartz::player::InferenceMetrics,
+) {
+    if let Ok(mut pending) = updates.lock() {
+        let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+        if update.generation != generation {
+            *update = RenderUpdate::new(generation);
+        }
+        update.inference_metrics = Some(metrics);
     }
 }
 
@@ -392,11 +413,13 @@ fn render_worker(
     let mut running = false;
     let mut render_failed = false;
     let mut first_frame = true;
-    let mut onnx = OnnxRuntime::default();
+    let mut inference = InferenceRuntime::default();
     let mut image_keys = BTreeMap::<String, u64>::new();
     let mut video_configs = BTreeMap::<String, NativeVideoConfig>::new();
     let mut video_pipelines = BTreeMap::<String, String>::new();
     let mut current_graph: Option<Graph> = None;
+    let mut graph_has_rendered = false;
+    let mut source_preview_nodes = std::collections::BTreeSet::<String>::new();
     let mut stopped = true;
     let mut ready_to_start = false;
     let mut playback_requested = false;
@@ -406,10 +429,10 @@ fn render_worker(
     let mut pending_video_previews = BTreeMap::<String, Instant>::new();
     let mut meter = RenderMeter::new(Instant::now());
     loop {
-        if onnx.reap_workers() {
-            publish_onnx(&updates, generation, &onnx);
+        if inference.reap_workers() {
+            publish_inference(&updates, generation, &inference);
         }
-        let command = if running || onnx.is_loading() || !pending_video_previews.is_empty() {
+        let command = if running || inference.is_loading() || !pending_video_previews.is_empty() {
             match receiver.recv_timeout(Duration::from_millis(16)) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -487,6 +510,10 @@ fn render_worker(
                     }
                 };
                 generation = next_generation;
+                graph_has_rendered = false;
+                source_preview_nodes = graph.nodes().iter().filter(|node| {
+                    matches!(node.node_type, open_quartz::NodeType::Input | open_quartz::NodeType::Inference)
+                }).map(|node| node.id.clone()).collect();
                 first_frame = true;
                 running = false;
                 render_failed = false;
@@ -507,9 +534,9 @@ fn render_worker(
                     eprintln!("[video] {path}");
                 }
                 if reset_resources {
-                    onnx.clear(&mut host);
+                    inference.clear(&mut host);
                 }
-                onnx.sync(&resource_plan.intents, &mut host, false);
+                inference.sync(&resource_plan.intents, &mut host, false);
                 let result: Result<bool, String> = (|| {
                     // Frame events coalesce in the engine; clear graph/state history only on replacement.
                     let _ = host.drain_events();
@@ -542,38 +569,38 @@ fn render_worker(
                         publish_failure(&updates, generation, "Graph initialization failed", &error);
                     }
                 }
-                publish_onnx(&updates, generation, &onnx);
+                publish_inference(&updates, generation, &inference);
             }
-            Some(Command::LoadOnnx {
+            Some(Command::LoadInference {
                 generation: requested,
                 node_id,
                 path,
             }) if requested == generation => {
-                host.unload_onnx(&node_id);
-                if let Err(error) = onnx.load(node_id, path, sender.clone()) {
+                host.unload_inference(&node_id);
+                if let Err(error) = inference.load(node_id, path, sender.clone()) {
                     publish_status(
                         &updates,
                         generation,
-                        format!("ONNX load refused: {error}"),
+                        format!("Inference load refused: {error}"),
                         true,
                     );
                 } else {
                     publish_status(
                         &updates,
                         generation,
-                        "Loading ONNX model resource…".into(),
+                        "Loading Inference model resource…".into(),
                         true,
                     );
                 }
-                publish_onnx(&updates, generation, &onnx);
+                publish_inference(&updates, generation, &inference);
             }
-            Some(Command::UnloadOnnx {
+            Some(Command::UnloadInference {
                 generation: requested,
                 node_id,
             }) if requested == generation => {
-                onnx.unload(&node_id, &mut host);
-                publish_status(&updates, generation, "ONNX session unloaded.".into(), true);
-                publish_onnx(&updates, generation, &onnx);
+                inference.unload(&node_id, &mut host);
+                publish_status(&updates, generation, "Inference session unloaded.".into(), true);
+                publish_inference(&updates, generation, &inference);
             }
             Some(Command::CapturePng {
                 generation: requested,
@@ -602,13 +629,15 @@ fn render_worker(
                     true,
                 );
                 if !running {
-                    if let Some(node_id) = preview_renderer.as_deref() {
+                    if let Some(node_id) = preview_renderer.as_deref()
+                        .filter(|id| graph_has_rendered || source_preview_nodes.contains(*id))
+                    {
                         match host.preview_source(node_id) {
                             Ok(output) => {
                                 if let Ok(mut pending) = updates.lock() {
                                     let update = pending
                                         .get_or_insert_with(|| RenderUpdate::new(generation));
-                                    update.texture = Some((*output.texture).clone());
+                                    update.texture = Some(output);
                                     update.clear_image = false;
                                 }
                             }
@@ -681,7 +710,7 @@ fn render_worker(
             Some(Command::Playback { .. }) => {}
             Some(Command::Model(message)) => {
                 let node_id = message.node_id().to_owned();
-                if onnx.receive(message, &mut host) {
+                if inference.receive(message, &mut host) {
                     let result = if running || !playback_requested {
                         Ok(())
                     } else {
@@ -694,27 +723,28 @@ fn render_worker(
                             publish_status(
                                 &updates,
                                 generation,
-                                "ONNX model attached; waiting for inference output…".into(),
+                                "Inference model attached; waiting for inference output…".into(),
                                 true,
                             );
                         }
                         Err(error) => {
                             running = false;
                             render_failed = true;
-                            onnx.render_failed(&error);
+                            inference.render_failed(&error);
                             publish_failure(&updates, generation, "Resume failed", &error);
                         }
                     }
-                } else if let Some(state) = onnx.states.get(&node_id) {
+                } else if let Some(state) = inference.states.get(&node_id) {
                     if !state.loading && !state.attached {
                         publish_status(&updates, generation, state.status.clone(), true);
                     }
                 }
-                publish_onnx(&updates, generation, &onnx);
+                publish_inference(&updates, generation, &inference);
             }
-            Some(Command::LoadOnnx { .. } | Command::UnloadOnnx { .. }) => {}
+            Some(Command::LoadInference { .. } | Command::UnloadInference { .. }) => {}
             None => {}
         }
+        publish_inference_metrics(&updates, generation, host.inference_metrics());
         // A source preview uploads decoded pixels only. It must never call
         // render_next/start_playback or consume the graph's first frame work.
         if !running && !render_failed && !pending_video_previews.is_empty() {
@@ -744,8 +774,10 @@ fn render_worker(
             pending_video_previews.clear();
         }
         if !render_failed && preview_tick.elapsed() >= Duration::from_millis(100) {
-            let previews = preview_nodes.iter().filter_map(|id| {
-                host.preview_source(id).ok().map(|output| (id.clone(), (*output.texture).clone()))
+            let previews = preview_nodes.iter()
+                .filter(|id| graph_has_rendered || source_preview_nodes.contains(*id))
+                .filter_map(|id| {
+                host.preview_source(id).ok().map(|output| (id.clone(), output))
             }).collect();
             if let Ok(mut pending) = updates.lock() {
                 let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
@@ -753,9 +785,10 @@ fn render_worker(
                 update.previews = Some(previews);
                 if !running {
                     if let Some(output) = preview_renderer.as_deref()
+                        .filter(|id| graph_has_rendered || source_preview_nodes.contains(*id))
                         .and_then(|id| host.preview_source(id).ok())
                     {
-                        update.texture = Some((*output.texture).clone());
+                        update.texture = Some(output);
                         update.clear_image = false;
                     }
                 }
@@ -767,8 +800,11 @@ fn render_worker(
         }
         #[cfg(test)]
         let mut rendered_revision = None;
-        let result: Result<Option<(wgpu::Texture, u32, u32)>, String> = (|| {
+        let result: Result<Option<GpuOutputHandle>, String> = (|| {
             let rendered = host.render_next()?;
+            // Prepared shader targets are allocations, not completed previews.
+            // A pending inference frame can succeed without producing an output.
+            graph_has_rendered |= rendered.width > 0 && rendered.height > 0;
             #[cfg(test)]
             { rendered_revision = Some(rendered.revision); }
             if let Some(metrics) = meter.frame(Instant::now(), rendered.timeline_ns, rendered.width > 0 && rendered.height > 0) {
@@ -788,27 +824,25 @@ fn render_worker(
                 Err(_) if preview_renderer.is_some() => return Ok(None),
                 Err(error) => return Err(error),
             };
-            Ok(Some((
-                (*output.texture).clone(),
-                output.width,
-                output.height,
-            )))
+            Ok(Some(output))
         })();
-        let events = host.take_output_events();
+        publish_inference_metrics(&updates, generation, host.inference_metrics());
+        let events = host.take_inference_events();
         if !events.is_empty() {
             for event in events {
-                onnx.output(event);
+                inference.output(event);
             }
-            publish_onnx(&updates, generation, &onnx);
+            publish_inference(&updates, generation, &inference);
         }
         match result {
-            Ok(Some((texture, width, height))) => {
+            Ok(Some(output)) => {
                 if let Ok(mut pending) = updates.lock() {
                     let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
                     if update.generation != generation {
                         *update = RenderUpdate::new(generation);
                     }
-                    update.texture = Some(texture);
+                    let (width, height) = (output.width, output.height);
+                    update.texture = Some(output);
                     #[cfg(test)]
                     { update.rendered_revision = rendered_revision; }
                     if first_frame {
@@ -823,8 +857,8 @@ fn render_worker(
                 running = false;
                 render_failed = true;
                 publish_metrics(&updates, generation, meter.suspend(Instant::now(), false));
-                onnx.render_failed(&error);
-                publish_onnx(&updates, generation, &onnx);
+                inference.render_failed(&error);
+                publish_inference(&updates, generation, &inference);
                 publish_failure(&updates, generation, "Rendering stopped", &error);
             }
         }
@@ -936,6 +970,13 @@ mod tests {
             source: PortKey::new(NodeId::new(&shader.id), PortId::new(&shader.data.outputs[0].id)),
             target: PortKey::new(NodeId::new(&renderer.id), PortId::new(&renderer.data.inputs[0].id)),
         }, project.graph_revision()).unwrap();
+        let (source_image, _) = project.create_graph_node(NodeFactoryRequest::Input {
+            position: None, data_type: open_quartz::DataType::Sampler2d,
+            input_mode: Some(open_quartz::InputMode::Image),
+        }, project.graph_revision()).unwrap();
+        let images = [(source_image.id.clone(), ImageUpload {
+            key: 1, width: 2, height: 2, rgba: Arc::new([17, 34, 51, 255].repeat(4)),
+        })].into_iter().collect();
         let (mut bridge, _configuration) = RenderBridge::initialize().unwrap();
         let wait_for = |bridge: &RenderBridge, predicate: &dyn Fn(&RenderUpdate) -> bool| {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -948,11 +989,40 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
         };
-        bridge.set_graph(project.graph_snapshot(), BTreeMap::new(), false).unwrap();
+        bridge.set_graph(project.graph_snapshot(), images, false).unwrap();
         let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("press Play")));
         assert!(update.texture.is_none());
+        // Force the periodic preview publication after selecting a prepared shader.
+        thread::sleep(Duration::from_millis(110));
+        bridge.select_preview(Some(shader.id.clone())).unwrap();
+        let update = wait_for(&bridge, &|update| update.previews.is_some());
+        let previews = update.previews.unwrap();
+        assert!(previews.contains_key(&source_image.id), "uploaded source must remain available before Play");
+        assert!(!previews.contains_key(&shader.id), "an allocated shader target is not a rendered preview");
+        assert!(!previews.contains_key(&renderer.id));
+        assert!(update.texture.is_none());
+        bridge.select_preview(Some(source_image.id.clone())).unwrap();
+        wait_for(&bridge, &|update| update.texture.is_some());
+        let capture = std::env::temp_dir().join(format!("open-quartz-explicit-play-{}.png", std::process::id()));
+        bridge.capture_png(source_image.id.clone(), capture.clone()).unwrap()
+            .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let source_pixels = image::open(&capture).unwrap().to_rgba8();
+        assert_eq!(source_pixels.dimensions(), (2, 2));
+        assert!(source_pixels.pixels().all(|pixel| pixel.0 == [17, 34, 51, 255]));
+        bridge.select_preview(Some(shader.id.clone())).unwrap();
+        let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("Waiting for selected node")));
+        assert!(update.texture.is_none() && update.clear_image);
         bridge.set_playback("play").unwrap();
         wait_for(&bridge, &|update| update.texture.is_some());
+        bridge.set_playback("pause").unwrap();
+        wait_for(&bridge, &|update| update.status.as_deref() == Some("Playback: pause"));
+        bridge.select_preview(Some(shader.id.clone())).unwrap();
+        wait_for(&bridge, &|update| update.texture.is_some());
+        bridge.capture_png(shader.id.clone(), capture.clone()).unwrap()
+            .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let rendered_pixels = image::open(&capture).unwrap().to_rgba8();
+        assert!(rendered_pixels.pixels().all(|pixel| pixel.0 == [255, 255, 255, 255]));
+        std::fs::remove_file(capture).unwrap();
         bridge.set_playback("stop").unwrap();
         bridge.set_graph(project.graph_snapshot(), BTreeMap::new(), false).unwrap();
         let update = wait_for(&bridge, &|update| update.status.as_ref().is_some_and(|status| status.contains("press Play")));
@@ -981,7 +1051,7 @@ mod tests {
         let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
         assert!(std::process::Command::new(ffmpeg).args([
             "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-            "testsrc2=size=64x64:rate=10:duration=2", "-pix_fmt", "yuv420p", "-y",
+            "testsrc2=size=64x64:rate=10:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
         ]).arg(&path).status().unwrap().success());
         let graph = standalone_video_graph(&path);
         let video = graph.nodes[0].id.clone();
@@ -1031,8 +1101,8 @@ mod tests {
         for (path, color) in [(&red, "red"), (&blue, "blue")] {
             assert!(ProcessCommand::new(&ffmpeg).args([
                 "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                &format!("color=c={color}:s=16x16:r=10"), "-t", "0.4",
-                "-pix_fmt", "yuv420p", "-y",
+                &format!("color=c={color}:s=64x64:r=10"), "-frames:v", "8",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
             ]).arg(path).status().unwrap().success());
         }
         let sdk = OpenQuartz::new(Environment::headless());
@@ -1087,7 +1157,7 @@ mod tests {
             bridge.capture_png(video.id.clone(), capture.clone()).unwrap()
                 .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
             let pixels = image::open(&capture).unwrap().to_rgba8();
-            assert_eq!(pixels.dimensions(), (16, 16));
+            assert_eq!(pixels.dimensions(), (64, 64));
             assert!(pixels.pixels().all(|pixel| pixel[channel] > 240
                 && pixel[(channel + 1) % 3] < 10 && pixel[(channel + 2) % 3] < 10));
             if let Some(update) = bridge.take_update() {

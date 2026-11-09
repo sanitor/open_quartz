@@ -11,10 +11,7 @@ use open_quartz::rendering::{GpuBackend, GpuExecutor, BLIT_FRAG, FULLSCREEN_VERT
 use open_quartz::media::native::{
     NativeVideoConfig, NativeVideoFrame, NativeVideoSource, NativeVideoSourceKind,
 };
-use open_quartz::inference::{
-    run_native_image_task, NativeOnnxOptions, NativeOnnxProvider, OnnxSession, OnnxTask,
-};
-use open_quartz::{Graph, InputMode, NodeType, OnnxParamValue, VideoSourceType};
+use open_quartz::{Graph, InputMode, NodeType, VideoSourceType};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
 };
@@ -89,18 +86,9 @@ struct NativeRenderer {
     present_bind_group_layout: wgpu::BindGroupLayout,
     present_pipeline: wgpu::RenderPipeline,
     videos: HashMap<String, NativeVideoSource>,
-    onnx: HashMap<String, OnnxResource>,
     started_at: Instant,
 }
 
-struct OnnxResource {
-    session: OnnxSession,
-    task: OnnxTask,
-    model_id: String,
-    target_size: u32,
-    score_threshold: f32,
-    iou_threshold: f32,
-}
 
 impl NativeRenderer {
     fn new(
@@ -166,7 +154,6 @@ impl NativeRenderer {
             .map_err(|error| error.to_string())?;
         upload_images(&graph, resource_overrides, &mut executor)?;
         let videos = open_videos(&graph, resource_overrides, packaged_resources)?;
-        let onnx = load_onnx_resources(&graph, packaged_resources)?;
         runtime
             .set_video_nodes(&videos.keys().cloned().collect::<Vec<_>>())
             .map_err(|error| error.to_json())?;
@@ -181,18 +168,14 @@ impl NativeRenderer {
             present_pipeline,
             started_at: Instant::now(),
             videos,
-            onnx,
         })
     }
 
     fn upload_video_frames(&mut self) -> Result<(), String> {
         let mut dirty = Vec::new();
         for (node_id, source) in &mut self.videos {
-            if source.upload_latest(&mut |frame, width, height| match frame {
-                NativeVideoFrame::Rgba(rgba) => self
-                    .executor
-                    .upload_rgba(node_id, rgba, width, height)
-                    .map_err(|error| error.to_string()),
+            if source.upload_latest(&mut |frame, _, _| match frame {
+                NativeVideoFrame::Rgba(_) => Err("Hardware-resident video required; CPU frame upload is forbidden".to_owned()),
                 NativeVideoFrame::D3d12(frame) => self
                     .executor
                     .upload_d3d12_yuv(node_id, frame)
@@ -215,44 +198,6 @@ impl NativeRenderer {
     ) -> Result<(), String> {
         let mut batch = Vec::new();
         for command in commands {
-            if command.kind == "onnx" {
-                if !batch.is_empty() {
-                    self.runtime
-                        .execute_gpu(&mut self.executor, &batch)
-                        .map_err(|error| error.to_json())?;
-                    batch.clear();
-                }
-                let Some(source_id) = command.texture_inputs.values().next() else {
-                    continue;
-                };
-                let Some(resource) = self.onnx.get_mut(&command.node_id) else {
-                    continue;
-                };
-                let source = self
-                    .executor
-                    .output_handle(source_id)
-                    .ok_or_else(|| format!("ONNX source {source_id} has no GPU output"))?;
-                let rgba = pollster::block_on(self.executor.read_output_rgba(source_id))
-                    .map_err(|error| error.to_string())?;
-                let output = run_native_image_task(
-                    &mut resource.session,
-                    resource.task,
-                    &resource.model_id,
-                    &rgba,
-                    source.width,
-                    source.height,
-                    resource.target_size,
-                    resource.score_threshold,
-                    resource.iou_threshold,
-                )?;
-                self.executor
-                    .upload_rgba(&command.node_id, &output.rgba, output.width, output.height)
-                    .map_err(|error| error.to_string())?;
-                self.runtime
-                    .mark_dirty(&command.node_id)
-                    .map_err(|error| error.to_json())?;
-                continue;
-            }
             if command
                 .texture_inputs
                 .values()
@@ -453,7 +398,16 @@ fn parse_graph(project_json: &str) -> Result<Graph, String> {
     serde_json::from_value(graph.clone()).map_err(|error| format!("Invalid project graph: {error}"))
 }
 
+pub(crate) fn validate_project(project_json: &str) -> Result<(), String> {
+    validate_graph(&parse_graph(project_json)?)
+}
+
 fn validate_graph(graph: &Graph) -> Result<(), String> {
+    if graph.nodes.iter().any(|node| node.node_type == NodeType::Inference) {
+        return Err(
+            "Windows resident inference backend unavailable; CPU fallback forbidden".to_owned(),
+        );
+    }
     if graph.nodes.iter().any(|node| {
         node.node_type == NodeType::Input
             && node.data.input_mode == Some(InputMode::Video)
@@ -480,78 +434,47 @@ fn open_videos(
             .or(node.data.video_file_path.as_ref())
             .ok_or_else(|| format!("Video node '{}' has no source", node.data.label))?
             .clone();
-        let video = NativeVideoSource::open(NativeVideoConfig {
+        let video = NativeVideoSource::open_hardware_required(NativeVideoConfig {
             kind: NativeVideoSourceKind::File,
             source,
             looping: node.data.video_loop.unwrap_or(true),
             playback_rate: node.data.video_playback_rate.unwrap_or(1.0),
-        })?;
+        }, false)?;
         videos.insert(node.id.clone(), video);
     }
     Ok(videos)
 }
 
-fn load_onnx_resources(
-    graph: &Graph,
-    packaged_resources: &HashMap<String, String>,
-) -> Result<HashMap<String, OnnxResource>, String> {
-    let mut resources = HashMap::new();
-    for node in &graph.nodes {
-        if node.node_type != NodeType::Onnx {
-            continue;
+
+#[cfg(test)]
+mod inference_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_and_legacy_inference_are_readable_but_cannot_run() {
+        for kind in ["inference", "onnx"] {
+            let project = serde_json::json!({
+                "nodes": [{
+                    "id": "model", "type": kind, "position": {"x": 0, "y": 0},
+                    "data": {
+                        "type": kind, "label": "Model", "shaderCode": "",
+                        "inputs": [], "outputs": [], "uniforms": {},
+                        "onnxModelId": "yolov8n", "onnxCustomPath": "missing.onnx"
+                    }
+                }], "edges": []
+            });
+            let graph = parse_graph(&project.to_string()).unwrap();
+            assert_eq!(graph.nodes[0].node_type, NodeType::Inference);
+            let error = validate_project(&project.to_string()).unwrap_err();
+            assert!(error.contains("Windows resident inference backend unavailable"));
+            assert!(error.contains("CPU fallback forbidden"));
         }
-        let model_path = packaged_resources
-            .get(&node.id)
-            .ok_or_else(|| format!("ONNX node '{}' has no packaged model", node.data.label))?;
-        let model = std::fs::read(model_path)
-            .map_err(|error| format!("Cannot read ONNX model {model_path}: {error}"))?;
-        let session = OnnxSession::from_memory_with_options(
-            &model,
-            NativeOnnxOptions {
-                provider: NativeOnnxProvider::DirectMl,
-                allow_cpu_fallback: true,
-            },
-        )?;
-        let model_id = node
-            .data
-            .onnx_model_id
-            .clone()
-            .or_else(|| node.data.onnx_catalog_id.clone())
-            .unwrap_or_else(|| node.id.clone());
-        let task = packaged_resources
-            .get(&format!("{}:task", node.id))
-            .and_then(|task| serde_json::from_value(serde_json::Value::String(task.clone())).ok())
-            .unwrap_or(OnnxTask::Generic);
-        let number = |key: &str| {
-            node.data
-                .onnx_params
-                .as_ref()
-                .and_then(|params| params.get(key))
-                .and_then(|value| match value {
-                    OnnxParamValue::Number(value) => Some(*value),
-                    OnnxParamValue::Boolean(_) => None,
-                })
-        };
-        resources.insert(
-            node.id.clone(),
-            OnnxResource {
-                session,
-                task,
-                model_id,
-                target_size: number("targetSize")
-                    .map(|value| value as u32)
-                    .or(node.data.onnx_target_size)
-                    .unwrap_or(640),
-                score_threshold: number("scoreThreshold")
-                    .or(node.data.onnx_score_threshold)
-                    .unwrap_or(0.25) as f32,
-                iou_threshold: number("iouThreshold")
-                    .or(node.data.onnx_iou_threshold)
-                    .unwrap_or(0.45) as f32,
-            },
-        );
     }
-    Ok(resources)
+
+    #[test]
+    fn non_inference_graph_remains_supported() {
+        validate_project(r#"{"nodes":[],"edges":[]}"#).unwrap();
+    }
 }
 
 fn upload_images(

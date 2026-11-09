@@ -1,5 +1,5 @@
 use open_quartz::project::catalog::{catalog_snapshot, evaluate_math};
-use open_quartz::OnnxTask;
+use open_quartz::InferenceTask;
 use open_quartz::{DataType, PortDirection};
 use serde_json::json;
 use std::collections::HashSet;
@@ -64,10 +64,10 @@ fn math_catalog_evaluator_owns_boundary_behavior() {
 }
 
 #[test]
-fn onnx_catalog_freezes_task_io_defaults_and_integrity_fields() {
+fn inference_catalog_freezes_task_io_defaults_and_integrity_fields() {
     let snapshot = catalog_snapshot();
     assert_eq!(
-        snapshot.onnx_categories,
+        snapshot.inference_categories,
         vec![
             "Background Removal",
             "Depth Estimation",
@@ -76,8 +76,8 @@ fn onnx_catalog_freezes_task_io_defaults_and_integrity_fields() {
             "Super-Resolution"
         ]
     );
-    assert_eq!(snapshot.onnx_models.len(), 7);
-    for entry in &snapshot.onnx_models {
+    assert_eq!(snapshot.inference_models.len(), 7);
+    for entry in &snapshot.inference_models {
         assert_eq!(entry.expected_io.inputs.len(), 1);
         assert!(entry.download_url.starts_with("https://"));
         assert!(entry.file_size > 0);
@@ -90,14 +90,22 @@ fn onnx_catalog_freezes_task_io_defaults_and_integrity_fields() {
     }
 
     let yolo = snapshot
-        .onnx_models
+        .inference_models
         .iter()
         .find(|entry| entry.id == "yolov8n")
         .unwrap();
-    assert_eq!(yolo.task, OnnxTask::Detection);
+    assert_eq!(yolo.task, InferenceTask::Detection);
     assert_eq!(yolo.file_size, 12_851_098);
     assert_eq!(yolo.sha256, "");
     assert_eq!(yolo.expected_io.outputs.len(), 2);
+    assert_eq!(
+        yolo.expected_io.inputs[0].id,
+        "onnx_in_image"
+    );
+    assert_eq!(
+        yolo.expected_io.outputs.iter().map(|port| port.id.as_str()).collect::<Vec<_>>(),
+        vec!["onnx_out_detections", "onnx_out_overlay"]
+    );
     assert_eq!(yolo.expected_io.outputs[0].data_type, DataType::Roi);
     assert_eq!(
         yolo.default_params.as_ref().unwrap()["scoreThreshold"].default,
@@ -109,13 +117,26 @@ fn onnx_catalog_freezes_task_io_defaults_and_integrity_fields() {
     );
 
     let sr = snapshot
-        .onnx_models
+        .inference_models
         .iter()
         .find(|entry| entry.id == "super-resolution-3x")
         .unwrap();
-    assert_eq!(sr.task, OnnxTask::SuperResolution);
+    assert_eq!(sr.task, InferenceTask::SuperResolution);
     assert!(sr.default_params.is_none());
     assert_eq!(sr.expected_io.outputs[0].label, "upscaled");
+
+    let catalog = serde_json::to_value(snapshot).unwrap();
+    assert!(catalog.get("inferenceModels").is_some());
+    assert!(catalog.get("inferenceCategories").is_some());
+    assert!(catalog.get("onnxModels").is_none());
+    assert!(catalog.get("onnxCategories").is_none());
+    let legacy = serde_json::json!({
+        "mathCategories": [], "mathOps": [], "onnxCategories": ["Detection"],
+        "onnxModels": [], "shaderGroups": []
+    });
+    let decoded: open_quartz::project::catalog::CatalogSnapshot = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.inference_categories, vec!["Detection".to_owned()]);
+    assert!(decoded.inference_models.is_empty());
 }
 
 #[test]

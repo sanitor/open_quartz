@@ -14,8 +14,8 @@ pub mod resources;
 
 pub use project::{
     DataType, Edge, FramebufferFormat, Graph, GraphChange, GraphCommand, GraphEdit, GraphLayout,
-    InputMode, NodeData, NodeFactoryRequest, NodeId, NodeType, OnnxParamValue, OnnxSource,
-    OnnxTask, Port, PortDirection, PortId, PortKey, Position, Project, ProjectFile, ProjectId,
+    InputMode, NodeData, NodeFactoryRequest, NodeId, NodeType, InferenceParamValue, InferenceSource,
+    InferenceTask, Port, PortDirection, PortId, PortKey, Position, Project, ProjectFile, ProjectId,
     ProjectNode, ResourceId, SdkError, SdkErrorCode, SubscriptionId, SystemSource,
     TextureFilter, TextureWrap, VideoSourceType, PROJECT_FILE_VERSION,
 };
@@ -58,7 +58,7 @@ mod coverage_gpu_shader;
 mod coverage_graph;
 #[cfg(test)]
 #[path = "../tests/onnx_test.rs"]
-mod coverage_onnx;
+mod coverage_inference;
 #[cfg(test)]
 #[path = "../tests/host_resource_intent_test.rs"]
 mod coverage_host_resource_intent;

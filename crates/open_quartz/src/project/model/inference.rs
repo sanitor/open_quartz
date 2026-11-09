@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum OnnxTask {
+pub enum InferenceTask {
     SuperResolution,
     BackgroundRemoval,
     Detection,

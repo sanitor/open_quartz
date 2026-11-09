@@ -28,6 +28,7 @@ async fn output() -> open_quartz::rendering::GpuOutputHandle {
         width: texture.width,
         height: texture.height,
         format: texture.format,
+        lease: texture.lease,
     }
 }
 

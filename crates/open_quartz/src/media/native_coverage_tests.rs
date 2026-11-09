@@ -360,9 +360,8 @@ fn initial_preview_decodes_one_real_frame_without_advancing_playback() {
     std::fs::remove_file(path).unwrap();
 }
 
-#[test]
-fn decoder_spawn_and_resume_errors_are_propagated() {
-    let mut source = NativeVideoSource {
+fn unstarted_software_source() -> NativeVideoSource {
+    NativeVideoSource {
         ffmpeg: std::path::PathBuf::from("definitely-missing-ffmpeg"),
         config: NativeVideoConfig {
             kind: NativeVideoSourceKind::Camera,
@@ -381,13 +380,14 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
         alive: Arc::new(AtomicBool::new(false)),
         decoded_frames: Arc::new(AtomicU64::new(0)),
         uploaded_frames: 0,
-        cpu_copy_bytes: 0,
+        cpu_copy_bytes: Arc::new(AtomicU64::new(0)),
         child: None,
         reader: None,
         stderr_reader: None,
         position_seconds: 0.0,
         uploaded_generation: 0,
         preview_only: false,
+        decode_policy: super::DecodePolicy::AllowSoftware,
         decoder_error: Arc::new(Mutex::new(None)),
         #[cfg(target_os = "macos")]
         hardware_position_ns: Arc::new(AtomicU64::new(0)),
@@ -404,7 +404,12 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
             d3d12_detach_required: false,
             fallback_reason: None,
         },
-    };
+    }
+}
+
+#[test]
+fn decoder_spawn_and_resume_errors_are_propagated() {
+    let mut source = unstarted_software_source();
     source.slot.lock().unwrap().generation = 1;
     assert!(source
         .upload_latest(&mut |frame, _, _| {
@@ -452,6 +457,112 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
     }
 }
 
+#[test]
+fn hardware_policy_rejects_camera_before_ffmpeg_resolution_or_resource_creation() {
+    super::FORCE_FFMPEG_ERROR.with(|forced| forced.set(true));
+    for preview in [false, true] {
+        let result = NativeVideoSource::open_hardware_required(NativeVideoConfig {
+            kind: NativeVideoSourceKind::Camera,
+            source: "__fail_reader_spawn__".to_owned(),
+            looping: false,
+            playback_rate: 1.0,
+        }, preview);
+        let error = result.err().expect("strict camera opening must fail");
+        assert!(error.contains("camera capture"), "{error}");
+        assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
+        assert!(!error.contains("Injected FFmpeg"), "{error}");
+    }
+    super::FORCE_FFMPEG_ERROR.with(|forced| forced.set(false));
+}
+
+#[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
+#[test]
+fn hardware_policy_rejects_unsupported_platform_before_accessing_file_or_ffmpeg() {
+    let error = NativeVideoSource::open_hardware_required(NativeVideoConfig {
+        kind: NativeVideoSourceKind::File,
+        source: "missing".to_owned(),
+        looping: false,
+        playback_rate: 1.0,
+    }, false).err().expect("unsupported platform must fail");
+    assert!(error.contains("no hardware-resident video decoder"), "{error}");
+    assert!(!error.contains("does not exist"), "{error}");
+}
+
+#[test]
+fn strict_upload_rejects_rgba_before_callback_or_uploaded_generation_mutation() {
+    let mut source = unstarted_software_source();
+    source.decode_policy = super::DecodePolicy::HardwareRequired;
+    {
+        let Ok(mut slot) = source.slot.lock() else { panic!("frame slot poisoned"); };
+        slot.generation = 1;
+        slot.rgba = vec![0; 4];
+    }
+    let error = source.upload_latest(&mut |_, _, _| panic!("CPU frame reached GPU callback")).unwrap_err();
+    assert!(error.contains("CPU RGBA frame"), "{error}");
+    assert_eq!(source.uploaded_generation, 0);
+    assert_eq!(source.metrics().uploaded_frames, 0);
+    assert!(source.slot.lock().is_ok_and(|slot| slot.generation == 1));
+    assert!(source.child.is_none() && source.reader.is_none());
+}
+
+#[test]
+fn strict_backend_failure_never_starts_software_decoder() {
+    let mut source = unstarted_software_source();
+    source.decode_policy = super::DecodePolicy::HardwareRequired;
+    source.config.kind = NativeVideoSourceKind::File;
+    source.config.source = "__missing_hardware_video_fixture__".to_owned();
+    #[cfg(all(windows, feature = "native-video-d3d12"))]
+    { source.info.d3d12_eligible = true; }
+    let error = source.start_decoder().unwrap_err();
+    assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
+    assert!(!error.contains("Cannot start FFmpeg video decoder"), "{error}");
+    assert!(!source.is_active());
+    assert!(source.child.is_none() && source.reader.is_none() && source.stderr_reader.is_none());
+    assert!(source.slot.lock().is_ok_and(|slot| slot.generation == 0 && slot.rgba.is_empty()));
+    assert_eq!(source.metrics().cpu_copy_bytes, 0);
+    assert!(!source.metrics().hardware_decode);
+}
+
+#[cfg(any(target_os = "macos", all(windows, feature = "native-video-d3d12")))]
+#[test]
+fn hardware_file_playback_and_resume_keep_frames_resident() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/white_64x64.mp4");
+    if !path.is_file() { return; }
+    let mut source = NativeVideoSource::open_hardware_required(NativeVideoConfig {
+        kind: NativeVideoSourceKind::File,
+        source: path.to_string_lossy().into_owned(),
+        looping: true,
+        playback_rate: 1.0,
+    }, false).expect("real hardware decoding is required for the video fixture");
+    for playback in 0..2 {
+        if playback > 0 { source.resume().unwrap(); }
+        let initial = source.metrics().uploaded_frames;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while source.metrics().uploaded_frames < initial + 2 {
+            source.upload_latest(&mut |frame, width, height| {
+                assert_eq!((width, height), (64, 64));
+                match frame {
+                    NativeVideoFrame::Rgba(_) => panic!("hardware playback delivered a CPU frame"),
+                    #[cfg(target_os = "macos")]
+                    NativeVideoFrame::VideoToolbox(frame) => assert!(!frame.pixel_buffer().is_null()),
+                    #[cfg(all(windows, feature = "native-video-d3d12"))]
+                    NativeVideoFrame::D3d12(frame) => assert_eq!((frame.width, frame.height), (width, height)),
+                }
+                Ok(())
+            }).unwrap();
+            assert!(Instant::now() < deadline, "hardware playback stopped producing frames");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(source.metrics().hardware_decode);
+        assert_eq!(source.metrics().cpu_copy_bytes, 0);
+        assert!(source.info().fallback_reason.is_none());
+        assert!(source.child.is_none());
+        source.pause();
+        assert!(!source.is_active());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
@@ -478,6 +589,7 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
         slot,
         alive.clone(),
         Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicU64::new(0)),
         Arc::new(Mutex::new(None)),
         4,
         Duration::ZERO,
@@ -492,6 +604,7 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
         .unwrap();
     let alive = Arc::new(AtomicBool::new(true));
     let decoded = Arc::new(AtomicU64::new(0));
+    let cpu_copy_bytes = Arc::new(AtomicU64::new(0));
     super::read_rgba_frames(
         child.stdout.take().unwrap(),
         Arc::new(Mutex::new(super::FrameSlot {
@@ -502,11 +615,13 @@ fn rgba_reader_handles_poisoned_slot_and_zero_interval() {
         })),
         alive,
         decoded.clone(),
+        cpu_copy_bytes.clone(),
         Arc::new(Mutex::new(None)),
         4,
         Duration::ZERO,
     );
     assert_eq!(decoded.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(cpu_copy_bytes.load(std::sync::atomic::Ordering::Acquire), 4);
     let _ = child.wait();
 }
 

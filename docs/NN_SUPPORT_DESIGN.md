@@ -1,10 +1,10 @@
-# chaiNNer 设计分析与 OpenQuartz NN 支持路线图
+# NN 支持历史研究与可复用要求
 
-> Version: 2.0 (2026-07-15)
-> 目的：分析 chaiNNer 的设计与实现，对比 OpenQuartz 现状，规划 NN/ONNX 支持的扩展路径。
+> 历史研究稿（2026-07-15，原 Version 2.0）。**从第 1 节至文末全部为当时 Web/wasm-pack 产品的研究快照**；其中“当前”、已完成标记、性能数字、源码路径、ONNX-first 限制和路线图均不表示现有 Rust/Slint 产品状态，也不作为实施承诺或本次重构验收。浏览器、Tauri 与 WASM 产品已退役。
+>
+> 当前实现以[推理架构](INFERENCE_ARCHITECTURE.md)、[推理节点契约](ONNX_NODE_DESIGN.md)和 [DESIGN](DESIGN.md#module-ownership) 为准：用户功能为 Inference / 推理；独立 `oq-inference` 含真实 ORT session 与命名 FP32 Tensor 调用，OpenQuartz 保留任务/前后处理和图身份。ONNX 是当前产物格式，不是公共推理边界。Core ML、CUDA、设备 Tensor I/O 与硬件驻留未实现。
 
-
-> 历史研究稿，基于早期 Web/wasm-pack ONNX 架构（2026-07-15）；其中“当前架构”和尚未实施的路线图不代表现在的产品状态。现行跨平台硬件推理目标与迁移门槛以[推理架构设计](INFERENCE_ARCHITECTURE.md)为准。
+可复用的研究要求是：任务与 backend 分离；模型结构自省不能替代任务语义验证；tiling 只适用于已声明并验证边界/拼接语义的模型；失败不得隐式降低精度或放宽严格策略；性能必须披露 CPU readback/上传与实际测量范围。以下旧实现细节仅保留历史上下文。
 
 ## 1. chaiNNer 架构概览
 

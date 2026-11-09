@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" width="720" alt="Open Quartz screenshot">
 </p>
 
-Open Quartz is a node-based, hardware-accelerated framework for authoring real-time video processing pipelines. It fuses GPU shader execution (WGSL), ONNX neural-network inference, and CPU-side math into a single heterogeneous graph. The current product is a **Rust + Slint** native desktop application plus an independent standalone Windows `.scr` screen saver runtime. Both use the shared native Rust core directly; there is no Web, Tauri, browser, WASM, or SDK bindings product. Android/iOS delivery remains deferred by user decision.
+Open Quartz is a node-based, hardware-accelerated framework for real-time video processing, GPU shaders, resident inference and CPU-side scalar math. ONNX is the model artifact format; production image inference uses a Metal GPU network on Slint's shared wgpu 30 Device/Queue. ORT host Tensor APIs are explicit reference/diagnostics only, never production fallback. The products are a **Rust + Slint** native desktop app and independent Windows `.scr` runtime using the shared native Rust core; Web/Tauri/WASM products are retired.
 
 ## Node Catalog
 
@@ -54,7 +54,7 @@ Open Quartz is a node-based, hardware-accelerated framework for authoring real-t
 
 Auto type inference from connected peers. CPU-only evaluation, results propagate to downstream shader uniforms.
 
-### ONNX Neural Network Nodes (7 models + custom)
+### Inference Nodes (task-centric model catalog + custom)
 
 | Category | Model | Size | Input | Output | Task |
 |----------|-------|------|-------|--------|------|
@@ -64,9 +64,15 @@ Auto type inference from connected peers. CPU-only evaluation, results propagate
 | **Background Removal** | U²Net-P | 4.4MB | 320×320 fixed | `sampler2D` RGBA (alpha=mask) | General-purpose foreground extraction |
 | **Background Removal** | MODNet | 24.7MB | 512×512 fixed | `sampler2D` RGBA (alpha=matte) | Portrait-focused matting |
 | **Depth Estimation** | MiDaS v2.1 Small | 63MB | 256×256 fixed | `sampler2D` grayscale depth | Monocular relative depth |
-| **Custom** | User `.onnx` file | any | auto-introspected | auto-introspected | Load any ONNX model, ports generated from I/O metadata |
+| **Custom** | User `.onnx` file | any | validated model metadata | task-compatible typed outputs | Explicit model/task interface validation; arbitrary model semantics are not inferred from a filename |
 
-Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime CPU or Windows DirectML with observable CPU fallback. Loading, inference, and downstream GPU execution share the typed Rust core/runtime contracts.
+The catalog describes model/task metadata, **not resident execution support**. Current production resident inference supports **SR3 only** on Metal: GPU texture → GPU BT.601/resize224 → full four-layer FP32 Conv/ReLU → PixelShuffle3/RGB reconstruction → resident RGBA → Slint/downstream Shader. The compiler validates original ONNX topology, weights and reshape layout, not an approximation. Independent `oq-inference/gpu` provides `GpuImageSession` with STORAGE-only scratch; weights upload only at initialization, source pixels never enter CPU. No per-frame CPU preprocessing, host image Tensor, readback or result upload.
+
+SR3's network profile is fixed 224→672. Arbitrary-size sources still resize to 224, then output source width/height ×3; this is **not window tiling or full-resolution large-image inference**, and no large-image quality/speedup claim is made. Other models/platforms fail before frame access. UI policy is **Metal GPU / Auto Hardware**: MetalGpu / Metal, GPU placement / Device path, RequireResident + AcceleratorOnly + Forbid CPU. Auto never falls back to ORT/CPU/CoreML EP.
+
+Source introspection and complete typed task contracts remain independent of execution support: recursive source types/dtypes, scalar/UnknownRank, symbolic dimensions, metadata/opsets, initializer/external-weight references and exact named task outputs are preserved. U²Net-P keeps all seven outputs and explicit mask `1959`; its historical reference parity does not make it resident-capable. Inspect without a runtime: `cargo run -p oq-inference --example inspect_model -- MODEL.onnx`.
+
+Explicit resident/reference diagnostic: `ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --example resident_compare -- MODEL.onnx REPORT_DIR`. Apple M4 Pro Metal: GPU-generated 8×8 source (no COPY_DST), full-network 24×24 output, max/mean byte error 0/0 against opt-in ORT CPU reference, host image bytes 0, six dispatches, scratch 26,292,224 B and weights 238,628 B. Wrong-device rejection before submit, three-slot saturation and released-lease reuse were observed. First completion wall 69.494292 ms **includes diagnostic copy and first pipeline compilation**, not throughput/GPU time. See [architecture and scope](docs/INFERENCE_ARCHITECTURE.md).
 
 ### Output Nodes
 
@@ -89,24 +95,24 @@ Models download when explicitly loaded in Slint. Native hosts use ONNX Runtime C
 ## Native Desktop (Slint)
 - Standalone Rust application with Slint 1.18.1 and wgpu 30; packaged builds require neither a WebView nor a browser/Node process.
 - Launches into an empty Untitled canvas with playback stopped. Opening/New also stop playback; editing nodes does not implicitly press Play. Manual node drags preserve the drop position even for a single-node graph; Fit View remains explicit.
-- Ownership extraction is complete. Final results: workspace 234, full-native 315, Slint 73, UI 18/18, Shader 34/34, editor 10, native boundaries, independent ONNX/runtime configurations and macOS release packaging passed. Both overall 100% coverage gates failed; see Design [验证基线](docs/DESIGN.md#validation). Camera, Windows/Linux/.scr and mobile remain untested. Changes remain Unreleased.
+- Resident-cutover verification on Apple Metal: workspace 270, native/backend 372, desktop 79; real cached-model/reference tests 2; UI 18/18 and Shader pixels 34/34 passed. Production SR3 also ran with a nonexistent ORT library path and displayed a real 24×24 shared GPU texture. Dependency boundaries and macOS packaging passed; both unchanged 100% coverage gates failed. Exact scope, percentages and reports: [Design validation](docs/DESIGN.md#validation). Other-platform resident support is not established by Apple Metal results. Changes remain Unreleased.
 - Slint's native coordinator is `open_quartz::player::NativePlayer`; its `RenderDevice` uses the same wgpu device/queue instance on the existing render thread. Renderer and eligible graph nodes import real GPU textures directly; cards show output previews and resolution labels. Structured GPU errors mark the affected node and clear its stale preview. PNG capture remains explicit readback. Extraction paths and implementation status are tracked in Design [源码索引](docs/DESIGN.md#source-map).
 - Filter **Auto size** follows connected input texture dimensions; disabling it uses explicit width/height. The toolbar displays composition time, while Renderer cards and previews show graph **Render FPS** (not source video FPS or screen refresh); Pause freezes time and Stop resets it.
 - The native Shader editor uses the reusable `crates/slint_code_editor` component: cosmic-text shaping/editing with live WGSL colors, line numbers, goto/find/replace, selection and local undo/redo. Slint provides the UI and public desktop IME event bridge; no fork or WebView. Presets remain read-only and Apply is explicit. Full screen-reader caret/selection reporting and real IME/platform acceptance are not yet verified; completion and inline lint are not provided. Run `npm run dev:editor` for the independent WGSL/JSON demo.
-- Rust owns graph editing/history, project I/O, source resources, native ONNX sessions, video/camera selection, previews/fullscreen, and Windows screen saver export. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
+- Rust owns graph editing/history, project I/O, source resources, inference task adaptation, video/camera selection, previews/fullscreen, and Windows screen saver export; `oq-inference` owns the actual backend sessions. The native FILE menu uses platform Open/Save dialogs; see the app README for exact behavior.
 - `npm run test:desktop:ui` runs real-window Slint UI automation and saves screenshots/logs under `test-results/slint-ui/`. `npm run dev:desktop:ui` enables interactive MCP inspection; see the [native app instructions](apps/open_quartz_slint/README.md#ui-automation).
 - `npm run test:desktop:shaders` checks every catalog Shader with real PNG inputs, native graph connections and independently verified GPU previews, with per-Shader input/reference/output images in the HTML report.
 - Portable packages include architecture-matched FFmpeg and official ONNX Runtime **1.21.0**, their notices, and (Windows) DirectML, app-local VC++ runtime DLLs, and the screen saver stub. Missing required resources fail packaging instead of producing a partial app.
-- macOS file video uses in-process VideoToolbox H.264/HEVC decoding with retained CoreVideo/Metal surfaces and GPU SDR color conversion; NV12/P010 playback does not read decoded frames back to the CPU. A pinned LGPL-only FFmpeg 8.1.1 SDK, corresponding source and hardware-required patch are bundled. Unsupported presentation/color semantics fail explicitly; backend failures retain the existing software fallback. Windows/Linux/cameras keep their existing paths. See the [implementation boundaries and evidence](docs/MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收).
+- macOS video uses in-process VideoToolbox H.264/HEVC with retained CoreVideo/Metal surfaces and GPU SDR conversion, without decoded-frame CPU transfer. Real-time video graphs require hardware: no FFmpeg RGBA software fallback; unsupported cameras/Linux/Windows without D3D12 refuse. One-time file image/framebuffer CPU decode-ingress and initial upload are explicit preparation boundaries; capture/reference/test readback is opt-in, never ordinary preview. See [media boundaries](docs/MEDIA_CODEC_ARCHITECTURE.md).
 - The reusable media crate is [`oq-media`](crates/oq-media/README.md) (`oq_media` in Rust), under `crates/oq-media`. `oq` denotes its OpenQuartz origin, not an OpenQuartz dependency; the application is a consumer of the library. Its README records 8K performance methods/results and the macOS NV12 OpenGL-compatibility fix.
-- ONNX remains the interchange format, not the cross-platform runtime contract. Native Core ML, DirectML/WinML, CUDA and CPU backends, plus strict device-residency policy, are an architecture proposal—not current capability. See [inference architecture and migration gates](docs/INFERENCE_ARCHITECTURE.md).
+- Output leases survive TextureHandle/GpuOutputHandle/RenderUpdate and Slint current handles, preventing output-pool reuse while consumers retain a texture. At most three slots, explicit backpressure when saturated, released-lease reuse, and same-queue order/fences protect the resident path. No unmeasured GPU timing is fabricated. ORT CPU/DirectML/CoreML EP remain explicit reference APIs/examples only.
 - macOS packages include an icon and camera usage description. They are ad-hoc signed, **not notarized**; Windows packages are unsigned. Camera access still requires OS permission and a real device.
 
-Exported `.scr` files use an independent Win32/Rust host and do not require an installed Slint application; camera inputs are not deterministic export sources. Earlier macOS package/video/dialog acceptance is recorded in the [migration archive](docs/SLINT_UI_REFACTOR.md); an earlier winit startup abort remains unexplained and unreproduced.
+Exported `.scr` files use an independent Win32/Rust host, not an installed Slint app. Inference export/stub execution is explicitly unavailable without a qualified resident backend; CPU is forbidden. Non-inference Shader/hardware-video export remains supported; camera inputs are nondeterministic and rejected. Historical migration evidence is archived in [SLINT_UI_REFACTOR](docs/SLINT_UI_REFACTOR.md); the earlier winit startup abort remains unexplained and unreproduced.
 
 ## Rust SDK and Native Ownership
 
-`open_quartz` remains the single core implementation and Rust SDK. `src/lib.rs` is the only root source module; public types such as `OpenQuartz`, `Project`, `Graph`, `ProjectNode`, `Port`, `Player`, `Resource`, and `Output` are root exports. State and production calls belong to the following concrete owners:
+`open_quartz` remains the single graph/core implementation and Rust SDK; reusable runtime implementation lives in the independent `oq-inference` and `oq-media` libraries. `src/lib.rs` is the only core root source module; public types such as `OpenQuartz`, `Project`, `Graph`, `ProjectNode`, `Port`, `Player`, `Resource`, and `Output` are root exports. State and production calls belong to the following concrete owners:
 
 | Module / owner | Responsibility |
 |---|---|
@@ -117,7 +123,8 @@ Exported `.scr` files use an independent Win32/Rust host and do not require an i
 | `outputs::OutputHub` | Output contracts, subscriptions/registry, presentation planning, resources/backend/capabilities |
 | `rendering::RenderDevice` | GPU executor/resources, explicit readback and Windows presenter on the shared device |
 | `media::sources::VideoSources` (internal) | Graph-source map and lifecycle; uploads through a callback using RenderDevice |
-| `inference::tasks::InferenceTasks` (internal) | Sessions, pending tasks, task IDs, channels/workers and accepted completions |
+| `inference::tasks::InferenceTasks` (internal) | Resident graph-task identity/session/output adaptation; no production ORT host-image workers |
+| `oq_inference::GpuImageSession` / `InferenceSession` | Actual GPU network execution; separate explicit ORT/reference named FP32 Tensor interface, no OpenQuartz dependency |
 
 Advanced paths use these responsibility modules, plus project::catalog and resources::{plan,models}. The old execution/runtime namespaces and class aliases are removed with the old directories; actual state, resources and production calls moved to their owners. [Design 模块与所有权](docs/DESIGN.md#module-ownership) and [源码索引](docs/DESIGN.md#source-map) define the interfaces and current file index.
 
@@ -127,20 +134,20 @@ The public headless `Player` still has no real device driver, and `Project::grap
 
 Desktop Rust calls typed APIs directly. Web/Tauri, WASM, JS object/worker exports, `bindings::wasm`, `web-bindings` and `browser` remain retired with no opt-in compatibility adapter. SDK C ABI/JNI bridges are unnecessary; ORT, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM backend FFI remain necessary.
 
-[Design 验证基线](docs/DESIGN.md#validation) records the latest architecture verification baseline. Coverage tests passed (default 134, native 201), but both 100% gates failed: default lines/functions/regions 98.53%/97.88%/98.34%; native 97.70%/95.96%/96.38%. Thresholds were not relaxed; RenderDevice/InferenceTasks/VideoSources remain measured, with NativePlayer's existing facade exclusion unchanged.
+[Design validation](docs/DESIGN.md#validation) separates resident evidence and pending final integration from dated ORT/CoreML coverage results. Prior passing tests and failing overall 100% gates are historical, not this cutover's counts; thresholds/exclusions must not be relaxed.
 
 The core's `default = []` supports graph/project editing, compiler/evaluation and playback/output state without GPU, ORT, FFmpeg, HTTP or UI dependencies. Consumers select capabilities explicitly:
 
 | Feature | Capability |
 |---|---|
 | `gpu` | wgpu execution, textures, readback and presentation |
-| `native-runtime` | NativePlayer/RenderDevice coordination; enables gpu, not video, ONNX or downloads; existing feature name and behavior retained |
+| `native-runtime` | NativePlayer/RenderDevice coordination; enables gpu, not video, inference or downloads; existing feature name and behavior retained |
 | `native-video` | Native video sources and platform workers; macOS uses independent `oq-media` |
 | `native-video-d3d12` | Windows D3D12 video; enables `native-video` and `gpu` |
-| `native-onnx` | Native ORT sessions/pipeline without requiring GPU or HTTP |
+| `native-onnx` | Graph inference through independent `oq-inference/gpu`; production requires shared resident GPU, ORT is explicit reference/diagnostic opt-in |
 | `model-cache` | Model download, checksum verification and file cache without requiring ORT/GPU |
 
-`oq-media`, `slint_code_editor`, the screen saver exporter, standalone `.scr` stub and Slint application remain independent components/products. A future inference extraction remains conditional on a real independent implementation and its own tests; no empty provider/API packages are introduced.
+`oq-inference`, `oq-media`, `slint_code_editor`, the screen saver exporter, standalone `.scr` stub and Slint application are independent implementations/components/products. The inference library contains a usable backend rather than an empty provider/API package.
 
 ## Getting Started — Native Desktop
 
@@ -190,7 +197,7 @@ npm run check:rust-boundaries        # default/native feature and public API bou
 npm run test:sdk-coverage            # Rust core coverage gates
 ```
 
-Final evidence is in [Design 验证基线](docs/DESIGN.md#validation): workspace 234/34 suites, full-native 315/30 suites, Slint 73, UI 18/18, Shader 34/34, editor 10 and boundaries passed. Independent --no-default-features ONNX-only 247/30 suites and runtime-only 279/28 suites passed. npm run build passed runtime copy/signing/--help and produced dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip. Both overall coverage gates failed; platform acceptance and public API limitations remain explicit there.
+Current verification covers independent real ORT/named Tensor invocation, strict policy handling, legacy/canonical projects, core/desktop integration, real model pixels, dependency boundaries and macOS packaging. [Design 验证基线](docs/DESIGN.md#validation) records exact counts, reports and remaining coverage/platform limits; no Windows/Linux device acceptance is inferred from these local results.
 
 ## Tech Stack
 

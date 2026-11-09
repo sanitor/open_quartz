@@ -33,7 +33,7 @@ fn shader_graph() -> String {
 }
 
 #[test]
-fn unsupported_video_and_onnx_rejection_preserves_current_rendered_graph() {
+fn unsupported_video_and_inference_rejection_preserves_current_rendered_graph() {
     pollster::block_on(async {
         let mut runtime = runtime().await;
         let revision = runtime.set_graph(&shader_graph()).unwrap();
@@ -47,9 +47,9 @@ fn unsupported_video_and_onnx_rejection_preserves_current_rendered_graph() {
         assert!(runtime.has_graph());
         assert!(runtime.has_output_texture("renderer"));
 
-        let onnx = json!({"nodes":[{"id":"onnx","type":"onnx","position":{"x":0,"y":0},"data":{"type":"onnx","label":"ONNX","shaderCode":"","inputs":[],"outputs":[],"uniforms":{}}}],"edges":[]}).to_string();
-        let error = runtime.set_graph(&onnx).unwrap_err();
-        assert!(error.contains("requires the native-onnx feature"), "{error}");
+        let inference = json!({"nodes":[{"id":"onnx","type":"onnx","position":{"x":0,"y":0},"data":{"type":"onnx","label":"ONNX","shaderCode":"","inputs":[],"outputs":[],"uniforms":{},"inferencePolicy":{"backend":"ort-cpu","fallback":"allow-cpu","residency":"cpu-transfers-allowed","placement":"any"}}}],"edges":[]}).to_string();
+        let error = runtime.set_graph(&inference).unwrap_err();
+        assert!(error.contains("hardware-resident"), "{error}");
         assert_eq!(runtime.session.revision(), revision);
         assert!(runtime.has_graph());
         assert!(runtime.has_output_texture("renderer"));

@@ -3,9 +3,9 @@ import { Button, ComboBox } from "components/compact_widgets.slint";
 import { Theme } from "theme.slint";
 import { TopBar, FactoryEntry, FactoryGroup } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
-import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow } from "components/inspector.slint";
+import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorInferenceRow } from "components/inspector.slint";
 import { CodeEditorBridge } from "code_editor.slint";
-export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorOnnxRow, FactoryEntry, FactoryGroup }
+export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorInferenceRow, FactoryEntry, FactoryGroup }
 
 export component AppWindow inherits Window {
     title: root.project-name + " — OpenQuartz";
@@ -66,15 +66,25 @@ export component AppWindow inherits Window {
     in property <bool> inspector-uniform-dirty;
     in property <bool> inspector-uniforms-valid: true;
     in property <[InspectorFormGroup]> inspector-forms;
-    in property <[InspectorOnnxRow]> inspector-onnx-config;
-    in property <[InspectorOnnxRow]> inspector-onnx-saved;
-    in property <string> inspector-onnx-status;
-    in property <[InspectorOnnxRow]> inspector-onnx-live;
-    in property <bool> inspector-onnx-available;
-    in property <bool> inspector-onnx-loading;
-    in property <bool> inspector-onnx-attached;
-    in-out property <string> inspector-onnx-path;
-    callback inspector-load-onnx(string);
+    in property <[InspectorInferenceRow]> inspector-inference-config;
+    in property <[InspectorInferenceRow]> inspector-inference-saved;
+    in property <string> inspector-inference-status;
+    in property <[InspectorInferenceRow]> inspector-inference-live;
+    in property <bool> inspector-inference-available;
+    in property <bool> inspector-inference-loading;
+    in property <bool> inspector-inference-attached;
+    in-out property <string> inspector-inference-path;
+    in property <[string]> inspector-inference-backend-options;
+    in property <int> inspector-inference-backend-index: -1;
+    in property <string> inspector-inference-policy-summary;
+    in property <bool> inspector-inference-policy-valid;
+    in property <string> inspector-inference-metrics-summary;
+    in property <bool> inspector-inference-custom;
+    in property <[string]> inspector-inference-task-options;
+    in property <int> inspector-inference-task-index: -1;
+    callback inspector-inference-task-changed(int);
+    callback inspector-inference-backend-changed(int);
+    callback inspector-load-inference(string);
     in property <bool> inspector-image-input;
     in property <string> inspector-image-name;
     in property <string> inspector-image-size;
@@ -89,7 +99,7 @@ export component AppWindow inherits Window {
     callback inspector-refresh-cameras();
     callback inspector-select-camera(int);
     callback inspector-choose-framebuffer();
-    callback inspector-unload-onnx();
+    callback inspector-unload-inference();
     in-out property <string> inspector-node-label;
     in-out property <string> inspector-shader-code;
     in-out property <bool> inspector-auto-size;
@@ -244,15 +254,25 @@ export component AppWindow inherits Window {
                     ports: root.inspector-ports;
                     uniforms: root.inspector-uniforms;
                     forms: root.inspector-forms;
-                    onnx-config: root.inspector-onnx-config;
-                    onnx-saved: root.inspector-onnx-saved;
-                    onnx-status: root.inspector-onnx-status;
-                    onnx-live: root.inspector-onnx-live;
-                    onnx-available: root.inspector-onnx-available;
-                    onnx-loading: root.inspector-onnx-loading;
-                    onnx-attached: root.inspector-onnx-attached;
-                    onnx-path <=> root.inspector-onnx-path;
-                    load-onnx(path) => { root.inspector-load-onnx(path); }
+                    inference-config: root.inspector-inference-config;
+                    inference-saved: root.inspector-inference-saved;
+                    inference-status: root.inspector-inference-status;
+                    inference-live: root.inspector-inference-live;
+                    inference-available: root.inspector-inference-available;
+                    inference-loading: root.inspector-inference-loading;
+                    inference-attached: root.inspector-inference-attached;
+                    inference-path <=> root.inspector-inference-path;
+                    inference-backend-options: root.inspector-inference-backend-options;
+                    inference-backend-index: root.inspector-inference-backend-index;
+                    inference-policy-summary: root.inspector-inference-policy-summary;
+                    inference-policy-valid: root.inspector-inference-policy-valid;
+                    inference-metrics-summary: root.inspector-inference-metrics-summary;
+                    inference-custom: root.inspector-inference-custom;
+                    inference-task-options: root.inspector-inference-task-options;
+                    inference-task-index: root.inspector-inference-task-index;
+                    inference-task-changed(index) => { root.inspector-inference-task-changed(index); }
+                    inference-backend-changed(index) => { root.inspector-inference-backend-changed(index); }
+                    load-inference(path) => { root.inspector-load-inference(path); }
                     image-input: root.inspector-image-input;
                     image-name: root.inspector-image-name;
                     image-size: root.inspector-image-size;
@@ -267,7 +287,7 @@ export component AppWindow inherits Window {
                     choose-video => { root.inspector-choose-video(); }
                     refresh-cameras => { root.inspector-refresh-cameras(); }
                     select-camera(index) => { root.inspector-select-camera(index); }
-                    unload-onnx => { root.inspector-unload-onnx(); }
+                    unload-inference => { root.inspector-unload-inference(); }
                     node-label <=> root.inspector-node-label;
                     shader-code <=> root.inspector-shader-code;
                     auto-size <=> root.inspector-auto-size;

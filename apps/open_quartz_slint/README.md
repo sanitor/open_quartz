@@ -12,7 +12,7 @@ pinned to **1.18.1**, using the femtovg wgpu renderer and wgpu 30 shared-device 
 The application consumes the single `open_quartz` core through root typed APIs
 and explicit advanced modules. `src/lib.rs` remains the only source root file,
 and public `Project`, `Graph`, `Player`, `Resource`, `Output` and other root types
-are preserved. The extraction target assigns shader/topology/plan to `compiler`,
+are preserved. The concrete owners assign shader/topology/plan to `compiler`,
 pure dirty/Math/feedback to `evaluation::GraphEvaluator`, and applied graph
 identity/revision/generation/state to `evaluation::GraphInstance`.
 
@@ -23,27 +23,39 @@ presentation planning, resources/backend/capabilities. `rendering::RenderDevice`
 owns GPU execution/readback/Windows presentation and uses the **same wgpu
 Device/Queue instance** as Slint. The internal `media::sources::VideoSources`
 owns the graph-source map/lifecycle/upload callback; `inference::tasks::InferenceTasks`
-owns sessions, pending tasks, task IDs, channels/workers and accepted completions.
-Project/history/catalog remain in `project`; resource intents and background
-model preparation remain in `resources::{plan,models}`.
+owns resident graph-task identity/session/output adaptation. Independent `oq-inference/gpu`
+owns the real ONNX GPU compiler and GpuImageSession, with no OpenQuartz/NodeId/UI
+dependency; wgpu is optional under its gpu feature. ORT named FP32 Tensor APIs
+remain explicit reference/diagnostics only, never a production fallback. Project/history/catalog remain in
+`project`; resource intents and background preparation remain in `resources::{plan,models}`.
+
+`inspect_onnx(model)` inspects source declarations without ORT; session `source_interface` preserves IR/producer/model versions, domain, graph name, model/graph/value descriptions/custom properties and graph opset imports. Opsets are source-parsed, not universally unavailable under ORT API 21. Recursive Tensor/SparseTensor/Sequence/Map/Optional/Opaque/Unknown types retain exact dtype codes, scalar vs UnknownRank, dimension symbols/denotations, and Required/Optional/OverridableInitializer inputs. Dense/sparse initializer and external-data references are described without copying/loading weights. Runtime ValueKind/tensor taxonomy/metadata and artifact hash/size/format are separate; runtime version sentinels are not source versions, and producer_version is source-filled.
+
+`ImageInterfaceReport` reports structural compatibility, not task semantics. Typed `ImageTaskContract` records exact named inputs/selected outputs, NCHW layout, decoder, preprocessing/resize/color and declared/concrete shape constraints. Declarations are checked before frame access and concrete outputs before decoding/delivery. Detection `[1,84,N]` is structurally valid, while the COCO decoder requires `[1,84,8400]`. JSON separates `model` and `taskContract`; retained contracts do not expand resident backend support.
+
+Image-task contracts retain exact output bindings: U²Net-P keeps all seven outputs `1959`–`1965` and binds mask `1959`; unknown multi-output models require a declared binding. Historical reference parity does not make these models resident-capable. Production currently supports **SR3 only**; other models/platforms reject before frame access.
+
+The production path is GPU texture → GPU BT.601/resize224 → full four-layer FP32 Conv/ReLU → PixelShuffle3/RGB reconstruction → resident RGBA → Slint/downstream Shader, on the **same Metal wgpu30 Device/Queue**. The network profile is fixed 224→672; arbitrary-size sources still resize to 224 and produce source-size ×3 output, not window tiling or full-resolution large-image quality. Source pixels never enter CPU; no per-frame host Tensor, CPU preprocessing, readback or result upload. Model/weights parsing and initial upload plus scalar controls are preparation boundaries.
+
+Source-only JSON: `cargo run -p oq-inference --example inspect_model -- MODEL.onnx`. Explicit resident/reference diagnostic: `ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --example resident_compare -- MODEL.onnx REPORT_DIR`. See [architecture and evidence](../../docs/INFERENCE_ARCHITECTURE.md); ORT/CoreML EP examples remain diagnostic only.
 
 The frame contract uploads current media, validates inference completions through
 `session.validate_completion` before changing GPU textures, advances/evaluates,
-and flushes upstream GPU work before ONNX readback/dispatch. NativePlayer selects
+and submits upstream GPU work before resident texture inference. NativePlayer selects
 the graph output for RenderDevice to present; OutputHub also supports an independent
 presentation backend path. Scalar advance preflights a candidate graph/clock and
 the whole scalar batch before commit; shared Arc graph/plan data avoids per-frame
 WGSL deep copies. PreparedNativeGraph stages images in fresh textures and owns
 prepared video handles; UI request generation differs from accepted graph revision.
 
-Close invalidates pending tasks and releases session/source descriptors and
-renderer outputs. Active ORT workers keep Arc sessions until completion, and
-InferenceTasks Drop currently joins them; it is not guaranteed nonblocking.
-Live GPU leases remain retained. Failure atomicity and detached-video texture
-cleanup regressions pass after the fix: successful video open precedes staged
-texture removal, detach/obsolete-video removal clears before optional image upload,
-and aborted candidates preserve old source/pixels. Standalone .scr directly drives
-PlaybackSession/evaluation/GpuExecutor in its own loop. See Design [验证基线](../../docs/DESIGN.md#validation) for evidence.
+Close invalidates pending publication and releases descriptors, not live GPU leases.
+TextureHandle/GpuOutputHandle/RenderUpdate and Slint's current handles retain the output
+owner through consumer use. The output pool has at most three slots: retained leases
+prevent reuse; saturation is explicit backpressure, release permits reuse. Same-queue
+order/fences preserve producer/consumer safety. Candidate graph failures preserve old
+source/pixels; request generation differs from accepted revision. Independent `.scr`
+keeps its own loop but inference export/stub execution is unavailable (CPU forbidden);
+non-inference Shader/hardware-video export remains available.
 
 Advanced paths use these modules without old execution/runtime namespaces or
 class aliases; the old directories are removed. Actual state, resources and calls
@@ -63,21 +75,14 @@ The pure Rust desktop uses the typed API directly; it needs no SDK C ABI, JNI
 bridge, or desktop language bridge. Native backend FFI remains necessary for
 ONNX Runtime, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM.
 
-Final evidence is in [Design 验证基线](../../docs/DESIGN.md#validation):
-workspace 234/34 suites, full-native 315/30 suites, Slint 73, editor 10, boundaries,
-ONNX-only 247/30 suites and runtime-only 279/28 suites passed. Real-window UI
-passed [18/18](../../test-results/slint-ui/interaction-2026-11-06T07-04-55-208Z/report.html),
-and catalog Shaders passed [34/34](../../test-results/slint-ui/shaders-2026-11-06T07-05-10-565Z/report.html).
-npm run build passed runtime copy/signing/--help and produced
-dist-desktop/OpenQuartz-0.20.0b-macos-arm64.zip.
-
-Both overall 100% coverage gates **failed**, despite default/native coverage tests
-134/201 passing. Lines/functions/regions: default 98.53%/97.88%/98.34%, native
-97.70%/95.96%/96.38%. Thresholds were not relaxed; extracted RenderDevice,
-InferenceTasks and VideoSources remain counted, with only the existing NativePlayer
-facade exclusion retained.
-Camera, Windows/Linux/.scr and mobile remain untested; public headless Player driver
-and graph_mut history limitations remain unchanged. Earlier results below are archival.
+Resident-cutover verification on Apple Metal: desktop 79, workspace 270 and
+native/backend 372 passed; real cached-model/reference tests 2 passed. Production
+SR3 ran with a nonexistent ORT library path and displayed 24×24 shared textures
+in the native window. UI 18/18, Shader pixels 34/34, dependency boundaries and
+macOS portable packaging passed. Both unchanged 100% coverage gates failed;
+[Design validation](../../docs/DESIGN.md#validation) records percentages and reports.
+Camera/Windows/Linux/mobile resident capabilities are not established by Apple
+Metal results; historical sections below are not new runs.
 
 ## Run
 
@@ -145,8 +150,8 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
 
 ## Graph and application boundary
 
-- The original React/Tauri light visual layout is restored in native Slint: 48px
-  icon toolbar with FILE/SOURCE/MATH/SHADER/ONNX menus, a full-bleed cross-grid
+- The native Slint layout has a 48px
+  icon toolbar with FILE/SOURCE/MATH/SHADER/INFERENCE menus, a full-bleed cross-grid
   canvas, dark-blue 28px node captions, typed ports, real shared-GPU node
   thumbnails with resolution labels and status LEDs, and a 320px resizable
   sidebar. The sidebar appears on selection; semantic sections and texture
@@ -181,8 +186,8 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   deletions, and whole-subgraph pastes. An identical connection is a no-op. A successful new edit clears redo;
   a failed edit does not. Opening a project resets the edit session; generated
   fixture construction is not exposed as user undo history. History is not saved.
-  Topology edits and their undo/redo refresh ExecutionRuntime; layout-only history does
-  not restart rendering.
+  Topology edits and their undo/redo refresh NativePlayer's accepted graph; layout-only
+  history does not restart rendering.
 - **− / +** change zoom by a factor of 1.25, with a manual range of **1%–200%**.
   **100%** resets scale while preserving the viewport center where bounds allow.
   Scrollbars/trackpad scrolling navigate the scaled canvas. **Fit View** centers
@@ -215,19 +220,19 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   the next offset. Copy with no selection leaves the existing clipboard intact.
 - The graph clipboard survives project Open and source edits/removal until replaced
   by another Copy or the app exits. Embedded Image and Framebuffer data URLs are
-  copied with their node data; ONNX model files and video/camera sources remain
+  copied with their node data; inference model files and video/camera sources remain
   external. Text fields retain their normal text clipboard shortcuts. Graph Copy/Paste/
   Select all are disabled during project I/O; graph shortcuts do not run during a node drag.
 - `AppController` owns the SDK `Project` and updates Slint properties/models.
   Project parsing, validation, serialization, and graph mutation use the Rust SDK;
   the UI does not interpret project JSON.
 - A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
-  A separate render worker owns `open_quartz::execution::runtime::ExecutionRuntime`;
-  it directly composes shared Runtime rules and GPU/video/inference resources.
+  A separate render worker owns `open_quartz::player::NativePlayer`;
+  it coordinates PlaybackSession and GPU/video/inference owners.
   The former native host crate and PlayerHost forwarding layer have been removed.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
-  into `ExecutionRuntime::from_shared_wgpu`, and passes the originals to Slint's
-  `WGPUConfiguration::Manual`. The runtime receives the SDK graph, advances playback,
+  into `NativePlayer::from_shared_wgpu`, and passes the originals to Slint's
+  `WGPUConfiguration::Manual`. NativePlayer receives the SDK graph, advances playback,
   and provides its output texture. A Slint timer imports the latest texture using
   `slint::Image::try_from`; frames do not go through pixel readback or encoded URLs.
   Graph generations discard stale output after opening another project.
@@ -238,13 +243,13 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   output image. Host graph/render errors and texture import failures are displayed;
   a render/import failure stops rendering until another open, topology, or executable-data edit.
 
-The app includes Sampling, Framebuffer, and Video configuration forms plus ONNX
-model loading and inference. Image inputs accept PNG/JPEG/BMP/WebP files; raw
+The app includes Sampling, Framebuffer, and Video configuration forms plus
+inference model loading and execution. Image inputs accept PNG/JPEG/BMP/WebP files; raw
 Framebuffer inputs accept binary files decoded using the applied format, dimensions,
 and optional row stride. Image/Framebuffer resources are embedded in the SDK project
-and decoded asynchronously after Open. ExecutionRuntime receives decoded RGBA textures;
+and decoded asynchronously after Open. NativePlayer receives decoded RGBA textures;
 errors are reported instead of replaced with sample output. Video file paths and
-camera IDs are persisted and reconciled by ExecutionRuntime, with native camera enumeration,
+camera IDs are persisted and reconciled by NativePlayer, with native camera enumeration,
 file selection, loop, and playback rate controls. Video files and cameras remain
 external resources and can fail if a file/device is missing or OS permission is
 denied. Sampling applies each source node's Linear/Nearest filter and Clamp/Repeat/
@@ -257,8 +262,8 @@ even when dimensions match; it preserves the UI playback state. This does not
 execute the graph or advance the starting playback position. Explicit Play starts
 normal decoding. Preview polling ends on success, error, timeout or source removal.
 
-The toolbar shows composition playback time (`HH:MM:SS.t`) from ExecutionRuntime's
-actual runtime timeline, not a second UI wall clock. Pause freezes it, Resume
+The toolbar shows composition playback time (`HH:MM:SS.t`) from NativePlayer's
+actual session timeline, not a second UI wall clock. Pause freezes it, Resume
 continues, and Stop/New/Open reset it. Renderer cards, the Renderer Inspector
 preview and fullscreen show **Render FPS**: successful graph output ticks per
 wall-clock measurement window (500ms), published with the time at most every
@@ -277,15 +282,15 @@ VideoToolbox backend. Retained CVPixelBuffer planes are imported through Metal
 into the shared wgpu device and converted to SDR sRGB RGBA on the GPU, without
 CPU frame transfer. The bundled, checksum-pinned LGPL-only FFmpeg 8.1.1 SDK
 includes its corresponding source, hardware-required patch and build options.
-Backend failures can use the existing software path; unsupported presentation
-semantics fail explicitly instead. NV12/P010, full/limited-range GPU colors and
+Backend or unsupported presentation failures are explicit errors, never FFmpeg
+RGBA software fallback in the real-time graph. NV12/P010 and GPU colors plus
 real-window stopped/Play/Pause/Resume/Stop behavior have been exercised on Apple
 Silicon, including a relocated production package. BT.470BG/PAL primaries are
 preserved separately from BT.601 YUV coefficients and converted to BT.709 in
 linear light before sRGB output. HDR, other primaries, rotation/crop and non-square
-pixels remain unsupported by this path. Windows,
-Linux and cameras retain their prior backends. Device-specific 8K measurements
-and their limits are recorded in the [oq-media README](../../crates/oq-media/README.md#8k-性能与-opengl-兼容慢路径); no cross-platform performance guarantee is made.
+pixels remain unsupported by this path. Unsupported cameras/Linux and Windows
+without D3D12 refuse rather than CPU-upload frames. Device-specific 8K measurements
+in the [oq-media README](../../crates/oq-media/README.md#8k-性能与-opengl-兼容慢路径) do not establish inference throughput or cross-platform support.
 
 For the small shared-GPU video demo, prepare the runtime first, then run
 `cargo run --manifest-path apps/open_quartz_slint/Cargo.toml --example video_preview -- VIDEO`.
@@ -375,8 +380,8 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   revision, history, and draft. SDK syntax errors can be committed when the graph
   remains valid; the stored `parseError` is shown in the panel. Apply valid source to
   clear it. GPU compilation failures carry their structured node ID back from
-  ExecutionRuntime: the affected node's status LED turns red, its stale texture preview
-  clears, and the runtime status remains readable. Unrelated attached ONNX nodes
+  NativePlayer: the affected node's status LED turns red, its stale texture preview
+  clears, and the runtime status remains readable. Unrelated attached inference nodes
   are not marked failed.
 - Each changed Apply is one SDK history entry. No-op Apply creates no revision.
   Undo/Redo refreshes Inspector values. Name-only edits do not restart rendering;
@@ -390,12 +395,12 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   optional positive-u32 stride (`blank` or `0` means auto). Video Inputs expose
   File/Camera source, native file/device selection, Loop, and finite 0.1–4.0 playback
   rate. Apply persists complete SDK `NodeData`; source switches preserve the saved
-  file path, and ExecutionRuntime reconciles committed source configuration. Raw buffer
+  file path, and NativePlayer reconciles committed source configuration. Raw buffer
   resources are decoded by the file worker rather than on the Slint UI thread.
 
-### Read-only ONNX metadata
+### Inference model metadata
 
-- Select one ONNX node to inspect its recorded source, model/catalog IDs, custom
+- Select one Inference node to inspect its recorded source, model/catalog IDs, custom
   path, input connection count, thresholds, target size, and numeric/bool parameters.
   Missing values say **Not recorded**; a recorded zero remains zero. A custom path
   is explicitly **not checked**. The generic Ports section lists its typed ports.
@@ -407,31 +412,16 @@ Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
   and saved project metadata are separate. Inspection does not seed defaults or
   mutate the graph; empty/multi-selection clears the old panel.
 - Renderer source mappings are invalidated when their actual upstream changes. A
-  unbound ONNX output reports the missing native texture and clears the stale image.
+  unbound inference output reports the missing native texture and clears the stale image.
 
-### Native ONNX sessions
+### Native inference sessions
 
-`npm run dev` and packaged builds prepare the compatible **official ONNX Runtime
-1.21.0** distribution automatically. They do not use the separate Node ORT version.
-Windows uses Microsoft's DirectML package plus its declared DirectML 1.15.4
-dependency; macOS/Linux use the CPU distribution. Source URLs and notices are bundled.
+Production inference uses Metal resident GPU execution, not a dynamically loaded ORT
+session. The packaging scripts still prepare official ORT 1.21.0 and notices for
+explicit reference/diagnostic consumers; `ORT_DYLIB_PATH` selects that real runtime,
+not a production fallback. Shader editing and project I/O need no loaded model.
 
-Startup resolves runtime resources beside the executable (`runtime/`) or, for a
-macOS app, `Contents/Resources/runtime/`. The primary library names are
-`onnxruntime.dll`, `libonnxruntime.1.21.0.dylib`, and `libonnxruntime.so.1.21.0`.
-Development commands explicitly configure `ORT_DYLIB_PATH`,
-`OPEN_QUARTZ_FFMPEG_PATH`, and runtime `PATH`. For direct Cargo launches, an explicit
-`ORT_DYLIB_PATH` can point to an [official native 1.21.0 library](https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0):
-
-```sh
-ORT_DYLIB_PATH=/absolute/path/libonnxruntime.1.21.0.dylib \
-  cargo run --release --manifest-path apps/open_quartz_slint/Cargo.toml -- --project project.json
-```
-
-Missing/invalid runtime configuration is a visible error, not fabricated inference.
-The shader editor and project I/O do not require a loaded model session.
-
-- Select one ONNX node and explicitly **Load model**. A temporary local path
+- Select one Inference node and explicitly **Load model**. A temporary local path
   overrides the saved custom path only for the current session. Without an
   override, the shell uses the custom path or the catalog download/cache planned by
   the existing Rust host-intent API.
@@ -442,14 +432,12 @@ The shader editor and project I/O do not require a loaded model session.
   Optional catalog SHA-256 is verified, including cache hits; an empty catalog
   digest means **unverified**, not validated. Failures/cancellation remove partial
   files. Model IDs are validated before any cache or lock path is constructed.
-- File reads and ORT session construction run off the UI/render threads. The live
-  section reports byte progress, load errors, session backend, tensor names, and
-  delivered inference output. Tasks with structured data display that real JSON;
-  image-only tasks report texture output. The application never synthesizes
-  detection results, claims inference GPU support, or persists a temporary path.
-- **Cancel load / Unload model** invalidates the load ticket and clears the native
-  output. Download cancellation is cooperative; an active ORT session constructor
-  cannot be interrupted, but its late completion cannot attach after cancellation.
+- Model file/weights parsing is preparation work, not per-frame I/O; initial weights
+  upload is permitted. The GPU compiler validates original topology, weights and
+  reshape layout, never approximates the network. GpuImageSession scratch is STORAGE-only.
+  Live state reports backend, interfaces and actual outputs, not fabricated results.
+- **Cancel load / Unload model** invalidates the ticket and clears native output.
+  Cancellation blocks late publication but does not promise immediate interruption.
   Opening a project tears down its resource sessions even if a node keeps its ID.
   Edits retain a session only while the shared model/resource plan is unchanged;
   an updated task/model/path requires an explicit reload. Superseded native
@@ -457,10 +445,27 @@ The shader editor and project I/O do not require a loaded model session.
 - Loads, progress, backend and inference results are session state, not SDK history
   or saved node data. Open never loads/downloads models implicitly. Resource
   operations are guarded by unapplied inspector drafts.
-- Native inference performs GPU readback → CPU ONNX tensor execution → GPU texture
-  upload. Slint presentation imports the shared GPU texture; inference itself is not
-  zero-copy. Windows requests DirectML with the existing CPU fallback; macOS/Linux
-  use the existing CPU execution provider.
+- UI policy is **Metal GPU / Auto Hardware** only: MetalGpu / Metal, GPU placement,
+  Device path, RequireResident + AcceleratorOnly + Forbid CPU. Auto never selects
+  ORT/CPU/CoreML EP. Legacy project parsing cannot weaken these production constraints.
+- `.onnx` remains the real artifact format and menus remain task-centric; catalog
+  presence and successful introspection do not imply resident model support.
+- Independent sessions support named multiple FP32 inputs/outputs. The graph image
+  adapter validates one input and a task-selected named output; catalog U²Net-P
+  explicitly binds `1959` while retaining all seven outputs in introspection.
+  Unknown multi-output models reject without a declared binding. Other dtypes fail explicitly.
+- Completed-inference rates differ from Render FPS. No GPU time is fabricated from
+  host wall time. On Apple M4 Pro Metal, resident_compare's GPU-generated 8×8 source
+  (no COPY_DST), full-network 24×24 output matched explicit ORT CPU reference with
+  max/mean byte error 0/0, host image bytes 0, six dispatches, scratch 26,292,224 B,
+  weights 238,628 B. Wrong-device before-submit rejection and pool-three saturation/
+  released-lease reuse were observed. First completion wall 69.494292 ms includes
+  diagnostic copy and initial pipeline compilation, not throughput or GPU time.
+  Capture/reference/test readback is opt-in; one-time image/framebuffer CPU decode
+  and initial upload is the explicit ingress boundary, never a per-frame fallback.
+- Save emits canonical `inference` / `inference*`. Legacy `onnx` / `onnx*` records remain
+  readable without rewriting old IDs, ports, edges or project version. Live sessions
+  are not persisted; see the [node contract](../../docs/ONNX_NODE_DESIGN.md).
 
 The independent editor has explicit Apply and UTF-8-safe editing and navigation.
 The earlier macOS text-input assessment is historical; see
@@ -485,7 +490,7 @@ Menus, toolbar buttons, Apply actions, ports, and node movement use simulated
 pointer input through the real Slint event loop. Node selection and editing
 use accessibility actions/values; this is not an OS keyboard/IME test.
 
-Current real-window acceptance passed 18/18; see the [current report](../../test-results/slint-ui/interaction-2026-11-06T04-59-55-340Z/report.html).
+Current real-window acceptance passed 18/18; see the [current report](../../test-results/slint-ui/interaction-2026-11-07T08-00-55-697Z/report.html). Shader pixels passed 34/34; see the [Shader report](../../test-results/slint-ui/shaders-2026-11-07T08-01-12-929Z/report.html).
 Other results and remaining gates are in [Design 验证基线](../../docs/DESIGN.md#validation); older local acceptance below remains historical.
 
 

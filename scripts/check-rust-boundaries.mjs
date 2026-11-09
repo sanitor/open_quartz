@@ -101,9 +101,9 @@ fn main() {
       feature: 'native-onnx',
       forbidden: ['wgpu', 'reqwest'],
       source: `
-use open_quartz::inference::OnnxSession;
+use open_quartz::inference::InferenceSession;
 fn main() {
-    let _ = OnnxSession::from_memory(&[]);
+    let _ = InferenceSession::from_memory(&[]);
 }
 `,
     },
@@ -131,6 +131,32 @@ fn main() {
     }
   }
 
+  const inferenceDependency = `oq-inference = { path = ${JSON.stringify(join(root, 'crates/oq-inference'))}, default-features = false }`;
+  const inferenceConsumer = consumer('oq_inference_contract_check', `
+use oq_inference::ExecutionPolicy;
+fn main() { let _ = ExecutionPolicy::default(); }
+`, inferenceDependency);
+  const inferenceManifest = join(inferenceConsumer, 'Cargo.toml');
+  run('cargo', ['check', '--quiet', '--manifest-path', inferenceManifest], root);
+  const inferenceTree = run('cargo', ['tree', '--quiet', '--manifest-path', inferenceManifest, '-e', 'normal,build', '--prefix', 'none'], root);
+  for (const forbidden of ['open_quartz', 'ort', 'wgpu', 'oq-media', 'reqwest', 'slint']) {
+    if (inferenceTree.split('\n').some((line) => line.startsWith(`${forbidden} `) || line === forbidden)) {
+      throw new Error(`Inference contracts unexpectedly depend on ${forbidden}`);
+    }
+  }
+  const ortConsumer = consumer('oq_inference_ort_check', `
+use oq_inference::InferenceSession;
+fn main() { let _ = InferenceSession::from_memory(&[]); }
+`, inferenceDependency.replace('default-features = false', 'default-features = false, features = ["ort"]'));
+  const ortManifest = join(ortConsumer, 'Cargo.toml');
+  run('cargo', ['check', '--quiet', '--manifest-path', ortManifest, '--target', host], root);
+  const ortTree = run('cargo', ['tree', '--quiet', '--manifest-path', ortManifest, '--target', host, '-e', 'normal,build', '--prefix', 'none'], root);
+  for (const forbidden of ['open_quartz', 'wgpu', 'oq-media', 'reqwest', 'slint']) {
+    if (ortTree.split('\n').some((line) => line.startsWith(`${forbidden} `) || line === forbidden)) {
+      throw new Error(`Independent ORT backend unexpectedly depends on ${forbidden}`);
+    }
+  }
+
   const privateModel = consumer('open_quartz_private_model_check', `
 use open_quartz::project::model::Graph;
 fn main() { let _ = core::any::type_name::<Graph>(); }
@@ -152,13 +178,15 @@ fn main() { let _ = core::any::type_name::<Player>(); }
 
   const metadata = JSON.parse(run('cargo', ['metadata', '--quiet', '--no-deps', '--format-version', '1'], root));
   const members = metadata.packages.map((pkg) => pkg.name);
-  if (!members.includes('open_quartz')) throw new Error('open_quartz core package is missing');
+  for (const required of ['open_quartz', 'oq-inference']) {
+    if (!members.includes(required)) throw new Error(`${required} implementation package is missing`);
+  }
   for (const obsolete of ['open_quartz_schema', 'open_quartz_execution', 'open_quartz_sdk']) {
     if (members.includes(obsolete)) throw new Error(`Obsolete core package remains in workspace: ${obsolete}`);
   }
   const manifests = [
     'Cargo.toml', 'apps/open_quartz_slint/Cargo.toml', 'crates/slint_code_editor/Cargo.toml',
-    'crates/open_quartz/Cargo.toml',
+    'crates/open_quartz/Cargo.toml', 'crates/oq-inference/Cargo.toml',
     'crates/open_quartz_screensaver/Cargo.toml', 'crates/open-quartz-screensaver-stub/Cargo.toml',
   ];
   for (const manifest of manifests) {
@@ -167,7 +195,7 @@ fn main() { let _ = core::any::type_name::<Player>(); }
       if (content.includes(obsolete)) throw new Error(`${manifest} still references ${obsolete}`);
     }
   }
-  console.log('Single-core API, default, and feature dependency boundaries passed');
+  console.log('Core API, feature boundaries, and independent inference contracts/backend passed');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

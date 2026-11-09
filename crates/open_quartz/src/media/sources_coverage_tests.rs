@@ -1,33 +1,63 @@
 use super::*;
-use crate::media::native::{find_ffmpeg, NativeVideoSourceKind};
-use std::process::{Command, Stdio};
+use crate::media::native::NativeVideoSourceKind;
+#[cfg(any(target_os = "macos", all(windows, feature = "native-video-d3d12")))]
 use std::time::{Duration, Instant};
 
 #[test]
-fn source_upload_retries_failed_callback_and_retention_drops_decoder() {
-    let Ok(ffmpeg) = find_ffmpeg() else { return; };
-    let directory = std::env::temp_dir().join(format!(
-        "open-quartz-sources-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("source.mp4");
-    let status = Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=16x16:r=5", "-frames:v", "2", "-pix_fmt", "yuv420p", "-y"])
-        .arg(&path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success());
+fn prepared_camera_rejection_leaves_source_collection_unchanged() {
     let mut sources = VideoSources::new();
-    sources.attach("video", NativeVideoConfig {
+    for preview in [false, true] {
+        let error = sources.attach("camera", NativeVideoConfig {
+            kind: NativeVideoSourceKind::Camera,
+            source: "__fail_reader_spawn__".to_owned(),
+            looping: false,
+            playback_rate: 1.0,
+        }, preview).unwrap_err();
+        assert!(error.contains("camera capture"), "{error}");
+        assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
+        assert!(sources.node_ids().is_empty());
+        assert_eq!(sources.frame_counts(), (0, 0));
+        assert!(!sources.is_active());
+        assert!(sources.upload_frames(|_, _, _, _| panic!("rejected source produced a frame")).unwrap().is_empty());
+    }
+}
+
+#[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
+#[test]
+fn prepared_file_rejects_unsupported_backend_before_file_access() {
+    let mut sources = VideoSources::new();
+    let error = sources.attach("video", NativeVideoConfig {
+        kind: NativeVideoSourceKind::File,
+        source: "missing".to_owned(),
+        looping: false,
+        playback_rate: 1.0,
+    }, true).unwrap_err();
+    assert!(error.contains("no hardware-resident video decoder"), "{error}");
+    assert!(sources.node_ids().is_empty());
+    assert_eq!(sources.frame_counts(), (0, 0));
+}
+
+#[cfg(any(target_os = "macos", all(windows, feature = "native-video-d3d12")))]
+#[test]
+fn hardware_source_upload_retries_and_failed_replacement_preserves_decoder() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/white_64x64.mp4");
+    if !path.is_file() { return; }
+    let config = NativeVideoConfig {
         kind: NativeVideoSourceKind::File,
         source: path.to_string_lossy().into_owned(),
         looping: false,
         playback_rate: 1.0,
-    }, true).unwrap();
+    };
+    let mut sources = VideoSources::new();
+    let info = sources.attach("video", config.clone(), true)
+        .expect("fixture must open through the real hardware backend, never software fallback");
+    assert_eq!((info.width, info.height), (64, 64));
+    assert!(info.fallback_reason.is_none());
+    #[cfg(target_os = "macos")]
+    assert_eq!(info.decoder, "ffmpeg-videotoolbox");
+    #[cfg(all(windows, feature = "native-video-d3d12"))]
+    assert_eq!(info.decoder, "ffmpeg-d3d12va");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let result = sources.upload_frames(|_, _, _, _| Err("retry upload".to_owned()));
@@ -35,20 +65,38 @@ fn source_upload_retries_failed_callback_and_retention_drops_decoder() {
             assert_eq!(error, "retry upload");
             break;
         }
-        assert!(Instant::now() < deadline, "preview frame did not arrive");
+        assert!(Instant::now() < deadline, "hardware preview frame did not arrive");
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(sources.metrics("video").unwrap().uploaded_frames, 0);
+    let error = sources.attach("video", NativeVideoConfig {
+        kind: NativeVideoSourceKind::Camera,
+        source: "0".to_owned(),
+        looping: false,
+        playback_rate: 1.0,
+    }, true).unwrap_err();
+    assert!(error.contains("camera capture"), "{error}");
+    assert_eq!(sources.node_ids(), ["video"]);
     let dirty = sources.upload_frames(|node_id, frame, width, height| {
         assert_eq!(node_id, "video");
-        assert_eq!((width, height), (16, 16));
-        if let NativeVideoFrame::Rgba(rgba) = frame {
-            assert_eq!(rgba.len(), 16 * 16 * 4);
+        assert_eq!((width, height), (64, 64));
+        match frame {
+            NativeVideoFrame::Rgba(_) => panic!("production source delivered a CPU frame"),
+            #[cfg(target_os = "macos")]
+            NativeVideoFrame::VideoToolbox(frame) => {
+                assert_eq!((frame.width(), frame.height()), (width, height));
+                assert!(!frame.pixel_buffer().is_null());
+            }
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
+            NativeVideoFrame::D3d12(frame) => assert_eq!((frame.width, frame.height), (width, height)),
         }
         Ok(())
     }).unwrap();
     assert_eq!(dirty, ["video"]);
-    assert_eq!(sources.metrics("video").unwrap().uploaded_frames, 1);
+    let metrics = sources.metrics("video").unwrap();
+    assert_eq!(metrics.uploaded_frames, 1);
+    assert_eq!(metrics.cpu_copy_bytes, 0);
+    assert!(metrics.hardware_decode);
     assert!(sources.upload_frames(|_, _, _, _| panic!("uploaded frame repeated")).unwrap().is_empty());
     sources.pause();
     sources.retain(&HashSet::new());
@@ -56,16 +104,10 @@ fn source_upload_retries_failed_callback_and_retention_drops_decoder() {
     assert!(!sources.is_active());
     assert_eq!(sources.frame_counts(), (0, 0));
     assert!(sources.metrics("video").is_err());
-    sources.attach("video", NativeVideoConfig {
-        kind: NativeVideoSourceKind::File,
-        source: path.to_string_lossy().into_owned(),
-        looping: false,
-        playback_rate: 1.0,
-    }, true).unwrap();
+    sources.attach("video", config, true).unwrap();
     assert_eq!(sources.node_ids(), ["video"]);
     sources.clear();
     assert!(sources.node_ids().is_empty());
     assert!(!sources.is_active());
     assert!(sources.metrics("video").is_err());
-    std::fs::remove_dir_all(directory).unwrap();
 }

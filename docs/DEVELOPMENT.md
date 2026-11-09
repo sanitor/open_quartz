@@ -4,36 +4,38 @@
 
 当前产品仅为 `apps/open_quartz_slint` 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 已退役。`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。没有 Vite/Web/Tauri 构建入口。`dist-desktop/` 是可重新生成的忽略产物；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
 
-本轮 owner 提取与生产调用已完成。最终结果：workspace 234/34 suites、完整 native 315/30 suites、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary 与 macOS release 包通过；独立 ONNX-only 247/30 suites、runtime-only 279/28 suites 通过。两项整体 100% coverage gate 失败，完整矩阵/报告见 [设计 验证基线](DESIGN.md#validation)。相机、Windows/Linux/.scr 和移动端未实测，下文 Web/Tauri 规划仍为历史。
+本轮生产已切到 hardware-only resident 推理；workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过。真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 历史记录不作为本轮验收，其他平台能力不由 Apple Metal 结果推断。
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
-跨平台硬件推理系统的目标分层、设备缓冲契约、执行方案策略与迁移验收见 [推理架构设计](INFERENCE_ARCHITECTURE.md)。当前 ONNX/ORT 读回路径与计划架构明确区分；Core ML、Windows 设备驻留和零 CPU 图像传输在通过各自平台门槛前不视为已实现。
+当前推理边界见[推理架构](INFERENCE_ARCHITECTURE.md)和[节点契约](ONNX_NODE_DESIGN.md)。`inspect_onnx(model)` 无需 ORT，保留完整 source facts：IR/producer/model versions、domain、graph name、模型/图/值 metadata、opsets、递归类型与精确 dtype codes、scalar/UnknownRank、维度/符号/denotation、Required/Optional/OverridableInitializer 及 dense/sparse external-data 引用；自省不加载权重。runtime metadata/ValueKind/元素分类、hash/size/format 分开，不把 runtime sentinel 当源版本。`ImageInterfaceReport` 仅结构兼容，typed `ImageTaskContract` 才定义命名输出、layout/preprocessing/resize/color/shape/decoder；声明在 frame access 前检查，实际输出在解码/交付前检查。JSON 分列 `model`/`taskContract`。旧 CoreML EP 混合执行数据仅为历史 reference，不是 resident fallback。
 
-核心仍为单一 open_quartz，根部仅 lib.rs，root 类型保留，无占位 crate。当前 owner：compiler shader/topology/plan；GraphEvaluator dirty/Math/feedback；GraphInstance identity/generation/state；PlaybackSession graph+clock+OutputHub；NativePlayer Slint 协调；OutputHub contract/registry/presentation/resources/backend/capabilities；RenderDevice GPU/readback/Windows presenter；VideoSources 图源 map/lifecycle/upload callback；InferenceTasks sessions/pending/task id/channels/workers/accepted completions。Project/history 与资源规划/模型服务仍分别归 project/resources。
+图任务契约要求一个图像输入与一个显式选定输出，而非模型只有一个输出。U²Net-P 的全部 `1959`–`1965` 与精确 mask binding `1959` 仍保留，历史 reference 的 409600 字节 RGBA parity 不代表 resident 支持；未知多输出无 binding 拒绝。生产仅 SR3，其他模型在 frame access 前报错；`.scr` 推理导出/stub 明确不可用，不能回退 CPU，非推理 Shader/硬件视频导出保留。
+
+图语义核心为单一 open_quartz，根部仅 lib.rs。compiler 拥有 shader/topology/plan，GraphEvaluator 拥有 dirty/Math/feedback，GraphInstance 拥有 identity/generation/state，PlaybackSession 拥有 graph/clock/OutputHub，NativePlayer 协调，RenderDevice 拥有 GPU/import/presentation，VideoSources 拥有图源 map/lifecycle，InferenceTasks 拥有 resident session/图任务身份/输出适配；独立 oq-inference 拥有 GPU compiler/session 与显式 reference Tensor APIs，oq-media 拥有媒体 session/FrameLease。project/resources 分别负责编辑/history 与准备/规划。
 
 advanced host 路径为 open_quartz::{compiler,evaluation,player,outputs,rendering,inference,media,resources} 与 project::catalog。Slint 使用 NativePlayer；独立 .scr 在自有 Win32 loop 中直接组合 PlaybackSession、evaluation work 与 GpuExecutor。内部 media::sources / inference::tasks 拥有 VideoSources/InferenceTasks，不新增 root alias。实现与生产调用随 owner 迁移，不保留 execution/runtime namespace 或类 alias，实际路径见 [设计 源码索引](DESIGN.md#source-map)。root 类型、既有 feature、独立组件边界保持，WASM/Tauri/bindings/browser 不恢复。
 
-Slint NativePlayer/RenderDevice 保持原 render thread 与同一 Device/Queue；session.validate_completion 在纹理修改之前，候选 graph/clock 与整批 scalar preflight 在 commit 之前，静态数据以 Arc 共享。NativePlayer 选择图输出 present，OutputHub 另支持 backend。PreparedNativeGraph 暂存新纹理/自有视频 handles；stage_video 打开成功后清候选纹理，detach/obsolete video 在可选 image upload 前清 staged texture，失败候选保留旧 source/像素。UI request generation 与 accepted revision 分开。close 释放 descriptors/outputs，活跃 ORT worker 的 Arc session 保留到完成，InferenceTasks Drop join；这些生命周期回归结果见 验证基线。
+NativePlayer/RenderDevice 在原 render thread 与 Slint 共用 wgpu30 Metal Device/Queue：texture → GPU BT.601/resize224 → 完整四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA → Slint/Shader。固定网络 224→672，输出源尺寸 ×3，不是 tiling 或大图全分辨率质量承诺。source pixels 不经 CPU；模型/weights 解析和 initial upload 仅准备时进行。一次性文件图片/framebuffer decode-ingress 可 CPU 解码并上传，capture/reference/test readback 必须 opt in。TextureHandle/GpuOutputHandle/RenderUpdate/Slint 当前 handles 保留 lease，最多三槽，持有期间不复用，饱和 backpressure；queue order/fences 保证生命周期。
 
 ### 桌面是否需要 FFI？
 
 纯 Rust/Slint 桌面和 `.scr` 直接调用 typed Rust API，不需要额外导出的 SDK C ABI、JNI 或语言 FFI 桥；已移除 JS/WASM adapter 和 Tauri IPC 产品边界，不提供兼容 bindings feature/API。
 
-这里的“无需 SDK FFI”不等于无需外部库 FFI：ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生后端必要的实现细节。typed planner、图校验、compiler/WGSL/catalog/ONNX 语义继续保留，旧 Engine/Runtime 的状态归属见 模块与所有权。
+这里的“无需 SDK FFI”不等于无需外部库 FFI：ORT、FFmpeg、AVFoundation/CoreVideo、Metal、D3D12/COM 等调用仍是原生后端必要的实现细节。typed planner、图校验、compiler/WGSL/catalog/推理任务语义继续保留，状态归属见模块与所有权。
 
 ### 核心能力选择与验收
 
 - `default = []`：Graph/Project、compiler、GraphEvaluator/GraphInstance、PlaybackSession/OutputHub 的纯状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出采用无设备配置。
 - `gpu`：RenderDevice 的 executor/纹理/readback/presenter；`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或下载，保留既有 feature 名称与行为。
 - `native-video`：平台视频 source/worker，macOS 选择独立 oq-media；`native-video-d3d12` 蕴含 native-video 与 gpu，供 Windows D3D12 路径显式选择。
-- `native-onnx`：ORT session/pipeline，可独立于 GPU 和 HTTP 使用。`model-cache`：下载/哈希/文件缓存，可独立于 ORT/GPU 使用。纯 task/pre/postprocess 不随 native-onnx 关闭。
+- `native-onnx`：图推理适配选择独立 `oq-inference/gpu` 的实际 compiler/GpuImageSession；GPU 编译验证原始 ONNX topology/weights/reshape layout，不用近似网络，scratch STORAGE-only，weights 仅初始化上传。ORT feature 仅显式 reference/诊断。`model-cache` 为下载/哈希/文件缓存，仍可无设备使用。
 
 Cargo feature 可加，完整 workspace 构建会因应用重新打开设备依赖；默认无设备闭包与每个独立能力必须分别用 consumer invocation 和目标 normal/build dependency tree 验收。默认纯核心不需要先准备原生运行库；显式 native video/ONNX 的直接 Cargo 调用仍需对应 SDK/运行库。
 
-本次默认 coverage 134 测试、完整 native 201 测试通过，但两项 100% gate 失败：Lines/Functions/Regions 分别为默认 98.53/97.88/98.34%，native 97.70/95.96/96.38%。阈值未放宽，提取的 RenderDevice/InferenceTasks/VideoSources 保持计量，NativePlayer 只沿用旧 facade exclusion。git diff --check 与无旧 namespace/class alias 扫描通过，旧 execution 目录已删除。公开 headless Player driver 与 graph_mut history 限制仍在范围之外，详见设计 验证基线。
+生产政策 MetalGpu / Metal、GPU placement / Device path，强制 RequireResident、AcceleratorOnly、Forbid CPU；UI 仅 Metal GPU / Auto Hardware，Auto 不允许 ORT/CPU/CoreML EP fallback。旧项目 wire aliases/IDs 保留，但不支持政策或模型/平台在 frame access 前报错。视频图 hardware-required，无 FFmpeg RGBA 软件 fallback；不支持相机/Linux/无 D3D12 Windows 拒绝。
 
 ### 当前命令与资源索引
 
@@ -42,7 +44,10 @@ npm ci
 npm run prepare:desktop              # 准备原生库；直接 Cargo 前同样需要
 npm run dev
 npm run build
-cargo test --workspace               # 根核心/媒体/exporter/stub workspace
+cargo test --workspace               # 核心/独立推理契约/媒体/exporter/stub
+cargo test -p oq-inference --features ort # 独立真实后端；需 ORT_DYLIB_PATH
+cargo run -p oq-inference --example inspect_model -- MODEL.onnx # 仅源接口 JSON，无需 ORT
+ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --example resident_compare -- MODEL.onnx REPORT_DIR # 显式诊断，非生产 CPU 路径
 npm run test:desktop                 # Slint 独立 workspace
 npm run test:desktop:ui              # 真实原生窗口交互
 npm run test:desktop:shaders         # catalog GPU 像素用例
@@ -50,6 +55,8 @@ npm run test:editor                 # 独立编辑器 workspace
 npm run check:rust-boundaries
 npm run test:sdk-coverage
 ```
+
+`inspect_model` 仅源自省。`resident_compare` 在 Apple M4 Pro Metal 的 GPU 生成 8×8 source（无 COPY_DST）上执行完整 SR3，输出 24×24 对显式 ORT CPU reference max/mean byte error 0/0，host image bytes 0、六 dispatch、scratch 26,292,224 B、weights 238,628 B；wrong-device submit 前拒绝、三槽饱和与 released-lease 复用已观察。首 completion wall 69.494292 ms 包含诊断 copy 和首次 pipeline compilation，不是 GPU 时间或稳态吞吐。命令和数字只属于显式诊断，不让 CPU/reference 或 readback 进入生产。旧 coreml_compare 仍为 reference example。
 
 图标源为 `apps/open_quartz_slint/icons/`；准备生成的运行库、媒体 SDK、许可证和对应源码在 `apps/open_quartz_slint/runtime/`，不再使用 `src-tauri/` 或 `public/`。`.scr` stub 从 `target/screensaver-stub/` 构建后暂存到 app runtime。macOS numeric bundle version 来自 `package.json`。Shader 唯一源为 `crates/open_quartz/src/project/shader_catalog.json`，原生 catalog 与 Shader automation 共用；根 `tests/fixtures/` 保留原生图像/Shader fixtures。以上是可运行命令与路径，不是本次已通过的检查记录。
 

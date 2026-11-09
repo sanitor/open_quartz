@@ -37,7 +37,7 @@ export struct InspectorFormGroup {
     error: string,
 }
 
-export struct InspectorOnnxRow {
+export struct InspectorInferenceRow {
     label: string,
     value: string,
 }
@@ -119,15 +119,25 @@ export component Inspector inherits Rectangle {
     in property <[InspectorPort]> ports;
     in property <[InspectorUniform]> uniforms;
     in property <[InspectorFormGroup]> forms;
-    in property <[InspectorOnnxRow]> onnx-config;
-    in property <[InspectorOnnxRow]> onnx-saved;
-    in property <string> onnx-status;
-    in property <[InspectorOnnxRow]> onnx-live;
-    in property <bool> onnx-available;
-    in property <bool> onnx-loading;
-    in property <bool> onnx-attached;
-    in-out property <string> onnx-path;
-    callback load-onnx(string);
+    in property <[InspectorInferenceRow]> inference-config;
+    in property <[InspectorInferenceRow]> inference-saved;
+    in property <string> inference-status;
+    in property <[InspectorInferenceRow]> inference-live;
+    in property <bool> inference-available;
+    in property <bool> inference-loading;
+    in property <bool> inference-attached;
+    in-out property <string> inference-path;
+    in property <[string]> inference-backend-options;
+    in property <int> inference-backend-index: -1;
+    in property <string> inference-policy-summary;
+    in property <bool> inference-policy-valid;
+    in property <string> inference-metrics-summary;
+    in property <bool> inference-custom;
+    in property <[string]> inference-task-options;
+    in property <int> inference-task-index: -1;
+    callback inference-task-changed(int);
+    callback inference-backend-changed(int);
+    callback load-inference(string);
     in property <bool> image-input;
     in property <string> image-name;
     in property <string> image-size;
@@ -142,7 +152,7 @@ export component Inspector inherits Rectangle {
     callback choose-video();
     callback refresh-cameras();
     callback select-camera(int);
-    callback unload-onnx();
+    callback unload-inference();
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in property <bool> shader-read-only: false;
@@ -408,44 +418,60 @@ export component Inspector inherits Rectangle {
                     }
                 }
 
-                if root.onnx-config.length > 0: InspectorSection {
-                    title: "ONNX · LIVE SESSION";
-                    Text { text: root.onnx-status; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
+                if root.inference-config.length > 0: InspectorSection {
+                    title: "EXECUTION";
+                    Text { text: root.inference-status; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
+                    Text { text: root.inference-policy-summary; color: root.inference-policy-valid ? Theme.foreground : #b42318; font-size: 11px; wrap: word-wrap; }
+                    Text { text: root.inference-metrics-summary; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    Text { text: "Backend"; color: Theme.secondary; font-size: 11px; }
+                    ComboBox {
+                        model: root.inference-backend-options;
+                        current-index: root.inference-backend-index;
+                        enabled: !root.project-busy && !root.inspector-dirty && !root.inference-loading;
+                        selected => { root.inference-backend-changed(self.current-index); }
+                    }
+                    Text { text: "Resident GPU buffers only · no host pixel/tensor transfers · no fallback"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Local model path (optional)"; color: Theme.secondary; font-size: 11px; }
-                    LineEdit { text <=> root.onnx-path; enabled: !root.project-busy && !root.onnx-loading; placeholder-text: "Saved path or catalog model"; }
+                    LineEdit { text <=> root.inference-path; enabled: !root.project-busy && !root.inference-loading; placeholder-text: "Saved path or catalog model"; }
                     Text { text: "Blank uses the saved path or catalog cache/download. This path and live session are not saved."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 6px;
                         Button {
                             text: "Load model";
-                            enabled: root.onnx-available && !root.project-busy && !root.inspector-dirty && !root.onnx-loading;
-                            clicked => { root.load-onnx(root.onnx-path); }
+                            enabled: root.inference-available && root.inference-policy-valid && !root.project-busy && !root.inspector-dirty && !root.inference-loading;
+                            clicked => { root.load-inference(root.inference-path); }
                         }
                         Button {
-                            text: root.onnx-loading ? "Cancel load" : "Unload model";
-                            enabled: root.onnx-available && !root.project-busy && !root.inspector-dirty && (root.onnx-loading || root.onnx-attached);
-                            clicked => { root.unload-onnx(); }
+                            text: root.inference-loading ? "Cancel load" : "Unload model";
+                            enabled: root.inference-available && !root.project-busy && !root.inspector-dirty && (root.inference-loading || root.inference-attached);
+                            clicked => { root.unload-inference(); }
                         }
                     }
-                    for field in root.onnx-live: VerticalLayout {
+                    for field in root.inference-live: VerticalLayout {
                         spacing: 2px;
                         Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                         Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }
                     }
                 }
-                if root.onnx-config.length > 0: InspectorSection {
-                    title: "ONNX CONFIGURATION";
-                    Text { text: "Read-only project configuration · separate from the live session"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                    for field in root.onnx-config: VerticalLayout {
+                if root.inference-config.length > 0: InspectorSection {
+                    title: "MODEL / TASK";
+                    Text { text: root.inference-custom ? "Choose the task expected by this model. Task selection is saved with the project." : "Saved model and task configuration"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                    if root.inference-custom: ComboBox {
+                        model: root.inference-task-options;
+                        current-index: root.inference-task-index;
+                        enabled: !root.project-busy && !root.inspector-dirty && !root.inference-loading;
+                        selected => { root.inference-task-changed(self.current-index); }
+                    }
+                    for field in root.inference-config: VerticalLayout {
                         spacing: 2px;
                         Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                         Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }
                     }
                 }
-                if root.onnx-config.length > 0 && root.onnx-saved.length > 0: InspectorSection {
-                    title: "ONNX SAVED METADATA";
+                if root.inference-config.length > 0 && root.inference-saved.length > 0: InspectorSection {
+                    title: "SAVED METADATA";
                     Text { text: "Saved metadata · not live session state"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                    for field in root.onnx-saved: VerticalLayout {
+                    for field in root.inference-saved: VerticalLayout {
                         spacing: 2px;
                         Text { text: field.label; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                         Text { text: field.value; color: Theme.foreground; font-size: 12px; wrap: word-wrap; min-width: 0px; }

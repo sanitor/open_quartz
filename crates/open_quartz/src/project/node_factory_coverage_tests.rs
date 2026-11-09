@@ -81,7 +81,7 @@ fn node_factory_covers_every_executable_variant_and_math_descriptor() {
         .unwrap();
     project
         .create_graph_node(
-            NodeFactoryRequest::Onnx {
+            NodeFactoryRequest::Inference {
                 position: None,
                 label: "Detector".to_owned(),
                 template_name: None,
@@ -95,7 +95,7 @@ fn node_factory_covers_every_executable_variant_and_math_descriptor() {
         .unwrap();
     project
         .create_graph_node(
-            NodeFactoryRequest::CustomOnnx { position: None },
+            NodeFactoryRequest::CustomInference { position: None },
             project.graph_revision(),
         )
         .unwrap();

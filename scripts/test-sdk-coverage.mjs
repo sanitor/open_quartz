@@ -17,14 +17,14 @@ function run(args, collectFailure = false) {
 run(['llvm-cov', 'clean', '--workspace']);
 const thresholds = ['--fail-under-lines', '100', '--fail-under-functions', '100', '--fail-under-regions', '100'];
 run([
-  'llvm-cov', '-p', 'open_quartz', '--lib', '--no-default-features',
+  'llvm-cov', '-p', 'open_quartz', '-p', 'oq-inference', '--lib', '--no-default-features',
   '--ignore-filename-regex', ignoredFiles, ...thresholds, '--summary-only',
 ], true);
 run(['llvm-cov', 'clean', '--workspace']);
 const features = ['native-runtime', 'native-video', 'native-onnx', 'model-cache'];
 if (process.platform === 'win32') features.push('native-video-d3d12');
 run([
-  'llvm-cov', '-p', 'open_quartz', '--lib', '--features', features.join(','),
+  'llvm-cov', '-p', 'open_quartz', '-p', 'oq-inference', '--lib', '--features', features.join(','),
   '--ignore-filename-regex', ignoredFiles,
   '--fail-under-lines', '100', '--fail-under-functions', '100',
   '--fail-under-regions', '100', '--summary-only',

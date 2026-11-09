@@ -171,9 +171,9 @@ impl GraphEvaluator {
                         None,
                     ));
                 }
-                NodeType::Onnx => commands.push(command_for(
+                NodeType::Inference => commands.push(command_for(
                     &node_plan,
-                    "onnx",
+                    "inference",
                     None,
                     BTreeMap::new(),
                     None,

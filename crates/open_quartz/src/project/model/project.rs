@@ -137,7 +137,8 @@ pub enum NodeFactoryRequest {
         #[serde(default)]
         position: Option<Position>,
     },
-    Onnx {
+    #[serde(alias = "onnx")]
+    Inference {
         #[serde(default)]
         position: Option<Position>,
         label: String,
@@ -152,7 +153,8 @@ pub enum NodeFactoryRequest {
         #[serde(default)]
         outputs: Vec<Port>,
     },
-    CustomOnnx {
+    #[serde(alias = "customOnnx")]
+    CustomInference {
         #[serde(default)]
         position: Option<Position>,
     },
@@ -606,7 +608,7 @@ fn compatible_types(source: DataType, target: DataType, source_node_type: NodeTy
         return matches!(source, DataType::Sampler2d | DataType::SamplerCube)
             || matches!(
                 source_node_type,
-                NodeType::Shader | NodeType::Constant | NodeType::Onnx
+                NodeType::Shader | NodeType::Constant | NodeType::Inference
             );
     }
     false

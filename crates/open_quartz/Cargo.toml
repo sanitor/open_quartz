@@ -10,15 +10,16 @@ license = "MIT"
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:windows-graphics", "dep:futures-channel", "dep:objc2", "dep:objc2-metal"]
-native-runtime = ["gpu", "dep:pollster", "dep:log"]
+native-runtime = ["gpu", "oq-inference/gpu", "dep:pollster", "dep:log"]
 native-video = ["dep:oq-media", "dep:log"]
 native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
-native-onnx = ["dep:ort"]
+native-onnx = ["oq-inference/ort"]
 model-cache = ["dep:reqwest", "dep:sha2"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+oq-inference = { path = "../oq-inference" }
 naga = { version = "30", features = ["wgsl-in"] }
 regex = "1.12"
 futures-channel = { version = "0.3", optional = true }
@@ -27,7 +28,6 @@ wgpu = { version = "30", optional = true, default-features = false, features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }
-ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["std", "load-dynamic", "api-20"] }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
 sha2 = { version = "0.10", optional = true }
 

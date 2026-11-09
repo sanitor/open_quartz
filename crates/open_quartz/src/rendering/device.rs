@@ -127,6 +127,9 @@ impl RenderDevice {
         adapter: &wgpu::Adapter,
     ) -> Result<(Self, RenderDeviceInfo), String> {
         let adapter_info = adapter.get_info();
+        if adapter_info.device_type == wgpu::DeviceType::Cpu {
+            return Err("Hardware GPU rendering is required; software CPU adapters are forbidden".to_owned());
+        }
         let backend = Arc::new(GpuBackend::from_device(device, queue));
         let executor = GpuExecutor::new(backend.clone());
         #[cfg(windows)]
@@ -143,7 +146,7 @@ impl RenderDevice {
             adapter_name: adapter_info.name,
             backend: format!("{:?}", adapter_info.backend),
             device_type: format!("{:?}", adapter_info.device_type),
-            output_mode: "embedded-readback".to_owned(),
+            output_mode: "shared-gpu-texture".to_owned(),
             shared_texture,
         };
         Ok((

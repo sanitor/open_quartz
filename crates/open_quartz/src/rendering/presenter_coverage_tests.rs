@@ -22,6 +22,7 @@ async fn output() -> GpuOutputHandle {
         texture: texture.texture,
         view: texture.view,
         sampler: texture.sampler,
+        lease: texture.lease,
         width: 1,
         height: 1,
         format: texture.format,
@@ -174,5 +175,27 @@ fn shared_presenter_no_work_pending_take_and_export_failure_paths() {
         failing.submit(frame(&output, 2)).unwrap();
         assert!(failing.process_latest().is_err());
         assert!(failing.release(2).is_err());
+    });
+}
+
+#[test]
+fn exported_source_lease_is_retained_until_successful_release() {
+    pollster::block_on(async {
+        let mut output = output().await;
+        let owner = Arc::new(());
+        let released = Arc::downgrade(&owner);
+        output.lease = Some(owner);
+        let mut presenter = SharedTexturePresenter::new(Exporter { fail: false });
+        presenter.submit(frame(&output, 7)).unwrap();
+        drop(output);
+        presenter.process_latest().unwrap();
+        let exported = presenter.take_latest().unwrap();
+        assert!(released.upgrade().is_some());
+        presenter.exporter.fail = true;
+        assert!(presenter.release(exported.lease_id).is_err());
+        assert!(released.upgrade().is_some());
+        presenter.exporter.fail = false;
+        presenter.release(exported.lease_id).unwrap();
+        assert!(released.upgrade().is_none());
     });
 }

@@ -40,6 +40,7 @@ fn backend_preview_scaling_readback_and_blit_cover_resource_paths() {
             texture: texture.texture.clone(),
             view: texture.view.clone(),
             sampler: texture.sampler.clone(),
+            lease: texture.lease.clone(),
             width: texture.width,
             height: texture.height,
             format: texture.format,

@@ -257,7 +257,7 @@ fn preview_height(node: &ProjectNode) -> f32 {
         NodeType::Renderer => 112.0,
         NodeType::Shader => 64.0,
         NodeType::Input if matches!(node.data.input_mode, Some(InputMode::Image | InputMode::Framebuffer | InputMode::Video)) => 100.0,
-        NodeType::Onnx if node.data.outputs.iter().any(|port| port.data_type == DataType::Sampler2d) => 64.0,
+        NodeType::Inference if node.data.outputs.iter().any(|port| port.data_type == DataType::Sampler2d) => 64.0,
         _ => 0.0,
     }
 }
@@ -269,7 +269,7 @@ fn node_height(node: &ProjectNode) -> f32 {
 
 fn node_title(node: &ProjectNode) -> String {
     match node.node_type {
-        NodeType::Shader | NodeType::Onnx => node.data.template_name.as_deref().unwrap_or(&node.data.label).to_uppercase(),
+        NodeType::Shader | NodeType::Inference => node.data.template_name.as_deref().unwrap_or(&node.data.label).to_uppercase(),
         NodeType::Input => match node.data.input_mode {
             Some(InputMode::Image) => "IMAGE".into(), Some(InputMode::Video) => "VIDEO".into(),
             Some(InputMode::Framebuffer) => "FRAMEBUFFER".into(), Some(InputMode::System) => node.data.system_source.map(|source| format!("{source:?}").to_uppercase()).unwrap_or_else(|| "SYSTEM".into()),
@@ -285,7 +285,7 @@ fn node_status(node: &ProjectNode, connected: &HashSet<(&str, &str)>) -> &'stati
         NodeType::Input if matches!(node.data.input_mode, Some(InputMode::Image | InputMode::Video | InputMode::Framebuffer)) => {
             if node.data.image_data_url.is_some() || node.data.raw_data_url.is_some() || node.data.video_file_path.is_some() || node.data.video_device_id.is_some() { "ready" } else { "not-ready" }
         }
-        NodeType::Onnx => "not-ready",
+        NodeType::Inference => "not-ready",
         _ if node.data.inputs.iter().any(|port| !connected.contains(&(node.id.as_str(), port.id.as_str()))) => "not-ready",
         _ => "ready",
     }

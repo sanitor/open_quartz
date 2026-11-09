@@ -13,7 +13,7 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
     let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
     assert!(std::process::Command::new(ffmpeg).args([
         "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-        "color=c=red:s=16x16:r=10", "-t", "2", "-pix_fmt", "yuv420p", "-y",
+        "color=c=red:s=64x64:r=10", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
     ]).arg(&path).status().unwrap().success());
     let sdk = OpenQuartz::new(Environment::headless());
     let mut project = sdk.create_project("Retained playback");
@@ -80,7 +80,7 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
         bridge.capture_png(video.id.clone(), capture.clone()).unwrap()
             .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         let pixels = image::open(&capture).unwrap().to_rgba8();
-        assert_eq!(pixels.dimensions(), (16, 16));
+        assert_eq!(pixels.dimensions(), (64, 64));
         assert!(pixels.pixels().all(|pixel| pixel[0] > 240 && pixel[1] < 10 && pixel[2] < 10));
         let paused = bridge.take_update().unwrap();
         assert_eq!(paused.status.as_deref(), Some("Playback: pause"));

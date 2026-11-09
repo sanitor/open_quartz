@@ -120,6 +120,7 @@ fn executor_public_and_command_error_paths_are_structured() {
             texture: texture.texture,
             view: texture.view,
             sampler: texture.sampler,
+            lease: texture.lease,
             width: 0,
             height: 1,
             format: texture.format,
@@ -138,7 +139,7 @@ fn executor_public_and_command_error_paths_are_structured() {
             .execute_commands(&empty, &[command("math")])
             .is_ok());
         assert!(executor
-            .execute_commands(&empty, &[command("onnx")])
+            .execute_commands(&empty, &[command("inference")])
             .is_err());
         assert!(executor
             .execute_commands(&empty, &[command("other")])
@@ -310,4 +311,49 @@ fn empty_plan() -> ExecutionPlan {
         default_height: 1,
         cycle: false,
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn external_texture_lease_survives_registry_replacement_and_held_preview() {
+    pollster::block_on(async {
+        let backend = backend().await;
+        let mut executor = GpuExecutor::new(backend.clone());
+        let owner = Arc::new(());
+        let released = Arc::downgrade(&owner);
+        let texture = backend.create_texture(1, 1, TextureFormat::Rgba8Unorm);
+        executor.register_external_texture("source", GpuOutputHandle {
+            texture: texture.texture,
+            view: texture.view,
+            sampler: texture.sampler,
+            lease: Some(owner),
+            width: 1,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+        }).unwrap();
+        assert!(released.upgrade().is_some());
+
+        // Plan reconciliation must not release a resident source while staging.
+        let staged = executor.prepare_plan(&empty_plan()).unwrap();
+        executor.renderer_sources.insert("preview".into(), "source".into());
+        let preview = executor.output_handle("preview").unwrap();
+        let held_preview = preview.clone();
+        let replacement = backend.create_texture(1, 1, TextureFormat::Rgba8Unorm);
+        executor.register_external_texture("source", GpuOutputHandle {
+            texture: replacement.texture,
+            view: replacement.view,
+            sampler: replacement.sampler,
+            lease: None,
+            width: 1,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+        }).unwrap();
+        drop(preview);
+        drop(executor);
+        assert!(released.upgrade().is_some());
+        drop(staged);
+        assert!(released.upgrade().is_some());
+        drop(held_preview);
+        assert!(released.upgrade().is_none());
+    });
 }

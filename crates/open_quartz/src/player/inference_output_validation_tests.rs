@@ -1,4 +1,3 @@
-use crate::inference::NativeOnnxImageOutput;
 use crate::outputs::{ContentStamp, DeliveryPolicy, OutputKey, OutputPayload, OutputState, OutputSubscription, OutputTransport};
 
 use super::*;
@@ -21,8 +20,13 @@ fn advance_and_drain(player: &mut NativePlayer, now_ns: u64) -> Vec<ExecutionCom
 }
 
 fn queue_new_image(player: &mut NativePlayer) {
-    player.inference.queue_test_completion("onnx", &player.session, NativeOnnxImageOutput {
-        rgba: vec![0, 0, 255, 255], width: 1, height: 1, data: None,
+    let backend = player.backend();
+    let texture = backend.create_texture(1, 1, crate::rendering::TextureFormat::Rgba8Unorm);
+    backend.upload_rgba(&texture, &[0, 0, 255, 255]).unwrap();
+    player.inference.queue_test_completion("onnx", &player.session, GpuOutputHandle {
+        texture: texture.texture, view: texture.view, sampler: texture.sampler,
+        width: 1, height: 1, format: texture.format,
+        lease: None,
     });
 }
 
@@ -42,9 +46,12 @@ fn invalid_output_contract_rejects_completion_before_texture_or_dirty_mutation()
     queue_new_image(&mut player);
     assert!(player.drain_inference_completions().is_err());
     assert_eq!(player.render_device.read_output_rgba("onnx").unwrap().0, old);
-    assert!(player.take_output_events().is_empty());
+    assert!(player.take_inference_events().is_empty());
     assert!(player.session.drain_deliveries().deliveries.is_empty());
     assert!(!advance_and_drain(&mut player, 2).iter().any(|command| command.node_id == "renderer"));
+    assert_eq!(player.inference_metrics().rejected, 1);
+    assert_eq!(player.inference_metrics().accepted, 0);
+    assert_eq!(player.inference_metrics().upload_bytes, 0);
 }
 
 #[test]
@@ -71,9 +78,12 @@ fn every_backpressure_rejects_completion_before_texture_or_dirty_mutation() {
     queue_new_image(&mut player);
     assert!(player.drain_inference_completions().is_err());
     assert_eq!(player.render_device.read_output_rgba("onnx").unwrap().0, old);
-    assert!(player.take_output_events().is_empty());
+    assert!(player.take_inference_events().is_empty());
     let deliveries = player.session.drain_deliveries();
     assert_eq!(deliveries.deliveries.iter().filter(|delivery| delivery.subscription_id == "every").count(), 1);
     assert!(deliveries.deliveries.iter().all(|delivery| matches!(delivery.state.payload, OutputPayload::Resource { handle: 99 })));
     assert!(!advance_and_drain(&mut player, 2).iter().any(|command| command.node_id == "renderer"));
+    assert_eq!(player.inference_metrics().rejected, 1);
+    assert_eq!(player.inference_metrics().accepted, 0);
+    assert_eq!(player.inference_metrics().upload_bytes, 0);
 }

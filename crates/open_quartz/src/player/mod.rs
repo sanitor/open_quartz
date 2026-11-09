@@ -18,7 +18,7 @@ pub use clock::{ClockState, CompositionClock};
 pub use session::{PlaybackSession, SessionFrameInput};
 pub use crate::outputs::PlaybackCapabilities;
 #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
-pub use native::{NativePlayer, NativePlayerInfo, NativeFrameRendered, NativeOutputEvent, PreparedNativeGraph};
+pub use native::{InferenceConfig, InferenceMetrics, InferenceOutputEvent, NativePlayer, NativePlayerInfo, NativeFrameRendered, PreparedNativeGraph};
 
 #[cfg(test)]
 #[path = "tests/support.rs"]

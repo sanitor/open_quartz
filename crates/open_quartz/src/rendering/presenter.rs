@@ -204,6 +204,9 @@ pub struct SharedTexturePresenter<E> {
     mailbox: LatestFrameMailbox,
     exporter: E,
     latest: Option<SharedTextureFrame>,
+    // Exported frames can outlive `latest` after take_latest; release is the
+    // consumer's acknowledgement that the pooled source may be reused.
+    leases: BTreeMap<u64, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl<E> SharedTexturePresenter<E> {
@@ -212,6 +215,7 @@ impl<E> SharedTexturePresenter<E> {
             mailbox: LatestFrameMailbox::default(),
             exporter,
             latest: None,
+            leases: BTreeMap::new(),
         }
     }
 
@@ -227,7 +231,9 @@ impl<E> SharedTexturePresenter<E> {
     where
         E: SharedTextureExporter,
     {
-        self.exporter.release(lease_id)
+        self.exporter.release(lease_id)?;
+        self.leases.remove(&lease_id);
+        Ok(())
     }
 }
 
@@ -253,7 +259,11 @@ impl<E: SharedTextureExporter> GpuPresenter for SharedTexturePresenter<E> {
         let Some(frame) = self.mailbox.try_take() else {
             return Ok(false);
         };
-        self.latest = Some(self.exporter.export(&frame)?);
+        let exported = self.exporter.export(&frame)?;
+        if let Some(lease) = frame.output.lease {
+            self.leases.insert(exported.lease_id, lease);
+        }
+        self.latest = Some(exported);
         Ok(true)
     }
 }
