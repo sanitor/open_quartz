@@ -140,6 +140,7 @@ pub struct GpuCounters {
 }
 
 struct ConvPass {
+    pipeline: wgpu::ComputePipeline,
     binding: wgpu::BindGroup,
     output_channels: u32,
 }
@@ -149,7 +150,6 @@ pub struct GpuImageSession {
     identity: Arc<()>,
     plan: ModelPlan,
     preprocess: wgpu::ComputePipeline,
-    convolution: wgpu::ComputePipeline,
     reconstruct: wgpu::ComputePipeline,
     planes: wgpu::Buffer,
     final_convolution: wgpu::Buffer,
@@ -188,23 +188,26 @@ impl GpuImageSession {
 
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let preprocess = pipeline(&device, "resident BT601 preprocessing", include_str!("gpu/preprocess.wgsl"));
-        let convolution = pipeline(&device, "resident FP32 convolution", include_str!("gpu/convolution.wgsl"));
         let reconstruct = pipeline(&device, "resident pixelshuffle reconstruction", include_str!("gpu/reconstruct.wgsl"));
         let planes = scratch(&device, "resident Y Cb Cr", PLANES_BYTES);
         let first = scratch(&device, "resident convolution A", SCRATCH_BYTES);
         let second = scratch(&device, "resident convolution B", SCRATCH_BYTES);
-        let mut buffers = Vec::with_capacity(14);
+        let mut buffers = Vec::with_capacity(9);
         let mut passes = Vec::with_capacity(4);
         let mut weight_upload_bytes = 0;
-        let layout = convolution.get_bind_group_layout(0);
         for (index, layer) in model.layers.iter().enumerate() {
+            // Geometry is validated and immutable. Specialization removes dynamic
+            // kernel/channel indexing without changing FP32 weights or arithmetic.
+            let source = format!(
+                "const INPUT_CHANNELS: u32 = {}u;\nconst OUTPUT_CHANNELS: u32 = {}u;\nconst KERNEL: u32 = {}u;\nconst PADDING: u32 = {}u;\nconst RELU: bool = {};\n{}",
+                layer.in_channels, layer.out_channels, layer.kernel[0], layer.pads[0],
+                layer.relu, include_str!("gpu/convolution.wgsl"),
+            );
+            let convolution = pipeline(&device, "resident tiled FP32 convolution", &source);
+            let layout = convolution.get_bind_group_layout(0);
             let weights = upload_f32(&device, "resident immutable weights", &layer.weights)?;
             let bias = upload_f32(&device, "resident immutable bias", &layer.bias)?;
             weight_upload_bytes += (layer.weights.len() as u64 + layer.bias.len() as u64) * 4;
-            let params = upload_u32(&device, &[
-                layer.in_channels, layer.out_channels, layer.kernel[0], layer.kernel[1],
-                layer.pads[0], layer.pads[1], u32::from(layer.relu), 0,
-            ])?;
             let input = if index == 0 { &planes } else if index % 2 == 1 { &first } else { &second };
             let output = if index % 2 == 0 { &first } else { &second };
             let binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -212,11 +215,11 @@ impl GpuImageSession {
                 layout: &layout,
                 entries: &[
                     buffer_entry(0, input), buffer_entry(1, output),
-                    buffer_entry(2, &weights), buffer_entry(3, &bias), buffer_entry(4, &params),
+                    buffer_entry(2, &weights), buffer_entry(3, &bias),
                 ],
             });
-            passes.push(ConvPass { binding, output_channels: layer.out_channels });
-            buffers.extend([weights, bias, params]);
+            passes.push(ConvPass { pipeline: convolution, binding, output_channels: layer.out_channels });
+            buffers.extend([weights, bias]);
         }
         finish_validation(scope)?;
         buffers.push(first);
@@ -225,7 +228,6 @@ impl GpuImageSession {
             identity: Arc::new(()),
             plan: model.plan,
             preprocess,
-            convolution,
             reconstruct,
             planes,
             final_convolution: second,
@@ -310,9 +312,10 @@ impl GpuImageSession {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("resident convolution and activation"), timestamp_writes: None,
             });
-            pass.set_pipeline(&self.convolution);
+            pass.set_pipeline(&layer.pipeline);
             pass.set_bind_group(0, &layer.binding, &[]);
-            pass.dispatch_workgroups(SIDE / 8, SIDE / 8, layer.output_channels);
+            // Shader tiles 32 adjacent pixels × 32 output channels, one row at a time.
+            pass.dispatch_workgroups(SIDE / 32, SIDE, layer.output_channels.div_ceil(32));
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -442,10 +445,11 @@ fn validate_limits(device: &wgpu::Device) -> Result<(), GpuError> {
         && limits.max_compute_invocations_per_workgroup >= 64
         && limits.max_compute_workgroup_size_x >= 8
         && limits.max_compute_workgroup_size_y >= 8
-        && limits.max_compute_workgroups_per_dimension >= 64
+        && limits.max_compute_workgroups_per_dimension >= SIDE
+        && limits.max_compute_workgroup_storage_size >= 8192
         && limits.max_texture_dimension_2d >= 672
     { Ok(()) } else {
-        Err(GpuError::DeviceLimit("requires four storage bindings, 64-thread workgroups, and 12.85MB storage bindings".into()))
+        Err(GpuError::DeviceLimit("requires four storage bindings, 64-thread workgroups, 8KB workgroup storage, and 12.85MB storage bindings".into()))
     }
 }
 
@@ -469,19 +473,6 @@ fn upload_f32(device: &wgpu::Device, label: &str, values: &[f32]) -> Result<wgpu
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label), size: values.len() as u64 * 4,
         usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: true,
-    });
-    {
-        let mut bytes = buffer.slice(..).get_mapped_range_mut().map_err(|error| GpuError::Validation(error.to_string()))?;
-        for (index, value) in values.iter().enumerate() { bytes.slice(index * 4..index * 4 + 4).copy_from_slice(&value.to_ne_bytes()); }
-    }
-    buffer.unmap();
-    Ok(buffer)
-}
-
-fn upload_u32(device: &wgpu::Device, values: &[u32]) -> Result<wgpu::Buffer, GpuError> {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("resident immutable convolution parameters"), size: values.len() as u64 * 4,
-        usage: wgpu::BufferUsages::UNIFORM, mapped_at_creation: true,
     });
     {
         let mut bytes = buffer.slice(..).get_mapped_range_mut().map_err(|error| GpuError::Validation(error.to_string()))?;

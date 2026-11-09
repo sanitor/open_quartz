@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Resident SR3 convolution performance (2026-11-09)
+
+- Replace independent per-pixel scalar convolution with preparation-specialized FP32 32-channel × 32-pixel workgroup tiles, 4×4 per-thread register accumulation and K=32 shared input/weight tiles (8KB workgroup storage). Keep the full original network, NCHW semantics, signed weights, padding, bias/ReLU, channel tail, same Metal queue and zero per-frame host image/Tensor transfers; no FP16 or approximation.
+- Add the reproducible `resident_benchmark` example comparing existing ORT CPU readback/preprocess/infer/postprocess/upload with actual resident GPU submission-completion latency. Same model/input/output, 10 warmups and 60 samples/path/size in three alternating blocks; all-byte verification outside timing. Reject unreliable external Metal timestamp diagnostics instead of inventing GPU execution time.
+- Observe Apple M4 Pro Release P50 completion latency: resident 4.34/4.42/4.74 ms for 672×672/1920×1080/3840×2160 final outputs, versus CPU 13.92/15.66/22.57 ms (3.20×/3.54×/4.76× faster) and baseline GPU 44.39/44.53/44.83 ms (10.22×/10.07×/9.46× faster). Every output-byte comparison max error 1; resident host image bytes 0. Fixed 224→672 network; not full-resolution inference, pipelined throughput or UI FPS. Raw samples/P95 and command: [inference performance](docs/INFERENCE_ARCHITECTURE.md#sr3-稳态性能验证2026-11-09).
+- Verify optimized code: workspace 270, full-native/backend 373 (1 ignored), desktop 79 (2 opt-in ignored), cached-model/reference 2 and release Metal dense-numeric/resource-lifecycle 2 passed. Rebuilt native Slint window displayed optimized shared SR3 output through Play/Pause with a nonexistent ORT path and zero host transfer counters. Full UI/Shader suites, coverage and release packaging were not rerun for this optimization; earlier cutover results below remain baseline evidence.
+
 ### Hardware-only resident inference (2026-11-09)
 
 - Replace production host-image inference with the same Slint wgpu30 Metal Device/Queue: GPU texture → BT.601/resize224 → full four-layer FP32 Conv/ReLU → PixelShuffle3/RGB reconstruction → resident RGBA → Slint/downstream Shader. Independent `oq-inference/gpu` compiles original ONNX topology, weights and reshape layout without approximation; GpuImageSession scratch is STORAGE-only, weights upload at initialization only, source pixels never enter CPU.

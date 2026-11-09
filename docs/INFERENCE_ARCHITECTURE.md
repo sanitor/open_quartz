@@ -17,6 +17,8 @@ GPU source texture
 
 `oq-inference` 的独立 `gpu` feature 提供实际 GPU 模型编译器与 `GpuImageSession`，不依赖 OpenQuartz 图或 Slint。编译器验证原始 ONNX topology、weights 与 reshape layout，运行完整网络，不以近似滤镜替代。`GpuImageSession` scratch 为 STORAGE-only；模型文件解析、weights 初始上传与 scalar controls 属于准备边界。逐帧 source pixels 不进入 CPU，不创建 host image Tensor，不做 CPU 前后处理、读回或结果重上传。
 
+卷积使用按已验证层几何专门编译的 FP32 内核：一个 64-thread workgroup 覆盖 32 个输出通道 × 32 个邻接像素，每线程累加 4×4 register tile；归约以 K=32 的输入/权重共享分块执行，workgroup storage 为 8KB。输出仍是 NCHW；9-channel 尾部、padding、bias 和 ReLU 保持原模型语义。专门编译和权重上传只发生在准备阶段，不增加逐帧 CPU 图像处理。
+
 当前 resident 模型仅 **super-resolution-3x（SR3）**，网络 profile 固定 `[1,1,224,224] → [1,1,672,672]`。任意源尺寸仍先缩到 224×224，最终 RGBA 尺寸为源宽高各 ×3。这不是 window tiling，也不是原始大图全分辨率推理；不据此声称大图完整质量或更快吞吐。catalog 其他模型保留自省与任务契约，不表示已支持 resident 执行。其他模型或平台在 frame access 前报错。
 
 ## 执行政策与方案
@@ -64,6 +66,28 @@ ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --exam
 ```
 
 源接口查看：`cargo run -p oq-inference --example inspect_model -- MODEL.onnx`，无需 ORT。旧 `coreml_compare` 只属于 reference 诊断，不作为 resident 验收入口。Render FPS、完成率、host completion wall 与 GPU 时间必须区分；没有测得的 GPU 时间不伪造为零或以 CPU 计时代替。
+
+## SR3 稳态性能验证（2026-11-09）
+
+在 Apple M4 Pro / Metal、Release 构建上，以同一个原始 SR3 模型和 GPU 生成图案进行比较。每条路径每种尺寸预热 10 次，再分三个交替执行块采样 60 次。CPU 路径为 GPU 读回 → 现有 CPU 前处理/ORT CPU/后处理 → GPU 上传并等待完成；resident 路径等待实际 inference submission 完成。模型加载、首次编译、源生成、验证读回、视频解码和 UI 显示不计时。
+
+| 输入 → 最终输出 | CPU P50 ms | 优化前 GPU P50 ms | 分块 GPU P50 ms | 相对 CPU 加速 | 相对原 GPU 加速 |
+|---|---:|---:|---:|---:|---:|
+| 224×224 → 672×672 | 13.92 | 44.39 | 4.34 | 3.20× | 10.22× |
+| 640×360 → 1920×1080 | 15.66 | 44.53 | 4.42 | 3.54× | 10.07× |
+| 1280×720 → 3840×2160 | 22.57 | 44.83 | 4.74 | 4.76× | 9.46× |
+
+优化前数据为本地基线 `e269dea` 的原内核；CPU 与优化后 GPU 在同一次最终运行中测量。全部输出逐字节核对，max byte error 均为 1，resident host image bytes 均为 0。额外稠密有符号权重回归以独立 FP64 参考覆盖全部隐藏通道、非中心 taps、padding、ReLU、尾部 9 通道和每个最终像素。
+
+原始样本、P95、均值、各 CPU 阶段与测量边界：[优化前](../test-results/output-metrics/resident-speed-baseline-2026-11-09.json)、[优化后](../test-results/output-metrics/resident-speed-optimized-2026-11-09.json)。这些是单帧串行 submission-completion wall latency，不是 GPU timestamp、流水吞吐或 UI FPS。外部 Metal timestamp markers 在资格验证中返回陈旧/非单调计数，已移除不可靠测量路径；`gpuExecutionTimeMs` 明确为 null，不用 CPU wall 冒充纯 GPU 执行时间。网络始终 224→672，大图输出不能解释为原生分辨率推理。
+
+复现同一 case（ORT 仅供显式 CPU 对照）：
+
+```sh
+ORT_DYLIB_PATH=... cargo run --release -p open_quartz --features native-runtime,native-onnx --example resident_benchmark -- MODEL.onnx REPORT.json
+```
+
+优化后回归：workspace 270、完整 native/backend 373（1 ignored）、桌面 79、真实缓存模型及 CPU reference 2 通过；release 稠密数值与资源生命周期 2 通过。实际 Slint 窗口使用不存在的 ORT 路径仍显示优化后 24×24 共享纹理，Play/Pause 保持有效且四项逐帧 host bytes 均 0；证据见 [DESIGN](DESIGN.md#validation)。以下 cutover 基线的 UI/Shader、coverage 和打包结果没有在本次优化中重跑。
 
 ## 项目兼容与验收范围
 
