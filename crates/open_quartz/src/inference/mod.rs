@@ -12,7 +12,7 @@ mod contract;
 #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
 pub(crate) mod prepared;
 #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
-pub use prepared::PreparedInferenceModel;
+pub use prepared::{PreparedInferenceModel, PreparedModel, ResidentInferenceSession};
 #[cfg(all(test, feature = "native-runtime", not(target_arch = "wasm32")))]
 pub(crate) mod resident_test_model;
 #[cfg(all(test, feature = "native-onnx", not(target_arch = "wasm32")))]

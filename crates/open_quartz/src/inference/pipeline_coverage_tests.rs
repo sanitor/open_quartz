@@ -60,7 +60,7 @@ fn every_native_task_family_runs_through_tensor_runner() {
     let output = run_image_task_with_runner(
         &mut super_resolution,
         InferenceTask::SuperResolution,
-        "realesrgan-x4plus",
+        "realesrgan-x4",
         &source,
         2,
         2,
@@ -178,7 +178,7 @@ fn native_pipeline_helpers_cover_shapes_pixels_resize_and_errors() {
     };
     assert!(run_generic(&mut error_runner, &rgba(), 2, 2).is_err());
     let mut short_depth = FakeRunner::one(vec![], vec![1, 1, 2, 2]);
-    assert!(run_depth(&mut short_depth, &rgba(), 2, 2).is_err());
+    assert!(run_depth(&mut short_depth, "midas", &rgba(), 2, 2).is_err());
     assert!(run_image_task_with_runner(
         &mut FakeRunner::one(vec![], vec![]),
         InferenceTask::Generic,
@@ -318,7 +318,8 @@ fn task_contracts_preserve_catalog_profiles_and_generic_identity() {
         (InferenceTask::SuperResolution, "super-resolution-3x", vec![1, 1, 224, 224], vec![1, 1, 672, 672], ImageTaskAdapter::LuminanceSuperResolution3x),
         (InferenceTask::SuperResolution, "realesrgan-x4", vec![1, 3, 2, 2], vec![1, 3, 8, 8], ImageTaskAdapter::RgbImage),
         (InferenceTask::Detection, "yolov8n", vec![1, 3, 640, 640], vec![1, 84, 8400], ImageTaskAdapter::CocoYolo8400),
-        (InferenceTask::Segmentation, "yolo26n-sem", vec![1, 3, 640, 640], vec![1, 19, 160, 160], ImageTaskAdapter::Cityscapes19),
+        (InferenceTask::Segmentation, "yolo26n-sem", vec![1, 3, 640, 640], vec![1, 640, 640], ImageTaskAdapter::UInt8ClassMap),
+        (InferenceTask::Segmentation, "generic-segmentation", vec![1, 3, 640, 640], vec![1, 19, 160, 160], ImageTaskAdapter::Cityscapes19),
         (InferenceTask::BackgroundRemoval, "u2netp", vec![1, 3, 320, 320], vec![1, 1, 320, 320], ImageTaskAdapter::AlphaMask),
         (InferenceTask::BackgroundRemoval, "modnet", vec![1, 3, 512, 512], vec![1, 1, 512, 512], ImageTaskAdapter::AlphaMask),
         (InferenceTask::DepthEstimation, "midas-small", vec![1, 3, 256, 256], vec![1, 256, 256], ImageTaskAdapter::DepthMap),
@@ -329,6 +330,7 @@ fn task_contracts_preserve_catalog_profiles_and_generic_identity() {
             info.output_names[0] = "1959".to_owned();
             info.outputs[0].name = "1959".to_owned();
         }
+        if model == "yolo26n-sem" { info.outputs[0].element_type = oq_inference::TensorElementType::Uint8; }
         let contract = image_task_contract(&task_config(task, model), &info).unwrap();
         assert_eq!(contract.adapter, adapter);
         assert_eq!(contract.input.name, "pixels");
@@ -337,7 +339,7 @@ fn task_contracts_preserve_catalog_profiles_and_generic_identity() {
     }
     let depth = image_task_contract(&task_config(InferenceTask::DepthEstimation, "midas-small"),
         &task_info(&[1, 3, 256, 256], &[1, 256, 256])).unwrap();
-    assert_eq!(depth.preprocessing, ImageTaskPreprocessing::BgrImageNetMeanStd);
+    assert_eq!(depth.preprocessing, ImageTaskPreprocessing::RgbZeroToOne);
 }
 
 #[test]
@@ -406,6 +408,32 @@ fn symbolic_task_output_constraints_bind_to_actual_results() {
 }
 
 #[test]
+fn realesrgan_consumer_requires_exact_four_times_spatial_shape() {
+    use oq_inference::TensorDimension::{Static, Symbol};
+    let mut info = task_info(&[1, 3, 2, 3], &[1, 3, 8, 12]);
+    // The original artifact reuses input height/width symbols on its scaled output.
+    let dimensions = vec![Static(1), Static(3), Symbol("height".into()), Symbol("width".into())];
+    info.inputs[0].dimensions = dimensions.clone();
+    info.outputs[0].dimensions = dimensions;
+    let contract = image_task_contract(&task_config(InferenceTask::SuperResolution, "realesrgan-x4"), &info).unwrap();
+    assert!(contract.validate_input(&[1, 3, 2, 3], 18).is_ok());
+    assert_eq!(contract.concrete_output_shape(&[1, 3, 2, 3]).unwrap(), [1, 3, 8, 12]);
+    assert_eq!(info.outputs[0].dimensions[2], Symbol("height".into()));
+    assert!(contract.concrete_output_shape(&[1, 1, 2, 3]).is_err());
+    assert!(contract.validate_output(&TensorOutput { data: vec![0.0; 3 * 8 * 12], shape: vec![1, 3, 8, 12] }, &[1, 3, 2, 3]).is_ok());
+    assert!(contract.validate_output(&TensorOutput { data: vec![0.0; 18], shape: vec![1, 3, 2, 3] }, &[1, 3, 2, 3]).is_err());
+    let source = vec![0u8; 3 * 2 * 4];
+    let mut exact = FakeRunner::one(vec![0.5; 3 * 8 * 12], vec![1, 3, 8, 12]);
+    let output = run_super_resolution(&mut exact, "realesrgan-x4", &source, 3, 2).unwrap();
+    assert_eq!((output.width, output.height, output.rgba.len()), (12, 8, 12 * 8 * 4));
+    for shape in [vec![1, 3, 2, 3], vec![1, 3, 4, 6], vec![1, 3, 12, 8]] {
+        let count = shape.iter().product::<i64>() as usize;
+        let mut incorrect = FakeRunner::one(vec![0.5; count], shape);
+        assert!(run_super_resolution(&mut incorrect, "realesrgan-x4", &source, 3, 2).is_err());
+    }
+}
+
+#[test]
 fn decoder_never_guesses_image_channels_from_length() {
     for (data, shape) in [
         (vec![0.5; 4], vec![1, 1, 2, 2]),
@@ -415,7 +443,7 @@ fn decoder_never_guesses_image_channels_from_length() {
         assert!(run_generic(&mut FakeRunner::one(data, shape), &rgba(), 2, 2).is_err());
     }
     let mut depth = FakeRunner::one(vec![0.5; 4], vec![1, 2, 2]);
-    assert!(run_depth(&mut depth, &rgba(), 2, 2).is_ok());
+    assert!(run_depth(&mut depth, "midas", &rgba(), 2, 2).is_ok());
     let mut detector = FakeRunner::one(vec![0.0; 84], vec![1, 84, 1]);
     assert!(run_detection(&mut detector, &rgba(), 2, 2, 2, 0.25, 0.45).is_err());
 }

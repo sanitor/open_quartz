@@ -19,6 +19,9 @@ pub struct InferenceImageOutput {
 pub(crate) trait TensorRunner {
     fn validate_image(&self) -> Result<(), String> { Ok(()) }
     fn run_f32(&mut self, input: Vec<f32>, shape: Vec<i64>) -> Result<TensorOutput, String>;
+    fn run_u8(&mut self, _input: Vec<f32>, _shape: Vec<i64>) -> Result<(Vec<u8>, Vec<i64>), String> {
+        Err("this diagnostic tensor runner does not support UInt8 outputs".to_owned())
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -69,9 +72,14 @@ impl TensorRunner for StampedImageRunner<'_> {
         let input_shape: [i64; 4] = shape.as_slice().try_into()
             .map_err(|_| "image task input requires rank 4".to_owned())?;
         self.metrics.preprocess_ns = self.metrics.preprocess_ns.saturating_add(duration_ns(self.stage_started.elapsed()));
-        let result = self.session.invoke(self.stamp,
-            vec![super::NamedTensor { name: self.contract.input.name.clone(), data: input, shape }],
-            std::slice::from_ref(&self.contract.output.name))
+        let output_names = std::slice::from_ref(&self.contract.output.name);
+        let inputs = vec![super::NamedTensor { name: self.contract.input.name.clone(), data: input, shape }];
+        let result = if self.contract.output_shape.iter().any(|constraint| matches!(constraint,
+            ImageDimensionConstraint::InputHeightTimes(_) | ImageDimensionConstraint::InputWidthTimes(_))) {
+            let output_shape = self.contract.concrete_output_shape(&input_shape)?;
+            self.session.invoke_with_output_shapes(self.stamp, inputs, output_names,
+                &[(self.contract.output.name.as_str(), output_shape.as_slice())])
+        } else { self.session.invoke(self.stamp, inputs, output_names) }
             .map_err(|error| error.to_string())?;
         self.stage_started = std::time::Instant::now();
         if result.stamp != self.stamp {
@@ -82,6 +90,20 @@ impl TensorRunner for StampedImageRunner<'_> {
         self.metrics.output_cpu_bytes = self.metrics.output_cpu_bytes.saturating_add(result.metrics.output_cpu_bytes);
         let output = single_image_output(result.outputs, &self.contract.output.name)?;
         self.contract.validate_output(&output, &input_shape)?;
+        Ok(output)
+    }
+
+    fn run_u8(&mut self, input: Vec<f32>, shape: Vec<i64>) -> Result<(Vec<u8>, Vec<i64>), String> {
+        self.contract.validate_input(&shape, input.len())?;
+        self.metrics.preprocess_ns = self.metrics.preprocess_ns.saturating_add(duration_ns(self.stage_started.elapsed()));
+        let input_bytes = (input.len() as u64).saturating_mul(4);
+        let started = std::time::Instant::now();
+        let output = self.session.run_u8(input, shape.clone()).map_err(|error| error.to_string())?;
+        self.metrics.runtime_ns = self.metrics.runtime_ns.saturating_add(duration_ns(started.elapsed()));
+        self.metrics.input_cpu_bytes = self.metrics.input_cpu_bytes.saturating_add(input_bytes);
+        self.metrics.output_cpu_bytes = self.metrics.output_cpu_bytes.saturating_add(output.0.len() as u64);
+        self.stage_started = std::time::Instant::now();
+        self.contract.validate_u8_output(&output.1, output.0.len(), &shape)?;
         Ok(output)
     }
 }
@@ -193,15 +215,18 @@ fn run_image_task_with_runner(
         InferenceTask::BackgroundRemoval => {
             run_background_removal(session, model_id, source_rgba, source_width, source_height)
         }
-        InferenceTask::DepthEstimation => run_depth(session, source_rgba, source_width, source_height),
+        InferenceTask::DepthEstimation => run_depth(session, model_id, source_rgba, source_width, source_height),
         InferenceTask::Detection => run_detection(
             session,
             source_rgba,
             source_width,
             source_height,
-            target_size.max(1),
+            if model_id == "yolov8n" { 640 } else { target_size.max(1) },
             score_threshold,
             iou_threshold,
+        ),
+        InferenceTask::Segmentation if model_id == "yolo26n-sem" => run_class_map(
+            session, source_rgba, source_width, source_height,
         ),
         InferenceTask::Segmentation => run_segmentation(
             session,
@@ -298,6 +323,11 @@ fn run_super_resolution(
 
     let tensor = rgba_to_chw(rgba, width, height)?;
     let output = session.run_f32(tensor, vec![1, 3, height as i64, width as i64])?;
+    if model_id == "realesrgan-x4" {
+        let output_width = width.checked_mul(4).ok_or("RealESRGAN output width overflow")?;
+        let output_height = height.checked_mul(4).ok_or("RealESRGAN output height overflow")?;
+        validate_output_shape(&output, &[Some(1), Some(3), Some(output_height as i64), Some(output_width as i64)])?;
+    }
     let (output_width, output_height) = image_output_size(&output, 3, false)?;
     Ok(InferenceImageOutput {
         rgba: rgb_output_to_rgba(&output.data, output_width, output_height)?,
@@ -338,14 +368,18 @@ fn run_background_removal(
 #[cfg(not(target_arch = "wasm32"))]
 fn run_depth(
     session: &mut impl TensorRunner,
+    model_id: &str,
     rgba: &[u8],
     width: u32,
     height: u32,
 ) -> Result<InferenceImageOutput, String> {
     const INPUT: u32 = 256;
     let resized = resize_rgba(rgba, width, height, INPUT, INPUT)?;
-    let tensor =
-        midas_preprocess(&resized, INPUT, INPUT).expect("resized depth RGBA dimensions are valid");
+    let tensor = if model_id == "midas-small" {
+        // The original MiDaS graph contains its own RGB channel Sub/Div.
+        rgba_to_chw(&resized, INPUT, INPUT)
+    } else { midas_preprocess(&resized, INPUT, INPUT) }
+        .expect("resized depth RGBA dimensions are valid");
     let output = session.run_f32(tensor, vec![1, 3, INPUT as i64, INPUT as i64])?;
     let (depth_width, depth_height) = image_output_size(&output, 1, true)?;
     let count = output.data.len();
@@ -416,6 +450,27 @@ fn run_detection(
         height,
         data: Some(json!(detections)),
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_class_map(session: &mut impl TensorRunner, rgba: &[u8], width: u32, height: u32)
+    -> Result<InferenceImageOutput, String> {
+    const SIDE: u32 = 640;
+    let input = letterbox_preprocess(rgba, width, height, SIDE)?;
+    let (classes, shape) = session.run_u8(input.tensor, vec![1, 3, SIDE as i64, SIDE as i64])?;
+    if shape != [1, SIDE as i64, SIDE as i64] || classes.len() != (SIDE * SIDE) as usize {
+        return Err("YOLO26 requires its original UInt8 class map [1,640,640]".to_owned());
+    }
+    let segmentation = super::postprocess::class_map_postprocess(&classes, SIDE as usize, SIDE as usize,
+        width as usize, height as usize, input.scale, input.pad_x, input.pad_y)?;
+    let mut overlay = rgba.to_vec();
+    for (pixel, color) in overlay.chunks_exact_mut(4).zip(segmentation.mask_rgba.chunks_exact(4)) {
+        for channel in 0..3 { pixel[channel] = blend(pixel[channel], color[channel]); }
+    }
+    Ok(InferenceImageOutput { rgba: overlay, width, height, data: Some(json!({
+        "classCounts": segmentation.class_counts, "numClasses": segmentation.num_classes,
+        "maskW": width, "maskH": height,
+    })) })
 }
 
 #[cfg(not(target_arch = "wasm32"))]

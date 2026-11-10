@@ -61,8 +61,8 @@ impl std::error::Error for GpuError {}
 /// Actual native device/queue ownership, not a guessed numeric device identifier.
 #[derive(Clone, Debug)]
 pub struct GpuDeviceOwner {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    pub(crate) device: Arc<wgpu::Device>,
+    pub(crate) queue: Arc<wgpu::Queue>,
 }
 impl GpuDeviceOwner {
     pub fn device(&self) -> &Arc<wgpu::Device> { &self.device }

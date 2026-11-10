@@ -389,7 +389,7 @@ impl NativePlayer {
         self.clock_origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
-    pub fn load_resident_inference(&mut self, node_id: String, session: oq_inference::gpu::GpuImageSession,
+    pub fn load_resident_inference(&mut self, node_id: String, session: crate::inference::ResidentInferenceSession,
         config: InferenceConfig) -> Result<crate::inference::InferenceSessionInfo, String> {
         crate::inference::prepared::validate_resident_config(&config)?;
         let backend = self.render_device.backend();
@@ -405,6 +405,16 @@ impl NativePlayer {
         self.render_device.remove_texture(&node_id);
         self.session.mark_dirty(&node_id).map_err(runtime_error)?;
         Ok(info)
+    }
+
+    /// GPU-only structured detections for the node's current ROI resource. Retain
+    /// its output lease through consumer submission on this player's queue.
+    pub fn inference_detection_buffer(&self, node_id: &str) -> Option<(Arc<wgpu::Buffer>, Arc<dyn std::any::Any + Send + Sync>)> {
+        self.inference.detection_buffer(node_id)
+    }
+
+    pub fn inference_raw_result_buffer(&self, node_id: &str) -> Option<(Arc<wgpu::Buffer>, Arc<dyn std::any::Any + Send + Sync>)> {
+        self.inference.raw_result_buffer(node_id)
     }
 
     pub fn unload_inference(&mut self, node_id: &str) {

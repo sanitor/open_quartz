@@ -51,7 +51,9 @@ pub(crate) use resident::*;
 mod resident {
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::sync::Arc;
-    use oq_inference::gpu::{GpuImageSession, GpuOutput};
+    use oq_inference::gpu::GpuOutput;
+    use oq_inference::catalog_gpu::CatalogGpuOutput;
+    use crate::inference::ResidentInferenceSession;
     use crate::evaluation::ExecutionCommand;
     use crate::inference::{InferenceConfig, InferenceSessionInfo, RequestStamp, SessionGeneration};
     use crate::outputs::{AsyncCompletionEnvelope, ContentStamp, DeliveryPolicy, FrameStamp,
@@ -62,12 +64,13 @@ mod resident {
     use super::{InferenceMetrics, InferenceOutputEvent};
 
     struct Resource {
-        session: GpuImageSession,
+        session: ResidentInferenceSession,
         info: InferenceSessionInfo,
     }
 
     pub(crate) enum ResidentImage {
         Gpu(GpuOutput),
+        Catalog(CatalogGpuOutput),
         #[cfg(test)]
         Test(GpuOutputHandle),
     }
@@ -75,6 +78,7 @@ mod resident {
         pub(crate) fn dimensions(&self) -> (u32, u32) {
             match self {
                 Self::Gpu(output) => (output.width(), output.height()),
+                Self::Catalog(output) => (output.width(), output.height()),
                 #[cfg(test)]
                 Self::Test(output) => (output.width, output.height),
             }
@@ -86,9 +90,17 @@ mod resident {
                     width: output.width(), height: output.height(), format: TextureFormat::Rgba8Unorm,
                     lease: Some(output.lease()),
                 },
+                Self::Catalog(output) => GpuOutputHandle {
+                    texture: output.texture_arc(), view: output.view_arc(), sampler,
+                    width: output.width(), height: output.height(), format: TextureFormat::Rgba8Unorm,
+                    lease: Some(output.lease()),
+                },
                 #[cfg(test)]
                 Self::Test(output) => output.clone(),
             }
+        }
+        pub(crate) fn detection_buffer(&self) -> Option<Arc<wgpu::Buffer>> {
+            match self { Self::Catalog(output) => output.detection_buffer(), _ => None }
         }
     }
     struct Completion {
@@ -153,7 +165,7 @@ mod resident {
             }
             Ok(())
         }
-        pub(crate) fn load(&mut self, node: String, session: GpuImageSession,
+        pub(crate) fn load(&mut self, node: String, session: ResidentInferenceSession,
             config: InferenceConfig, info: InferenceSessionInfo) -> Result<InferenceSessionInfo, String> {
             super::super::prepared::validate_resident_config(&config)?;
             crate::inference::image_task_contract(&config, &info)?;
@@ -193,6 +205,18 @@ mod resident {
             metrics.in_flight = self.active.len(); metrics.queue_depth = self.queued_nodes.len(); metrics
         }
         pub(crate) fn take_ready_nodes(&mut self) -> Vec<String> { self.ready_nodes.drain().collect() }
+        pub(crate) fn detection_buffer(&self, node: &str) -> Option<(Arc<wgpu::Buffer>, Arc<dyn std::any::Any + Send + Sync>)> {
+            match self.retained_images.get(node)? {
+                ResidentImage::Catalog(output) => Some((output.detection_buffer()?, output.lease())),
+                _ => None,
+            }
+        }
+        pub(crate) fn raw_result_buffer(&self, node: &str) -> Option<(Arc<wgpu::Buffer>, Arc<dyn std::any::Any + Send + Sync>)> {
+            match self.retained_images.get(node)? {
+                ResidentImage::Catalog(output) => Some((output.raw_result_buffer(), output.lease())),
+                _ => None,
+            }
+        }
         pub(crate) fn schedule(&mut self, command: &ExecutionCommand, input_stamp: &FrameStamp,
             playback: &PlaybackSession, render: &RenderDevice) -> Result<(), String> {
             if self.active.contains_key(&command.node_id) {
@@ -209,7 +233,7 @@ mod resident {
             let task_id = self.next_task.checked_add(1).ok_or("Inference request ID exhausted")?;
             let before = resource.session.counters();
             let result = match resource.session.submit_texture(source.texture, source.width, source.height) {
-                Ok(output) => Ok(ResidentImage::Gpu(output)),
+                Ok(output) => Ok(output),
                 Err(oq_inference::gpu::GpuError::Capacity) => {
                     self.metrics.queued += 1;
                     self.queued_nodes.insert(command.node_id.clone());
@@ -255,7 +279,8 @@ mod resident {
                 })?;
                 let (width, height) = image.dimensions();
                 let outputs = self.outputs.get(&completion.node_id).into_iter().flatten()
-                    .filter_map(|(key, data_type)| matches!(data_type, DataType::Sampler2d | DataType::SamplerCube)
+                    .filter_map(|(key, data_type)| (matches!(data_type, DataType::Sampler2d | DataType::SamplerCube)
+                        || (*data_type == DataType::Roi && image.detection_buffer().is_some()))
                         .then(|| (key.clone(), OutputPayload::Resource { handle: u64::from(completion.generation) }))).collect();
                 let envelope = AsyncCompletionEnvelope { node_id: completion.node_id.clone(),
                     graph_revision: completion.revision, node_generation: completion.generation,

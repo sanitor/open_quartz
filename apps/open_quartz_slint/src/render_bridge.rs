@@ -183,9 +183,14 @@ impl RenderBridge {
             let p010 = wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
             if adapter.features().contains(p010) { required_features |= p010; }
         }
+        let mut limits = wgpu::Limits::default();
+        let adapter_limits = adapter.limits();
+        limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
+        limits.max_buffer_size = adapter_limits.max_buffer_size;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("open-quartz-slint-shared-device"),
             required_features,
+            required_limits: limits,
             ..Default::default()
         }))
         .map_err(|error| {

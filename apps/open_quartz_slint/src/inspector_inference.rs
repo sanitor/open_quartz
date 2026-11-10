@@ -22,7 +22,7 @@ pub(crate) fn inspect(
         .count();
     let mut configuration = vec![
         row("Model", &data.label),
-        row("Resident capability", "Metal GPU · super-resolution-3x / Super Resolution only (Conv, ReLU, PixelShuffle). Other models and tasks fail preparation; no host execution fallback."),
+        row("Resident capability", "Metal GPU · seven catalog profiles only: SR3 224² BT.601 ×3; RealESRGAN-X4 source-size ×4; U²Net-P 320²; MODNet 512²; MiDaS-small 256² RGB [0,1] graph normalization; YOLOv8n 640² COCO; YOLO26n-sem 640² UInt8 Cityscapes class map. Accelerator-only, no CPU fallback or host payload."),
         row("Task", match data.inference_task {
             Some(InferenceTask::SuperResolution) => "Super resolution",
             Some(InferenceTask::BackgroundRemoval) => "Background removal",

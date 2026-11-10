@@ -10,6 +10,7 @@ pub enum ImageTaskAdapter {
     DepthMap,
     CocoYolo8400,
     Cityscapes19,
+    UInt8ClassMap,
 }
 
 /// These describe the existing application transforms, not ONNX metadata claims.
@@ -38,7 +39,7 @@ pub enum ImageDimensionConstraint {
     InputWidthTimes(u32),
 }
 
-/// The exact named FP32 input and selected output plus task adapter constraints.
+/// The exact named FP32 input and typed selected output plus task adapter constraints.
 /// Full model outputs remain available in `InferenceSessionInfo`; only explicit
 /// catalog bindings may select one output from a multi-output model.
 /// Symbolic/dynamic dimensions remain in `input`/`output`; constraints are checked
@@ -86,10 +87,15 @@ pub fn image_task_contract(
             return Err("image task tensor names must match the exact declared interface".to_owned());
         }
     }
-    for tensor in [input, output] {
-        if tensor.element_type != oq_inference::TensorElementType::Float32 {
-            return Err(format!("image task tensor {:?} requires FP32, received {:?}", tensor.name, tensor.element_type));
-        }
+    if input.element_type != oq_inference::TensorElementType::Float32 {
+        return Err(format!("image task input {:?} requires FP32, received {:?}", input.name, input.element_type));
+    }
+    let output_type = if config.task == InferenceTask::Segmentation && config.model_id == "yolo26n-sem" {
+        oq_inference::TensorElementType::Uint8
+    } else { oq_inference::TensorElementType::Float32 };
+    if output.element_type != output_type {
+        let expected = if output_type == oq_inference::TensorElementType::Float32 { "FP32" } else { "Uint8" };
+        return Err(format!("image task output {:?} requires {expected}, received {:?}", output.name, output.element_type));
     }
     let target = config.target_size.max(1);
     let (adapter, preprocessing, resize, channels, output_shape) = match config.task {
@@ -102,13 +108,17 @@ pub fn image_task_contract(
             vec![Fixed(1), Fixed(1), Positive, Positive],
         ),
         InferenceTask::DepthEstimation => (
-            DepthMap, BgrImageNetMeanStd, Square(256), 3,
+            DepthMap, if config.model_id == "midas-small" { RgbZeroToOne } else { BgrImageNetMeanStd }, Square(256), 3,
             if output.dimensions.len() == 3 { vec![Fixed(1), Positive, Positive] }
             else { vec![Fixed(1), Fixed(1), Positive, Positive] },
         ),
         InferenceTask::Detection => (
-            CocoYolo8400, RgbZeroToOne, Letterbox(target), 3,
+            CocoYolo8400, RgbZeroToOne, Letterbox(if config.model_id == "yolov8n" { 640 } else { target }), 3,
             vec![Fixed(1), Fixed(84), Fixed(8400)],
+        ),
+        InferenceTask::Segmentation if config.model_id == "yolo26n-sem" => (
+            UInt8ClassMap, RgbZeroToOne, Letterbox(640), 3,
+            vec![Fixed(1), Fixed(640), Fixed(640)],
         ),
         InferenceTask::Segmentation => (
             Cityscapes19, RgbZeroToOne, Letterbox(target), 3,
@@ -172,9 +182,42 @@ pub(super) fn validate_declared_shape(
     Ok(())
 }
 
+fn shape_length(shape: &[i64]) -> Result<usize, String> {
+    shape.iter().try_fold(1usize, |length, &dimension| {
+        let dimension = usize::try_from(dimension).ok().filter(|&dimension| dimension > 0)
+            .ok_or_else(|| "image task tensor requires positive dimensions".to_owned())?;
+        length.checked_mul(dimension).ok_or_else(|| "image task tensor size overflow".to_owned())
+    })
+}
+
 impl ImageTaskContract {
+    pub(crate) fn validate_prepared_shapes(&self, input: &[i64], output: &[i64]) -> Result<(), String> {
+        let input_length = shape_length(input)?;
+        self.validate_input(input, input_length)?;
+        self.validate_concrete(&self.output, &self.output_shape, output, shape_length(output)?, input)
+    }
+
+    pub(super) fn validate_u8_output(&self, shape: &[i64], length: usize, input_shape: &[i64]) -> Result<(), String> {
+        if self.output.element_type != oq_inference::TensorElementType::Uint8 {
+            return Err("image task output is not UInt8".to_owned());
+        }
+        self.validate_concrete(&self.output, &self.output_shape, shape, length, input_shape)
+    }
+
     pub(super) fn validate_input(&self, shape: &[i64], length: usize) -> Result<(), String> {
         self.validate_concrete(&self.input, &self.input_shape, shape, length, shape)
+    }
+
+    /// Resolve task-owned scaled output dimensions without rewriting source symbols.
+    pub(super) fn concrete_output_shape(&self, input: &[i64]) -> Result<Vec<i64>, String> {
+        let input_axis = |axis| input.get(axis).and_then(|&value| u64::try_from(value).ok());
+        let shape = self.output_shape.iter().map(|&constraint| {
+            constraint_value(constraint, input_axis(2), input_axis(3))
+                .and_then(|value| i64::try_from(value).ok())
+                .ok_or_else(|| "image task output shape is not fully constrained".to_owned())
+        }).collect::<Result<Vec<_>, _>>()?;
+        self.validate_prepared_shapes(input, &shape)?;
+        Ok(shape)
     }
 
     /// Validate the task decoder contract even when the model declares symbolic output axes.

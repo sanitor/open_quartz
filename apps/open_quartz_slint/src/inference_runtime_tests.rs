@@ -122,7 +122,7 @@ fn model_messages_expose_their_node_identity() {
 fn production_worker_rejects_host_policies_and_unsupported_tasks_before_model_io() {
     for (policy, task, model_id, expected) in [
         (ExecutionPolicy::default(), InferenceTask::SuperResolution, "super-resolution-3x", "hardware-resident"),
-        (ExecutionPolicy::resident(), InferenceTask::Detection, "yolov8n", "supports only task super-resolution"),
+        (ExecutionPolicy::resident(), InferenceTask::DepthEstimation, "yolov8n", "requires task Detection"),
     ] {
         let mut runtime = InferenceRuntime::default();
         runtime.specs.insert("model".into(), ModelSpec {

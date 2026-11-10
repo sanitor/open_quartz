@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Opt-in Metal catalog image inference (2026-11-09)
+
+- Add an independent GPU execution path for the supported image-catalog graphs, correct the ESR raw CPU diagnostic to supply its task-owned source-scaled output shape, and add a reproducible `catalog_benchmark` against the existing ORT CPU pipeline. The six checked models are U²Net-P, MiDaS, MODNet, YOLO26n, YOLOv8n and RealESRGAN-x4; this opt-in path does not replace or widen the production fixed-profile resident SR3 contract.
+- Validate on Apple M4 Pro / Metal at 1280×720 with 30 alternating CPU/GPU samples and 2–3 warmups per path: every selected raw FP32 output value met 1e-3 absolute/relative tolerance, every final RGBA image met max error ≤1 byte, and source texture parity reported zero host upload bytes. YOLOv8n's deterministic gradient fixture yielded zero detections; non-empty detection decoding remains unverified.
+- Record the per-model CPU/GPU P50 comparison, acceleration, benefits, correctness checks and measurement limits in [Metal catalog 收益与结论](docs/INFERENCE_ARCHITECTURE.md#metal-catalog-收益与结论2026-11-09-实测). Keep single-frame completion-wall latency distinct from UI latency, GPU execution timestamps, cross-device performance and production acceptance.
+- Exercise resource lifetime separately from timing for every catalog model: retain three consumer output leases, verify capacity rejects a fourth submit, release/reuse one slot, then destroy the session and wait with a consumer output still leased. RealESRGAN also recompiles at 640×360 and restores 1280×720 with exact 4× output extents. Per-model three-sample diagnostics are in `test-results/output-metrics/catalog-<model>-1280x720-lifecycle.json`; SR3 resource and pool tests remain in the native Metal suite.
 ### Resident SR3 convolution performance (2026-11-09)
 
 - Replace independent per-pixel scalar convolution with preparation-specialized FP32 32-channel × 32-pixel workgroup tiles, 4×4 per-thread register accumulation and K=32 shared input/weight tiles (8KB workgroup storage). Keep the full original network, NCHW semantics, signed weights, padding, bias/ReLU, channel tail, same Metal queue and zero per-frame host image/Tensor transfers; no FP16 or approximation.

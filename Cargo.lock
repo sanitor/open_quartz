@@ -1310,6 +1310,9 @@ dependencies = [
 name = "oq-inference"
 version = "0.1.0"
 dependencies = [
+ "cc",
+ "objc2",
+ "objc2-metal",
  "ort",
  "pollster",
  "prost",

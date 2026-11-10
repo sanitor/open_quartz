@@ -384,6 +384,49 @@ pub fn segment_postprocess(
     })
 }
 
+/// Decode the original YOLO26 UInt8 Cityscapes class map without inventing logits.
+#[allow(clippy::too_many_arguments)]
+pub fn class_map_postprocess(raw: &[u8], mask_width: usize, mask_height: usize,
+    source_width: usize, source_height: usize, scale: f32, pad_x: f32, pad_y: f32,
+) -> Result<SegmentationResult, String> {
+    const CLASSES: usize = CITYSCAPES_PALETTE.len();
+    if mask_width == 0 || mask_height == 0 || raw.len() != mask_width.checked_mul(mask_height)
+        .ok_or_else(|| "class-map dimensions overflow".to_owned())? {
+        return Err("class-map dimensions do not match UInt8 output length".to_owned());
+    }
+    if raw.iter().any(|&class| class as usize >= CLASSES) {
+        return Err("YOLO26 class map contains an invalid Cityscapes class ID".to_owned());
+    }
+    let model_width = source_width as f32 * scale + 2.0 * pad_x;
+    let model_height = source_height as f32 * scale + 2.0 * pad_y;
+    if source_width == 0 || source_height == 0 || !scale.is_finite() || scale <= 0.0
+        || !pad_x.is_finite() || !pad_y.is_finite() || pad_x < 0.0 || pad_y < 0.0 {
+        return Err("class-map letterbox geometry is invalid".to_owned());
+    }
+    let crop_x = (pad_x * mask_width as f32 / model_width).round() as usize;
+    let crop_y = (pad_y * mask_height as f32 / model_height).round() as usize;
+    let crop_width = (source_width as f32 * scale * mask_width as f32 / model_width).round().max(1.0) as usize;
+    let crop_height = (source_height as f32 * scale * mask_height as f32 / model_height).round().max(1.0) as usize;
+    if crop_x + crop_width > mask_width || crop_y + crop_height > mask_height {
+        return Err("class-map crop exceeds tensor bounds".to_owned());
+    }
+    let pixels = source_width.checked_mul(source_height).ok_or_else(|| "class-map dimensions overflow".to_owned())?;
+    let mut colors = vec![0; pixels.checked_mul(4).ok_or_else(|| "class-map dimensions overflow".to_owned())?];
+    let mut class_counts = vec![0; CLASSES];
+    for y in 0..source_height {
+        let source_y = crop_y + y * crop_height / source_height;
+        for x in 0..source_width {
+            let source_x = crop_x + x * crop_width / source_width;
+            let class = raw[source_y * mask_width + source_x] as usize;
+            class_counts[class] += 1;
+            let index = (y * source_width + x) * 4;
+            colors[index..index + 4].copy_from_slice(&CITYSCAPES_PALETTE[class]);
+        }
+    }
+    Ok(SegmentationResult { mask_rgba: colors, mask_width: source_width, mask_height: source_height,
+        class_counts, num_classes: CLASSES })
+}
+
 #[cfg(test)]
 mod coverage_tests {
     use super::*;

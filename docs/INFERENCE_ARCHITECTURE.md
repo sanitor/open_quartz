@@ -2,6 +2,28 @@
 
 用户能力为 **INFERENCE / 推理**；ONNX 是模型产物格式，不等于执行后端。生产实时绘制与推理的图像 payload 必须为硬件 buffer/texture，ORT host Tensor 仅供显式 reference/诊断，绝不是生产 fallback。
 
+
+## Metal catalog 收益与结论（2026-11-09 实测）
+
+Apple M4 Pro / Metal，Release 构建，1280×720 GPU 生成的确定性图案，每条路径预热 2–3 次、采样 30 次，CPU/GPU 按交替执行块串行测量。CPU 为完整 readback → preprocessing → ORT CPU → postprocessing → upload/fence；GPU 为驻留提交到实际完成的 wall latency。源生成、模型准备、诊断读回、视频解码与 UI 显示不计时。
+
+| 模型 | 任务 | CPU P50 ms | GPU completion P50 ms | P50 加速比 | 主要收益 |
+|---|---|---:|---:|---:|---|
+| U²Net-P | 背景移除 | 84.92 | 9.28 | 9.15× | GPU 生成 alpha mask，省去逐帧 CPU 图像处理及结果上传 |
+| MiDaS Small | 深度估计 | 39.03 | 4.12 | 9.48× | 深度推理、极值归约与可视化留在 GPU |
+| MODNet | 人像抠图 | 87.04 | 9.79 | 8.89× | GPU 生成前景 alpha，省去 CPU 推理和结果重上传 |
+| YOLO26n Semantic | 语义分割 | 16.72 | 2.98 | 5.61× | GPU 生成 class map；640×640 UInt8 class ID 与 CPU 逐值完全一致 |
+| YOLOv8n | 目标检测 | 23.31 | 5.55 | 4.20× | 推理、检测后处理与框绘制留在 GPU；当前样本仅覆盖空检测结果 |
+| RealESRGAN-x4 | 超分辨率 | 4228.36 | 340.51 | 12.42× | 原分辨率 720p 推理并输出 5120×2880，无逐帧 host 图像往返 |
+
+**结论：** 六个模型在本机本输入下均降低了串行完成延迟。RealESRGAN 的相对和绝对耗时收益最大，但单帧仍需约 341 ms，不能据此宣称可实时处理 720p 视频。其余五个模型的 GPU P50 均低于 10 ms；这不保证尾延迟、流水吞吐或 UI 帧率。收益来自完整驻留路径，不能把加速比解释成单独模型内核的加速比。
+
+**正确性与资源：** FP32 选定输出逐值满足 `abs(gpu-cpu) <= 1e-3 + 1e-3*abs(cpu)`，YOLO26n 的 UInt8 class ID 要求完全相等；最终 RGBA 最大差异不超过 1 byte。驻留路径报告 `hostImageBytes = 0`，显式 CPU reference 与验证读回不属于生产逐帧路径。六模型均验证三份输出 lease 的容量限制、释放后的 slot 复用和 session 销毁后持有输出的生命周期；RealESRGAN 另验证源尺寸切换与恢复。
+
+**适用边界：** 确定性图案不是自然视频；YOLOv8n 此样本检测框为 0，未证明非空框解码正确性。以上数据不等于 GPU timestamp、UI 延迟、跨设备性能或完整生产验收。SR3 的固定尺寸网络与本节六个 catalog 模型分别记录，不能混用其分辨率和性能结论。
+
+原始性能报告：`test-results/output-metrics/catalog-<model>-1280x720.json`，其中报告文件名使用 `midas` 和 `yolo26n` 对应 `midas-small` 和 `yolo26n-sem`。生命周期报告使用同名前缀加 `-lifecycle.json`。这些本地报告位于 git 忽略目录；可通过 `catalog_benchmark` 重现。
+
 ## 当前实现与边界
 
 生产 macOS 路径使用与 Slint **wgpu 30 同一个 Metal Device/Queue**：
@@ -19,7 +41,11 @@ GPU source texture
 
 卷积使用按已验证层几何专门编译的 FP32 内核：一个 64-thread workgroup 覆盖 32 个输出通道 × 32 个邻接像素，每线程累加 4×4 register tile；归约以 K=32 的输入/权重共享分块执行，workgroup storage 为 8KB。输出仍是 NCHW；9-channel 尾部、padding、bias 和 ReLU 保持原模型语义。专门编译和权重上传只发生在准备阶段，不增加逐帧 CPU 图像处理。
 
-当前 resident 模型仅 **super-resolution-3x（SR3）**，网络 profile 固定 `[1,1,224,224] → [1,1,672,672]`。任意源尺寸仍先缩到 224×224，最终 RGBA 尺寸为源宽高各 ×3。这不是 window tiling，也不是原始大图全分辨率推理；不据此声称大图完整质量或更快吞吐。catalog 其他模型保留自省与任务契约，不表示已支持 resident 执行。其他模型或平台在 frame access 前报错。
+当前生产 resident 模型仅 **super-resolution-3x（SR3）**，网络 profile 固定 `[1,1,224,224] → [1,1,672,672]`。任意源尺寸仍先缩到 224×224，最终 RGBA 尺寸为源宽高各 ×3。这不是 window tiling，也不是原始大图全分辨率推理；不据此声称大图完整质量或更快吞吐。其他模型可通过下述 opt-in Metal catalog 诊断路径运行，但不属于生产 resident 支持；其他平台在 frame access 前报错。
+目录图像模型另有 opt-in 的 macOS Metal execution 与 `catalog_benchmark` 对照，不改变以上生产 resident policy。Apple M4 Pro 720p 的 U²Net-P、MiDaS、MODNet、YOLO26n、YOLOv8n、RealESRGAN-x4 全部完成原始选定输出核对及最终 RGBA 核对；原始输出逐元素满足 FP32 绝对/相对容差 1e-3，图像最大差异不超过 1 byte，GPU 源纹理核验 host upload/readback 计数均为 0。真实生产适用性、其他硬件与输入内容不可由梯度图案外推。YOLOv8n 梯度图案产生 0 个检测框；该结果没有验证非空框的 decoder 覆盖。
+六个 catalog 模型各自另执行了不计时的 Metal 生命周期检查：同时持有三份 consumer output lease 时拒绝第四次提交；释放一个 lease 后复用对应 slot；销毁 session 后等待中仍可读到持有中的输出纹理。RealESRGAN 另验证源分辨率从 1280×720 切到 640×360、再恢复 1280×720 后，输出尺寸分别为 2560×1440 与 5120×2880。每个模型额外执行 3 次 CPU 与 3 次 GPU completion 样本；含 lifecycle 字段的专用记录为 `test-results/output-metrics/catalog-<model>-1280x720-lifecycle.json`，不作为性能统计。SR3 的独立真实 Metal pool/resource/device 验收及多尺寸性能记录见下方历史条目。
+
+该诊断将 GPU completion-wall 与完整 ORT CPU readback/preprocess/infer/postprocess/upload 分开测量；它不是 UI 延迟或 GPU execution timestamp。`realesrgan-x4` 的 720p 源输入输出 `[1,3,2880,5120]`，CPU P50 4228.36 ms、GPU completion P50 340.51 ms（12.42×）；其 44,236,800 个 FP32 值均匹配容差，58,982,400 个 RGBA 字节最大差异 1。其他五模型原始报告位于 `test-results/output-metrics/catalog-<model>-1280x720.json`。此 opt-in GPU catalog 与当前生产支持的固定尺寸 resident SR3 是不同执行路径。
 
 ## 执行政策与方案
 

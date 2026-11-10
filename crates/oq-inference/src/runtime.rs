@@ -291,6 +291,71 @@ impl InferenceSession {
             shape: output.shape,
         })
     }
+    /// Run the original single-input FP32 / single-output UInt8 model on the
+    /// explicitly selected host runtime. This diagnostic API does not cast or
+    /// rewrite model outputs and is not a resident GPU execution path.
+    pub fn run_u8(
+        &mut self,
+        input: Vec<f32>,
+        shape: Vec<i64>,
+    ) -> Result<(Vec<u8>, Vec<i64>), InferenceError> {
+        if self.info.inputs.len() != 1 || self.info.outputs.len() != 1 {
+            return Err(InferenceError::InvalidModelInterface(
+                "UInt8 reference execution requires exactly one input and one output".into(),
+            ));
+        }
+        let input_metadata = &self.info.inputs[0];
+        let output_metadata = &self.info.outputs[0];
+        if let Some(source) = &self.info.source_interface {
+            for value in source.inputs.iter().map(|input| &input.value).chain(&source.outputs) {
+                if !matches!(
+                    value.value_type.as_ref().map(|ty| &ty.kind),
+                    Some(crate::artifact::ArtifactValueKind::Tensor {
+                        shape: crate::artifact::ArtifactShape::KnownRank(_), ..
+                    })
+                ) {
+                    return Err(InferenceError::InvalidModelInterface(
+                        "UInt8 reference execution requires tensor interfaces with known rank".into(),
+                    ));
+                }
+            }
+        }
+        if output_metadata.element_type != TensorElementType::Uint8 {
+            return Err(InferenceError::UnsupportedType {
+                name: output_metadata.name.clone(),
+                element_type: format!("{:?}", output_metadata.element_type),
+            });
+        }
+        let limits = TensorLimits::default();
+        let mut symbols = BTreeMap::new();
+        let input_bytes = validate_tensor(
+            &input_metadata.name, &shape, input.len(), input_metadata, &mut symbols, limits,
+        )?;
+        checked_total(0, input_bytes, limits)?;
+        // Bound all output dimensions known before execution; data-dependent
+        // dimensions are checked against the actual tensor before copying it.
+        let known_shape = output_metadata.dimensions.iter().map(|dimension| match dimension {
+            TensorDimension::Static(n) => i64::try_from(*n)
+                .map(Some).map_err(|_| InferenceError::SizeOverflow(output_metadata.name.clone())),
+            TensorDimension::Symbol(symbol) => Ok(symbols.get(symbol).copied()),
+            TensorDimension::Dynamic => Ok(None),
+        }).collect::<Result<Option<Vec<_>>, _>>()?;
+        if let Some(shape) = known_shape {
+            let bytes = validate_u8_output(&shape, None, output_metadata, &mut symbols, limits)?;
+            checked_total(input_bytes, bytes, limits)?;
+        }
+        let value = ort::value::Tensor::from_array((shape, input))
+            .map_err(|e| runtime_error("create input tensor", e))?;
+        let results = self.session.run(vec![(input_metadata.name.as_str(), value)])
+            .map_err(|e| runtime_error("run model", e))?;
+        let output = results.get(&output_metadata.name)
+            .ok_or_else(|| InferenceError::UnknownName(output_metadata.name.clone()))?;
+        let (shape, data) = output.try_extract_tensor::<u8>()
+            .map_err(|e| runtime_error("extract UInt8 output", e))?;
+        let bytes = validate_u8_output(shape, Some(data.len()), output_metadata, &mut symbols, limits)?;
+        checked_total(input_bytes, bytes, limits)?;
+        Ok((data.to_vec(), shape.to_vec()))
+    }
     pub fn run_f32_scoped(
         &mut self,
         stamp: RequestStamp,
@@ -317,12 +382,34 @@ impl InferenceSession {
     ) -> Result<InvocationResult, InferenceError> {
         self.invoke_with_limits(stamp, inputs, output_names, TensorLimits::default())
     }
-    /// Limits bound submitted/materialized CPU payloads, not ORT's internal allocator.
+    /// Invoke task-owned outputs whose concrete shapes are a deterministic function
+    /// of the prepared input (for example source-scaled image reconstruction).
+    /// The ONNX source interface remains unchanged; only the caller's exact expected
+    /// shapes replace symbolic name-equality inference for the named result tensors.
+    pub fn invoke_with_output_shapes(
+        &mut self,
+        stamp: RequestStamp,
+        inputs: Vec<NamedTensor>,
+        output_names: &[String],
+        expected_shapes: &[(&str, &[i64])],
+    ) -> Result<InvocationResult, InferenceError> {
+        self.invoke_with_output_shapes_and_limits(stamp, inputs, output_names, expected_shapes, TensorLimits::default())
+    }
     pub fn invoke_with_limits(
         &mut self,
         stamp: RequestStamp,
         inputs: Vec<NamedTensor>,
         output_names: &[String],
+        limits: TensorLimits,
+    ) -> Result<InvocationResult, InferenceError> {
+        self.invoke_with_output_shapes_and_limits(stamp, inputs, output_names, &[], limits)
+    }
+    fn invoke_with_output_shapes_and_limits(
+        &mut self,
+        stamp: RequestStamp,
+        inputs: Vec<NamedTensor>,
+        output_names: &[String],
+        expected_shapes: &[(&str, &[i64])],
         limits: TensorLimits,
     ) -> Result<InvocationResult, InferenceError> {
         let started = Instant::now();
@@ -362,9 +449,21 @@ impl InferenceSession {
                 .ok_or_else(|| InferenceError::UnknownName(name.clone()))?;
             if m.element_type != TensorElementType::Float32 {
                 return Err(InferenceError::UnsupportedType {
-                    name: name.clone(),
-                    element_type: format!("{:?}", m.element_type),
+                    name: name.clone(), element_type: format!("{:?}", m.element_type),
                 });
+            }
+            if let Some((_, shape)) = expected_shapes.iter().find(|(expected,_)| *expected == name) {
+                if shape.len() != m.dimensions.len() { return Err(InferenceError::Rank { name:name.clone(), expected:m.dimensions.len(), actual:shape.len() }); }
+                if shape.iter().any(|dimension| *dimension <= 0) { return Err(InferenceError::InvalidModelInterface(format!("task-owned output {name} dimensions must be positive"))); }
+                let mut elements = 1usize;
+                for (axis, &dimension) in shape.iter().enumerate() {
+                    if let TensorDimension::Static(expected) = &m.dimensions[axis] {
+                        if dimension as u64 != *expected { return Err(InferenceError::Dimension { name:name.clone(), axis, expected:format!("{expected}"), actual:dimension }); }
+                    }
+                    elements = elements.checked_mul(dimension as usize).ok_or_else(||InferenceError::SizeOverflow(name.clone()))?;
+                }
+                let bytes = u64::try_from(elements).ok().and_then(|value|value.checked_mul(4)).ok_or_else(||InferenceError::SizeOverflow(name.clone()))?;
+                if bytes > limits.max_tensor_bytes { return Err(InferenceError::Capacity { name:name.clone(), bytes, limit:limits.max_tensor_bytes }); }
             }
         }
         let values = inputs
@@ -398,13 +497,16 @@ impl InferenceSession {
             let (shape, data) = value
                 .try_extract_tensor::<f32>()
                 .map_err(|e| runtime_error("extract FP32 output", e))?;
-            let metadata = self
-                .info
-                .outputs
-                .iter()
-                .find(|m| &m.name == name)
+            let metadata = self.info.outputs.iter().find(|m| &m.name == name)
                 .ok_or_else(|| InferenceError::UnknownName(name.clone()))?;
-            let bytes = validate_tensor(name, shape, data.len(), metadata, &mut symbols, limits)?;
+            let override_shape=expected_shapes.iter().find(|(expected,_)|*expected==name).map(|(_,shape)|*shape);
+            let bytes = if let Some(expected) = override_shape {
+                let actual = shape.to_vec();
+                if actual.as_slice() != expected { return Err(InferenceError::Dimension { name:name.clone(), axis:0, expected:format!("task-owned shape {expected:?}"), actual:actual.first().copied().unwrap_or(-1) }); }
+                let elements = expected.iter().try_fold(1usize, |n, &d| n.checked_mul(usize::try_from(d).ok()?)).ok_or_else(||InferenceError::SizeOverflow(name.clone()))?;
+                if elements != data.len() { return Err(InferenceError::TensorLength { name:name.clone(), expected:elements, actual:data.len() }); }
+                u64::try_from(elements).ok().and_then(|n|n.checked_mul(4)).ok_or_else(||InferenceError::SizeOverflow(name.clone()))?
+            } else { validate_tensor(name, shape, data.len(), metadata, &mut symbols, limits)? };
             output_cpu_bytes = checked_total(output_cpu_bytes, bytes, limits)?;
             checked_total(input_cpu_bytes, output_cpu_bytes, limits)?;
             outputs.push(NamedTensor {
@@ -424,6 +526,49 @@ impl InferenceSession {
             },
         })
     }
+}
+fn validate_u8_output(
+    shape: &[i64],
+    data_length: Option<usize>,
+    metadata: &TensorMetadata,
+    symbols: &mut BTreeMap<String, i64>,
+    limits: TensorLimits,
+) -> Result<u64, InferenceError> {
+    let name = &metadata.name;
+    if shape.len() != metadata.dimensions.len() {
+        return Err(InferenceError::Rank {
+            name: name.clone(), expected: metadata.dimensions.len(), actual: shape.len(),
+        });
+    }
+    let mut length = 1usize;
+    for (axis, (&actual, dimension)) in shape.iter().zip(&metadata.dimensions).enumerate() {
+        let valid = actual >= 0 && match dimension {
+            TensorDimension::Static(expected) => actual as u64 == *expected,
+            TensorDimension::Symbol(symbol) => match symbols.get(symbol) {
+                Some(expected) => actual == *expected,
+                None => { symbols.insert(symbol.clone(), actual); true }
+            },
+            TensorDimension::Dynamic => true,
+        };
+        if !valid {
+            return Err(InferenceError::Dimension {
+                name: name.clone(), axis, expected: format!("{dimension:?}"), actual,
+            });
+        }
+        length = length.checked_mul(usize::try_from(actual)
+            .map_err(|_| InferenceError::SizeOverflow(name.clone()))?)
+            .ok_or_else(|| InferenceError::SizeOverflow(name.clone()))?;
+    }
+    let bytes = u64::try_from(length).map_err(|_| InferenceError::SizeOverflow(name.clone()))?;
+    if bytes > limits.max_tensor_bytes {
+        return Err(InferenceError::Capacity { name: name.clone(), bytes, limit: limits.max_tensor_bytes });
+    }
+    if let Some(actual) = data_length {
+        if actual != length {
+            return Err(InferenceError::TensorLength { name: name.clone(), expected: length, actual });
+        }
+    }
+    Ok(bytes)
 }
 fn checked_total(total: u64, bytes: u64, limits: TensorLimits) -> Result<u64, InferenceError> {
     let bytes = total

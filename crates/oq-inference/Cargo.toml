@@ -9,13 +9,21 @@ license = "MIT"
 [features]
 default = []
 ort = ["dep:ort", "dep:sha2"]
-gpu = ["dep:wgpu", "dep:sha2"]
+gpu = ["dep:wgpu", "dep:sha2", "dep:serde_json", "dep:objc2", "dep:objc2-metal"]
 
 [dependencies]
 prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = { version = "0.10", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["std", "metal", "wgsl"] }
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.3", optional = true }
+objc2-metal = { version = "0.3.2", optional = true, features = ["MTLDevice", "MTLBuffer", "MTLCommandQueue"] }
+
+[build-dependencies]
+cc = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["std", "load-dynamic", "api-21", "coreml"] }

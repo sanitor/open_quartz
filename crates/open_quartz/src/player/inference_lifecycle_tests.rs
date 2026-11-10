@@ -69,7 +69,7 @@ fn foreign_device_session_is_rejected_without_pixel_or_resource_mutation() {
     let model = oq_inference::gpu_model::GpuModel::from_onnx(&crate::inference::resident_test_model::sr3_model()).unwrap();
     let foreign = foreign.backend();
     let session = oq_inference::gpu::GpuImageSession::prepare(foreign.device.clone(), foreign.queue.clone(), model).unwrap();
-    let error = host.load_resident_inference("model".to_owned(), session, config()).unwrap_err();
+    let error = host.load_resident_inference("model".to_owned(), crate::inference::ResidentInferenceSession::Sr3(session), config()).unwrap_err();
     assert!(error.contains("exact GPU device and queue"), "{error}");
     assert!(!host.has_output_texture("model"));
     assert_eq!(host.inference_metrics().submitted, 0);

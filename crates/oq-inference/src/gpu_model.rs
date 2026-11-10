@@ -381,7 +381,7 @@ fn expect_ints(attrs: &BTreeMap<&str, &proto::Attribute>, name: &str, expected: 
 
 // Selected official ONNX protobuf fields. Unlike artifact::proto, this schema
 // deliberately decodes initializer and Constant payloads for one-time upload.
-mod proto {
+pub(crate) mod proto {
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct Model {
         #[prost(message, optional, tag = "7")]

@@ -110,6 +110,50 @@ fn identity_model_with_io_dimensions(
     ]
     .concat()
 }
+fn cast_u8_model(dimensions: &[Option<u64>]) -> Vec<u8> {
+    let attribute = [message(1, b"to"), integer(3, 2), integer(20, 2)].concat();
+    let node = [
+        message(1, b"image"), message(2, b"mask"), message(4, b"Cast"),
+        message(5, &attribute),
+    ].concat();
+    let graph = [
+        message(2, b"uint8-reference"), message(1, &node),
+        message(11, &value_info("image", dimensions, 1)),
+        message(12, &value_info("mask", dimensions, 2)),
+    ].concat();
+    [integer(1, 8), message(7, &graph), message(8, &integer(2, 13))].concat()
+}
+
+#[test]
+fn uint8_reference_extracts_original_typed_output() {
+    configure_runtime();
+    let mut session = InferenceSession::from_memory(&cast_u8_model(&[None, Some(3)])).unwrap();
+    let generation = session.generation();
+    let (data, shape) = session.run_u8(vec![0.99, 1.0, 254.99], vec![1, 3]).unwrap();
+    assert_eq!(data, vec![0, 1, 254]);
+    assert_eq!(shape, vec![1, 3]);
+    assert_eq!(session.generation(), generation);
+    assert!(session.run_f32(vec![0.0; 3], vec![1, 3]).is_err());
+}
+
+#[test]
+fn uint8_reference_rejects_invalid_requests_before_execution() {
+    configure_runtime();
+    let mut session = InferenceSession::from_memory(&cast_u8_model(&[None, Some(3)])).unwrap();
+    assert!(matches!(session.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::Rank { .. })));
+    assert!(matches!(session.run_u8(vec![0.0; 3], vec![1, 4]), Err(InferenceError::Dimension { .. })));
+    assert!(matches!(session.run_u8(vec![0.0; 2], vec![1, 3]), Err(InferenceError::TensorLength { .. })));
+    assert!(matches!(session.run_u8(vec![], vec![-1, 3]), Err(InferenceError::Dimension { .. })));
+    assert!(matches!(session.run_u8(vec![], vec![i64::MAX, 3]), Err(InferenceError::SizeOverflow(_))));
+    assert!(matches!(session.run_u8(vec![], vec![1 << 30, 3]), Err(InferenceError::Capacity { .. })));
+    let mut fp32 = InferenceSession::from_memory(&identity_model(&[("image", "result")], &[Some(3)])).unwrap();
+    assert!(matches!(fp32.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::UnsupportedType { .. })));
+    let mut uint8 = InferenceSession::from_memory(&identity_model_with_type(&[("image", "result")], &[Some(3)], 2)).unwrap();
+    assert!(matches!(uint8.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::UnsupportedType { .. })));
+    let mut multiple = InferenceSession::from_memory(&identity_model(&[("a", "b"), ("c", "d")], &[Some(3)])).unwrap();
+    assert!(matches!(multiple.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::InvalidModelInterface(_))));
+}
+
 fn configure_runtime() {
     if std::env::var_os("ORT_DYLIB_PATH").is_some() {
         return;

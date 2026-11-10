@@ -47,3 +47,7 @@ pollster = "0.4"
 [[example]]
 name = "resident_benchmark"
 required-features = ["native-runtime", "native-onnx"]
+
+[[example]]
+name = "catalog_benchmark"
+required-features = ["native-runtime", "native-onnx"]

@@ -40,17 +40,30 @@ fn model_preparation_preserves_source_facts_without_runtime_or_gpu() {
     assert_eq!(info.plan.transfer_path, oq_inference::TransferPath::Device);
     assert_eq!(prepared.task_contract().unwrap().adapter, crate::inference::ImageTaskAdapter::LuminanceSuperResolution3x);
     let (model, owned_config) = prepared.into_parts();
-    assert_eq!(model.plan.source_byte_length, bytes.len() as u64);
+    assert_eq!(model.model_plan().source_byte_length, bytes.len() as u64);
     assert_eq!(owned_config.policy, ExecutionPolicy::resident());
 }
 #[test]
 fn unsupported_tasks_and_invalid_graphs_never_become_reference_fallbacks() {
     let missing = Path::new("missing.onnx");
-    let mut unsupported = config(); unsupported.task = InferenceTask::Detection;
+    let mut unsupported = config(); unsupported.model_id = "unknown-model".to_owned();
     let error = PreparedInferenceModel::open_with_policy(missing, unsupported).err().unwrap();
-    assert!(error.contains("capability"), "{error}");
-    let mut unsupported = config(); unsupported.model_id = "realesrgan-x4".to_owned();
-    assert!(PreparedInferenceModel::open_with_policy(missing, unsupported).err().unwrap().contains("capability"));
+    assert!(error.contains("seven supported"), "{error}");
     assert!(PreparedInferenceModel::from_memory(b"not ONNX", config()).is_err());
     assert!(PreparedInferenceModel::from_memory(include_bytes!("../../tests/data/image_identity.onnx"), config()).is_err());
+}
+
+#[test]
+fn resident_catalog_requires_exact_model_task_pairing() {
+    for (id, task) in [
+        ("super-resolution-3x", InferenceTask::SuperResolution),
+        ("realesrgan-x4", InferenceTask::SuperResolution), ("u2netp", InferenceTask::BackgroundRemoval),
+        ("modnet", InferenceTask::BackgroundRemoval), ("midas-small", InferenceTask::DepthEstimation),
+        ("yolov8n", InferenceTask::Detection), ("yolo26n-sem", InferenceTask::Segmentation),
+    ] {
+        let mut config = config(); config.model_id = id.to_owned(); config.task = task;
+        validate_resident_config(&config).unwrap();
+        config.task = InferenceTask::Generic;
+        assert!(validate_resident_config(&config).unwrap_err().contains("requires task"));
+    }
 }

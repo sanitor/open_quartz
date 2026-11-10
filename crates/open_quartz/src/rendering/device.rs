@@ -110,9 +110,14 @@ impl RenderDevice {
             required_features |=
                 wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
         }
+        let mut limits = wgpu::Limits::default();
+        let adapter_limits = adapter.limits();
+        limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
+        limits.max_buffer_size = adapter_limits.max_buffer_size;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features,
+                required_limits: limits,
                 ..Default::default()
             })
             .await

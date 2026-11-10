@@ -5,6 +5,12 @@ pub use artifact::{inspect_onnx, ArtifactError, ArtifactInterface};
 pub mod gpu_model;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+#[cfg(feature = "gpu")]
+pub mod catalog_model;
+#[cfg(feature = "gpu")]
+pub mod catalog_gpu;
+#[cfg(feature = "gpu")]
+mod catalog_detect;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(any(test, all(feature = "ort", not(target_arch = "wasm32"))))]
