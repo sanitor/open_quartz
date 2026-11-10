@@ -87,3 +87,27 @@ fn every_backpressure_rejects_completion_before_texture_or_dirty_mutation() {
     assert_eq!(player.inference_metrics().accepted, 0);
     assert_eq!(player.inference_metrics().upload_bytes, 0);
 }
+
+#[test]
+fn detection_before_image_output_keeps_preview_and_renderer_delivery() {
+    let (mut player, _) = pollster::block_on(NativePlayer::new()).unwrap();
+    let mut graph = graph();
+    graph.nodes[0].data.outputs.insert(0, crate::project::model::Port {
+        id: "detections".into(), label: "detections".into(),
+        data_type: crate::project::model::DataType::Roi,
+        direction: crate::project::model::PortDirection::Output,
+        default_value: None, description: None,
+    });
+    player.set_graph_snapshot(&graph).unwrap();
+    player.start_playback().unwrap();
+    queue_new_image(&mut player);
+    player.render_next().unwrap();
+    let (pixels, width, height) = player.render_device.read_output_rgba("renderer").unwrap();
+    assert_eq!((width, height), (1, 1));
+    assert_eq!(pixels, [0, 0, 255, 255]);
+    let events = player.take_inference_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].node_id.as_str(), events[0].width, events[0].height), ("onnx", 1, 1));
+    assert_eq!(player.inference_metrics().accepted, 1);
+    assert_eq!(player.inference_metrics().rejected, 0);
+}

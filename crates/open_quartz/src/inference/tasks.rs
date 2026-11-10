@@ -156,7 +156,7 @@ mod resident {
             self.resources.retain(|node, _| self.outputs.contains_key(node));
             self.retained_images.retain(|node, _| self.outputs.contains_key(node));
             for (node, outputs) in &self.outputs {
-                let Some((output, _)) = outputs.first() else { continue; };
+                let Some((output, _)) = outputs.iter().find(|(_, kind)| matches!(kind, DataType::Sampler2d | DataType::SamplerCube)) else { continue; };
                 let id = format!("native-output-{node}");
                 session.subscribe_output(OutputSubscription { subscription_id: id.clone(), output: output.clone(),
                     delivery: DeliveryPolicy::OnChange, transport: OutputTransport::Preview,

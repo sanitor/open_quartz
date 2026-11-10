@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Video → YOLO → Renderer output fix
+
+- Select an inference image port by its sampler type for preview subscriptions instead of assuming the first output is an image. YOLOv8n declares ROI detections before its overlay; subscribing that ROI as Preview rejected graph commit and left the model-loading plan unset.
+- Accept both host JSON and resident device-buffer Resource payloads on ROI ports, while keeping Preview restricted to texture ports and Mesh/Json resource rejection unchanged. Fix the first-frame payload-contract failure without CPU readback or fake detection JSON.
+- Verify the original 1920×1080 VideoToolbox video through YOLOv8n and Renderer: live image and detection boxes, paused output retention, five accepted core completions and zero video CPU-copy bytes. Core tests 210 passed; desktop tests 79 passed, 2 opt-in ignored. UI screenshots: `test-results/yolo-video-renderer-fixed*.png`.
+
 ### Opt-in Metal catalog image inference (2026-11-09)
 
 - Add an independent GPU execution path for the supported image-catalog graphs, correct the ESR raw CPU diagnostic to supply its task-owned source-scaled output shape, and add a reproducible `catalog_benchmark` against the existing ORT CPU pipeline. The six checked models are U²Net-P, MiDaS, MODNet, YOLO26n, YOLOv8n and RealESRGAN-x4; this opt-in path does not replace or widen the production fixed-profile resident SR3 contract.

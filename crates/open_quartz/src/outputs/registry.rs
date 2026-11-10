@@ -361,7 +361,9 @@ fn payload_matches(data_type: DataType, payload: &OutputPayload) -> bool {
         DataType::Sampler2d | DataType::SamplerCube => {
             matches!(payload, OutputPayload::Resource { .. })
         }
-        DataType::Roi | DataType::Mesh | DataType::Json => {
+        // Resident detections use a device buffer; host-side ROI values remain JSON.
+        DataType::Roi => matches!(payload, OutputPayload::Resource { .. } | OutputPayload::Json(_)),
+        DataType::Mesh | DataType::Json => {
             matches!(payload, OutputPayload::Json(_))
         }
         DataType::Auto => true,

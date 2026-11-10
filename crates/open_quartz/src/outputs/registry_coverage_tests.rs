@@ -144,3 +144,31 @@ fn registry_update_reconcile_publish_generation_and_pending_cleanup_paths() {
     registry.publish(state(&output, 2, 3)).unwrap();
     assert!(!registry.pending_latest.contains_key("change"));
 }
+
+#[test]
+fn roi_device_buffer_is_delivered_as_resource_without_becoming_a_texture() {
+    let output = OutputKey::new("node", "port");
+    let mut registry = OutputRegistry::default();
+    registry.reconcile(1, BTreeMap::from([(output.clone(), DataType::Roi)]));
+    registry.subscribe(subscription("roi")).unwrap();
+    let mut preview = subscription("preview");
+    preview.transport = OutputTransport::Preview;
+    assert!(registry.subscribe(preview).is_err());
+    let mut current = state(&output, 1, 1);
+    current.payload = OutputPayload::Resource { handle: 7 };
+    registry.publish(current.clone()).unwrap();
+    let deliveries = registry.drain().deliveries;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0].state, current);
+    assert_eq!(deliveries[0].subscription_id, "roi");
+    current.output_generation = 2;
+    current.payload = OutputPayload::Json(serde_json::json!({"detections": []}));
+    registry.publish(current.clone()).unwrap();
+    assert_eq!(registry.drain().deliveries[0].state, current);
+    for kind in [DataType::Mesh, DataType::Json] {
+        registry.reconcile(2, BTreeMap::from([(output.clone(), kind)]));
+        let mut invalid = state(&output, 2, 1);
+        invalid.payload = OutputPayload::Resource { handle: 7 };
+        assert!(registry.publish(invalid).is_err());
+    }
+}

@@ -23,6 +23,12 @@ Apple M4 Pro / Metal，Release 构建，1280×720 GPU 生成的确定性图案�
 **适用边界：** 确定性图案不是自然视频；YOLOv8n 此样本检测框为 0，未证明非空框解码正确性。以上数据不等于 GPU timestamp、UI 延迟、跨设备性能或完整生产验收。SR3 的固定尺寸网络与本节六个 catalog 模型分别记录，不能混用其分辨率和性能结论。
 
 原始性能报告：`test-results/output-metrics/catalog-<model>-1280x720.json`，其中报告文件名使用 `midas` 和 `yolo26n` 对应 `midas-small` 和 `yolo26n-sem`。生命周期报告使用同名前缀加 `-lifecycle.json`。这些本地报告位于 git 忽略目录；可通过 `catalog_benchmark` 重现。
+### Video → YOLO → Renderer 出图验证
+
+YOLOv8n 的第一个输出是 `detections`（ROI），第二个才是 `overlay`（Sampler2d）。推理预览订阅必须按 sampler 类型选择输出，不能取第一个端口；否则图提交失败，模型加载计划未同步，界面后续误报缺少 Model ID。ROI 输出既可承载显式 host JSON，也可承载驻留检测 buffer 的 Resource handle；它不是可供 Preview 订阅的纹理。`NativePlayer::inference_detection_buffer` 提供 buffer 与 consumer lease，不能用伪造 JSON 或逐帧 CPU 读回代替。
+
+实际操作：Video 选择视频文件 → image 接 YOLOv8n → **overlay** 接 Renderer → 在 YOLO 执行面板点击 **Load model** → Play。用原 1920×1080 VideoToolbox 视频验证了运动图像、非空检测叠框和暂停后画面保留；核心 smoke 接受了 5 次完成，检测 buffer 存在，video CPU-copy bytes 为 0。这是实际出图证据，不是非空检测框与 CPU reference 的逐框数值一致性证明。截图：`test-results/yolo-video-renderer-fixed.png`、`test-results/yolo-video-renderer-fixed-paused.png`。
+
 
 ## 当前实现与边界
 
