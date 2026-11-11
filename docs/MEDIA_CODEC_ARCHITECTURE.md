@@ -1,6 +1,7 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
 > 状态：完整跨平台会话/编码/Slint 组件仍为提案，§17.1 首轮 macOS 验收为历史。当前生产实时图只接受 hardware buffer/texture，不允许软件 RGBA fallback；下面未来可选政策不放宽此约束。本轮 resident cutover 的实测计数、画面与未通过覆盖率门槛见 [DESIGN](DESIGN.md#validation)，旧结果不得复用。当前产品仅 Rust/Slint 与独立 .scr。
+> 2026-11-11 架构更新：原 `open_quartz` 采用[同 crate 渲染/执行职责分离](DESIGN.md#execution-rendering-split)，不新建双引擎；本媒体库保持无图/无 UI/无 wgpu 依赖。§8.4 明确按源时间的前瞻取帧、切点预热、credit 与非阻塞完成目标，尚未实现；剪辑器宿主策略见[视频编辑器 §9](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)。
 
 ## 1. 决策与目标
 
@@ -32,6 +33,7 @@
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
 | 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
 | FFmpeg 打包不同：Windows 固定 shared 9.0.2 snapshot；其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs)，目标资源目录为 [`apps/open_quartz_slint/runtime/`](../apps/open_quartz_slint/runtime/) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
+| 当前 macOS worker 按 PTS 等待后发布单个当前帧，GPU importer 转换后 `device.poll(Wait)` | [`media/native.rs`](../crates/open_quartz/src/media/native.rs) 与 [`rendering/videotoolbox.rs`](../crates/open_quartz/src/rendering/videotoolbox.rs) | 现有实时路径不是完整预取流水；窗口 admission、受控 slot 和设备完成先落实，再替换宿主等待，不能仅删除同步 |
 
 **Windows 当前代码不能直接视作跨设备、全色彩已验收的基线。** 本次源码核查还发现：Slint shared device 以默认 feature 集合创建，而 NV12/P010 外部纹理使用需要相应 device features；FFmpeg D3D12VA 自行创建设备，没有显式按 host adapter LUID 对齐；现有转换 shader 对 NV12/P010 共用写死的 10-bit/BT.709 limited 公式，未传递 AVFrame 色彩元数据，色度中性偏移也需校正验证。这些是 A/C 阶段必须关闭的正确性缺口，不在本轮设计中顺手改代码，也不把 macOS RGBA 像素回归当作 Windows 硬解证明。
 
@@ -76,7 +78,7 @@ flowchart TD
 
 `media_core` 逻辑协议部分应可不启用 FFmpeg、wgpu、浏览器依赖而测试。初期 backend modules 可以共包，稳定后根据链接大小和分发需要拆包。FFmpeg 类型仅存在于后端，不从公共协议泄漏 `AVFrame*`。GPU 适配器是可选依赖；软件解码、离线编码、命令行和其他 UI 可独立使用核心。
 
-依赖方向为 **Slint → 媒体核心/GPU 适配**。独立 oq-media 拥有 decoder/session/FrameLease，不反向依赖 Slint、OpenQuartz NodeId、graph 或 inference。内部 media::sources::VideoSources 拥有 NodeId → NativeVideoSource map、source reconcile、预览/播放/替换生命周期；它经同步 upload callback 借用 rendering::RenderDevice，后者拥有 GPU executor/importer/readback/Windows presenter。player::NativePlayer 只协调这些 owner，PlaybackSession 保存 GraphInstance+clock+OutputHub，compiler/evaluation 保持编译与纯求值边界。模型服务继续在 resources::models。root 类型保留，旧 execution/runtime namespace 与类 alias 不保留；实际文件见 [DESIGN 模块与所有权](./DESIGN.md#module-ownership) 与 [源码索引](./DESIGN.md#source-map)。
+当前依赖方向为 **Slint → 媒体核心/GPU 适配**。oq-media 拥有 decoder/session/FrameLease，不依赖 Slint、NodeId、graph、inference 或 wgpu。VideoSources 拥有 NodeId→NativeVideoSource map 与源生命周期，经 upload callback 借用 RenderDevice；NativePlayer 协调这些 owner，PlaybackSession 保存 GraphInstance+clock+OutputHub。模型服务留在 resources::models。此前无生产消费者的 execution/runtime namespace/alias 已删除；[目标 FramePipeline](DESIGN.md#execution-rendering-split)是为 NativePlayer 与编辑器统一流水的新职责，不恢复旧 facade 或第二套帧/同步契约。当前文件见[模块所有权](DESIGN.md#module-ownership)和[源码索引](DESIGN.md#source-map)。
 
 当前通用推理实现与图适配边界见[推理架构](INFERENCE_ARCHITECTURE.md)，本轮核心、真实模型、窗口/Shader、独立依赖与原生包结果统一见 [DESIGN 验证基线](./DESIGN.md#validation)。独立推理库的 ORT 验证不替代媒体硬解、设备驻留或其他平台验收；相机/Windows/Linux/.scr/移动端未实测，公开 Player driver/graph_mut 限制未改变。
 
@@ -246,7 +248,7 @@ GPU 创建必须先汇总 Slint renderer、图执行和媒体导入所需的 **o
 | 模式/消费者 | 队列策略 | 不允许的行为 |
 |---|---|---|
 | 停止状态 PreviewOnce | 输出选定时刻一张可显示帧，结束解码活动 | 长期解码然后丢帧、启动整图 |
-| 实时图 | 根据图时钟取最近合适 PTS，可丢过期视频帧；报告 drop/late | 无界积压、按 UI 是否可见停止图输入 |
+| 实时图 | 按唯一外部时钟的源时间需求窗口提前解码，呈现取合法 PTS；可跳过过期显示帧并报告 drop/late | 无界积压、将 latest-only 显示槽当解码预取队列、按 UI 是否可见停止图输入 |
 | 缩略图 / Inspector / fullscreen | latest-only，复用 session 或图输出 | 各自创建 decoder、PNG/base64 实时传图 |
 | 离线导出 | 有界排队，无静默丢帧；满时反压上游 | 使用 latest-only 槽导致漏帧 |
 | 实时录制 | 编码预算独立，超预算按显式策略丢帧/失败，记录时间线 | 静默阻塞 UI 或无限积压 |
@@ -261,7 +263,27 @@ GPU 创建必须先汇总 Slint renderer、图执行和媒体导入所需的 **o
 
 Seek：定位到前一个合适关键帧、flush decoder、提升 timeline epoch，解码丢弃到目标附近；`SeekCompleted` 报 actual position。拖动进度条期间可以合并请求，最终请求必须完成或失败。缺失 PTS 的流报告估算模式；live source 的 seek 返回 Unsupported。
 
-Preview 不消耗正式播放起点：可在同一 session 下执行独立 preview request，并在完成后恢复/重建 decoder 的播放定位；不能仅把计数器改回零而保留已消耗的 packet 游标。Seek/预览使用同一后端，不另造常驻 decoder。没有音频阶段时选择视频主时钟；以后加入音频输出，按独立能力扩展为音频主时钟/A/V 同步。
+Preview 不消耗正式播放起点：可在同一 session 下执行独立 preview request，并在完成后恢复/重建 decoder 的播放定位；不能仅把计数器改回零而保留已消耗 packet 游标。seek/预览复用同一后端实现，不为每个 view 常驻 decoder；切点预热或同时需要同素材不同源时间时，允许预算内独立 cursor，会话调度归宿主。没有音频阶段时选择视频主时钟；以后加入音频输出，按独立能力扩展为音频主时钟/A/V 同步。
+
+### 8.4 前瞻取帧与阶段流水（目标协议）
+
+本节是未来完整会话要求，当前 oq-media::Session 的 open/next_frame/reset 不等于窗口/seek API。NativePlayer 与编辑器宿主将各自图/时间线需求映射成源时间区间，交给核心 execution::FramePipeline；共享流水通过宿主注入的源适配器驱动媒体预取/查询/取消，不由两个宿主各建调度循环。媒体层只接收源身份、time base、epoch、区间、优先级/取消与预算，不接收 ClipId/Slint/工程命令；decoder 状态仍归媒体 worker，流水内部 FrameExecutionSession 只处理图阶段。
+
+拟议 `prefetch_window` 表达可撤销的前瞻需求，`frame_at` 查询覆盖指定 presentation 时刻的帧，返回 Item(lease)/Pending/EOF/Error；后台 worker 被新需求、输入可用或下游释放唤醒，不能用 UI timer 忙轮询。精确随机查询与顺序预取共用帧选择/后端：缓存命中复用 owner；相近后续请求沿既有 cursor 推进，离散跨度才重新 seek/flush；禁止每一输出帧重新定位。仅改变呈现需求不等于恢复/重开整个 codec。
+
+窗口先在 decoder 支持的前关键帧定位，解码必要 reference/B-frame reorder，保留覆盖目标区间的 presentation frames；source PTS/time base 与区间上界独立于输出帧率。预滚、DPB、重排和 EOF 确认可能需要读超出需求区间，不能把未显示帧一概跳过；读入/表面预算达到硬上限时需反压或明确失败，而非无界预滚。源时间相同的多个输出采样可共享 lease，预算按真实资源身份计费。
+
+宿主提前调度下一素材的 open/probe/seek/首帧，媒体层执行原生游标准备；预算允许时当前与下个 cursor 共存。启动 prefill 与运行中的低/高水位以 presentation 时间、帧数、bytes、native surfaces 同时限制；不能照抄另一引擎固定 buffer=25。具体默认值在目标硬件的 codec/分辨率/首帧与阶段延迟测量后写入配置和验收记录；不能用无界缓存掩盖延迟。高水位停止投机解码，低水位通知补充需求，seek/source epoch 变化淘汰失效未提交工作。
+
+宿主对解码、GPU、推理输出、呈现和编码统一协调物理预算，每阶段有自己的有界队列。一个最小可前进工作单元先获得必要下游 credit，decoder 内部 reference pool 和 encoder reorder 另计；未知 0..N 输出用有界增量推进。编码器满时反压到图 admission/解码窗口，禁止拿满全部表面再等待永远拿不到的输出 slot。慢显示消费者不能阻断独立导出状态机，但共享设备仍有资源争用，需保留导出最低前进额度或显式暂停预览，不能声称天然无干扰。
+
+允许 decoder 准备未来帧、GPU 处理较早帧、presenter/encoder 消费更早帧。FrameExecutionSession 的内容/版本就绪与硬件 ready sync 分开；转换/图计算提交返回的是设备完成条件，不是自动 GpuReady。现有 VideoToolbox importer 用 retained AVFrame + wrapper 保留到 completion，并在 host 等待转换完成；替换此 wait 时必须保留这些 owner 至真实完成，在同 queue 有序依赖或合法跨设备同步成立后才允许消费，不得因取消/timeout 释放在途表面。
+
+图稳定输出和原生 FrameLease 是相邻但不同契约：媒体库保原生 surface，GPU 适配器将其映射到统一图像描述和稳定输出池；不能在媒体 crate 再定义一套依赖 wgpu/NodeId 的帧类型。首阶段禁止 CPU 图像回传，平台无法提供所需互操作就拒绝；独立媒体产品未来可选策略不放宽 OpenQuartz 约束。
+
+需要测量冷启动/切点预热、长 GOP/VFR、缓存命中与实际 seek 次数、decode/GPU/encode 的起止与等待、buffer 低/高水位、surface 占用、过期任务回收及 export 前进性。小池/慢消费者下正确性和有界性先通过，再以真实时间线证明阶段重叠；线程数、UI 刷新率、纯模型吞吐都不能替代端到端流水证据。详细判据见[编辑器真实媒体验收](../apps/open_quartz_video_editor/DESIGN.md#152-真实媒体与-gpu)。
+
+本目标按[实施 Phase 计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)落地：Phase 3 精确源时间访问，Phase 4 窗口/水位/非阻塞完成，Phase 5 真实编码与封装。每 Phase 的 codec/时间/队列错误路径单元测试及真实硬件端到端场景随实现提交，记录样本许可/hash、实际 PTS、独立解码预期和资源回收证据；不将模拟 codec、过往截图或 unavailable runner 算作通过。设计、默认水位、支持矩阵与 build identity 按实测在同一 Phase commit 修订。
 
 ## 9. 会话与导出状态机
 

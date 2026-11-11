@@ -1,6 +1,6 @@
 # Open Quartz 架构设计
 
-本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。以模块所有权、线程边界和数据交接为主线；媒体与推理的实现及扩展边界分别见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。Web、Tauri、WASM 与语言绑定产品已退役，不属于本文架构。
+本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。以模块所有权、线程边界和数据交接为主线；媒体与推理的实现及扩展边界分别见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。[渲染与执行分离决策](#execution-rendering-split)单列尚未实施的目标架构，不能将其类型、流水或验收门槛读成已有实现。Web、Tauri、WASM 与语言绑定产品已退役，不属于本文架构。
 
 阅读顺序：
 
@@ -12,6 +12,7 @@
 - [图替换与生命周期](#graph-lifecycle)：准备、提交、播放控制和关闭。
 - [线程与异步任务](#threading)：请求身份、迟到结果和释放规则。
 - [能力与编译边界](#capabilities)：默认核心与可选设备功能。
+- [渲染与执行分离决策](#execution-rendering-split)：同 crate 内抽离无时钟执行会话、稳定帧与有界流水；当前状态与迁移顺序。
 - [独立屏保与发布](#deployment)：`.scr` 宿主和运行库布局。
 - [架构约束与已知限制](#known-limitations)、[验证基线](#validation)、[源码索引](#source-map)。
 
@@ -212,7 +213,7 @@ Slint 的图输出由 NativePlayer 交给 RenderDevice 呈现，当前生产路�
 
 `OutputKey` 以 node/port 标识输出；`OutputState` 携带 graph revision、output generation、evaluation/content stamp 和 payload。payload 类型可以表达值、bytes、resource 或 tensor handle，类型存在不代表所有设备传输路径已接通。
 
-GPU 纹理和原生帧通过 handle/lease 保持有效，直到提交与消费者使用完成。实际图像尺寸参与 Auto size 传播；Filter 自动尺寸沿声明顺序的连接输入传播，手动尺寸保留显式设置。composition time 表示图播放时间，Render FPS 统计有效图输出，不能用源视频 FPS 或屏幕刷新率替代。
+GPU 纹理和原生帧通过 handle/lease 保持资源有效，但**普通 shader 的 GpuOutputHandle 是可变输出视图，不是不可变帧快照**；保留 Arc 不阻止后续执行覆盖像素。外部推理输出的池 slot lease 与普通 render target 的语义不能混同。异步编码/缓存所需稳定帧见[目标执行契约](#execution-rendering-split)。实际图像尺寸参与 Auto size 传播；Filter 自动尺寸沿声明顺序的连接输入传播，手动尺寸保留显式设置。composition time 表示图播放时间，Render FPS 统计有效图输出，不能用源视频 FPS 或屏幕刷新率替代。
 
 生产仅 SR3 固定 224→672 网络 profile，任意源尺寸仍缩到 224 后执行，输出源尺寸 ×3；没有 window tiling 或大图全分辨率质量/提速承诺。模型文件/weights 解析与 initial upload、scalar controls 属于准备边界；文件图片/framebuffer 一次性 CPU decode-ingress 与初始上传允许，不能推广到逐帧像素。输出 lease 沿 `TextureHandle` / `GpuOutputHandle` / `RenderUpdate` / Slint 当前 handles 保留 owner；最多三槽，全部被消费者持有时显式 backpressure，释放后才复用。queue order/fences 保证提交与消费顺序。
 
@@ -367,6 +368,84 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 平台验证 | 相机、Windows/Linux GPU、独立 `.scr` 与移动端未完成本轮实机验证；移动端交付暂缓 |
 | macOS 启动 | 早先出现过未解释的 winit startup abort，后续未复现，不能宣称原因已修复 |
 | 覆盖率 | 默认与完整 native 的整体 100% gates 仍失败，见下节 |
+| 按帧离线执行与流水 | 底层已有显式 FrameInputs/外部纹理接口，但 NativePlayer 仍耦合播放推进与呈现；精确取帧、稳定帧输出和跨阶段 credit 流水尚未形成完整契约，见下节 |
+
+<a id="execution-rendering-split"></a>
+## 渲染与执行分离决策（目标架构，未实施）
+
+### 决策与范围
+
+**决定拆分职责与调用边界，不将 `open_quartz` 拆成渲染/执行两个 crate，不创建设备副本或新增仅转发的壳包。** 同 crate 的拟议 `execution::FramePipeline` 是 NativePlayer、编辑器预览和离线导出共同使用的流水入口，内部组合无时钟 `FrameExecutionSession` 图执行阶段，继续复用 compiler/evaluation/rendering/outputs。本轮只更新架构，未新增模块/API、移动生产代码或完成性能改造。
+
+分离不是从零重做：`GraphEvaluator::run_frame(FrameInputs)` 已可接受显式时间；`RenderDevice::register_external_texture` 已能注入带 owner 的纹理；`GpuExecutor` 已明确只管 GPU 资源和命令编码。真正需要从 NativePlayer/PlaybackSession 组合中抽出的，是图执行生命周期、输入/推理依赖就绪、请求身份、输出完成和保留权；不能把 `GpuExecutor` 当作缺失的宿主调度器重写。
+
+| 层 / 目标所有者 | 唯一责任 | 明确不负责 |
+|---|---|---|
+| 编辑语义：原图 Project / 新编辑器 EditorDocument、TimelinePlanner | 编辑事务；将指定序列帧或前瞻范围变成不可变需求 | decoder、GPU queue、完成等待 |
+| 宿主策略：NativePlayer / 编辑器 PreviewScheduler、ExportJob | 唯一时钟、需求规划、媒体身份解析、实时/离线策略、截止时间与呈现/文件任务 | 自己实现 admission、水位、背压、跨阶段完成循环 |
+| 核心 `execution::FramePipeline` | 需求窗口执行、源预取/就绪协调、credit admission、取消、阶段衔接、完成与消费者背压；驱动注入的源/输出适配器 | 推导 ClipId/时间线编辑语义、拥有 UI、另建媒体时钟、实现 codec |
+| 内部图阶段 `FrameExecutionSession` | 组合 GraphInstance/GraphEvaluator、OutputHub 与 InferenceTasks；维护输入版本、图内依赖和稳定输出 | 另建一套跨阶段调度队列、推进 clock、打开文件/decoder、编码/mux |
+| `rendering::RenderDevice` / GpuExecutor | shader/纹理/平台 GPU import、局部资源池、命令编码/提交、设备完成条件 | 源时间映射、全局任务优先级、因 UI 刷新决定计算时间 |
+| 媒体 / 推理算子 / 消费者 | oq-media 管 codec 与原生帧；oq-inference 管网络执行；presenter/encoder 消费稳定输出 | 复制核心图状态或建立第二个媒体时钟 |
+
+**NativePlayer 必须依赖 FramePipeline，而不是绕过它直接驱动 FrameExecutionSession。** 原图宿主将当前/前瞻图需求与实时政策交给共享流水；[编辑器宿主](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)将时间线映射后的需求交给同一入口。每个播放/导出会话有独立 pipeline 状态，共享同一宿主 Device/Queue 和物理预算协调者；共享实现不等于把预览与导出塞进一个 latest-only 队列。
+
+```mermaid
+flowchart TD
+    GraphHost[NativePlayer 实时图宿主] --> Pipeline[execution FramePipeline 共享流水]
+    EditorHost[编辑器预览与导出宿主] --> Pipeline
+    Pipeline --> Provider[源适配器 图源或编辑器资产解析]
+    Provider --> Media[oq-media 会话与源帧窗口]
+    Media --> Provider
+    Provider --> Pipeline
+    Pipeline --> Exec[内部 FrameExecutionSession 图阶段]
+    Exec --> Eval[evaluation 图身份与求值]
+    Exec --> Infer[inference 图任务适配与 oq-inference]
+    Exec --> Render[rendering RenderDevice 与 GpuExecutor]
+    Infer --> Shared[同一宿主 Device/Queue 与预算]
+    Render --> Shared
+    Exec --> Outputs[outputs 身份 完成与帧保留权]
+    Outputs --> Pipeline
+    Pipeline --> Present[呈现消费者适配器]
+    Pipeline --> Encoder[编码消费者适配器]
+```
+
+源适配器由宿主注入：原图使用现有 VideoSources 的实际资源映射，编辑器使用资产/序列映射；流水只依赖可执行源需求、就绪/错误回执与 lease，不依赖 app 或反向引用 EditorDocument。codec 状态仍由媒体 worker 持有，预取/查询/取消由流水调用适配器；编码/呈现适配器提供消费就绪、背压和释放通知。这里是已有两类消费者的职责契约，不要求先造通用任务图框架或空 trait。FrameExecutionSession 是内部图阶段，不另暴露给普通宿主组成绕过流水的第二条生产路径。
+
+### 按帧接口、图状态与完成
+
+流水入口的拟议 `submit(demand)` 接收宿主已映射的图/源需求、执行政策与 deadline，返回 Accepted(requestId) 或 WouldBlock（未接收的输入所有权返回），由内部事件驱动源预取→输入就绪→图阶段→消费者；`poll_completion` 只取回状态，不承担驱动流水的 UI tick。图阶段的 FrameRequest 至少包括图 revision、执行 epoch、请求 ID、显式内容时间/帧号/delta、输入内容版本与拥有者、目标图输出、尺寸/色彩/质量、时域状态身份。媒体时间保持源 rational/time base；只在现有 shader ABI 边界转为浮点 uniform。deadline 是调度信息，不参与内容时间推算或内容 hash。
+
+接收请求不等于已产出帧。区分 Admitted、InputsReady、GpuSubmitted、GpuReady、ConsumerReleased；可取消请求对宿主只有一个完成/取消/失败终态，资源回收另由设备及消费者完成决定。只有本请求的所有图依赖已满足，才能交付它的输出；“某 NodeId 已经有一张纹理”不足以证明结果属于本帧。推理 adapter 的任务身份与该帧输入绑定，不复用旧蒙版冒充本帧计算。
+
+GraphInstance、dirty、feedback 与输出 generation 不在多个宿主中复制实现。求值和计划变更按会话顺序执行；在途帧持有相应图/输入版本与资源，禁止后续请求改写仍会被早先 submission 读取的 uniform/纹理。feedback/时域算子必须声明历史依赖与 reset/preroll/checkpoint 规则，不能把多个时间点任意并发或仅靠修改 iTime 实现随机访问。首个剪辑闭环仅静态效果，但须明确拒绝尚不能随机求值的 recipe。
+
+### 稳定帧与资源预算
+
+在现有 `outputs` 资源协议上扩展稳定帧契约，而非重建第二套输出 registry；GPU 纹理实现留在 `rendering`，设备无关身份/生命周期留在 `outputs`，默认无 GPU 依赖的核心边界保持。稳定帧包含图/输入身份、内容时间、图像描述（颜色域、alpha、尺寸/格式）、ready completion、consumer lease。普通 live texture view 不能被异步编码队列当作帧保存；输出池 slot 保留或必要的 GPU detach copy 必须保证后续渲染不改写它。
+
+沿用现有原生 FrameLease 和推理池 owner；区分“可读”“对象存活”“像素不被覆盖”“消费者已用完”四个条件。同 queue 的 GPU 排序可表达内部依赖时不加逐 pass CPU wait；跨 decoder/encoder/外部设备边界按平台完成协议同步，不能因共用 Device 就省略消费完成。稳定帧不等于每个节点每帧都复制：只在跨异步保留边界按预算保留/分配，发布最终输出前预留必要额度。
+
+宿主为共享设备创建并注入一个物理预算协调者，多个 FramePipeline 会话向它申请额度；admission、水位和归还算法只有核心流水一份，宿主只配置优先级/份额/总额。共享原生资源按身份计费，不把同一 lease 的克隆重复计成两张图。额度同时限制 bytes、native surface/输出 slot、请求数与时间跨度。对一个能前进的最小工作单元先预留必要下游容量；拿不到则停留在调度队列、不占住全部解码表面等编码 slot。未知长度 codec 预滚/重排用独立硬上限分段推进，超限明确失败，不能假定“一输入一输出”。禁止持预算锁等待 GPU/codec/UI；未提交投机任务先退让，已提交工作持有资源直到真实完成。
+
+### 预取和流水不是 UI 循环
+
+内容求值与 UI 解耦不意味着逐帧串行：宿主规划未来需求，FramePipeline 按政策驱动 decoder 顺序推进/预热、内部图阶段和呈现/编码消费者。后台完成/水位变化由共享流水处理，UI timer 只刷新状态；NativePlayer 和编辑器均不复制此循环。scrub 的一个活动＋一个最新目标只限制交互意图，连续播放和导出各有独立、有界的在途窗口；具体窗口/水位和 codec 约束见[编辑器 §9](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)及[媒体 §8.4](MEDIA_CODEC_ARCHITECTURE.md#84-前瞻取帧与阶段流水目标协议)。
+
+共享 Queue 不保证 GPU 转换/推理/合成相互并行；目标是减少不必要的宿主等待并重叠 I/O、解码、GPU 与编码，实际设备重叠必须测量。预取缓解启动延迟/抖动，不能弥补长期吞吐不足；实时可降明确标记的预览质量或跳过过时呈现，但不能跳过必需的 codec reference/时域依赖；导出反压而不丢帧。
+
+### 当前阻塞点、迁移顺序与验收
+
+当前 `NativePlayer::render` 连在一起完成源轮询、时钟推进、图执行与呈现；`PlaybackSession` 合并图状态、clock 和 OutputHub；macOS 视频 worker 在 PTS 到来时发布单个当前帧；VideoToolbox importer 在转换提交后执行 `device.poll(Wait)`。这些是切分依据，不是已经修复的性能缺陷；尤其不能直接删除 wait 而不补 completion/lease 回收。
+
+1. 先补 stable frame/输入版本/设备完成契约，证明旧输出在继续渲染时不被覆盖、小池可正确背压；不先抽空包或大规模改名。
+2. 在 `execution` 接入共享 FramePipeline 和内部 FrameExecutionSession，将 NativePlayer 的 admission/源就绪/图执行/完成循环迁入；NativePlayer 留下实时 clock、需求映射、源/presentation 适配及政策，通过 pipeline 工作。PlaybackSession 的公共播放状态机复用同一无时钟图/输出状态实现，不再维护第二份执行状态；原先专用于旧组合的内部逻辑随调用方迁移后删除，不保留双路径开关。
+3. 在真实媒体需求驱动和 surface 预算成立后，以非阻塞 completion 替换 importer 的宿主逐帧 wait；固定所属 worker/共享 Queue 规则保留，不借拆分无条件增加线程或设备。
+4. 编辑器只接入时间线范围规划、资产源适配器及呈现/编码消费者策略，预取/水位/credit/取消/完成仍由核心 FramePipeline 实现；迁移原图 app、headless 消费者及屏保受影响路径，不将 Windows 未验证能力宣称为迁移成功。具体接口更改前查询所有调用方，保持公共产品行为并删除失效测试，不靠兼容别名掩盖两套实现。
+
+具体落地顺序以[Phase 0～8 提交计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为唯一执行清单：Phase 1 稳定帧、Phase 2 NativePlayer 共享流水切换、Phase 3 精确取帧、Phase 4 预取/credit、Phase 5 实际硬件编码，之后接入新编辑器。每个实现 Phase 独立一个 commit，必须同时带新增行为的单元测试、真实 E2E 与按实际情况修订的文档；完成/提交纪律和现有红色 gates 的处理见[硬性协议](../apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)。本轮只提交设计，不将上述 Phase 写成已实现。
+
+验收必须同时有：无窗口显式时间/外部纹理执行；慢消费者下稳定帧不串像素；图替换/seek 后旧结果不发布；受限表面下无死锁/无泄漏；长 GOP/VFR 与切点预热；暂停/最终 scrub 正确；导出不丢帧且 drain 后提交。记录队列水位、阶段起止/等待、实际 PTS、deadline miss 和资源归还，证明多帧跨阶段在途，而不是用 UI FPS 或线程数冒充流水。当前只能确认底层能力与已识别限制，不把这些目标验收列为已通过；详细产品门槛见[编辑器验收](../apps/open_quartz_video_editor/DESIGN.md#15-回归与验收方案)。
 
 <a id="validation"></a>
 ## 验证基线
