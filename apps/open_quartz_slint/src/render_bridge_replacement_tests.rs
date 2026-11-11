@@ -91,3 +91,45 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
     drop(bridge);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn paused_selected_preview_retries_after_slow_consumers_release_without_resuming() {
+    let (mut bridge, config) = RenderBridge::initialize().unwrap();
+    let WGPUConfiguration::Manual { device, queue, .. } = config else { panic!("shared GPU config required") };
+    let backend = open_quartz::rendering::GpuBackend::from_device(device.clone(), queue);
+    let graph: Graph = serde_json::from_value(serde_json::json!({"nodes":[
+        {"id":"blue","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Blue","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(0.0,0.0,1.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":2,"height":2}},
+        {"id":"red","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Red","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(1.0,0.0,0.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":2,"height":2}}
+    ],"edges":[]})).unwrap();
+    bridge.select_preview(Some("blue".into())).unwrap();
+    bridge.set_graph(graph, BTreeMap::new(), true).unwrap();
+    let wait_for = |predicate: &dyn Fn(&RenderUpdate) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(update) = bridge.take_update() {
+                assert!(update.node_error.is_none(), "{:?}", update.node_error);
+                if predicate(&update) { return update; }
+            }
+            assert!(Instant::now() < deadline, "preview request was not retried after capacity release");
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut consumers = Vec::new();
+    for _ in 0..3 {
+        consumers.push(wait_for(&|u| u.texture.is_some()).texture.unwrap());
+    }
+    bridge.set_playback("pause").unwrap();
+    wait_for(&|u| u.status.as_deref() == Some("Playback: pause"));
+    bridge.select_preview(Some("red".into())).unwrap();
+    wait_for(&|u| u.status.as_deref() == Some("Waiting for selected node preview…"));
+    for handle in &consumers {
+        let pixels = pollster::block_on(backend.read_texture_rgba(&handle.texture, 2, 2)).unwrap();
+        assert_eq!(pixels, [0, 0, 255, 255].repeat(4));
+    }
+    // No play, seek or further UI command is sent after releasing a consumer.
+    drop(consumers.remove(0));
+    let red = wait_for(&|u| u.texture.is_some()).texture.unwrap();
+    assert_eq!(pollster::block_on(backend.read_texture_rgba(&red.texture, 2, 2)).unwrap(), [255, 0, 0, 255].repeat(4));
+    assert_eq!(pollster::block_on(backend.read_texture_rgba(&consumers[0].texture, 2, 2)).unwrap(), [0, 0, 255, 255].repeat(4));
+    drop(red); drop(consumers); drop(bridge);
+}

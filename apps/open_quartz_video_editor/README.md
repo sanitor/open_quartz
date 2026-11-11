@@ -4,6 +4,8 @@
 
 **当前交付仅为设计，不是可运行的视频编辑器。** 本目录尚无 Cargo package、Slint 窗口或剪辑/导出实现，不添加启动命令，也不改变现有 OpenQuartz 图编辑应用。
 
+共享核心的 Phase 1 稳定帧/完成协议已实现并接入原图 app；[本阶段测试、真实窗口报告与 coverage 红色限制](DESIGN.md#144-当前实施记录与后续范围)单列。它不是新编辑器可运行或共享 FramePipeline 已实现的声明。
+
 - [完整设计、实施阶段与验收标准](DESIGN.md)
 - [Phase 0～8 落地与逐阶段提交计划](DESIGN.md#141-phase-提交序列与依赖)
 - [硬性要求：按现实 revise 文档，每个实现 Phase 同时交付单元测试与真实 E2E](DESIGN.md#142-每个-phase-的硬性完成与提交协议)

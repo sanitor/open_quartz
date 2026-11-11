@@ -308,6 +308,8 @@ pub struct AppController {
     node_previews: BTreeMap<String, slint::Image>,
     node_preview_handles: BTreeMap<String, open_quartz::rendering::GpuOutputHandle>,
     renderer_texture: Option<open_quartz::rendering::GpuOutputHandle>,
+    #[cfg(not(target_os = "macos"))]
+    retired_renderer_frames: Rc<RefCell<Vec<open_quartz::rendering::GpuOutputHandle>>>,
     node_errors: BTreeMap<String, String>,
     clipboard: Option<GraphClipboard>,
     graph_stress_count: Option<usize>,
@@ -382,6 +384,19 @@ impl AppController {
     ) -> Result<Rc<RefCell<Self>>, String> {
         let sdk = OpenQuartz::new(Environment::headless());
         let project = initial_project(&sdk, graph_stress_count)?;
+        #[cfg(not(target_os = "macos"))]
+        let retired_renderer_frames = Rc::new(RefCell::new(Vec::new()));
+        #[cfg(not(target_os = "macos"))]
+        if renderer.is_some() {
+            let retired = retired_renderer_frames.clone();
+            window.window().set_rendering_notifier(move |state, _api| {
+                if matches!(state, slint::RenderingState::AfterRendering | slint::RenderingState::RenderingTeardown) {
+                    // FemtoVG-wgpu submits scene commands before AfterRendering.
+                    // Last lease drop then defers reuse to that queue's completion.
+                    retired.borrow_mut().clear();
+                }
+            }).map_err(|error| format!("Cannot track stable preview consumption: {error:?}"))?;
+        }
         let controller = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             project: Arc::new(project),
@@ -398,6 +413,8 @@ impl AppController {
             node_previews: BTreeMap::new(),
             node_preview_handles: BTreeMap::new(),
             renderer_texture: None,
+            #[cfg(not(target_os = "macos"))]
+            retired_renderer_frames,
             node_errors: BTreeMap::new(),
             image_assets: BTreeMap::new(),
             framebuffer_assets: BTreeMap::new(),
@@ -971,12 +988,24 @@ impl AppController {
         Ok(controller)
     }
 
+    fn retire_renderer_texture(&mut self) {
+        if let Some(previous) = self.renderer_texture.take() {
+            #[cfg(not(target_os = "macos"))]
+            self.retired_renderer_frames.borrow_mut().push(previous);
+            // Metal snapshot textures carry their pool lease in the native
+            // resource drop guard, so Slint Image/cache clones keep it alive.
+            #[cfg(target_os = "macos")]
+            drop(previous);
+        }
+    }
+
     pub fn shutdown(&mut self) {
         self.timer.stop();
         if let Some(window) = self.window.upgrade() {
             window.set_renderer_image(slint::Image::default());
             window.set_has_renderer_image(false);
         }
+        self.retire_renderer_texture();
         self.renderer.take();
     }
 
@@ -1786,7 +1815,7 @@ impl AppController {
             window.set_renderer_image(slint::Image::default());
             window.set_has_renderer_image(false);
         }
-        self.renderer_texture = None;
+        self.retire_renderer_texture();
         self.node_errors.clear();
         if self.graph_stress_count.is_none() {
             self.sync_project_resources();
@@ -3272,7 +3301,7 @@ impl AppController {
             if update.clear_image {
                 window.set_renderer_image(slint::Image::default());
                 window.set_has_renderer_image(false);
-                self.renderer_texture = None;
+                self.retire_renderer_texture();
             }
             if let Some(handle) = update.texture {
                 window.window().request_redraw();
@@ -3284,12 +3313,13 @@ impl AppController {
                     Ok(image) => {
                         window.set_renderer_image(image);
                         window.set_has_renderer_image(true);
+                        self.retire_renderer_texture();
                         self.renderer_texture = Some(handle);
                     }
                     Err(error) => {
                         window.set_renderer_image(slint::Image::default());
                         window.set_has_renderer_image(false);
-                        self.renderer_texture = None;
+                        self.retire_renderer_texture();
                         window.set_runtime_status(format!("Native renderer stopped: shared GPU texture import failed: {error:?}").into());
                         if let Some(renderer) = &mut self.renderer {
                             renderer.pause_after_import_error();
@@ -4621,6 +4651,8 @@ mod tests {
             node_previews: std::collections::BTreeMap::new(),
             node_preview_handles: std::collections::BTreeMap::new(),
             renderer_texture: None,
+            #[cfg(not(target_os = "macos"))]
+            retired_renderer_frames: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             node_errors: std::collections::BTreeMap::new(),
             image_assets: std::collections::BTreeMap::new(),
             framebuffer_assets: std::collections::BTreeMap::new(),

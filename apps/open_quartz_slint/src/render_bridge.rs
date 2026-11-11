@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz::{Graph, NativePlayer};
-use open_quartz::rendering::GpuOutputHandle;
+use open_quartz::rendering::{FrameCaptureError, GpuOutputHandle};
 use slint::wgpu_30::WGPUConfiguration;
 use std::path::PathBuf;
 
@@ -448,6 +448,7 @@ fn render_worker(
     let mut preview_nodes = Vec::<String>::new();
     let mut preview_tick = Instant::now();
     let mut pending_video_previews = BTreeMap::<String, Instant>::new();
+    let mut pending_stable_preview = false;
     let mut meter = RenderMeter::new(Instant::now());
     #[cfg(all(test, feature = "inference-e2e"))]
     let mut diagnostic_node: Option<String> = None;
@@ -457,7 +458,7 @@ fn render_worker(
         if inference.reap_workers() {
             publish_inference(&updates, generation, &inference);
         }
-        let command = if running || inference.is_loading() || !pending_video_previews.is_empty() {
+        let command = if running || inference.is_loading() || !pending_video_previews.is_empty() || pending_stable_preview {
             match receiver.recv_timeout(Duration::from_millis(16)) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -555,6 +556,7 @@ fn render_worker(
                 };
                 generation = next_generation;
                 graph_has_rendered = false;
+                pending_stable_preview = false;
                 source_preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz::NodeType::Input | open_quartz::NodeType::Inference)
                 }).map(|node| node.id.clone()).collect();
@@ -666,6 +668,8 @@ fn render_worker(
             }) if requested == generation => {
                 preview_renderer = node_id;
                 first_frame = true;
+                pending_stable_preview = !running && preview_renderer.as_deref()
+                    .is_some_and(|id| graph_has_rendered || source_preview_nodes.contains(id));
                 publish_status(
                     &updates,
                     generation,
@@ -676,8 +680,10 @@ fn render_worker(
                     if let Some(node_id) = preview_renderer.as_deref()
                         .filter(|id| graph_has_rendered || source_preview_nodes.contains(*id))
                     {
-                        match host.preview_source(node_id) {
-                            Ok(output) => {
+                        match host.try_stable_preview(node_id) {
+                            Ok(Some(frame)) => {
+                                pending_stable_preview = false;
+                                let output = frame.into_output();
                                 if let Ok(mut pending) = updates.lock() {
                                     let update = pending
                                         .get_or_insert_with(|| RenderUpdate::new(generation));
@@ -685,7 +691,11 @@ fn render_worker(
                                     update.clear_image = false;
                                 }
                             }
-                            Err(error) => publish_status(&updates, generation, error, true),
+                            Ok(None) => {}
+                            Err(error) => {
+                                pending_stable_preview = false;
+                                publish_status(&updates, generation, error.to_string(), true);
+                            }
                         }
                     }
                 }
@@ -830,8 +840,10 @@ fn render_worker(
                 if !running {
                     if let Some(output) = preview_renderer.as_deref()
                         .filter(|id| graph_has_rendered || source_preview_nodes.contains(*id))
-                        .and_then(|id| host.preview_source(id).ok())
+                        .and_then(|id| host.try_stable_preview(id).ok().flatten())
+                        .map(|frame| frame.into_output())
                     {
+                        pending_stable_preview = false;
                         update.texture = Some(output);
                         update.clear_image = false;
                     }
@@ -857,16 +869,17 @@ fn render_worker(
             if rendered.width == 0 || rendered.height == 0 {
                 return Ok(None);
             }
-            let output = match host.preview_source(
+            let output = match host.try_stable_preview(
                 preview_renderer
                     .as_deref()
                     .unwrap_or(&rendered.output_node_id),
             ) {
-                Ok(output) => output,
+                Ok(Some(frame)) => frame.into_output(),
+                Ok(None) => return Ok(None),
                 // An unexecuted/disconnected inspector node may not have a texture.
                 // Choosing it must not pause a healthy graph's Renderer output.
-                Err(_) if preview_renderer.is_some() => return Ok(None),
-                Err(error) => return Err(error),
+                Err(FrameCaptureError::InvalidSource(_)) if preview_renderer.is_some() => return Ok(None),
+                Err(error) => return Err(error.to_string()),
             };
             Ok(Some(output))
         })();

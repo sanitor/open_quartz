@@ -556,6 +556,74 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       await stopped(4, 2);
       return { playingTime, pausedTime, fps, dimensions: { input: '96×48', unrelated: '32×32', manual: '320×180', restored: '96×48' }, pixels };
     });
+    await checkpoint('stable-preview-dynamic-pause-replace', async () => {
+      const fixturePath = join(directory, 'stable-preview.quartz.json');
+      const dynamic = '@fragment fn main() -> @location(0) vec4f { return vec4f(0.0, 0.25 + 0.5 * fract(iTime * 0.37), 1.0, 1.0); }';
+      const source = { id: 'stable-color', type: 'shader', position: { x: 30, y: 40 }, data: {
+        type: 'shader', label: 'Stable color', shaderCode: dynamic, inputs: [],
+        outputs: [{ id: 'out', label: 'fragColor', dataType: 'vec4', direction: 'output' }],
+        uniforms: {}, autoSize: false, width: 64, height: 64,
+      } };
+      const renderer = { id: 'stable-renderer', type: 'renderer', position: { x: 330, y: 40 }, data: {
+        type: 'renderer', label: 'Stable renderer', shaderCode: '', uniforms: {}, outputs: [],
+        inputs: [{ id: 'in', label: 'image', dataType: 'sampler2D', direction: 'input' }],
+      } };
+      await writeFile(fixturePath, JSON.stringify({ version: '0.4.0', name: 'Stable preview lifecycle', createdAt: '', updatedAt: '', graph: {
+        nodes: [source, renderer], edges: [{ id: 'stable-edge', source: source.id, sourceHandle: 'out', target: renderer.id, targetHandle: 'in' }],
+      } }));
+      report.artifacts = [...(report.artifacts || []), fixturePath];
+      await connect(await restart({ project: fixturePath }));
+      await stopped(2, 1);
+      await client.activate(await header(renderer.id));
+      await activate('PLAY');
+      await status({ Playback: 'playing', 'Renderer image': 'available' });
+      const sample = async (name) => {
+        const preview = await client.find({ label: 'Renderer preview' });
+        const png = await capture(name);
+        const window = await client.windowProperties();
+        const { roi } = bluePixelStats(png, preview, window);
+        const image = decodePng(png);
+        const total = [0, 0, 0]; let count = 0;
+        for (let y = roi.top; y < roi.bottom; y++) for (let x = roi.left; x < roi.right; x++) {
+          const offset = (y * image.width + x) * image.channels;
+          for (let c = 0; c < 3; c++) total[c] += image.pixels[offset + c];
+          count++;
+        }
+        assert.ok(count >= 256, 'Stable preview needs a meaningful pixel ROI');
+        return total.map((value) => value / count);
+      };
+      const first = await sample('16-stable-playing-first');
+      assert.ok(first[0] < 5 && first[2] > 240 && first[1] >= 55 && first[1] <= 200, `Wrong dynamic output: ${first}`);
+      let advancing;
+      await client.waitFor(async () => {
+        await delay(350, undefined, { signal });
+        advancing = await sample('16-stable-playing-later');
+        return Math.abs(advancing[1] - first[1]) > 12;
+      }, { description: 'Stable output slots recycle while dynamic pixels continue advancing' });
+      await activate('PAUSE');
+      await status({ Playback: 'paused' });
+      // Allow the last accepted UI update to settle before checking frozen pixels.
+      await delay(250, undefined, { signal });
+      const paused = await sample('16-stable-paused');
+      await delay(450, undefined, { signal });
+      const retained = await sample('16-stable-paused-retained');
+      paused.forEach((value, c) => near(retained[c], value, 1, `Paused channel ${c} changed`));
+      await client.activate(await header(source.id));
+      await client.setValue(await find('Shader source'), '@fragment fn main() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }');
+      await activate('Apply shader');
+      await status({ 'Inspector dirty': 'false', 'IO status': 'Shader source applied through the SDK.' });
+      await client.activate(await header(renderer.id));
+      await activate('RESUME');
+      await status({ Playback: 'playing', 'Renderer image': 'available' });
+      let replacement;
+      await client.waitFor(async () => {
+        replacement = await sample('16-stable-replacement');
+        return replacement[0] > 240 && replacement[1] < 5 && replacement[2] < 5;
+      }, { description: 'Graph replacement displays red, never reuses stale blue snapshot pixels' });
+      await activate('STOP');
+      await stopped(2, 1);
+      return { first, advancing, paused, retained, replacement, pixels: { verified: true, oracle: 'Dynamic GPU channel progression, frozen Pause ROI, explicit red graph replacement' } };
+    });
     report.passed = true;
     return report;
   } catch (error) {

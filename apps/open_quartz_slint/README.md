@@ -236,6 +236,14 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   and provides its output texture. A Slint timer imports the latest texture using
   `slint::Image::try_from`; frames do not go through pixel readback or encoded URLs.
   Graph generations discard stale output after opening another project.
+  Phase 1 now snapshots the main/selected preview through NativePlayer's bounded
+  stable-frame pool (three slots / 256 MiB by default). GPU detach copies preserve
+  pixels while asynchronous consumers retain them; node cards remain live views.
+  On macOS, a Metal texture ownership guard follows Slint's actual texture clones,
+  including screenshot/cache use, and pool reuse waits for queue completion.
+  Paused preview requests retry capacity exhaustion without resuming playback.
+  Other platforms have not received this phase's hardware acceptance. See the
+  [Phase 1 evidence and limitations](../open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
 - Model cache/download/checksum/session preparation lives in `open_quartz::resources::models`, and runs on model workers. Ticket/generation validation still precedes session attachment; the render loop performs no downloads. Capabilities are enabled by the Slint app's explicit core features.
   Historical acceptance records below use the former NativeHost implementation name.
 - If GPU/host initialization fails, the shell attempts Slint's default UI backend

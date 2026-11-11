@@ -9,6 +9,8 @@ pub mod presenter;
 pub mod preview;
 pub mod readback;
 pub mod target;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod stable_frame;
 #[cfg(all(target_os = "macos", feature = "native-video"))]
 pub mod videotoolbox;
 
@@ -28,6 +30,8 @@ pub use presenter::{
 pub use preview::{GpuPreviewImage, GpuPreviewReader};
 pub use readback::{align_bytes_per_row, copy_padded_rgba};
 pub use target::{RenderTarget, TextureFormat};
+#[cfg(not(target_arch = "wasm32"))]
+pub use stable_frame::{FrameCaptureError, FrameReady, StableFrame, StableFrameBudget, StableFramePool};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "gpu_coverage_tests.rs"]

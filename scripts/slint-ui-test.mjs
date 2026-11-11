@@ -77,8 +77,8 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
     const log = createWriteStream(logPath);
     log.on('error', (error) => fail(new Error(`Cannot write ${logPath}: ${error.message}`)));
     const child = spawn(resolve(binary), args, {
-      env: { ...process.env, SLINT_MCP_PORT: String(port) },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SLINT_MCP_PORT: String(port), OPEN_QUARTZ_UI_CLOSE_STDIN: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     child.stdout.pipe(log, { end: false });
     child.stderr.pipe(log, { end: false });
@@ -154,7 +154,18 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
     ]);
     signal.throwIfAborted();
     if (current?.child.exitCode !== null || current?.child.signalCode !== null) throw new Error('Application exited unexpectedly');
-    report = { passed: true, suite, startedAt, finishedAt: new Date().toISOString(), launches, scenarios };
+    const closing = current;
+    current = undefined; // This exit is expected; all earlier exits remain failures.
+    const closeDeadline = setTimeout(() => closing.child.kill('SIGKILL'), 10_000);
+    let shutdown;
+    try {
+      closing.child.stdin.end('close\n');
+      shutdown = await closing.exited;
+      await new Promise((accept) => closing.log.end(accept));
+      if (shutdown?.code !== 0 || shutdown?.signal) throw new Error(`Normal window close failed: ${JSON.stringify(shutdown)}`);
+    } finally { clearTimeout(closeDeadline); }
+    report = { passed: true, suite, startedAt, finishedAt: new Date().toISOString(), launches, scenarios,
+      shutdown: { event: 'CloseRequested', injection: 'ui-automation stdin → event loop', ...shutdown } };
     console.log(`[slint-ui] PASS\n[slint-ui] Screenshots and report: ${directory}`);
     return report;
   } catch (error) {

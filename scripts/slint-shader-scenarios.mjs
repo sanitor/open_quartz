@@ -378,8 +378,10 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
             appliedUniforms.push({ name, expected: value, actual: control.accessibleValue });
           }
           await client.activate(await header(renderer.id));
-          const preview = await client.find({ label: 'Renderer preview' });
-          assert.equal(preview.accessibleDescription, 'Available');
+          const preview = await client.waitFor(async () => {
+            const found = await client.find({ label: 'Renderer preview' });
+            return found.accessibleDescription === 'Available' && found;
+          }, { description: 'Selected paused node preview completes after stable-frame backpressure' });
           const png = await capture(step, 'output-window-paused');
           const actual = rendererPixels(png, preview, await client.windowProperties(), 64, 64);
           const actualPath = join(directory, `${entry.id}-actual-renderer.png`);

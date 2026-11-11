@@ -1,6 +1,6 @@
 # Open Quartz 架构设计
 
-本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。以模块所有权、线程边界和数据交接为主线；媒体与推理的实现及扩展边界分别见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。[渲染与执行分离决策](#execution-rendering-split)单列尚未实施的目标架构，不能将其类型、流水或验收门槛读成已有实现。Web、Tauri、WASM 与语言绑定产品已退役，不属于本文架构。
+本文描述当前 Rust/Slint 桌面应用、独立 Windows 屏保和共享 Rust 核心的实际架构。媒体与推理详见[媒体架构](MEDIA_CODEC_ARCHITECTURE.md)和[推理架构](INFERENCE_ARCHITECTURE.md)。[渲染与执行分离决策](#execution-rendering-split)单列目标架构：Phase 1 稳定帧已落地，FramePipeline/FrameExecutionSession 及预取仍待实现；目标类型与验收不代表现成能力。Web、Tauri、WASM 与语言绑定产品已退役。
 
 阅读顺序：
 
@@ -199,23 +199,25 @@ flowchart TD
 输出包含两个相关但不同的路径：
 
 - `OutputHub` 处理 typed 输出契约、订阅、值/资源句柄、交付政策及可选 backend presentation。
-- Slint 生产路径由 NativePlayer 选择图输出，再经 RenderDevice 呈现；RenderBridge 把 GPU 纹理交给 UI。普通节点卡、Renderer 和全屏预览共享纹理。
+- Slint 生产路径由 NativePlayer 执行图；RenderBridge 对主监视器/选中大图调用 try_stable_preview，GPU detach 到有界 StableFramePool 后交 UI。节点卡仍共享 live texture，不将它作为异步编码/缓存帧。
 
 Slint 的图输出由 NativePlayer 交给 RenderDevice 呈现，当前生产路径没有向 OutputHub 挂载 HostBackend。OutputHub 保留独立的 backend presentation 接口及测试覆盖，不能把接口存在等同于已接管 Slint 显示。
 
 | 路径 | 数据传递 | 当前实现边界 |
 |---|---|---|
 | CPU Math / 标量输出 | 值 → OutputHub → 订阅交付 | 契约与整批容量预检；支持 OnChange、Latest、Every 政策 |
-| Shader / 预览 | GPU work → 输出纹理 → Slint texture Image | 同一 wgpu Device/Queue；实时预览不经 PNG/base64 |
+| Shader / 主预览 | GPU work → 稳定快照池 → Slint texture Image | 同一 wgpu Device/Queue；三槽/256 MiB；无 CPU 图像往返；macOS 原生纹理 drop guard 保 slot |
 | 视频输入 | hardware decoder frame/lease → GPU import/转换 → texture | 无 FFmpeg RGBA 软件 fallback；不支持的相机/Linux/无 D3D12 Windows 拒绝 |
 | Slint 推理图像任务 | texture → GPU BT.601/resize224 → 四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA | 同 Slint wgpu30 Metal Device/Queue；无逐帧 CPU preprocessing/Tensor/readback/upload |
 | PNG capture | 显式 GPU readback → 编码 → 文件 | 用户操作或验证使用；不作为普通预览通道 |
 
 `OutputKey` 以 node/port 标识输出；`OutputState` 携带 graph revision、output generation、evaluation/content stamp 和 payload。payload 类型可以表达值、bytes、resource 或 tensor handle，类型存在不代表所有设备传输路径已接通。
 
-GPU 纹理和原生帧通过 handle/lease 保持资源有效，但**普通 shader 的 GpuOutputHandle 是可变输出视图，不是不可变帧快照**；保留 Arc 不阻止后续执行覆盖像素。外部推理输出的池 slot lease 与普通 render target 的语义不能混同。异步编码/缓存所需稳定帧见[目标执行契约](#execution-rendering-split)。实际图像尺寸参与 Auto size 传播；Filter 自动尺寸沿声明顺序的连接输入传播，手动尺寸保留显式设置。composition time 表示图播放时间，Render FPS 统计有效图输出，不能用源视频 FPS 或屏幕刷新率替代。
+普通 shader 的 GpuOutputHandle 是 live view，Arc 不阻止后续覆盖；Phase 1 新增 rendering::StableFramePool/StableFrame 用 GPU copy 形成稳定快照，借用源不被消耗，slot/bytes 双限额，池满 WouldBlock。NativePlayer::try_stable_preview 对临时背压返回 None，监视器最小双帧工作集无法满足时报 Capacity；RGBA32F 快照保留精度但 Slint 主预览只接 RGBA8。outputs 的 FrameSnapshotIdentity/FrameImageDescription 不依赖 wgpu，源内容/颜色/alpha 不明时明确 None/Unknown；不是将旧帧标成本次时钟。详细行为与[Phase 1 证据](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)相连；完整输入依赖绑定仍见[目标流水](#execution-rendering-split)。
 
 生产仅 SR3 固定 224→672 网络 profile，任意源尺寸仍缩到 224 后执行，输出源尺寸 ×3；没有 window tiling 或大图全分辨率质量/提速承诺。模型文件/weights 解析与 initial upload、scalar controls 属于准备边界；文件图片/framebuffer 一次性 CPU decode-ingress 与初始上传允许，不能推广到逐帧像素。输出 lease 沿 `TextureHandle` / `GpuOutputHandle` / `RenderUpdate` / Slint 当前 handles 保留 owner；最多三槽，全部被消费者持有时显式 backpressure，释放后才复用。queue order/fences 保证提交与消费顺序。
+
+稳定快照与 resident 推理三槽池是两个独立预算。macOS 快照用同一 Metal 资源的受控 wgpu alias 附着 native drop guard，Slint Image/缓存的纹理 clone 也保留实际 lease；最后 owner 释放只设原子标记，池维护在安全调用域安排 queue completion，再准许复用。避免在 wgpu 内部 destructor 锁中重入 queue。producer copy ready、consumer 最后释放和 GPU 用完分别判断。部分窗口绘制未触发原窗口 notifier，因此 macOS 不依赖 AfterRendering 回收；其他平台的显式 lease/notifier 路径未实机认证。暂停下池满的最终选中预览保持 pending 并重试，不能等另一次 Play 才前进。
 
 <a id="graph-lifecycle"></a>
 ## 图替换与生命周期
@@ -371,11 +373,11 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 按帧离线执行与流水 | 底层已有显式 FrameInputs/外部纹理接口，但 NativePlayer 仍耦合播放推进与呈现；精确取帧、稳定帧输出和跨阶段 credit 流水尚未形成完整契约，见下节 |
 
 <a id="execution-rendering-split"></a>
-## 渲染与执行分离决策（目标架构，未实施）
+## 渲染与执行分离决策（Phase 1 稳定帧已落地，流水待实施）
 
 ### 决策与范围
 
-**决定拆分职责与调用边界，不将 `open_quartz` 拆成渲染/执行两个 crate，不创建设备副本或新增仅转发的壳包。** 同 crate 的拟议 `execution::FramePipeline` 是 NativePlayer、编辑器预览和离线导出共同使用的流水入口，内部组合无时钟 `FrameExecutionSession` 图执行阶段，继续复用 compiler/evaluation/rendering/outputs。本轮只更新架构，未新增模块/API、移动生产代码或完成性能改造。
+**决定拆分职责与调用边界，不将 `open_quartz` 拆成渲染/执行两个 crate，不创建设备副本或仅转发的壳包。** 拟议 execution::FramePipeline 是 NativePlayer、编辑器预览和导出的共同入口，内部 FrameExecutionSession 复用现有模块。当前 Phase 1 已落地稳定快照/完成与 NativePlayer 主预览消费者；execution 模块、流水迁移、精确取帧和预取仍未实施，不能将本节目标读成现状。
 
 分离不是从零重做：`GraphEvaluator::run_frame(FrameInputs)` 已可接受显式时间；`RenderDevice::register_external_texture` 已能注入带 owner 的纹理；`GpuExecutor` 已明确只管 GPU 资源和命令编码。真正需要从 NativePlayer/PlaybackSession 组合中抽出的，是图执行生命周期、输入/推理依赖就绪、请求身份、输出完成和保留权；不能把 `GpuExecutor` 当作缺失的宿主调度器重写。
 
@@ -443,7 +445,7 @@ GraphInstance、dirty、feedback 与输出 generation 不在多个宿主中复�
 3. 在真实媒体需求驱动和 surface 预算成立后，以非阻塞 completion 替换 importer 的宿主逐帧 wait；固定所属 worker/共享 Queue 规则保留，不借拆分无条件增加线程或设备。
 4. 编辑器只接入时间线范围规划、资产源适配器及呈现/编码消费者策略，预取/水位/credit/取消/完成仍由核心 FramePipeline 实现；迁移原图 app、headless 消费者及屏保受影响路径，不将 Windows 未验证能力宣称为迁移成功。具体接口更改前查询所有调用方，保持公共产品行为并删除失效测试，不靠兼容别名掩盖两套实现。
 
-具体落地顺序以[Phase 0～8 提交计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为唯一执行清单：Phase 1 稳定帧、Phase 2 NativePlayer 共享流水切换、Phase 3 精确取帧、Phase 4 预取/credit、Phase 5 实际硬件编码，之后接入新编辑器。每个实现 Phase 独立一个 commit，必须同时带新增行为的单元测试、真实 E2E 与按实际情况修订的文档；完成/提交纪律和现有红色 gates 的处理见[硬性协议](../apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)。本轮只提交设计，不将上述 Phase 写成已实现。
+具体顺序以[Phase 0～8 计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为准；Phase 1 稳定帧已落地，Phase 2 共享流水切换、Phase 3 精确取帧、Phase 4 预取/credit、Phase 5 硬编，之后新编辑器。每个实现 Phase 一个 commit，代码/单元/真实 E2E 与实际修订文档一同提交；[硬性协议](../apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)保留，整体 coverage 红色不标为全部通过或发布。
 
 验收必须同时有：无窗口显式时间/外部纹理执行；慢消费者下稳定帧不串像素；图替换/seek 后旧结果不发布；受限表面下无死锁/无泄漏；长 GOP/VFR 与切点预热；暂停/最终 scrub 正确；导出不丢帧且 drain 后提交。记录队列水位、阶段起止/等待、实际 PTS、deadline miss 和资源归还，证明多帧跨阶段在途，而不是用 UI FPS 或线程数冒充流水。当前只能确认底层能力与已识别限制，不把这些目标验收列为已通过；详细产品门槛见[编辑器验收](../apps/open_quartz_video_editor/DESIGN.md#15-回归与验收方案)。
 
@@ -532,6 +534,7 @@ GraphInstance、dirty、feedback 与输出 generation 不在多个宿主中复�
 | 图身份与纯求值 | [`evaluation/instance.rs`](../crates/open_quartz/src/evaluation/instance.rs)、[`evaluator.rs`](../crates/open_quartz/src/evaluation/evaluator.rs) |
 | 播放会话与原生协调 | [`player/session.rs`](../crates/open_quartz/src/player/session.rs)、[`native.rs`](../crates/open_quartz/src/player/native.rs) |
 | 输出、订阅与 presentation | [`outputs/`](../crates/open_quartz/src/outputs/) |
+| 有界稳定输出与回归 | [`rendering/stable_frame.rs`](../crates/open_quartz/src/rendering/stable_frame.rs)、[`stable_frame_tests.rs`](../crates/open_quartz/src/rendering/stable_frame_tests.rs)、[`outputs/types.rs`](../crates/open_quartz/src/outputs/types.rs)；[Phase 1 验收记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围) |
 | GPU 执行、资源与平台导入 | [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs)、[`executor.rs`](../crates/open_quartz/src/rendering/executor.rs)、[`videotoolbox.rs`](../crates/open_quartz/src/rendering/videotoolbox.rs)、[`dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs) |
 | 视频源与媒体后端 | [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)、[`native.rs`](../crates/open_quartz/src/media/native.rs)、[`oq-media`](../crates/oq-media/) |
 | 推理图任务与独立 runtime | [`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)、[`inference/pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs)、[`oq-inference/src/artifact.rs`](../crates/oq-inference/src/artifact.rs)、[`lib.rs`](../crates/oq-inference/src/lib.rs)、[`runtime.rs`](../crates/oq-inference/src/runtime.rs) |

@@ -54,6 +54,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.project,
         options.graph_stress,
     )?;
+    // The MCP server cannot dispatch native CloseRequested. Only automation
+    // builds opt into this stdin lane; it exercises the real window close
+    // callback and normal teardown instead of killing the process with SIGTERM.
+    #[cfg(feature = "ui-automation")]
+    if std::env::var_os("OPEN_QUARTZ_UI_CLOSE_STDIN").is_some() {
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            let mut command = String::new();
+            if std::io::stdin().read_line(&mut command).is_ok() && command.trim() == "close" {
+                let _ = weak.upgrade_in_event_loop(|window| {
+                    window.window().dispatch_event(slint::platform::WindowEvent::CloseRequested);
+                });
+            }
+        });
+    }
     window.run()?;
     controller.borrow_mut().shutdown();
     drop(controller);

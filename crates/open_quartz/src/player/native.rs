@@ -18,6 +18,8 @@ use std::time::{Instant, SystemTime};
 
 use crate::evaluation::ExecutionCommand;
 use crate::rendering::{GpuBackend, GpuOutputHandle, RenderDevice, RenderDeviceInfo};
+use crate::rendering::{FrameCaptureError, StableFrame, StableFrameBudget, StableFramePool};
+use crate::outputs::{FrameAlphaMode, FrameColorSpace, FrameSnapshotIdentity};
 #[cfg(windows)]
 use crate::rendering::SharedTextureFrame;
 #[cfg(feature = "native-video")]
@@ -74,6 +76,7 @@ pub struct NativePlayer {
     inference_sampler: Arc<wgpu::Sampler>,
     inference_available: bool,
     perf: NativeRenderPerf,
+    stable_previews: StableFramePool,
 }
 
 /// A validated graph and its GPU resources, ready to commit on the preparing device.
@@ -184,6 +187,8 @@ impl NativePlayer {
             tensor_data_path: if metal_inference { "device" } else { "unsupported" }.to_owned(),
             shared_texture,
         };
+        let stable_previews = StableFramePool::new(render_device.backend(), StableFrameBudget::default())
+            .expect("default stable preview limits are non-zero");
         (Self {
             render_device,
             session: PlaybackSession::new_native(PlaybackCapabilities {
@@ -197,6 +202,7 @@ impl NativePlayer {
             inference_sampler,
             inference_available: metal_inference,
             perf: NativeRenderPerf::new(),
+            stable_previews,
         }, info)
     }
 
@@ -323,6 +329,32 @@ impl NativePlayer {
 
     pub fn preview_source(&self, node_id: &str) -> Result<GpuOutputHandle, String> {
         self.render_device.preview_source(node_id)
+    }
+
+    /// Immutable preview snapshot. Full pools reject without modifying the source;
+    /// live graph handles remain available for synchronous graph/node-card consumers.
+    pub fn try_stable_preview(&self, node_id: &str) -> Result<Option<StableFrame>, FrameCaptureError> {
+        let source = self.render_device.output_texture(node_id)
+            .ok_or_else(|| FrameCaptureError::InvalidSource(format!("output {node_id} has no texture")))?;
+        if source.format != crate::rendering::TextureFormat::Rgba8Unorm {
+            return Err(FrameCaptureError::InvalidSource("native preview requires rgba8unorm".into()));
+        }
+        let budget = self.stable_previews.budget();
+        let pair_bytes = u64::from(source.width).checked_mul(u64::from(source.height))
+            .and_then(|pixels| pixels.checked_mul(8));
+        if budget.max_frames < 2 || pair_bytes.is_none_or(|bytes| bytes > budget.max_bytes) {
+            return Err(FrameCaptureError::Capacity);
+        }
+        let identity = FrameSnapshotIdentity {
+            output_node_id: node_id.to_owned(), graph_revision: self.session.revision(),
+            evaluation_stamp: None, content_stamp: None,
+            color_space: FrameColorSpace::Unknown, alpha_mode: FrameAlphaMode::Unknown,
+        };
+        match self.stable_previews.try_capture(&self.render_device, node_id, identity) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(FrameCaptureError::WouldBlock) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
 
@@ -768,5 +800,29 @@ mod tests {
         assert_eq!(host.inference_metrics().submitted, 0);
     }
 
+
+    #[test]
+    fn stable_monitor_rejects_impossible_working_sets_instead_of_permanent_backpressure() {
+        use crate::rendering::{FrameCaptureError, GpuOutputHandle, StableFrameBudget, StableFramePool};
+        let (mut host, _) = pollster::block_on(NativePlayer::new()).unwrap();
+        assert!(matches!(host.try_stable_preview("missing"), Err(FrameCaptureError::InvalidSource(_))));
+        host.render_device.upload_rgba("image", &[10, 20, 30, 255], 1, 1).unwrap();
+        for budget in [StableFrameBudget { max_frames: 1, max_bytes: 8 }, StableFrameBudget { max_frames: 2, max_bytes: 7 }] {
+            host.stable_previews = StableFramePool::new(host.backend(), budget).unwrap();
+            assert!(matches!(host.try_stable_preview("image"), Err(FrameCaptureError::Capacity)));
+        }
+        host.stable_previews = StableFramePool::new(host.backend(), StableFrameBudget { max_frames: 2, max_bytes: 8 }).unwrap();
+        let first = host.try_stable_preview("image").unwrap().unwrap();
+        let second = host.try_stable_preview("image").unwrap().unwrap();
+        assert!(host.try_stable_preview("image").unwrap().is_none());
+        first.ready.wait(std::time::Duration::from_secs(5)).unwrap();
+        second.ready.wait(std::time::Duration::from_secs(5)).unwrap();
+        let float = host.backend().create_target(1, 1, crate::rendering::TextureFormat::Rgba32Float);
+        host.render_device.register_external_texture("float", GpuOutputHandle {
+            texture: float.texture, view: float.view, sampler: host.inference_sampler.clone(),
+            width: 1, height: 1, format: crate::rendering::TextureFormat::Rgba32Float, lease: None,
+        }).unwrap();
+        assert!(matches!(host.try_stable_preview("float"), Err(FrameCaptureError::InvalidSource(_))));
+    }
 
 }

@@ -204,6 +204,8 @@ GPU adapter 接收受控 lease，验证 decoder 和渲染 adapter、device、格
 
 多消费者的租约要等实际 GPU submission 完成才能归还，不以“Slint 已收到 Image”或“Rust 变量释放”作为 GPU 完成。Slint 1.18.1 的纹理 Image 不提供任意导入 lease 的通用消费完成协议：优先转换进宿主控制的显示纹理池，验证 Slint 与 host 的队列排序、呈现保留和回收机制；池大小有界，不能靠无限保留帧避免闪烁。若无法证明采样完成，零 CPU presenter 尚未通过门槛，必须显式选用受支持的拷贝呈现路径或拒绝严格模式。
 
+2026-11-11 Phase 1 已实现图输出的独立 StableFramePool（三槽/256 MiB 默认、slot/bytes 双限额）与 NativePlayer 稳定主预览，不修改 oq-media 原生帧类型。macOS 用受控 Metal texture alias 的 native drop guard 让 Slint Image/缓存的 texture clone 保 slot；原子释放通知由池维护转换为 queue completion，不在原生析构中重入 wgpu。实际窗口部分绘制没有触发原窗口 AfterRendering，故不能仅靠 notifier 回收。生产无 CPU 图像回传，但新增 GPU detach copy 需要计量；其他平台的 lease/notifier 方案尚未验收。源时间/完整同帧依赖与预取仍为后续 Phase，详见[Phase 1 实现/证据](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。
+
 OpenQuartz 仍由 `RenderBridge::initialize` 创建共享 wgpu Device/Queue，并注入图与 presenter。独立播放器示例可由 Slint adapter 创建同类 shared context，再注入核心；不会让 `MediaView::new` 隐式创建另一个 GPU。设备丢失时提升 GPU generation，停止使用旧纹理、释放/取消待提交作业，重新协商或明确失败。
 
 GPU 创建必须先汇总 Slint renderer、图执行和媒体导入所需的 **optional features**，与 adapter 实际支持取交集并显式 request；要求 NV12/P010 的 importer 只在对应 device feature 已启用时可选。严格模式缺特性即失败，可回退模式重新选择受支持路径。若某 source 在设备创建后才暴露新格式，不能给既有 Device 追加 feature；由已协商能力决定转换/回退或明确重建整个设备上下文。无需把无条件启用所有 feature 当作解决方法。

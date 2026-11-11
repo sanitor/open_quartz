@@ -357,7 +357,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。顺序为 Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8；每个实现 Phase 都必须有可运行的真实纵向路径，不以空接口/假 decoder/假 encoder 过关。Phase 0 只提交设计，Phase 1～8 当前全部未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐；共享流水不能等到最后才迁移 NativePlayer。
+本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。顺序为 Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8；每个 Phase 须有真实可运行纵向路径，不用空接口/假 codec 过关。Phase 0 已提交，Phase 1 已实施并完成下列局部行为/硬件验收（整体 coverage gate 仍红），Phase 2～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐；共享流水不能等到最后才迁移 NativePlayer。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -398,7 +398,40 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-本提交为 **Phase 0 设计基线**；Phase 1～8 未开始。Phase 0 验证只覆盖文档/计划，不代表任何新流水代码被测试。实施提交时按当次结果追加 Phase 记录：需求→单元/E2E 映射、现实与设计差异、精确命令/环境/结果/产物和遗留限制；不预填测试通过数或未来 commit hash。设计提交 hash 由 git 记录，不为把自身 hash 写回文档再创建第二个设计提交。
+Phase 0 设计基线已提交为 `895a32c`。本提交为 **Phase 1 稳定帧与完成协议**；Phase 2～8 未开始，新编辑器仍只有设计目录。本阶段新增功能与受影响回归通过下述验收，**不是全仓 100% coverage 或发布 gate 已通过**。
+
+实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
+
+**按实测 revise：** 最初依赖 AfterRendering 释放 UI 旧 owner，实际 E2E 的部分绘制未经过原窗口 notifier，池耗尽后尺寸切换失败，故 macOS 改为受控 Metal 纹理别名的 native drop guard：Slint Image/缓存仅克隆 wgpu Texture 也保留实际 slot lease，最后纹理/owner 释放后才申请同 queue completion。原生 destructor 可能在 wgpu 内部锁下执行，因此只标记原子 release_requested，池维护在锁外设备上下文安排完成回调；不在 drop guard 重入 wgpu。副作用为每次快照一个 GPU detach copy＋轻量 ownership wrapper，不新建设备/不回传 CPU 像素，未声称无 GPU copy。其他平台保留显式 GpuOutputHandle lease 与 notifier 交接，但本轮无实机验收，不能从 Metal 结论推广。
+
+另一个真实缺陷：暂停后切换预览恰遇池满时，worker 原先会永久睡眠。新增 pending 最终预览重试，保留当前播放暂停状态；增加三消费者耗尽池→暂停选红色→只释放蓝色消费者、不再发送 Play/Seek→收到红色稳定快照的真实 worker 回归。Phase 4 再统一为共享流水事件机制，本阶段沿现有 render worker 的有限 recv_timeout 重试，不提前宣称 FramePipeline 已落地。
+
+需求到测试映射（GPU tests 在 `rendering/stable_frame_tests.rs`，均为真实设备而非假纹理；源图案 CPU initial upload 仅准备边界，readback 仅 oracle）：
+
+| 不变量 | 单元/真实链路 case | E2E 证据 |
+|---|---|---|
+| 多帧与多消费者像素不改写、池满返还/复用 | `snapshots_keep_pixels_and_provenance_across_source_changes_and_pool_saturation`；`explicit_time_two_source_graph_frames_stay_stable_during_later_execution` | 双源在显式时间 0/0.5/1 生成红/紫/蓝并同时保留；NativePlayer 连续编号帧与替图 |
+| byte/slot 双预算、resize/reset、池释放后资源仍有效 | `byte_budget_resize_and_reset_preserve_outstanding_frames`；`readiness_or_wait_does_not_release_a_consumer_and_pool_drop_does_not_destroy_pixels` | 主监视器 Auto size 96×48→320×180→96×48、动态图连续回收 |
+| pending/取消/零 timeout 不提前回收、源 owner 保留 | `dropping_pending_frame_retains_source_until_producer_completion`；上述 readiness case | 真实 GPU copy/consumer submission 完成后才复用；timeout 结果依实际进度可成功或超时，但两种情况都不释放持有 lease |
+| 格式/设备/身份校验；RGBA32F 不量化 | `invalid_sources_and_wrong_devices_do_not_consume_capacity`；`float_snapshots_keep_format_and_exact_values` | 错误在容量变化前拒绝，浮点 2.0/0.5/0.25/1.0 保持；生产 UI 只接受 RGBA8 |
+| Slint 裸纹理持有、宿主工作集/替图与释放 | `slint_style_texture_clone_keeps_the_pool_slot_until_native_resource_release`；`native_player_stable_preview_backpressure_and_graph_replacement`；native `stable_monitor_rejects_impossible_working_sets_instead_of_permanent_backpressure` | 真实显示/暂停/替图与 CloseRequested 正常退出；主监视器不靠属性替换时间猜 GPU 已用完 |
+| 暂停最终预览在容量恢复后前进 | app `paused_selected_preview_retries_after_slow_consumers_release_without_resuming` | Shader suite 在暂停下切换 Shader/Renderer 后等待真实结果，Circle 与其余 33 个画面按独立 oracle 通过 |
+
+2026-11-11，macOS 26 / Apple M4 Pro / Metal 实测：
+
+| 精确命令/范围 | 结果与产物 |
+|---|---|
+| `cargo test --locked --workspace` | 271 passed；默认无 GPU 核心闭包保持 |
+| 设置 `OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg` 后 `cargo test --locked -p open_quartz -p oq-inference --features native-runtime,native-video,native-onnx,model-cache -- --test-threads=1` | 393 passed、1 ignored；包含新增 9 项稳定帧真实 GPU/NativePlayer 测试及 1 项最小工作集测试；未设置 executable 时最初有 6 项媒体前提失败，显式配置实际 runtime 后通过，未改成 skip |
+| `npm run test:desktop` | 80 passed、2 既有 opt-in ignored；含暂停池满恢复回归；未把模型 opt-in 标为已运行 |
+| `npm run test:desktop:ui` | 19/19；[交互报告](../../test-results/slint-ui/interaction-2026-11-11T11-01-35-463Z/report.html)、[动态稳定帧结果](../../test-results/slint-ui/interaction-2026-11-11T11-01-35-463Z/result.json)。动态 ROI 从 [0,68,255]→[0,95,255]，Pause 两次 [0,102,255]，替图 [255,0,0] |
+| `npm run test:desktop:shaders` | 34/34；[独立画面 oracle 报告](../../test-results/slint-ui/shaders-2026-11-11T11-01-35-226Z/report.html)，含 feedback 实际变化与暂停预览 |
+| 两个 UI runner 的正常退出 | run.json 均记录 CloseRequested → exit 0 / signal null；MCP 不支持系统关闭，ui-automation 专用 stdin 将关闭事件投递真实 event loop，走生产 on_close_requested/shutdown/窗口销毁路径；不是鼠标点击系统标题栏。正常构建无此测试入口；中途 restart 仍由 runner 管理 |
+| `npm run check:rust-boundaries` | 默认/feature/独立推理边界通过 |
+| `node --test scripts/slint-ui-report.test.mjs scripts/shader-e2e-reference.test.mjs` | 13 passed；画面 oracle 与报告正确处理失败/未运行 |
+| 同 FFmpeg 环境下 `npm run test:sdk-coverage` | 测试默认 143+16、native 238+33（1 ignored）通过，但两项 100% gates 失败；默认 lines/functions/regions=96.29/95.32/95.98%，native=90.68/83.80/84.54%。新增 stable_frame.rs=95.80/86.96/91.30%；未覆盖含格式化错误诊断和设备错误分支，不通过测试字符串来填数，不增加 exclusion/放宽门槛 |
+
+限制：整体 coverage 红色状态保留，未发布；未测其他平台、硬件 encoder/随机 seek、完整流水性能或新编辑器；未运行本轮七模型完整 inference UI。此阶段只交付稳定快照和消费回收，Phase 2 才迁移共享执行流水。默认预算是保守配置不是吞吐保证；时间 provenance 未知不伪造，也不因独立快照可用就宣称预览/导出帧已完整同帧绑定。
 
 首轮提交序列明确覆盖 P0～P2，不取消 P3/P4。声音、多轨/转场、关键帧、代理/后台缓存、现有模型剪辑接入分别作为后续独立实施 Phase，沿用相同“一 Phase 一 commit＋文档 revise＋单元/E2E”纪律；每项启动前根据前序真实接口、平台能力和 §12/§19 的范围补齐同粒度验收/依赖，未规划细节不能先写占位。HDR/其他平台等仍须独立规格与硬件门槛，不混入当前单轨无音轨发布承诺。
 

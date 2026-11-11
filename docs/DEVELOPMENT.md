@@ -8,7 +8,7 @@
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
-媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
+媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
 
 当前推理边界见[推理架构](INFERENCE_ARCHITECTURE.md)和[节点契约](ONNX_NODE_DESIGN.md)。`inspect_onnx(model)` 无需 ORT，保留完整 source facts：IR/producer/model versions、domain、graph name、模型/图/值 metadata、opsets、递归类型与精确 dtype codes、scalar/UnknownRank、维度/符号/denotation、Required/Optional/OverridableInitializer 及 dense/sparse external-data 引用；自省不加载权重。runtime metadata/ValueKind/元素分类、hash/size/format 分开，不把 runtime sentinel 当源版本。`ImageInterfaceReport` 仅结构兼容，typed `ImageTaskContract` 才定义命名输出、layout/preprocessing/resize/color/shape/decoder；声明在 frame access 前检查，实际输出在解码/交付前检查。JSON 分列 `model`/`taskContract`。旧 CoreML EP 混合执行数据仅为历史 reference，不是 resident fallback。
 
@@ -19,6 +19,8 @@ Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` �
 advanced host 路径为 open_quartz::{compiler,evaluation,player,outputs,rendering,inference,media,resources} 与 project::catalog。Slint 使用 NativePlayer；独立 .scr 在自有 Win32 loop 中直接组合 PlaybackSession、evaluation work 与 GpuExecutor。内部 media::sources / inference::tasks 拥有 VideoSources/InferenceTasks，不新增 root alias。实现与生产调用随 owner 迁移，不保留 execution/runtime namespace 或类 alias，实际路径见 [设计 源码索引](DESIGN.md#source-map)。root 类型、既有 feature、独立组件边界保持，WASM/Tauri/bindings/browser 不恢复。
 
 NativePlayer/RenderDevice 在原 render thread 与 Slint 共用 wgpu30 Metal Device/Queue：texture → GPU BT.601/resize224 → 完整四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA → Slint/Shader。固定网络 224→672，输出源尺寸 ×3，不是 tiling 或大图全分辨率质量承诺。source pixels 不经 CPU；模型/weights 解析和 initial upload 仅准备时进行。一次性文件图片/framebuffer decode-ingress 可 CPU 解码并上传，capture/reference/test readback 必须 opt in。TextureHandle/GpuOutputHandle/RenderUpdate/Slint 当前 handles 保留 lease，最多三槽，持有期间不复用，饱和 backpressure；queue order/fences 保证生命周期。
+
+Phase 1 稳定输出已落地：主预览通过 NativePlayer::try_stable_preview 和有界 StableFramePool detach GPU copy 保像素；节点卡仍为 live view。macOS 原生 texture drop guard 保留 Slint 实际消费的 slot，consumer 最后释放后由安全池维护安排 queue completion。尚未迁移 FramePipeline，也不新增默认设备依赖。[本阶段完整验证/失败限制](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)与旧记录分开。可重跑：准备 desktop runtime 后设置 `OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg`，执行 `cargo test --locked -p open_quartz --features native-runtime,native-video stable_frame::tests -- --test-threads=1`；应用 worker 回归用 `npm run test:desktop`，真实窗口用 `npm run test:desktop:ui` / `npm run test:desktop:shaders`。UI runner 最终通过 ui-automation 专用 stdin lane 投递真实 CloseRequested，run.json 必须 exit 0/signal null；不把 SIGTERM 当正常关闭，正常 build 不提供此测试入口。现有全局 100% coverage gates 仍失败，未放宽。
 
 ### 桌面是否需要 FFI？
 

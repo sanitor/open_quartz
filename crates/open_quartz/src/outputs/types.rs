@@ -183,3 +183,34 @@ pub enum DataPathMode {
 pub struct PlaybackCapabilities {
     pub data_paths: Vec<DataPathMode>,
 }
+
+/// The graph catalog does not impose a universal color or alpha convention.
+/// Unknown must remain explicit rather than silently labelling arbitrary shader values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FrameColorSpace { Unknown, Srgb, LinearBt709 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FrameAlphaMode { Unknown, Straight, Premultiplied, Opaque }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameImageDescription {
+    pub width: u32,
+    pub height: u32,
+    pub color_space: FrameColorSpace,
+    pub alpha_mode: FrameAlphaMode,
+}
+
+/// Provenance supplied by the caller, not inferred from texture arrival time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSnapshotIdentity {
+    pub output_node_id: String,
+    pub graph_revision: u32,
+    pub evaluation_stamp: Option<FrameStamp>,
+    pub content_stamp: Option<ContentStamp>,
+    pub color_space: FrameColorSpace,
+    pub alpha_mode: FrameAlphaMode,
+}
