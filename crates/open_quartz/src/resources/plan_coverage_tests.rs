@@ -164,13 +164,16 @@ fn legacy_custom_path_and_bare_params_preserve_configuration_and_canonical_graph
     let plan = plan_host_resource_intents(HostResourceIntentRequest {
         previous_graph: None,
         graph: source,
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(plan.intents.len(), 1);
-    assert!(matches!(&plan.intents[0], HostResourceIntent::LoadInference {
+    assert!(
+        matches!(&plan.intents[0], HostResourceIntent::LoadInference {
         model_path: Some(path), target_size: 320, score_threshold, iou_threshold, policy,
         download: None, ..
     } if path == "/models/custom.onnx" && *score_threshold == 0.3 && *iou_threshold == 0.6
-        && policy.backend == BackendPreference::OrtDirectMl));
+        && policy.backend == BackendPreference::OrtDirectMl)
+    );
     let saved = &plan.graph.nodes[0];
     assert_eq!(saved["id"], "onnx-original-id");
     assert_eq!(saved["type"], "inference");
@@ -198,11 +201,14 @@ fn canonical_and_onnx_fields_override_bare_params_before_and_after_save() {
     let first = plan_host_resource_intents(HostResourceIntentRequest {
         previous_graph: None,
         graph: source,
-    }).unwrap();
-    assert!(matches!(&first.intents[0], HostResourceIntent::LoadInference {
+    })
+    .unwrap();
+    assert!(
+        matches!(&first.intents[0], HostResourceIntent::LoadInference {
         target_size: 512, score_threshold, iou_threshold, policy, ..
     } if *score_threshold == 0.4 && *iou_threshold == 0.7
-        && *policy == ExecutionPolicy::resident()));
+        && *policy == ExecutionPolicy::resident())
+    );
     let saved = &first.graph.nodes[0]["data"];
     assert!(saved.get("params").is_none());
     assert_eq!(saved["inferenceParams"]["targetSize"], 512);
@@ -212,7 +218,8 @@ fn canonical_and_onnx_fields_override_bare_params_before_and_after_save() {
     let restored = plan_host_resource_intents(HostResourceIntentRequest {
         previous_graph: None,
         graph: first.graph,
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(restored.intents, first.intents);
 }
 
@@ -222,7 +229,8 @@ fn bare_params_on_other_nodes_are_preserved_and_invalid_legacy_preference_errors
     let plan = plan_host_resource_intents(HostResourceIntentRequest {
         previous_graph: None,
         graph: graph(vec![shader.clone()]),
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(plan.graph.nodes[0], shader);
     assert!(effective_inference_policy(&json!({"params":{"preferDirectMl":"true"}})).is_err());
 }
@@ -236,7 +244,8 @@ fn legacy_custom_path_and_bare_params_keep_same_resource_key_after_typed_roundtr
             "params":{"targetSize":256,"scoreThreshold":0.35,"iouThreshold":0.65,"preferDirectMl":true}
         }
     });
-    let typed: crate::project::model::NodeData = serde_json::from_value(legacy["data"].clone()).unwrap();
+    let typed: crate::project::model::NodeData =
+        serde_json::from_value(legacy["data"].clone()).unwrap();
     let mut canonical = legacy.clone();
     canonical["type"] = json!("inference");
     canonical["data"] = serde_json::to_value(typed).unwrap();
@@ -252,17 +261,109 @@ fn legacy_custom_path_and_bare_params_keep_same_resource_key_after_typed_roundtr
     let unchanged = plan_host_resource_intents(HostResourceIntentRequest {
         previous_graph: Some(graph(vec![legacy])),
         graph: graph(vec![canonical]),
-    }).unwrap();
+    })
+    .unwrap();
     assert!(unchanged.intents.is_empty());
-    assert_eq!(effective_inference_policy(&json!({
-        "inferenceParams":{"targetSize":512}, "params":{"preferDirectMl":true}
-    })).unwrap().backend, BackendPreference::OrtDirectMl);
+    assert_eq!(
+        effective_inference_policy(&json!({
+            "inferenceParams":{"targetSize":512}, "params":{"preferDirectMl":true}
+        }))
+        .unwrap()
+        .backend,
+        BackendPreference::OrtDirectMl
+    );
 }
 
 #[test]
 fn implicit_inference_policy_is_strict_resident_but_saved_host_intent_stays_readable() {
-    assert_eq!(effective_inference_policy(&json!({})).unwrap(), ExecutionPolicy::resident());
-    assert_eq!(effective_inference_policy(&json!({"preferDirectMl":false})).unwrap(), ExecutionPolicy::resident());
+    assert_eq!(
+        effective_inference_policy(&json!({})).unwrap(),
+        ExecutionPolicy::resident()
+    );
+    assert_eq!(
+        effective_inference_policy(&json!({"preferDirectMl":false})).unwrap(),
+        ExecutionPolicy::resident()
+    );
     let saved = json!({"inferencePolicy":ExecutionPolicy::default(),"preferDirectMl":true});
-    assert_eq!(effective_inference_policy(&saved).unwrap(), ExecutionPolicy::default());
+    assert_eq!(
+        effective_inference_policy(&saved).unwrap(),
+        ExecutionPolicy::default()
+    );
+}
+
+#[test]
+fn canonical_top_level_settings_survive_legacy_parameter_normalization() {
+    let node = json!({"id":"model", "type":"inference", "data":{
+        "type":"inference", "label":"model", "shaderCode":"", "inputs":[], "outputs":[], "uniforms":{},
+        "inferenceModelId":"custom", "inferenceModelPath":null, "onnxCustomPath":"obsolete.onnx",
+        "inferenceTargetSize":128, "inferenceIouThreshold":0.6, "inferencePreferDirectMl":false,
+        "inferenceParams":{"scoreThreshold":0.8},
+        "onnxParams":{"targetSize":256,"iouThreshold":0.7,"preferDirectMl":true},
+        "params":{"targetSize":64,"scoreThreshold":0.1,"iouThreshold":0.2,"preferDirectMl":true}
+    }});
+    let original = plan_host_resource_intents(HostResourceIntentRequest {
+        previous_graph: None,
+        graph: graph(vec![node.clone()]),
+    })
+    .unwrap();
+    assert!(
+        matches!(&original.intents[0], HostResourceIntent::LoadInference {
+        target_size:128, score_threshold, iou_threshold, model_path:None, policy, ..
+    } if *score_threshold == 0.8 && *iou_threshold == 0.6 && *policy == ExecutionPolicy::resident())
+    );
+    let typed: crate::project::model::NodeData =
+        serde_json::from_str(&node["data"].to_string()).unwrap();
+    let mut restored = node;
+    restored["data"] = serde_json::to_value(typed).unwrap();
+    let restored = plan_host_resource_intents(HostResourceIntentRequest {
+        previous_graph: None,
+        graph: graph(vec![restored]),
+    })
+    .unwrap();
+    assert_eq!(restored.intents, original.intents);
+    let normalized = plan_host_resource_intents(HostResourceIntentRequest {
+        previous_graph: None,
+        graph: original.graph,
+    })
+    .unwrap();
+    assert_eq!(normalized.intents, original.intents);
+}
+
+#[test]
+fn invalid_inference_task_rejects_both_new_and_previous_resource_snapshots() {
+    let bad = graph(vec![json!({"id":"bad-model","data":{
+        "type":"inference","inferenceModelId":"custom","inferenceTask":"unrecognized-task"
+    }})]);
+    assert!(plan_host_resource_intents(HostResourceIntentRequest {
+        previous_graph: None,
+        graph: bad.clone(),
+    })
+    .is_err());
+    assert!(plan_host_resource_intents(HostResourceIntentRequest {
+        previous_graph: Some(bad),
+        graph: graph(vec![]),
+    })
+    .is_err());
+}
+
+#[test]
+fn typed_project_data_rejects_nonobjects_and_invalid_inference_params() {
+    for source in ["[]", "null", "42"] {
+        assert!(serde_json::from_str::<crate::project::model::NodeData>(source).is_err());
+    }
+    let base = json!({"type":"inference","label":"model","shaderCode":"","inputs":[],"outputs":[],"uniforms":{}});
+    for malformed in [json!(false), json!([1]), json!({"targetSize":"large"})] {
+        let mut input = base.clone();
+        input["params"] = malformed;
+        assert!(serde_json::from_value::<crate::project::model::NodeData>(input).is_err());
+    }
+    let mut shader = base;
+    shader["type"] = json!("shader");
+    shader["params"] = json!({"targetSize":"shader-specific"});
+    let shader: crate::project::model::NodeData = serde_json::from_value(shader).unwrap();
+    assert!(shader.inference_params.is_none());
+    assert_eq!(
+        shader.extra["params"],
+        json!({"targetSize":"shader-specific"})
+    );
 }

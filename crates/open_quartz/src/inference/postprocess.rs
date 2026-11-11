@@ -449,3 +449,70 @@ mod coverage_tests {
         assert!(decode_segmentation_output(&vec![0.0; 19], 1, 1, 1.0, -1.0, -1.0).is_err());
     }
 }
+#[cfg(test)]
+mod decoder_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn yolo_decoder_applies_threshold_clipping_class_and_nms() {
+        const BOXES: usize = 8400;
+        let mut raw = vec![0.0; 84 * BOXES];
+        // Two overlapping boxes, with class 3 winning in the first and class 1 in the second.
+        raw[0] = 50.0;
+        raw[BOXES] = 50.0;
+        raw[2 * BOXES] = 100.0;
+        raw[3 * BOXES] = 100.0;
+        raw[4 * BOXES + 0] = 0.75;
+        raw[4 * BOXES + 1] = 0.70;
+        raw[7 * BOXES] = 0.9;
+        raw[1] = 90.0;
+        raw[2 * BOXES + 1] = 100.0;
+        raw[3 * BOXES + 1] = 100.0;
+        raw[4 * BOXES + 2] = 0.5;
+        raw[2] = -20.0;
+        raw[BOXES + 2] = 50.0;
+        raw[2 * BOXES + 2] = 100.0;
+        raw[3 * BOXES + 2] = 100.0;
+        raw[0] = -20.0;
+        let decoded = decode_yolo_output(&raw, 100, 100, 1.0, 0.0, 0.0, 0.5);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0].class_id, 3);
+        assert_eq!(decoded[0].bbox[..2], [0.0, 0.0]);
+        assert!((decoded[0].bbox[2] - 0.3).abs() < 1e-6);
+        assert_eq!(decoded[0].bbox[3], 1.0);
+        assert_eq!(decoded[1].class_id, 0);
+        assert_eq!(
+            decoded[2].score, 0.5,
+            "score exactly at the threshold remains eligible"
+        );
+        let kept = detect_postprocess(&raw, 100, 100, 1.0, 0.0, 0.0, 0.5, 0.5);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].score, 0.9);
+        assert!(decode_yolo_output(&raw[..raw.len() - 1], 100, 100, 1.0, 0.0, 0.0, 0.5).is_empty());
+        assert!(decode_yolo_output(&raw, 100, 100, 0.0, 0.0, 0.0, 0.5).is_empty());
+    }
+
+    #[test]
+    fn class_map_postprocess_preserves_ids_palette_counts_and_rejects_bad_geometry() {
+        let decoded = class_map_postprocess(&[0, 1, 2, 3], 2, 2, 2, 2, 1.0, 0.0, 0.0).unwrap();
+        assert_eq!(
+            (decoded.mask_width, decoded.mask_height, decoded.num_classes),
+            (2, 2, 19)
+        );
+        assert_eq!(decoded.class_counts[0..4], [1, 1, 1, 1]);
+        assert_eq!(
+            decoded.mask_rgba,
+            [
+                CITYSCAPES_PALETTE[0],
+                CITYSCAPES_PALETTE[1],
+                CITYSCAPES_PALETTE[2],
+                CITYSCAPES_PALETTE[3]
+            ]
+            .concat()
+        );
+        assert!(class_map_postprocess(&[], 0, 2, 1, 1, 1.0, 0.0, 0.0).is_err());
+        assert!(class_map_postprocess(&[19], 1, 1, 1, 1, 1.0, 0.0, 0.0).is_err());
+        assert!(class_map_postprocess(&[0], 1, 1, 1, 1, f32::NAN, 0.0, 0.0).is_err());
+        assert!(class_map_postprocess(&[0], 1, 1, 1, 1, 1.0, -1.0, 0.0).is_err());
+    }
+}

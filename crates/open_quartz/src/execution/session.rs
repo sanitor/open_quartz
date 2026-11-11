@@ -181,6 +181,11 @@ impl FrameExecutionSession {
         self.graph.state_value()
     }
 
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn rollback_feedback(&mut self, commands: &[ExecutionCommand]) {
+        self.graph.rollback_feedback(commands);
+    }
+
     pub fn attach_backend(&mut self, backend: Box<dyn HostBackend>) {
         self.hub.attach_backend(backend);
     }

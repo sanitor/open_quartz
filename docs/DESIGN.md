@@ -452,6 +452,42 @@ Phase 2 已将 NativePlayer 的 admission、图命令/推理依赖与完成循�
 <a id="validation"></a>
 ## 验证基线
 
+<a id="pre-phase3-coverage"></a>
+### 2026-11-11 Phase 3 前覆盖率加固
+
+用户要求先提升到 100% 或接近 100%，未开始 Phase 3。保留原有 default/native 两套 package/feature、排除范围和 line/function/region=100 门槛，不通过移除生产代码统计、伪造设备失败或测试转发字段补数字；`scripts/test-sdk-coverage.mjs` 现在在清理 profile 前输出各自 JSON，方便按函数/region 复核。
+
+| 配置 / 指标 | Phase 2 基线 | 本轮最终 |
+|---|---:|---:|
+| default lines | 96.11% | 98.37% |
+| default functions | 95.30% | 96.99% |
+| default regions | 95.96% | 98.45% |
+| native lines | 90.11% | 96.23% |
+| native functions | 83.40% | 90.35% |
+| native regions | 84.54% | 94.52% |
+
+真实修正与对应回归：
+
+- `pause_cancels_without_advancing_feedback_resume_preserves_it_and_stop_resets_it` 首次在 Pause→Resume 返回旧 64 而非 128 红通道，说明 admission 已翻转 evaluator feedback index、取消却没执行 GPU。未提交 demand 取消时回滚 feedback read index/first-frame 状态，已提交 GPU 不回滚。真实 Metal 像素保留历史并可 stop/reset。
+- `rejected_shader_replacement_keeps_deliverable_output_and_source_removal_fails_once` 和 staged-image case 发现 remove 后图仍 clean，错误地返回旧输出。直接/staged image/video removal 标记当前图源 dirty，缺依赖以失败终态结束；无关已删除节点的 cleanup 仍幂等。恢复上传后显示新绿帧，保留旧 lease 不变。
+- `canonical_top_level_settings_survive_legacy_parameter_normalization` 发现 `onnxParams.targetSize/iouThreshold` 保存后成为 canonical params，盖过原顶层 128/0.6。typed NodeData 与宿主 strip-normalization 都在合并旧参数前尊重显式字段；原始/typed roundtrip/normalized 三条路径的资源意图一致。
+
+新增行为覆盖包括：Every/Latest 与 presentation 后端失败事务、图/source/revision/epoch 原子拒绝、PreparedInferenceModel 文件解析→NativePlayer attach→mask 像素→关闭保留；CPU reference 的 scalar/多 dtype/Sequence/Optional/任务专属输出形状、真实 Gather 越界失败后有效重试和 profile 中 CPU provider；ONNX 图/权重/形状拒绝；原生 MPSGraph Conv mask、恒定 depth reduction、真实 ArgMax/Cast class map、非空检测的坐标/排序/跨类 NMS 与零检测、4× DepthToSpace profile resize 与三槽 backpressure。测试生成的小图不是原七模型数值验收，也不替代图像质量/吞吐测量；生产仍不使用 ORT/CPU fallback。
+
+本轮实测 macOS / Apple M4 Pro / Metal，准备 runtime 后设置：
+
+```sh
+export OPEN_QUARTZ_FFMPEG_PATH="$PWD/apps/open_quartz_slint/runtime/ffmpeg"
+export ORT_DYLIB_PATH="$PWD/node_modules/.cache/open-quartz/desktop-runtime-darwin-arm64/libonnxruntime.1.21.0.dylib"
+npm run test:sdk-coverage
+```
+
+default 156+19、native 275+61 passed（另 1 既有 cached-model ignored）。命令退出 1 的原因仍是两个 100% gates，不是测试失败。[default 明细](../test-results/sdk-coverage/default.json)、[native 明细](../test-results/sdk-coverage/native.json)。default 剩余 105 lines/20 functions/135 regions，native 剩余 522/145/1177；函数包括 LLVM 对未走错误闭包的计数，不能将 line 接近 100% 写成所有指标接近 100%。当前未声明 branch coverage，报告没有启用 branch instrumentation。
+
+其他实测：workspace 287 passed；桌面 80 passed/2 opt-in ignored；依赖边界通过。真实原生 Shader suite 34/34（包含反馈演化与暂停）通过，[报告](../test-results/slint-ui/shaders-2026-11-11T13-50-44-383Z/report.html)。原始 SR3 release example 1 warmup/3 samples 每尺寸，三种输出共逐字节对照 max error=1、resident host bytes=0，[数值 smoke](../test-results/sdk-coverage/resident-smoke.json)；此小样本仅正确性 smoke，不更新性能结论。另 `cargo test -p oq-inference --features gpu-diagnostics,ort catalog_behavior -- --test-threads=1` 的 4 项真实 native catalog 图通过，覆盖诊断 feature 的语义 logits 原图要求。没有重跑七模型完整独立 reference/UI、发布包或其他平台，不能沿用历史通过结果。
+
+残余明确分三类：真实环境故障（adapter/device creation、poll/device loss、CoreVideo import、ORT loader/provider activation/configuration）、由更早模型/尺寸验证挡住的防御错误路径，以及尚未独立覆盖的 accessor/诊断/性能输出与部分 resident/CPU-reference 分支。**不是把后两类称为不可达**。本轮拒绝单独测试错误措辞、只转发字段/handle 或伪造设备对象以凑 100%。`catalog_detect.rs` 已到 line/function/region=100%，共享 session 为98.41/98.04/97.36%；整个 pipeline 的89.64/85.57/90.29%仍有前述残余。100% gates 保持红，不发布；精确 seek/预取/编码仍未实现。
+
 ### 2026-11-11 Phase 2 共享执行
 
 NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 FrameExecutionSession 的图/输出状态。默认 workspace 275、完整 native/backend 405（1 ignored）、桌面 80（2 ignored）通过；真实交互 19/19、Shader 像素 34/34。不存在 ORT 路径下，原始 SR3 的 Shader/VideoToolbox 视频→Renderer 完成播放、暂停、源码替图/恢复与正常关闭，逐帧 host image/tensor bytes=0。[需求映射、命令、报告及完整限制](../apps/open_quartz_video_editor/DESIGN.md#phase-2共享执行与原图宿主切换)。

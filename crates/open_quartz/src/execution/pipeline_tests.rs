@@ -576,3 +576,356 @@ fn real_gpu_inference_keeps_each_demand_source_until_same_frame_result_and_cance
         assert_eq!(pixels(&p, &first)[..4], [255, 0, 0, 255]);
     });
 }
+
+#[test]
+fn prepared_images_commit_atomically_and_foreign_preparation_preserves_active_frame() {
+    pollster::block_on(async {
+        let graph = image_graph();
+        let mut p = pipeline(device().await, &graph);
+        p.upload_image("image", &[255, 0, 0, 255].repeat(4), 2, 2)
+            .unwrap();
+        let request = demand(&p, 1, 1, 0, vec![]);
+        accepted(&mut p, request);
+        let red = rendered(complete(&mut p));
+        let original_revision = p.revision();
+        let mut prepared = p.prepare_graph(&graph).unwrap();
+        assert!(prepared.stage_image("missing", &[0; 16], 2, 2).is_err());
+        assert!(prepared.stage_image("image", &[0; 3], 2, 2).is_err());
+        prepared
+            .stage_image("image", &[0, 0, 255, 255].repeat(4), 2, 2)
+            .unwrap();
+        assert_eq!(p.revision(), original_revision);
+        assert_eq!(
+            p.render_device.read_output_rgba("image").unwrap().0,
+            [255, 0, 0, 255].repeat(4)
+        );
+        let request = demand(&p, 2, 1, 100, vec![]);
+        let old_stamp = request.input.stamp.clone();
+        accepted(&mut p, request);
+        let foreign = pipeline(device().await, &graph)
+            .prepare_graph(&graph)
+            .unwrap();
+        assert!(p.commit_graph(foreign).is_err());
+        assert_eq!(p.pending_stamp(), Some(&old_stamp));
+        assert_eq!(p.revision(), original_revision);
+        let revision = p.commit_graph(prepared).unwrap();
+        let cancelled = p.poll_completion().unwrap();
+        assert_eq!(cancelled.request_id, 2);
+        assert_eq!(cancelled.stamp, old_stamp);
+        assert_eq!(cancelled.graph_revision, original_revision);
+        assert!(matches!(cancelled.outcome, FrameOutcome::Cancelled));
+        let mut stale = demand(&p, 3, 1, 200, vec![]);
+        stale.graph_revision = original_revision;
+        assert!(matches!(p.submit(stale), FrameAdmission::Rejected { .. }));
+        let fresh = demand(&p, 3, 1, 200, vec![]);
+        accepted(&mut p, fresh);
+        let blue = rendered(complete(&mut p));
+        assert_eq!(blue.identity.graph_revision, revision);
+        assert_eq!(pixels(&p, &blue), [0, 0, 255, 255].repeat(4));
+        assert_eq!(pixels(&p, &red), [255, 0, 0, 255].repeat(4));
+        let mut removed = p.prepare_graph(&graph).unwrap();
+        removed.stage_remove_texture("image");
+        p.commit_graph(removed).unwrap();
+        let request = demand(&p, 4, 1, 300, vec![]);
+        accepted(&mut p, request);
+        assert!(matches!(complete(&mut p).outcome, FrameOutcome::Failed(_)));
+        p.upload_image("image", &[0, 255, 0, 255].repeat(4), 2, 2)
+            .unwrap();
+        let request = demand(&p, 5, 1, 400, vec![]);
+        accepted(&mut p, request);
+        let recovered = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &recovered), [0, 255, 0, 255].repeat(4));
+    });
+}
+
+#[test]
+fn rejected_source_sets_and_invalid_frame_restore_absent_and_existing_bindings() {
+    pollster::block_on(async {
+        let mut render = device().await;
+        let pool = StableFramePool::new(render.backend(), StableFrameBudget::default()).unwrap();
+        let red = capture(&mut render, &pool, [255, 0, 0, 255]);
+        let blue = capture(&mut render, &pool, [0, 0, 255, 255]);
+        let mut p = pipeline(render, &image_graph());
+        p.remove_texture("image");
+        let source = |node: &str, version, frame: &StableFrame| ExternalFrameInput {
+            node_id: node.into(),
+            version,
+            frame: frame.clone(),
+        };
+        for sources in [
+            vec![source("image", 0, &red)],
+            vec![source("image", 1, &red), source("image", 2, &blue)],
+            vec![source("output", 1, &red)],
+        ] {
+            let request = demand(&p, 1, 1, 0, sources);
+            assert!(matches!(p.submit(request), FrameAdmission::Rejected { .. }));
+            assert!(!p.has_output_texture("image"));
+        }
+        let mut invalid = demand(&p, 1, 1, 0, vec![source("image", 2, &red)]);
+        invalid.input.resolution[1] = f32::NAN;
+        let retry = match p.submit(invalid) {
+            FrameAdmission::Rejected { mut demand, .. } => {
+                demand.input.resolution[1] = 2.0;
+                demand
+            }
+            _ => panic!("invalid frame must return its source leases"),
+        };
+        accepted(&mut p, retry);
+        let original = rendered(complete(&mut p));
+        let stale = demand(&p, 2, 1, 100, vec![source("image", 1, &blue)]);
+        assert!(matches!(p.submit(stale), FrameAdmission::Rejected { .. }));
+        let mut invalid = demand(&p, 2, 1, 100, vec![source("image", 3, &blue)]);
+        invalid.input.previous_timeline_ns = 101;
+        let mut retry = match p.submit(invalid) {
+            FrameAdmission::Rejected { demand, .. } => demand,
+            _ => panic!("invalid timeline must not install the new binding"),
+        };
+        assert_eq!(
+            p.render_device.read_output_rgba("image").unwrap().0,
+            [255, 0, 0, 255].repeat(4)
+        );
+        retry.input.previous_timeline_ns = 0;
+        accepted(&mut p, retry);
+        let changed = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &changed), [0, 0, 255, 255].repeat(4));
+        let stale = demand(&p, 3, 1, 200, vec![source("image", 2, &red)]);
+        assert!(matches!(p.submit(stale), FrameAdmission::Rejected { .. }));
+        let same = demand(&p, 3, 1, 200, vec![source("image", 3, &blue)]);
+        accepted(&mut p, same);
+        let unchanged = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &unchanged), pixels(&p, &changed));
+        assert_eq!(pixels(&p, &original), [255, 0, 0, 255].repeat(4));
+    });
+}
+
+#[test]
+fn pause_cancels_without_advancing_feedback_resume_preserves_it_and_stop_resets_it() {
+    pollster::block_on(async {
+        let graph: Graph = serde_json::from_value(json!({"nodes":[shader("output",
+            "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {return textureSample(previousFrame,previousFrameSampler,uv)+vec4f(0.25,0.0,0.0,1.0);}", json!([]))],"edges":[]})).unwrap();
+        let mut p = pipeline(device().await, &graph);
+        let request = demand(&p, 1, 1, 0, vec![]);
+        accepted(&mut p, request);
+        let first = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &first), [64, 0, 0, 255].repeat(4));
+        let request = demand(&p, 2, 1, 100, vec![]);
+        let stamp = request.input.stamp.clone();
+        accepted(&mut p, request);
+        assert!(p.try_stable_preview("output").unwrap().is_none());
+        p.pause_execution().unwrap();
+        let cancelled = p.poll_completion().unwrap();
+        assert_eq!(cancelled.stamp, stamp);
+        assert!(matches!(cancelled.outcome, FrameOutcome::Cancelled));
+        let request = demand(&p, 3, 1, 200, vec![]);
+        let retry = match p.submit(request) {
+            FrameAdmission::Rejected { demand, .. } => demand,
+            _ => panic!("paused graph must not advance feedback"),
+        };
+        p.resume_execution().unwrap();
+        accepted(&mut p, retry);
+        let second = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &second), [128, 0, 0, 255].repeat(4));
+        p.stop_execution().unwrap();
+        let request = demand(&p, 4, 1, 300, vec![]);
+        assert!(matches!(p.submit(request), FrameAdmission::Rejected { .. }));
+        p.set_graph_snapshot(&graph).unwrap();
+        let request = demand(&p, 4, 2, 0, vec![]);
+        accepted(&mut p, request);
+        let reset = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &reset), [64, 0, 0, 255].repeat(4));
+        assert_eq!(pixels(&p, &first), [64, 0, 0, 255].repeat(4));
+        assert_eq!(pixels(&p, &second), [128, 0, 0, 255].repeat(4));
+    });
+}
+
+#[test]
+fn rejected_shader_replacement_keeps_deliverable_output_and_source_removal_fails_once() {
+    pollster::block_on(async {
+        let mut p = pipeline(device().await, &image_graph());
+        p.upload_image("image", &[255, 0, 0, 255].repeat(4), 2, 2)
+            .unwrap();
+        let request = demand(&p, 1, 1, 0, vec![]);
+        accepted(&mut p, request);
+        let first = rendered(complete(&mut p));
+        let revision = p.revision();
+        let mut broken = image_graph();
+        broken.nodes[1].data.shader_code = "@fragment fn main( broken".into();
+        assert!(p.prepare_graph(&broken).is_err());
+        assert_eq!(p.revision(), revision);
+        assert_eq!(
+            pixels(&p, &p.try_stable_preview("output").unwrap().unwrap()),
+            pixels(&p, &first)
+        );
+        let request = demand(&p, 2, 1, 100, vec![]);
+        accepted(&mut p, request);
+        p.remove_texture("image");
+        assert!(matches!(
+            p.poll_completion().unwrap().outcome,
+            FrameOutcome::Cancelled
+        ));
+        let request = demand(&p, 3, 1, 200, vec![]);
+        accepted(&mut p, request);
+        let failed = complete(&mut p);
+        assert_eq!(failed.request_id, 3);
+        assert_eq!(failed.graph_revision, revision);
+        assert!(matches!(failed.outcome, FrameOutcome::Failed(_)));
+        p.progress();
+        assert!(p.poll_completion().is_none());
+        p.upload_image("image", &[0, 255, 0, 255].repeat(4), 2, 2)
+            .unwrap();
+        let request = demand(&p, 4, 1, 300, vec![]);
+        accepted(&mut p, request);
+        let recovered = rendered(complete(&mut p));
+        assert_eq!(pixels(&p, &recovered), [0, 255, 0, 255].repeat(4));
+        assert_eq!(pixels(&p, &first), [255, 0, 0, 255].repeat(4));
+    });
+}
+
+#[cfg(all(feature = "native-video", target_os = "macos"))]
+#[test]
+fn staged_hardware_video_replacement_and_detach_preserve_snapshot_content() {
+    pollster::block_on(async {
+        let config = |name: &str| NativeVideoConfig {
+            kind: crate::media::native::NativeVideoSourceKind::File,
+            source: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures")
+                .join(name)
+                .to_string_lossy()
+                .into_owned(),
+            looping: true,
+            playback_rate: 1.0,
+        };
+        let mut graph = image_graph();
+        graph.nodes[0].data.input_mode = Some(crate::project::model::InputMode::Video);
+        let mut p = pipeline(device().await, &graph);
+        let mut staged = p.prepare_graph(&graph).unwrap();
+        assert!(staged
+            .stage_video("output", config("white_64x64.mp4"), true)
+            .is_err());
+        staged
+            .stage_video("image", config("white_64x64.mp4"), true)
+            .unwrap();
+        let info = staged
+            .stage_video("image", config("gray_64x64.mp4"), true)
+            .unwrap();
+        assert_eq!((info.width, info.height), (64, 64));
+        assert!(info.fallback_reason.is_none());
+        p.commit_graph(staged).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while p.video_metrics("image").unwrap().uploaded_frames == 0 {
+            p.upload_video_frames().unwrap();
+            assert!(Instant::now() < deadline, "hardware preview did not arrive");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let request = demand(&p, 1, 1, 0, vec![]);
+        accepted(&mut p, request);
+        let gray = rendered(complete(&mut p));
+        let gray_pixels = pixels(&p, &gray);
+        assert!(gray_pixels.chunks_exact(4).all(|px| {
+            (80..180).contains(&px[0])
+                && px[0].abs_diff(px[1]) <= 4
+                && px[0].abs_diff(px[2]) <= 4
+                && px[3] == 255
+        }));
+        let metrics = p.video_metrics("image").unwrap();
+        assert!(metrics.hardware_decode);
+        assert_eq!(metrics.cpu_copy_bytes, 0);
+        assert!(p
+            .attach_video_preview("missing", config("white_64x64.mp4"))
+            .is_err());
+        assert!(p
+            .attach_video_preview("image", config("missing.mp4"))
+            .is_err());
+        p.attach_video_preview("image", config("white_64x64.mp4"))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while p.video_metrics("image").unwrap().uploaded_frames == 0 {
+            p.upload_video_frames().unwrap();
+            assert!(
+                Instant::now() < deadline,
+                "replacement hardware preview did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let request = demand(&p, 2, 1, 100, vec![]);
+        accepted(&mut p, request);
+        let white = rendered(complete(&mut p));
+        assert!(pixels(&p, &white)
+            .chunks_exact(4)
+            .all(|px| px[0] >= 253 && px[1] >= 253 && px[2] >= 253 && px[3] == 255));
+        let mut staged = p.prepare_graph(&graph).unwrap();
+        staged
+            .stage_video("image", config("gray_64x64.mp4"), true)
+            .unwrap();
+        staged.stage_detach_video("image");
+        p.commit_graph(staged).unwrap();
+        assert!(p.video_metrics("image").is_err());
+        assert!(!p.has_output_texture("image"));
+        let mut request = demand(&p, 3, 1, 200, vec![]);
+        request.output_node_id = "image".into();
+        accepted(&mut p, request);
+        assert!(matches!(complete(&mut p).outcome, FrameOutcome::Failed(_)));
+        assert_eq!(pixels(&p, &gray), gray_pixels);
+        assert!(pixels(&p, &white).chunks_exact(4).all(|px| px[0] >= 253));
+    });
+}
+
+#[test]
+fn graph_json_rejection_preserves_active_request_and_missing_output_recovers_with_same_revision() {
+    pollster::block_on(async {
+        let mut p = FramePipeline::from_render_device(
+            device().await,
+            PlaybackCapabilities { data_paths: vec![] },
+        );
+        assert!(!p.has_graph());
+        let request = demand(&p, 1, 1, 0, vec![]);
+        assert!(matches!(p.submit(request), FrameAdmission::Rejected { .. }));
+        let graph: Graph =
+            serde_json::from_value(json!({"nodes":[input_node("image")],"edges":[]})).unwrap();
+        let revision = p
+            .set_graph(&serde_json::to_string(&graph).unwrap())
+            .unwrap();
+        let mut request = demand(&p, 1, 1, 10, vec![]);
+        request.output_node_id = "image".into();
+        let stamp = request.input.stamp.clone();
+        accepted(&mut p, request);
+        assert!(p.set_graph("{not valid JSON}").is_err());
+        assert_eq!(p.pending_stamp(), Some(&stamp));
+        assert_eq!(p.revision(), revision);
+        let failed = complete(&mut p);
+        assert_eq!(failed.request_id, 1);
+        assert_eq!(failed.stamp, stamp);
+        assert_eq!(failed.graph_revision, revision);
+        assert!(matches!(failed.outcome, FrameOutcome::Failed(_)));
+        p.progress();
+        assert!(p.poll_completion().is_none());
+        p.upload_image("image", &[12, 34, 56, 255].repeat(4), 2, 2)
+            .unwrap();
+        let preview = p.try_stable_preview("image").unwrap().unwrap();
+        assert_eq!(preview.identity.evaluation_stamp, None);
+        assert_eq!(pixels(&p, &preview), [12, 34, 56, 255].repeat(4));
+        let mut request = demand(&p, 2, 1, 20, vec![]);
+        request.output_node_id = "image".into();
+        let stamp = request.input.stamp.clone();
+        accepted(&mut p, request);
+        let completion = complete(&mut p);
+        assert_eq!(completion.request_id, 2);
+        assert_eq!(completion.stamp, stamp);
+        let frame = rendered(completion);
+        assert_eq!(frame.identity.output_node_id, "image");
+        assert_eq!(frame.identity.evaluation_stamp, Some(stamp));
+        assert_eq!(
+            frame.identity.content_stamp,
+            Some(ContentStamp {
+                epoch: 1,
+                timeline_ns: 20,
+                media_pts_ns: None
+            })
+        );
+        assert_eq!(pixels(&p, &frame), [12, 34, 56, 255].repeat(4));
+        p.remove_texture("image");
+        assert!(p.try_stable_preview("image").is_err());
+        assert_eq!(pixels(&p, &preview), [12, 34, 56, 255].repeat(4));
+        assert_eq!(pixels(&p, &frame), [12, 34, 56, 255].repeat(4));
+    });
+}

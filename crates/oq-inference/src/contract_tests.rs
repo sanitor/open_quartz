@@ -125,6 +125,54 @@ fn coreml_selection_reports_provider_and_cpu_fallback() {
     .unwrap();
     assert_eq!(auto.configured_backend, BackendPreference::OrtCoreMl);
 }
+
+#[test]
+fn resident_auto_policy_is_incompatible_with_host_sessions_under_both_fallback_modes() {
+    let capabilities = InferenceCapabilities {
+        cpu: true,
+        direct_ml: true,
+        core_ml: true,
+        shared_wgpu_device: false,
+    };
+    for fallback in [FallbackPolicy::Forbid, FallbackPolicy::AllowCpu] {
+        let policy = ExecutionPolicy {
+            backend: BackendPreference::Auto,
+            residency: ResidencyPolicy::RequireResident,
+            placement: PlacementPolicy::AcceleratorOnly,
+            fallback,
+        };
+        let result = select_execution_plan(&policy, &capabilities);
+        if fallback == FallbackPolicy::Forbid {
+            assert!(matches!(result, Err(InferenceError::InvalidModelInterface(message)) if message.contains("GpuImageSession")));
+        } else {
+            assert!(matches!(result, Err(InferenceError::InvalidModelInterface(message)) if message.contains("forbids CPU fallback")));
+        }
+    }
+}
+
+#[test]
+fn strict_accelerator_selection_and_missing_cpu_capability_are_rejected_truthfully() {
+    let accelerator = InferenceCapabilities {
+        cpu: true,
+        direct_ml: true,
+        core_ml: false,
+        shared_wgpu_device: false,
+    };
+    let strict = ExecutionPolicy {
+        backend: BackendPreference::OrtDirectMl,
+        fallback: FallbackPolicy::Forbid,
+        ..ExecutionPolicy::default()
+    };
+    let plan = select_execution_plan(&strict, &accelerator).unwrap();
+    assert_eq!(plan.configured_backend, BackendPreference::OrtDirectMl);
+    assert_eq!(plan.configured_providers, [InferenceProvider::DirectMl]);
+    assert_eq!(plan.fallback_reason, None);
+    let unavailable_cpu = InferenceCapabilities { cpu: false, ..accelerator };
+    assert_eq!(
+        select_execution_plan(&ExecutionPolicy::default(), &unavailable_cpu),
+        Err(InferenceError::ProviderUnavailable(InferenceProvider::Cpu))
+    );
+}
 #[test]
 fn tensor_validation_checks_names_shape_symbols_length_and_capacity() {
     let m = metadata(

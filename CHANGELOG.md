@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Pre-Phase-3 coverage hardening
+
+- Add real ORT typed/container/output-shape and execution-error recovery cases; real Metal catalog mask/depth/semantic/detection/reconstruction graphs, source-cache/device-limit/lease tests, and VideoToolbox color/range coverage. Preserve the existing default/native coverage scope and 100% thresholds; export both machine-readable reports before cleaning profiles.
+- Fix cancellation of an unsubmitted feedback demand advancing its ping-pong state, texture removal failing to dirty downstream nodes, and legacy `onnxParams` overriding explicit inference configuration after normalization/save. Keep regression tests that failed before each correction.
+- Raise default line/function/region coverage from 96.11/95.30/95.96% to 98.37/96.99/98.45%, and native from 90.11/83.40/84.54% to 96.23/90.35/94.52%. The 100% gates still fail; remaining provider/device errors, public paths and error-formatting branches are recorded rather than hidden by exclusions. See [coverage evidence](docs/DESIGN.md#pre-phase3-coverage).
+
 ### Shared frame execution (Phase 2)
 
 - Route NativePlayer through the same-crate, clock-free FramePipeline; PlaybackSession composes its clock with the shared FrameExecutionSession graph/output state. Remove the old native graph/inference completion loop without introducing another device or crate.

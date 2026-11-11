@@ -420,3 +420,9 @@ fn metal_resident_dense_tiled_numeric_parity() {
         assert!(mean_error <= 0.05, "dense FP32 mean RGB byte error {mean_error}; max {max_error}");
     });
 }
+
+#[path = "gpu_boundary_tests.rs"]
+mod boundary_tests;
+
+#[path = "catalog_gpu_behavior_tests.rs"]
+mod catalog_behavior;

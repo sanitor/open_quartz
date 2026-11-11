@@ -266,7 +266,9 @@ fn native_file_decoder_runs_and_handles_upload_pause_resume() {
                         assert_eq!((frame.width, frame.height), (width, height));
                     }
                     #[cfg(target_os = "macos")]
-                    NativeVideoFrame::VideoToolbox(frame) => assert_eq!((frame.width(), frame.height()), (width, height)),
+                    NativeVideoFrame::VideoToolbox(frame) => {
+                        assert_eq!((frame.width(), frame.height()), (width, height))
+                    }
                 }
                 frames += 1;
                 Ok(())
@@ -314,48 +316,90 @@ fn native_file_decoder_runs_and_handles_upload_pause_resume() {
 #[test]
 fn initial_preview_decodes_one_real_frame_without_advancing_playback() {
     let ffmpeg = find_ffmpeg().unwrap();
-    let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let path = std::env::temp_dir().join(format!("open-quartz-preview-{suffix}.mp4"));
-    assert!(Command::new(&ffmpeg).args([
-        "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-        "color=c=red:s=16x16:r=10", "-t", "0.4", "-pix_fmt", "yuv420p", "-y",
-    ]).arg(&path).status().unwrap().success());
+    assert!(Command::new(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=16x16:r=10",
+            "-t",
+            "0.4",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
     let mut source = NativeVideoSource::open_preview(NativeVideoConfig {
         kind: NativeVideoSourceKind::File,
         source: path.to_string_lossy().into_owned(),
         looping: true,
         playback_rate: 1.0,
-    }).unwrap();
+    })
+    .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while source.is_active() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(!source.is_active(), "one-frame preview decoder kept running");
+    assert!(
+        !source.is_active(),
+        "one-frame preview decoder kept running"
+    );
     assert_eq!(source.metrics().decoded_frames, 1);
-    assert!(source.upload_latest(&mut |frame, width, height| {
-        assert_eq!((width, height), (16, 16));
-        match frame {
-            NativeVideoFrame::Rgba(rgba) => assert!(rgba.chunks_exact(4)
-                .all(|pixel| pixel[0] > 240 && pixel[1] < 10 && pixel[2] < 10 && pixel[3] == 255)),
-            #[cfg(all(windows, feature = "native-video-d3d12"))]
-            NativeVideoFrame::D3d12(frame) => assert_eq!((frame.width, frame.height), (width, height)),
-            #[cfg(target_os = "macos")]
-            NativeVideoFrame::VideoToolbox(frame) => assert_eq!((frame.width(), frame.height()), (width, height)),
-        }
-        Ok(())
-    }).unwrap());
-    assert!(!source.upload_latest(&mut |_, _, _| panic!("preview uploaded twice")).unwrap());
+    assert!(source
+        .upload_latest(&mut |frame, width, height| {
+            assert_eq!((width, height), (16, 16));
+            match frame {
+                NativeVideoFrame::Rgba(rgba) => assert!(rgba.chunks_exact(4).all(|pixel| pixel[0]
+                    > 240
+                    && pixel[1] < 10
+                    && pixel[2] < 10
+                    && pixel[3] == 255)),
+                #[cfg(all(windows, feature = "native-video-d3d12"))]
+                NativeVideoFrame::D3d12(frame) => {
+                    assert_eq!((frame.width, frame.height), (width, height))
+                }
+                #[cfg(target_os = "macos")]
+                NativeVideoFrame::VideoToolbox(frame) => {
+                    assert_eq!((frame.width(), frame.height()), (width, height))
+                }
+            }
+            Ok(())
+        })
+        .unwrap());
+    assert!(!source
+        .upload_latest(&mut |_, _, _| panic!("preview uploaded twice"))
+        .unwrap());
     source.pause();
-    assert_eq!(source.position_seconds, 0.0, "preview consumed the start of playback");
+    assert_eq!(
+        source.position_seconds, 0.0,
+        "preview consumed the start of playback"
+    );
     source.resume().unwrap();
-    assert_eq!(source.position_seconds, 0.0, "explicit Play skipped the first frame");
+    assert_eq!(
+        source.position_seconds, 0.0,
+        "explicit Play skipped the first frame"
+    );
     assert!(!source.preview_only);
     let deadline = Instant::now() + Duration::from_secs(5);
     while source.metrics().decoded_frames < 2 && Instant::now() < deadline {
         source.upload_latest(&mut |_, _, _| Ok(())).unwrap();
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(source.metrics().decoded_frames >= 2, "explicit Play stayed in preview mode");
+    assert!(
+        source.metrics().decoded_frames >= 2,
+        "explicit Play stayed in preview mode"
+    );
     drop(source);
     std::fs::remove_file(path).unwrap();
 }
@@ -437,8 +481,18 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!("oq-failing-decoder-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::write(&path, "#!/bin/sh\nprintf x\necho decode-failed >&2\nexit 9\n").unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "oq-failing-decoder-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nprintf x\necho decode-failed >&2\nexit 9\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         source.ffmpeg = path.clone();
         source.config.source = "0".to_owned();
@@ -451,7 +505,10 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
                 Ok(_) => panic!("decoder failure was not reported"),
             }
         };
-        assert!(error.contains("truncated") && error.contains("decode-failed"), "{error}");
+        assert!(
+            error.contains("truncated") && error.contains("decode-failed"),
+            "{error}"
+        );
         source.pause();
         std::fs::remove_file(path).unwrap();
     }
@@ -461,15 +518,21 @@ fn decoder_spawn_and_resume_errors_are_propagated() {
 fn hardware_policy_rejects_camera_before_ffmpeg_resolution_or_resource_creation() {
     super::FORCE_FFMPEG_ERROR.with(|forced| forced.set(true));
     for preview in [false, true] {
-        let result = NativeVideoSource::open_hardware_required(NativeVideoConfig {
-            kind: NativeVideoSourceKind::Camera,
-            source: "__fail_reader_spawn__".to_owned(),
-            looping: false,
-            playback_rate: 1.0,
-        }, preview);
+        let result = NativeVideoSource::open_hardware_required(
+            NativeVideoConfig {
+                kind: NativeVideoSourceKind::Camera,
+                source: "__fail_reader_spawn__".to_owned(),
+                looping: false,
+                playback_rate: 1.0,
+            },
+            preview,
+        );
         let error = result.err().expect("strict camera opening must fail");
         assert!(error.contains("camera capture"), "{error}");
-        assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
+        assert!(
+            error.contains("CPU decode/upload fallback is disabled"),
+            "{error}"
+        );
         assert!(!error.contains("Injected FFmpeg"), "{error}");
     }
     super::FORCE_FFMPEG_ERROR.with(|forced| forced.set(false));
@@ -478,13 +541,21 @@ fn hardware_policy_rejects_camera_before_ffmpeg_resolution_or_resource_creation(
 #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
 #[test]
 fn hardware_policy_rejects_unsupported_platform_before_accessing_file_or_ffmpeg() {
-    let error = NativeVideoSource::open_hardware_required(NativeVideoConfig {
-        kind: NativeVideoSourceKind::File,
-        source: "missing".to_owned(),
-        looping: false,
-        playback_rate: 1.0,
-    }, false).err().expect("unsupported platform must fail");
-    assert!(error.contains("no hardware-resident video decoder"), "{error}");
+    let error = NativeVideoSource::open_hardware_required(
+        NativeVideoConfig {
+            kind: NativeVideoSourceKind::File,
+            source: "missing".to_owned(),
+            looping: false,
+            playback_rate: 1.0,
+        },
+        false,
+    )
+    .err()
+    .expect("unsupported platform must fail");
+    assert!(
+        error.contains("no hardware-resident video decoder"),
+        "{error}"
+    );
     assert!(!error.contains("does not exist"), "{error}");
 }
 
@@ -493,11 +564,15 @@ fn strict_upload_rejects_rgba_before_callback_or_uploaded_generation_mutation() 
     let mut source = unstarted_software_source();
     source.decode_policy = super::DecodePolicy::HardwareRequired;
     {
-        let Ok(mut slot) = source.slot.lock() else { panic!("frame slot poisoned"); };
+        let Ok(mut slot) = source.slot.lock() else {
+            panic!("frame slot poisoned");
+        };
         slot.generation = 1;
         slot.rgba = vec![0; 4];
     }
-    let error = source.upload_latest(&mut |_, _, _| panic!("CPU frame reached GPU callback")).unwrap_err();
+    let error = source
+        .upload_latest(&mut |_, _, _| panic!("CPU frame reached GPU callback"))
+        .unwrap_err();
     assert!(error.contains("CPU RGBA frame"), "{error}");
     assert_eq!(source.uploaded_generation, 0);
     assert_eq!(source.metrics().uploaded_frames, 0);
@@ -512,13 +587,24 @@ fn strict_backend_failure_never_starts_software_decoder() {
     source.config.kind = NativeVideoSourceKind::File;
     source.config.source = "__missing_hardware_video_fixture__".to_owned();
     #[cfg(all(windows, feature = "native-video-d3d12"))]
-    { source.info.d3d12_eligible = true; }
+    {
+        source.info.d3d12_eligible = true;
+    }
     let error = source.start_decoder().unwrap_err();
-    assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
-    assert!(!error.contains("Cannot start FFmpeg video decoder"), "{error}");
+    assert!(
+        error.contains("CPU decode/upload fallback is disabled"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("Cannot start FFmpeg video decoder"),
+        "{error}"
+    );
     assert!(!source.is_active());
     assert!(source.child.is_none() && source.reader.is_none() && source.stderr_reader.is_none());
-    assert!(source.slot.lock().is_ok_and(|slot| slot.generation == 0 && slot.rgba.is_empty()));
+    assert!(source
+        .slot
+        .lock()
+        .is_ok_and(|slot| slot.generation == 0 && slot.rgba.is_empty()));
     assert_eq!(source.metrics().cpu_copy_bytes, 0);
     assert!(!source.metrics().hardware_decode);
 }
@@ -528,30 +614,49 @@ fn strict_backend_failure_never_starts_software_decoder() {
 fn hardware_file_playback_and_resume_keep_frames_resident() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/white_64x64.mp4");
-    if !path.is_file() { return; }
-    let mut source = NativeVideoSource::open_hardware_required(NativeVideoConfig {
-        kind: NativeVideoSourceKind::File,
-        source: path.to_string_lossy().into_owned(),
-        looping: true,
-        playback_rate: 1.0,
-    }, false).expect("real hardware decoding is required for the video fixture");
+    if !path.is_file() {
+        return;
+    }
+    let mut source = NativeVideoSource::open_hardware_required(
+        NativeVideoConfig {
+            kind: NativeVideoSourceKind::File,
+            source: path.to_string_lossy().into_owned(),
+            looping: true,
+            playback_rate: 1.0,
+        },
+        false,
+    )
+    .expect("real hardware decoding is required for the video fixture");
     for playback in 0..2 {
-        if playback > 0 { source.resume().unwrap(); }
+        if playback > 0 {
+            source.resume().unwrap();
+        }
         let initial = source.metrics().uploaded_frames;
         let deadline = Instant::now() + Duration::from_secs(5);
         while source.metrics().uploaded_frames < initial + 2 {
-            source.upload_latest(&mut |frame, width, height| {
-                assert_eq!((width, height), (64, 64));
-                match frame {
-                    NativeVideoFrame::Rgba(_) => panic!("hardware playback delivered a CPU frame"),
-                    #[cfg(target_os = "macos")]
-                    NativeVideoFrame::VideoToolbox(frame) => assert!(!frame.pixel_buffer().is_null()),
-                    #[cfg(all(windows, feature = "native-video-d3d12"))]
-                    NativeVideoFrame::D3d12(frame) => assert_eq!((frame.width, frame.height), (width, height)),
-                }
-                Ok(())
-            }).unwrap();
-            assert!(Instant::now() < deadline, "hardware playback stopped producing frames");
+            source
+                .upload_latest(&mut |frame, width, height| {
+                    assert_eq!((width, height), (64, 64));
+                    match frame {
+                        NativeVideoFrame::Rgba(_) => {
+                            panic!("hardware playback delivered a CPU frame")
+                        }
+                        #[cfg(target_os = "macos")]
+                        NativeVideoFrame::VideoToolbox(frame) => {
+                            assert!(!frame.pixel_buffer().is_null())
+                        }
+                        #[cfg(all(windows, feature = "native-video-d3d12"))]
+                        NativeVideoFrame::D3d12(frame) => {
+                            assert_eq!((frame.width, frame.height), (width, height))
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                Instant::now() < deadline,
+                "hardware playback stopped producing frames"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(source.metrics().hardware_decode);
@@ -641,4 +746,47 @@ fn parses_directshow_devices() {
 "Microphone" (audio)"#,
     );
     assert_eq!(devices.len(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn hdr_transfer_is_rejected_before_hardware_decode_without_tone_mapping() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pq-input.mp4");
+    let ffmpeg = find_ffmpeg().expect("bundled FFmpeg required");
+    let status = Command::new(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:size=64x64:rate=1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_trc",
+            "smpte2084",
+            "-colorspace",
+            "bt2020nc",
+            "-color_primaries",
+            "bt2020",
+            "-y",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "HDR-tagged fixture creation failed");
+    let config = NativeVideoConfig {
+        kind: NativeVideoSourceKind::File,
+        source: path.to_string_lossy().into_owned(),
+        looping: false,
+        playback_rate: 1.0,
+    };
+    assert!(NativeVideoSource::open_hardware_required(config.clone(), false).is_err());
+    assert!(super::probe_video(&ffmpeg, &config).is_err());
 }

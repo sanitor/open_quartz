@@ -36,9 +36,17 @@ impl Detector {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("catalog resident detector layout"),
             entries: &[
-                layout_entry(0, wgpu::BufferBindingType::Storage { read_only: true }, RAW_BYTES),
+                layout_entry(
+                    0,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                    RAW_BYTES,
+                ),
                 layout_entry(1, wgpu::BufferBindingType::Uniform, 48),
-                layout_entry(2, wgpu::BufferBindingType::Storage { read_only: false }, DETECTION_BYTES),
+                layout_entry(
+                    2,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                    DETECTION_BYTES,
+                ),
                 layout_entry(3, wgpu::BufferBindingType::Uniform, 16),
             ],
         });
@@ -80,9 +88,14 @@ impl Detector {
                     mapped_at_creation: true,
                 });
                 {
-                    let mut mapped = uniform.slice(..).get_mapped_range_mut().expect("newly created mapped sort uniform");
+                    let mut mapped = uniform
+                        .slice(..)
+                        .get_mapped_range_mut()
+                        .expect("newly created mapped sort uniform");
                     for (index, word) in [sequence, stride, 0, 0].into_iter().enumerate() {
-                        mapped.slice(index * 4..index * 4 + 4).copy_from_slice(&word.to_le_bytes());
+                        mapped
+                            .slice(index * 4..index * 4 + 4)
+                            .copy_from_slice(&word.to_le_bytes());
                     }
                 }
                 uniform.unmap();
@@ -91,7 +104,13 @@ impl Detector {
             }
             sequence *= 2;
         }
-        Self { layout, decode, sort, nms, sort_steps: sort_steps.into_boxed_slice() }
+        Self {
+            layout,
+            decode,
+            sort,
+            nms,
+            sort_steps: sort_steps.into_boxed_slice(),
+        }
     }
 
     /// `raw` is FLOAT [1, 84, 8400]; `parameters` is the shared 48-byte catalog
@@ -108,18 +127,23 @@ impl Detector {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
-        let bindings = self.sort_steps.iter().map(|step| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("catalog cached detector bindings"),
-                layout: &self.layout,
-                entries: &[
-                    buffer_entry(0, raw),
-                    buffer_entry(1, parameters),
-                    buffer_entry(2, &buffer),
-                    buffer_entry(3, step),
-                ],
+        let bindings = self
+            .sort_steps
+            .iter()
+            .map(|step| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("catalog cached detector bindings"),
+                    layout: &self.layout,
+                    entries: &[
+                        buffer_entry(0, raw),
+                        buffer_entry(1, parameters),
+                        buffer_entry(2, &buffer),
+                        buffer_entry(3, step),
+                    ],
+                })
             })
-        }).collect::<Vec<_>>().into_boxed_slice();
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         DetectionSlot { buffer, bindings }
     }
 
@@ -156,7 +180,11 @@ impl Detector {
     }
 }
 
-fn layout_entry(binding: u32, ty: wgpu::BufferBindingType, size: u64) -> wgpu::BindGroupLayoutEntry {
+fn layout_entry(
+    binding: u32,
+    ty: wgpu::BufferBindingType,
+    size: u64,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -170,5 +198,115 @@ fn layout_entry(binding: u32, ty: wgpu::BufferBindingType, size: u64) -> wgpu::B
 }
 
 fn buffer_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry { binding, resource: buffer.as_entire_binding() }
+    wgpu::BindGroupEntry {
+        binding,
+        resource: buffer.as_entire_binding(),
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn metal_detector_decodes_nonempty_boxes_and_suppresses_overlap() {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::METAL,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            let adapter = instance
+                .request_adapter(&Default::default())
+                .await
+                .expect("hardware Metal adapter required");
+            assert_eq!(adapter.get_info().backend, wgpu::Backend::Metal);
+            assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .expect("Metal device");
+            let raw = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("detector overlapping raw ONNX boxes"),
+                size: RAW_BYTES,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: true,
+            });
+            {
+                let mut mapped = raw.slice(..).get_mapped_range_mut().unwrap();
+                mapped.slice(..).fill(0);
+                for index in 0..2 {
+                    for (plane, value) in [(0,320.0f32),(1,320.0),(2,128.0),(3,96.0),
+                        (if index == 0 {7} else {5},if index == 0 {0.9} else {0.8})] {
+                        let offset=(plane * RAW_BOX_COUNT as usize + index)*4;
+                        mapped.slice(offset..offset+4).copy_from_slice(&value.to_ne_bytes());
+                    }
+                }
+            }
+            raw.unmap();
+            let parameters = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("detector source geometry and thresholds"),
+                size: 48,
+                usage: wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: true,
+            });
+            {
+                let mut mapped = parameters.slice(..).get_mapped_range_mut().unwrap();
+                for (index, value) in [640u32, 480, 640, 640, 640, 480, 8400, 1]
+                    .into_iter()
+                    .enumerate()
+                {
+                    mapped
+                        .slice(index * 4..index * 4 + 4)
+                        .copy_from_slice(&value.to_ne_bytes());
+                }
+                for (index, value) in [0.25f32, 0.45, 4.0, 0.0].into_iter().enumerate() {
+                    mapped
+                        .slice(32 + index * 4..36 + index * 4)
+                        .copy_from_slice(&value.to_ne_bytes());
+                }
+            }
+            parameters.unmap();
+            let detector = Detector::new(&device);
+            assert_eq!(detector.sort_steps.len(), SORT_STEP_COUNT);
+            let slot = detector.prepare_slot(&device, &raw, &parameters);
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("detector result readback"),
+                size: 48,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            detector.encode(&mut encoder, &slot);
+            encoder.copy_buffer_to_buffer(&slot.buffer, 0, &staging, 0, 48);
+            let submission = queue.submit([encoder.finish()]);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            staging.map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = sender.send(result);
+            });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: Some(Duration::from_secs(120)),
+                })
+                .expect("bounded detector readback wait");
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("map callback after GPU wait")
+                .expect("detector result mapping");
+            let mapped = staging.get_mapped_range(..).unwrap();
+            let words: Vec<u32> = mapped
+                .chunks_exact(4)
+                .map(|word| u32::from_ne_bytes(word.try_into().unwrap()))
+                .collect();
+            assert_eq!(&words[..4], [1,0,0,0]);
+            for (actual,expected) in words[4..8].iter().map(|word|f32::from_bits(*word)).zip([0.4,0.4,0.6,0.6]) {
+                assert!((actual-expected).abs()<1e-6);
+            }
+            assert_eq!(f32::from_bits(words[8]),0.9);
+            assert_eq!(&words[9..12],[3,0,0]);
+            drop(mapped);
+            staging.unmap();
+        });
+    }
 }

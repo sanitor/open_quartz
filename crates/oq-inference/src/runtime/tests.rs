@@ -1,5 +1,7 @@
 use super::*;
 
+mod shape_and_types;
+
 // Encode the small ONNX protobuf directly: two Identity nodes, two explicitly
 // named FP32 inputs/outputs with a shared symbolic batch dimension. The fixture
 // is independent of OpenQuartz, protoc, Python, downloads, and model packages.
@@ -113,15 +115,60 @@ fn identity_model_with_io_dimensions(
 fn cast_u8_model(dimensions: &[Option<u64>]) -> Vec<u8> {
     let attribute = [message(1, b"to"), integer(3, 2), integer(20, 2)].concat();
     let node = [
-        message(1, b"image"), message(2, b"mask"), message(4, b"Cast"),
+        message(1, b"image"),
+        message(2, b"mask"),
+        message(4, b"Cast"),
         message(5, &attribute),
-    ].concat();
+    ]
+    .concat();
     let graph = [
-        message(2, b"uint8-reference"), message(1, &node),
+        message(2, b"uint8-reference"),
+        message(1, &node),
         message(11, &value_info("image", dimensions, 1)),
         message(12, &value_info("mask", dimensions, 2)),
-    ].concat();
-    [integer(1, 8), message(7, &graph), message(8, &integer(2, 13))].concat()
+    ]
+    .concat();
+    [
+        integer(1, 8),
+        message(7, &graph),
+        message(8, &integer(2, 13)),
+    ]
+    .concat()
+}
+fn scalar_identity_model() -> Vec<u8> {
+    let node = [
+        message(1, b"scalar"),
+        message(2, b"result"),
+        message(4, b"Identity"),
+    ]
+    .concat();
+    let graph = [
+        message(2, b"scalar-boundary"),
+        message(1, &node),
+        message(11, &value_info("scalar", &[], 1)),
+        message(12, &value_info("result", &[], 1)),
+    ]
+    .concat();
+    [
+        integer(1, 8),
+        message(7, &graph),
+        message(8, &integer(2, 13)),
+    ]
+    .concat()
+}
+
+#[test]
+fn real_cpu_scalar_tensor_preserves_scalar_shape() {
+    configure_runtime();
+    let mut session = InferenceSession::from_memory(&scalar_identity_model()).unwrap();
+    assert!(session.info().inputs[0].dimensions.is_empty());
+    let output = session.run_f32(vec![3.25], vec![]).unwrap();
+    assert!(output.shape.is_empty());
+    assert_eq!(output.data, [3.25]);
+    assert!(matches!(
+        session.run_f32(vec![3.25], vec![1]),
+        Err(InferenceError::Rank { .. })
+    ));
 }
 
 #[test]
@@ -140,18 +187,53 @@ fn uint8_reference_extracts_original_typed_output() {
 fn uint8_reference_rejects_invalid_requests_before_execution() {
     configure_runtime();
     let mut session = InferenceSession::from_memory(&cast_u8_model(&[None, Some(3)])).unwrap();
-    assert!(matches!(session.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::Rank { .. })));
-    assert!(matches!(session.run_u8(vec![0.0; 3], vec![1, 4]), Err(InferenceError::Dimension { .. })));
-    assert!(matches!(session.run_u8(vec![0.0; 2], vec![1, 3]), Err(InferenceError::TensorLength { .. })));
-    assert!(matches!(session.run_u8(vec![], vec![-1, 3]), Err(InferenceError::Dimension { .. })));
-    assert!(matches!(session.run_u8(vec![], vec![i64::MAX, 3]), Err(InferenceError::SizeOverflow(_))));
-    assert!(matches!(session.run_u8(vec![], vec![1 << 30, 3]), Err(InferenceError::Capacity { .. })));
-    let mut fp32 = InferenceSession::from_memory(&identity_model(&[("image", "result")], &[Some(3)])).unwrap();
-    assert!(matches!(fp32.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::UnsupportedType { .. })));
-    let mut uint8 = InferenceSession::from_memory(&identity_model_with_type(&[("image", "result")], &[Some(3)], 2)).unwrap();
-    assert!(matches!(uint8.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::UnsupportedType { .. })));
-    let mut multiple = InferenceSession::from_memory(&identity_model(&[("a", "b"), ("c", "d")], &[Some(3)])).unwrap();
-    assert!(matches!(multiple.run_u8(vec![0.0; 3], vec![3]), Err(InferenceError::InvalidModelInterface(_))));
+    assert!(matches!(
+        session.run_u8(vec![0.0; 3], vec![3]),
+        Err(InferenceError::Rank { .. })
+    ));
+    assert!(matches!(
+        session.run_u8(vec![0.0; 3], vec![1, 4]),
+        Err(InferenceError::Dimension { .. })
+    ));
+    assert!(matches!(
+        session.run_u8(vec![0.0; 2], vec![1, 3]),
+        Err(InferenceError::TensorLength { .. })
+    ));
+    assert!(matches!(
+        session.run_u8(vec![], vec![-1, 3]),
+        Err(InferenceError::Dimension { .. })
+    ));
+    assert!(matches!(
+        session.run_u8(vec![], vec![i64::MAX, 3]),
+        Err(InferenceError::SizeOverflow(_))
+    ));
+    assert!(matches!(
+        session.run_u8(vec![], vec![1 << 30, 3]),
+        Err(InferenceError::Capacity { .. })
+    ));
+    let mut fp32 =
+        InferenceSession::from_memory(&identity_model(&[("image", "result")], &[Some(3)])).unwrap();
+    assert!(matches!(
+        fp32.run_u8(vec![0.0; 3], vec![3]),
+        Err(InferenceError::UnsupportedType { .. })
+    ));
+    let mut uint8 = InferenceSession::from_memory(&identity_model_with_type(
+        &[("image", "result")],
+        &[Some(3)],
+        2,
+    ))
+    .unwrap();
+    assert!(matches!(
+        uint8.run_u8(vec![0.0; 3], vec![3]),
+        Err(InferenceError::UnsupportedType { .. })
+    ));
+    let mut multiple =
+        InferenceSession::from_memory(&identity_model(&[("a", "b"), ("c", "d")], &[Some(3)]))
+            .unwrap();
+    assert!(matches!(
+        multiple.run_u8(vec![0.0; 3], vec![3]),
+        Err(InferenceError::InvalidModelInterface(_))
+    ));
 }
 
 fn configure_runtime() {
@@ -449,6 +531,35 @@ fn strict_policy_is_refused_before_runtime_loading() {
         Err(InferenceError::UnsupportedResidency(_))
     ));
 }
+#[test]
+fn real_cpu_profile_is_opt_in_and_finishes_with_trace_path() {
+    configure_runtime();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let prefix = std::env::temp_dir().join(format!("oq-inference-profile-{nonce}"));
+    let mut session = InferenceSession::from_memory_with_profile(
+        &identity_model(&[("input", "output")], &[Some(1)]),
+        &ExecutionPolicy::default(),
+        &prefix,
+    )
+    .unwrap();
+    assert_eq!(session.run_f32(vec![4.0], vec![1]).unwrap().data, [4.0]);
+    let trace = session.end_profiling().unwrap();
+    let trace_bytes = std::fs::read(&trace).unwrap();
+    let events: serde_json::Value = serde_json::from_slice(&trace_bytes).unwrap();
+    let events = events.as_array().expect("ORT trace is an event array");
+    let node = events
+        .iter()
+        .find(|event| event["cat"] == "Node" || event["cat"] == "node")
+        .expect("profile contains an executed node event");
+    let event_text = node.to_string();
+    assert!(event_text.contains("Identity"), "{node}");
+    assert!(event_text.contains("CPUExecutionProvider"), "{node}");
+    std::fs::remove_file(trace).unwrap();
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn real_coreml_identity_when_runtime_exposes_provider() {

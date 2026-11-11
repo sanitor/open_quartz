@@ -6,6 +6,8 @@
 
 历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
+Phase 3 前覆盖率加固已独立执行：[当前证据](DESIGN.md#pre-phase3-coverage)。默认 line/function/region=98.37/96.99/98.45%，native=96.23/90.35/94.52%；100% gates 仍红且阈值/排除范围未变。`npm run test:sdk-coverage` 在清理 profile 前保存 `test-results/sdk-coverage/{default,native}.json`；准备 desktop runtime 并显式配置 FFmpeg 与 ORT 1.21 路径可复跑，ORT 仅 reference 测试使用。未开始 Phase 3，不将 line 接近 100% 当作函数/分支覆盖已全绿。
+
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。

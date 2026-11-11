@@ -68,6 +68,9 @@ impl PreparedNativeGraph {
 
     pub fn stage_remove_texture(&mut self, node_id: &str) {
         self.rendering.stage_remove_texture(node_id);
+        if self.graph.nodes.iter().any(|node| node.id == node_id) {
+            self.dirty_images.push(node_id.to_owned());
+        }
     }
 
     #[cfg(feature = "native-video")]
@@ -88,7 +91,7 @@ impl PreparedNativeGraph {
         }
         let source = crate::media::sources::PreparedVideoSource::open(config, preview_only)?;
         let info = source.info().clone();
-        self.rendering.stage_remove_texture(node_id);
+        self.stage_remove_texture(node_id);
         self.videos.retain(|(id, _)| id != node_id);
         self.videos.push((node_id.to_owned(), source));
         Ok(info)
@@ -96,7 +99,7 @@ impl PreparedNativeGraph {
 
     #[cfg(feature = "native-video")]
     pub fn stage_detach_video(&mut self, node_id: &str) {
-        self.rendering.stage_remove_texture(node_id);
+        self.stage_remove_texture(node_id);
         self.videos.retain(|(id, _)| id != node_id);
         self.detached_videos.push(node_id.to_owned());
     }
@@ -326,6 +329,11 @@ impl FramePipeline {
         self.latest = None;
         self.bump_input(node_id);
         self.render_device.remove_texture(node_id);
+        if self.session.node_generation(node_id).is_ok() {
+            self.session
+                .mark_dirty(node_id)
+                .expect("active graph node remains prepared");
+        }
     }
 
     pub fn read_output(&self, node_id: &str) -> Result<Vec<u8>, String> {
@@ -1031,6 +1039,9 @@ impl FramePipeline {
         };
         self.inference.cancel_pending();
         self.inference_ready.clear();
+        if !pending.started {
+            self.session.rollback_feedback(&pending.commands);
+        }
         // Cancelled CPU work is retryable; submitted GPU work is never rolled back.
         for command in &pending.commands {
             let _ = self.session.mark_dirty(&command.node_id);

@@ -142,7 +142,13 @@ pub struct NodeData {
     pub inference_source: Option<InferenceSource>,
     #[serde(alias = "onnxCatalogId", skip_serializing_if = "Option::is_none")]
     pub inference_catalog_id: Option<String>,
-    #[serde(alias = "onnxCustomPath", alias = "onnxModelPath", alias = "inferenceCustomPath", alias = "customPath", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "onnxCustomPath",
+        alias = "onnxModelPath",
+        alias = "inferenceCustomPath",
+        alias = "customPath",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub inference_model_path: Option<String>,
     #[serde(alias = "onnxParams", skip_serializing_if = "Option::is_none")]
     pub inference_params: Option<BTreeMap<String, InferenceParamValue>>,
@@ -235,7 +241,13 @@ impl<'de> Deserialize<'de> for NodeData {
         let mut data = Map::<String, Value>::deserialize(deserializer)?;
         // The first present spelling wins, including an explicit canonical null.
         let mut model_path = None;
-        for key in ["inferenceModelPath", "inferenceCustomPath", "onnxModelPath", "onnxCustomPath", "customPath"] {
+        for key in [
+            "inferenceModelPath",
+            "inferenceCustomPath",
+            "onnxModelPath",
+            "onnxCustomPath",
+            "customPath",
+        ] {
             if let Some(value) = data.remove(key) {
                 if model_path.is_none() {
                     model_path = Some(value);
@@ -245,32 +257,47 @@ impl<'de> Deserialize<'de> for NodeData {
         if let Some(value) = model_path {
             data.insert("inferenceModelPath".to_owned(), value);
         }
-        let inference = matches!(data.get("type").and_then(Value::as_str), Some("inference" | "onnx"));
+        let inference = matches!(
+            data.get("type").and_then(Value::as_str),
+            Some("inference" | "onnx")
+        );
         let mut params = None;
         for key in ["params", "onnxParams", "inferenceParams"] {
             if key == "params" && !inference {
                 continue;
             }
             if let Some(mut value) = data.remove(key) {
-                if key == "params" {
+                if key != "inferenceParams" {
                     if let Some(legacy) = value.as_object_mut() {
                         for (param, canonical, old) in [
                             ("targetSize", "inferenceTargetSize", "onnxTargetSize"),
-                            ("scoreThreshold", "inferenceScoreThreshold", "onnxScoreThreshold"),
+                            (
+                                "scoreThreshold",
+                                "inferenceScoreThreshold",
+                                "onnxScoreThreshold",
+                            ),
                             ("iouThreshold", "inferenceIouThreshold", "onnxIouThreshold"),
                         ] {
                             if data.contains_key(canonical) || data.contains_key(old) {
                                 legacy.remove(param);
                             }
                         }
-                        if ["inferencePreferDirectMl", "preferDirectMl", "onnxPreferDirectMl"]
-                            .iter().any(|field| data.contains_key(*field)) {
+                        if [
+                            "inferencePreferDirectMl",
+                            "preferDirectMl",
+                            "onnxPreferDirectMl",
+                        ]
+                        .iter()
+                        .any(|field| data.contains_key(*field))
+                        {
                             legacy.remove("preferDirectMl");
                         }
                     }
                 }
                 match (&mut params, value) {
-                    (Some(Value::Object(previous)), Value::Object(current)) => previous.extend(current),
+                    (Some(Value::Object(previous)), Value::Object(current)) => {
+                        previous.extend(current)
+                    }
                     (params, value) => *params = Some(value),
                 }
             }
@@ -350,8 +377,10 @@ fn canonical_inference_extras(extra: Map<String, Value>) -> Map<String, Value> {
     canonical
 }
 
-
-fn serialize_inference_extras<S>(extra: &Map<String, Value>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_inference_extras<S>(
+    extra: &Map<String, Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {

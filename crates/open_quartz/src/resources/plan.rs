@@ -359,8 +359,8 @@ fn inference_resources(
         }
         let policy = effective_inference_policy(data)
             .map_err(|error| format!("Inference node {node_id}: {error}"))?;
-        let catalog_id = inference_field(data, "inferenceCatalogId", "onnxCatalogId")
-            .and_then(Value::as_str);
+        let catalog_id =
+            inference_field(data, "inferenceCatalogId", "onnxCatalogId").and_then(Value::as_str);
         let model_id = inference_field(data, "inferenceModelId", "onnxModelId")
             .and_then(Value::as_str)
             .or(catalog_id);
@@ -371,22 +371,48 @@ fn inference_resources(
         let task = match inference_field(data, "inferenceTask", "onnxTask") {
             Some(value) if !value.is_null() => serde_json::from_value(value.clone())
                 .map_err(|error| format!("Inference node {node_id}: invalid task: {error}"))?,
-            _ => catalog_entry.map(|entry| entry.task).unwrap_or(InferenceTask::Generic),
+            _ => catalog_entry
+                .map(|entry| entry.task)
+                .unwrap_or(InferenceTask::Generic),
         };
-        let target_size = inference_number(data, "targetSize", "inferenceTargetSize", "onnxTargetSize")
-            .unwrap_or(640.0) as u32;
-        let score_threshold = inference_number(data, "scoreThreshold", "inferenceScoreThreshold", "onnxScoreThreshold")
-            .unwrap_or(0.25);
-        let iou_threshold = inference_number(data, "iouThreshold", "inferenceIouThreshold", "onnxIouThreshold")
-            .unwrap_or(0.45);
-        let model_path = ["inferenceModelPath", "inferenceCustomPath", "onnxModelPath", "onnxCustomPath", "customPath"]
-            .into_iter()
-            .find_map(|field| data.get(field))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let target_size =
+            inference_number(data, "targetSize", "inferenceTargetSize", "onnxTargetSize")
+                .unwrap_or(640.0) as u32;
+        let score_threshold = inference_number(
+            data,
+            "scoreThreshold",
+            "inferenceScoreThreshold",
+            "onnxScoreThreshold",
+        )
+        .unwrap_or(0.25);
+        let iou_threshold = inference_number(
+            data,
+            "iouThreshold",
+            "inferenceIouThreshold",
+            "onnxIouThreshold",
+        )
+        .unwrap_or(0.45);
+        let model_path = [
+            "inferenceModelPath",
+            "inferenceCustomPath",
+            "onnxModelPath",
+            "onnxCustomPath",
+            "customPath",
+        ]
+        .into_iter()
+        .find_map(|field| data.get(field))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
         let key = serde_json::to_string(&(
-            model_id, &model_path, task, target_size, score_threshold, iou_threshold, &policy,
-        )).map_err(|error| format!("Cannot encode inference resource key: {error}"))?;
+            model_id,
+            &model_path,
+            task,
+            target_size,
+            score_threshold,
+            iou_threshold,
+            &policy,
+        ))
+        .map_err(|error| format!("Cannot encode inference resource key: {error}"))?;
         let download = if model_path.is_none() {
             catalog_entry.map(|entry| InferenceDownloadIntent {
                 model_id: model_id.to_owned(),
@@ -420,7 +446,8 @@ fn inference_field<'a>(data: &'a Value, canonical: &str, legacy: &str) -> Option
 }
 
 fn inference_number(data: &Value, param: &str, canonical: &str, legacy: &str) -> Option<f64> {
-    data.get("inferenceParams").and_then(|params| params.get(param))
+    data.get("inferenceParams")
+        .and_then(|params| params.get(param))
         .or_else(|| data.get(canonical))
         .or_else(|| data.get("onnxParams").and_then(|params| params.get(param)))
         .or_else(|| data.get(legacy))
@@ -435,18 +462,32 @@ pub fn effective_inference_policy(data: &Value) -> Result<ExecutionPolicy, Strin
         return serde_json::from_value(value.clone())
             .map_err(|error| format!("Invalid inference policy: {error}"));
     }
-    let preference = data.get("inferencePreferDirectMl")
-        .or_else(|| data.get("inferenceParams").and_then(|params| params.get("preferDirectMl")))
+    let preference = data
+        .get("inferencePreferDirectMl")
+        .or_else(|| {
+            data.get("inferenceParams")
+                .and_then(|params| params.get("preferDirectMl"))
+        })
         .or_else(|| data.get("preferDirectMl"))
         .or_else(|| data.get("onnxPreferDirectMl"))
-        .or_else(|| data.get("onnxParams").and_then(|params| params.get("preferDirectMl")))
-        .or_else(|| data.get("params").and_then(|params| params.get("preferDirectMl")));
+        .or_else(|| {
+            data.get("onnxParams")
+                .and_then(|params| params.get("preferDirectMl"))
+        })
+        .or_else(|| {
+            data.get("params")
+                .and_then(|params| params.get("preferDirectMl"))
+        });
     let mut policy = ExecutionPolicy::resident();
     if let Some(value) = preference {
-        let prefer_direct_ml = value.as_bool()
+        let prefer_direct_ml = value
+            .as_bool()
             .ok_or_else(|| "Invalid preferDirectMl: expected a boolean".to_owned())?;
         if prefer_direct_ml {
-            policy = ExecutionPolicy { backend: BackendPreference::OrtDirectMl, ..ExecutionPolicy::default() };
+            policy = ExecutionPolicy {
+                backend: BackendPreference::OrtDirectMl,
+                ..ExecutionPolicy::default()
+            };
         }
     }
     Ok(policy)
@@ -466,7 +507,9 @@ fn strip_native_resource_payloads(graph: &HostGraphSnapshot) -> HostGraphSnapsho
 fn strip_node_resource_payloads(node: &Value) -> Value {
     let mut node = node.clone();
     let is_inference = matches!(
-        node.get("data").and_then(|data| data.get("type")).or_else(|| node.get("type"))
+        node.get("data")
+            .and_then(|data| data.get("type"))
+            .or_else(|| node.get("type"))
             .and_then(Value::as_str),
         Some("inference" | "onnx")
     );
@@ -480,13 +523,33 @@ fn strip_node_resource_payloads(node: &Value) -> Value {
         data.insert("type".into(), Value::String("inference".into()));
     }
     // Migrate semantic keys only; values such as model IDs, filenames and port IDs stay exact.
-    let legacy_keys = data.keys().filter(|key| key.starts_with("onnx")).cloned().collect::<Vec<_>>();
+    let legacy_keys = data
+        .keys()
+        .filter(|key| key.starts_with("onnx"))
+        .cloned()
+        .collect::<Vec<_>>();
     for legacy in legacy_keys {
         let canonical = format!("inference{}", &legacy[4..]);
-        if let Some(value) = data.remove(&legacy) {
+        if let Some(mut value) = data.remove(&legacy) {
             if legacy == "onnxParams" {
+                if let Some(params) = value.as_object_mut() {
+                    for (param, canonical_field, legacy_field) in [
+                        ("targetSize", "inferenceTargetSize", "onnxTargetSize"),
+                        ("scoreThreshold", "inferenceScoreThreshold", "onnxScoreThreshold"),
+                        ("iouThreshold", "inferenceIouThreshold", "onnxIouThreshold"),
+                    ] {
+                        if data.contains_key(canonical_field) || data.contains_key(legacy_field) {
+                            params.remove(param);
+                        }
+                    }
+                    if ["inferencePreferDirectMl", "onnxPreferDirectMl", "preferDirectMl"]
+                        .iter().any(|key| data.contains_key(*key)) {
+                        params.remove("preferDirectMl");
+                    }
+                }
                 if let (Some(prior), Some(current)) = (
-                    value.as_object(), data.get_mut(&canonical).and_then(Value::as_object_mut),
+                    value.as_object(),
+                    data.get_mut(&canonical).and_then(Value::as_object_mut),
                 ) {
                     for (key, value) in prior {
                         current.entry(key.clone()).or_insert_with(|| value.clone());
@@ -511,18 +574,23 @@ fn strip_node_resource_payloads(node: &Value) -> Value {
                         params.remove(param);
                     }
                 }
-                if data.contains_key("inferencePreferDirectMl") || data.contains_key("preferDirectMl") {
+                if data.contains_key("inferencePreferDirectMl")
+                    || data.contains_key("preferDirectMl")
+                {
                     params.remove("preferDirectMl");
                 }
             }
             if let (Some(prior), Some(current)) = (
-                legacy_params.as_object(), data.get_mut("inferenceParams").and_then(Value::as_object_mut),
+                legacy_params.as_object(),
+                data.get_mut("inferenceParams")
+                    .and_then(Value::as_object_mut),
             ) {
                 for (key, value) in prior {
                     current.entry(key.clone()).or_insert_with(|| value.clone());
                 }
             } else {
-                data.entry("inferenceParams".to_owned()).or_insert(legacy_params);
+                data.entry("inferenceParams".to_owned())
+                    .or_insert(legacy_params);
             }
         }
     }
@@ -565,7 +633,6 @@ fn u32_field(data: &Value, field: &str) -> Option<u32> {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
 }
-
 
 #[cfg(test)]
 #[path = "plan_coverage_tests.rs"]

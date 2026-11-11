@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::evaluation::{DirtySet};
-use crate::compiler::topology::{GraphEdge};
+use crate::compiler::topology::GraphEdge;
+use crate::evaluation::DirtySet;
 use crate::project::model::{DataType, Edge, NodeType, ProjectNode, SystemSource};
 
 use super::frame::{ExecutionCommand, FrameInputs, FrameResult};
@@ -199,6 +199,24 @@ impl GraphEvaluator {
         }
     }
 
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn rollback_feedback(&mut self, commands: &[ExecutionCommand]) {
+        for command in commands
+            .iter()
+            .filter(|command| command.clear_feedback || command.feedback_read_index.is_some())
+        {
+            let Some(read_index) = command.feedback_read_index else {
+                continue;
+            };
+            self.feedback_read_index
+                .insert(command.node_id.clone(), read_index);
+            if command.clear_feedback {
+                self.feedback_first_frame.insert(command.node_id.clone());
+            }
+            self.dirty.mark_dirty(&command.node_id);
+        }
+    }
+
     fn mark_dynamic_nodes(&mut self, inputs: &FrameInputs) {
         let mut dynamic = Vec::new();
         for node in self.nodes.iter() {
@@ -289,7 +307,10 @@ impl GraphEvaluator {
                     .unwrap_or(0.0)
             })
             .collect::<Vec<_>>();
-        crate::project::catalog::evaluate_math(node.data.math_op.as_deref().unwrap_or("add"), &values)
+        crate::project::catalog::evaluate_math(
+            node.data.math_op.as_deref().unwrap_or("add"),
+            &values,
+        )
     }
 }
 

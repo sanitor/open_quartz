@@ -325,7 +325,12 @@ mod tests {
     use super::*;
 
     fn tensor(dtype: i32, dims: Vec<i64>, raw: Vec<u8>) -> proto::Tensor {
-        proto::Tensor { data_type: Some(dtype), dims, raw_data: Some(raw), ..Default::default() }
+        proto::Tensor {
+            data_type: Some(dtype),
+            dims,
+            raw_data: Some(raw),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -340,7 +345,12 @@ mod tests {
 
     #[test]
     fn packs_canonical_typed_integer_payloads() {
-        let source = proto::Tensor { data_type: Some(7), dims: vec![2], int64_data: vec![-1, 4], ..Default::default() };
+        let source = proto::Tensor {
+            data_type: Some(7),
+            dims: vec![2],
+            int64_data: vec![-1, 4],
+            ..Default::default()
+        };
         let mut blob = Vec::new();
         let descriptor = tensor_descriptor(&source, &mut blob).unwrap();
         assert_eq!(descriptor["length"], 16);
@@ -352,9 +362,121 @@ mod tests {
         let mut source = tensor(1, vec![1], 1f32.to_le_bytes().to_vec());
         source.int64_data.push(1);
         assert!(tensor_descriptor(&source, &mut Vec::new()).is_err());
-        assert!(tensor_descriptor(&tensor(7, vec![i64::MAX, i64::MAX], vec![]), &mut Vec::new()).is_err());
-        let attribute = proto::Attribute { name: "axis".into(), r#type: Some(2), i: Some(1), f: Some(1.0), ..Default::default() };
+        assert!(tensor_descriptor(
+            &tensor(7, vec![i64::MAX, i64::MAX], vec![]),
+            &mut Vec::new()
+        )
+        .is_err());
+        let attribute = proto::Attribute {
+            name: "axis".into(),
+            r#type: Some(2),
+            i: Some(1),
+            f: Some(1.0),
+            ..Default::default()
+        };
         let decoded = proto::Attribute::decode(attribute.encode_to_vec().as_slice()).unwrap();
         assert!(attribute_value(&decoded, &mut Vec::new()).is_err());
+    }
+    #[test]
+    fn validates_interface_dimensions_and_bounded_storage() {
+        let value = ArtifactValue {
+            name: "input".into(),
+            value_type: Some(crate::artifact::ArtifactType {
+                denotation: None,
+                kind: ArtifactValueKind::Tensor {
+                    element_type: Some(1),
+                    shape: ArtifactShape::KnownRank(vec![
+                        crate::artifact::ArtifactDimension {
+                            value: ArtifactDimensionValue::Static(1),
+                            denotation: None,
+                        },
+                        crate::artifact::ArtifactDimension {
+                            value: ArtifactDimensionValue::Symbol("width".into()),
+                            denotation: None,
+                        },
+                    ]),
+                },
+            }),
+            doc_string: None,
+            metadata: Default::default(),
+        };
+        assert!(validate_interface(&value, 1, &[1, 640], |axis| axis == 1).is_ok());
+        assert!(validate_interface(&value, 1, &[2, 640], |axis| axis == 1).is_err());
+        assert!(validate_interface(&value, 6, &[1, 640], |_| true).is_err());
+        assert!(checked_storage(&[1, 3, 640, 640], 4).is_ok());
+        assert!(checked_storage(&[MAX_DIMENSION + 1], 1).is_err());
+        assert!(checked_storage(&[1; 9], 1).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_tensor_shapes_storage_and_values() {
+        assert!(tensor_shape(&tensor(1, vec![-1], 0f32.to_le_bytes().to_vec())).is_err());
+        assert!(tensor_descriptor(&tensor(3, vec![1], vec![0]), &mut Vec::new()).is_err());
+        assert!(tensor_descriptor(&tensor(1, vec![1], vec![0]), &mut Vec::new()).is_err());
+        let mut tensor = proto::Tensor {
+            data_type: Some(2),
+            dims: vec![1],
+            int32_data: vec![256],
+            ..Default::default()
+        };
+        assert!(tensor_descriptor(&tensor, &mut Vec::new()).is_err());
+        tensor.int32_data = vec![1];
+        assert_eq!(
+            tensor_descriptor(&tensor, &mut Vec::new()).unwrap()["length"],
+            1
+        );
+        let mut tensor = proto::Tensor {
+            data_type: Some(6),
+            dims: vec![1],
+            int32_data: vec![7],
+            ..Default::default()
+        };
+        assert_eq!(
+            tensor_descriptor(&tensor, &mut Vec::new()).unwrap()["length"],
+            4
+        );
+        tensor.data_location = Some(1);
+        assert!(tensor_descriptor(&tensor, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn attribute_and_node_arity_branches_are_checked() {
+        for (kind, valid) in [
+            (1, true),
+            (2, true),
+            (3, true),
+            (6, true),
+            (7, true),
+            (99, false),
+        ] {
+            let attribute = proto::Attribute {
+                name: "a".into(),
+                r#type: Some(kind),
+                f: (kind == 1).then_some(1.0),
+                i: (kind == 2).then_some(2),
+                s: (kind == 3).then(|| b"ok".to_vec()),
+                floats: if kind == 6 { vec![1.0] } else { vec![] },
+                ints: if kind == 7 { vec![1] } else { vec![] },
+                ..Default::default()
+            };
+            assert_eq!(attribute_value(&attribute, &mut Vec::new()).is_ok(), valid);
+        }
+        for (op, inputs, outputs, valid) in [
+            ("Constant", 0, 1, true),
+            ("Conv", 2, 1, true),
+            ("Resize", 1, 1, true),
+            ("Split", 1, 2, true),
+            ("Concat", 0, 1, false),
+            ("Add", 1, 1, false),
+            ("Relu", 1, 2, false),
+        ] {
+            let node = proto::Node {
+                op_type: op.into(),
+                input: vec!["x".into(); inputs],
+                output: vec!["y".into(); outputs],
+                ..Default::default()
+            };
+            assert_eq!(validate_node_arity(&node).is_ok(), valid, "{op}");
+        }
     }
 }

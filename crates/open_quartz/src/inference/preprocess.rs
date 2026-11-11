@@ -149,3 +149,64 @@ fn validate_rgba(rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
 fn float_to_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn preprocessing_preserves_channel_order_padding_and_numeric_bounds() {
+        let pixels = [10, 20, 30, 7, 200, 150, 100, 8];
+        assert_eq!(
+            rgba_to_chw(&pixels, 2, 1).unwrap(),
+            [
+                10.0 / 255.0,
+                200.0 / 255.0,
+                20.0 / 255.0,
+                150.0 / 255.0,
+                30.0 / 255.0,
+                100.0 / 255.0
+            ]
+        );
+
+        let letterbox = letterbox_preprocess(&pixels, 2, 1, 4).unwrap();
+        assert_eq!(letterbox.shape, [1, 3, 4, 4]);
+        assert_eq!(
+            (letterbox.scale, letterbox.pad_x, letterbox.pad_y),
+            (2.0, 0.0, 1.0)
+        );
+        assert_eq!((letterbox.resized_width, letterbox.resized_height), (4, 2));
+        let fill = 114.0 / 255.0;
+        assert_eq!(letterbox.tensor[0], fill);
+        assert_eq!(letterbox.tensor[4], 10.0 / 255.0);
+        assert_eq!(letterbox.tensor[4 * 4 + 4], 20.0 / 255.0);
+        assert_eq!(letterbox.tensor[2 * 16 + 4], 30.0 / 255.0);
+
+        let midas = midas_preprocess(&[0, 0, 0, 255, 255, 255, 255, 255], 2, 1).unwrap();
+        assert!((midas[0] - (0.0 - 0.485) / 0.229).abs() < 1e-6);
+        assert!((midas[4] - (0.0 - 0.406) / 0.225).abs() < 1e-6);
+        assert!((midas[1] - (1.0 - 0.485) / 0.229).abs() < 1e-6);
+
+        assert_eq!(
+            rgb_output_to_rgba(&[-1.0, 0.5, 2.0], 1, 1).unwrap(),
+            [0, 128, 255, 255]
+        );
+        assert_eq!(
+            apply_alpha_mask(&[9, 8, 7, 6], &[-1.0], 1, 1).unwrap(),
+            [9, 8, 7, 0]
+        );
+        assert_eq!(
+            apply_alpha_mask(&[9, 8, 7, 6], &[0.5], 1, 1).unwrap(),
+            [9, 8, 7, 128]
+        );
+    }
+
+    #[test]
+    fn preprocessing_rejects_invalid_dimensions_lengths_and_target() {
+        assert!(rgba_to_chw(&[], 0, 1).is_err());
+        assert!(rgba_to_chw(&[0; 4], 2, 1).is_err());
+        assert!(letterbox_preprocess(&[0; 4], 1, 1, 0).is_err());
+        assert!(midas_preprocess(&[0; 3], 1, 1).is_err());
+        assert!(rgb_output_to_rgba(&[0.0, 1.0], 1, 1).is_err());
+        assert!(apply_alpha_mask(&[0; 4], &[], 1, 1).is_err());
+    }
+}

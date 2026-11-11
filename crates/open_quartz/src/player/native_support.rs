@@ -105,4 +105,32 @@ mod tests {
             [1970.0, 1.0, 2.0, 0.0]
         );
     }
+
+    #[test]
+    fn date_uniform_handles_utc_rollover_and_gregorian_century_rules() {
+        for (seconds, expected) in [
+            (946_684_799, [1999.0, 12.0, 31.0, 86_399.0]),
+            (946_684_800, [2000.0, 1.0, 1.0, 0.0]),
+            (951_827_696, [2000.0, 2.0, 29.0, 45_296.0]),
+            (951_868_800, [2000.0, 3.0, 1.0, 0.0]),
+            (4_107_542_399, [2100.0, 2.0, 28.0, 86_399.0]),
+            (4_107_542_400, [2100.0, 3.0, 1.0, 0.0]),
+            (13_574_563_200, [2400.0, 2.0, 29.0, 0.0]),
+        ] {
+            assert_eq!(
+                utc_date_uniform(UNIX_EPOCH + Duration::from_secs(seconds)),
+                expected
+            );
+            assert_eq!(
+                utc_date_uniform(
+                    UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_nanos(999_999_999)
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            utc_date_uniform(UNIX_EPOCH - Duration::from_secs(1)),
+            [1970.0, 1.0, 1.0, 0.0]
+        );
+    }
 }

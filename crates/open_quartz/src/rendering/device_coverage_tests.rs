@@ -10,13 +10,19 @@ async fn shared_device() -> (RenderDevice, RenderDeviceInfo, GpuBackend, wgpu::A
         backends: native_backends(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        force_fallback_adapter: !cfg!(target_os = "macos"),
-        compatible_surface: None,
-        apply_limit_buckets: false,
-    }).await.unwrap();
-    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.unwrap();
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: !cfg!(target_os = "macos"),
+            compatible_surface: None,
+            apply_limit_buckets: false,
+        })
+        .await
+        .unwrap();
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default())
+        .await
+        .unwrap();
     let original = GpuBackend::from_device(device.clone(), queue.clone());
     let (render, info) = RenderDevice::from_shared_wgpu(device, queue, &adapter).unwrap();
     assert_eq!(info.adapter_name, adapter.get_info().name);
@@ -98,22 +104,39 @@ fn shared_device_resources_keep_pixels_and_outlive_owner() {
         let texture = original.create_texture(2, 1, TextureFormat::Rgba8Unorm);
         let rgba = [255, 0, 0, 255, 0, 0, 255, 255];
         original.upload_rgba(&texture, &rgba).unwrap();
-        render.register_external_texture("image", GpuOutputHandle {
-            texture: texture.texture,
-            view: texture.view,
-            sampler: texture.sampler,
-            lease: texture.lease,
-            width: texture.width,
-            height: texture.height,
-            format: texture.format,
-        }).unwrap();
+        render
+            .register_external_texture(
+                "image",
+                GpuOutputHandle {
+                    texture: texture.texture,
+                    view: texture.view,
+                    sampler: texture.sampler,
+                    lease: texture.lease,
+                    width: texture.width,
+                    height: texture.height,
+                    format: texture.format,
+                },
+            )
+            .unwrap();
         let handle = render.preview_source("image").unwrap();
-        assert!(Arc::ptr_eq(&handle.texture, &render.output_handle("image").unwrap().texture));
-        assert_eq!(render.read_output_rgba_async("image").await.unwrap(), (rgba.to_vec(), 2, 1));
+        assert!(Arc::ptr_eq(
+            &handle.texture,
+            &render.output_handle("image").unwrap().texture
+        ));
+        assert_eq!(
+            render.read_output_rgba_async("image").await.unwrap(),
+            (rgba.to_vec(), 2, 1)
+        );
         render.remove_texture("image");
         assert!(!render.has_output_texture("image"));
         drop(render);
-        assert_eq!(original.read_texture_rgba(&handle.texture, 2, 1).await.unwrap(), rgba);
+        assert_eq!(
+            original
+                .read_texture_rgba(&handle.texture, 2, 1)
+                .await
+                .unwrap(),
+            rgba
+        );
     });
 }
 
@@ -126,7 +149,9 @@ fn execute_preserves_renderer_pixels_across_static_frames_and_sync() {
         render.sync_plan(&plan).unwrap();
         render.sync_sampling(&graph);
         let mut renderer = command("renderer", "renderer");
-        renderer.texture_inputs.insert("in".to_owned(), "shader".to_owned());
+        renderer
+            .texture_inputs
+            .insert("in".to_owned(), "shader".to_owned());
         GpuFacade::execute(&mut render, &plan, &[command("shader", "shader"), renderer]).unwrap();
         let (rgba, width, height) = render.read_output_rgba_async("renderer").await.unwrap();
         assert_eq!((width, height), (4, 2));
@@ -134,13 +159,28 @@ fn execute_preserves_renderer_pixels_across_static_frames_and_sync() {
         assert!(rgba.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
         let output = render.output_handle("renderer").unwrap();
         render.execute(&plan, &[]).unwrap();
-        assert!(Arc::ptr_eq(&output.texture, &render.output_handle("renderer").unwrap().texture));
-        assert_eq!(render.read_output_rgba_async("renderer").await.unwrap().0, rgba);
-        assert_eq!(render.read_output_rgba_async("shader").await.unwrap().0, rgba);
+        assert!(Arc::ptr_eq(
+            &output.texture,
+            &render.output_handle("renderer").unwrap().texture
+        ));
+        assert_eq!(
+            render.read_output_rgba_async("renderer").await.unwrap().0,
+            rgba
+        );
+        assert_eq!(
+            render.read_output_rgba_async("shader").await.unwrap().0,
+            rgba
+        );
         #[cfg(feature = "native-runtime")]
         {
-            assert_eq!(render.read_output_rgba("renderer").unwrap(), (rgba.clone(), width, height));
-            assert_eq!(render.read_output("renderer").unwrap(), RenderDevice::output_payload(&rgba, width, height));
+            assert_eq!(
+                render.read_output_rgba("renderer").unwrap(),
+                (rgba.clone(), width, height)
+            );
+            assert_eq!(
+                render.read_output("renderer").unwrap(),
+                RenderDevice::output_payload(&rgba, width, height)
+            );
         }
     });
 }
@@ -151,26 +191,56 @@ fn execution_upload_preview_and_readback_keep_error_attribution() {
         let (mut render, _, original, adapter) = shared_device().await;
         let graph = graph();
         let plan = build_execution_plan(&graph.nodes, &graph.edges);
-        let error = render.execute(&plan, &[command("bad-node", "unsupported")]).unwrap_err();
+        let error = render
+            .execute(&plan, &[command("bad-node", "unsupported")])
+            .unwrap_err();
         assert_eq!(error.node_id.as_deref(), Some("bad-node"));
-        assert_eq!(error.code, crate::project::model::SdkErrorCode::InvalidResource);
+        assert_eq!(
+            error.code,
+            crate::project::model::SdkErrorCode::InvalidResource
+        );
         let error = render.upload_rgba("bad-image", &[0; 3], 1, 1).unwrap_err();
         assert_eq!(error.node_id.as_deref(), Some("bad-image"));
-        assert_eq!(render.preview_source("missing").err().unwrap(), "Output node missing has no native GPU texture");
-        assert_eq!(render.read_output_rgba_async("missing").await.unwrap_err(), "Output node missing has no native GPU texture");
+        assert_eq!(
+            render.preview_source("missing").err().unwrap(),
+            "Output node missing has no native GPU texture"
+        );
+        assert_eq!(
+            render.read_output_rgba_async("missing").await.unwrap_err(),
+            "Output node missing has no native GPU texture"
+        );
 
-        let target = render.backend().create_target(1, 1, TextureFormat::Rgba32Float);
-        render.register_external_texture("float", GpuOutputHandle {
-            texture: target.texture,
-            view: target.view,
-            sampler: Arc::new(render.device().create_sampler(&wgpu::SamplerDescriptor::default())),
-            lease: None,
-            width: 1,
-            height: 1,
-            format: TextureFormat::Rgba32Float,
-        }).unwrap();
-        assert!(render.preview_source("float").err().unwrap().contains("native preview requires rgba8unorm"));
-        assert!(render.read_output_rgba_async("float").await.unwrap_err().contains("native readback requires rgba8unorm"));
+        let target = render
+            .backend()
+            .create_target(1, 1, TextureFormat::Rgba32Float);
+        render
+            .register_external_texture(
+                "float",
+                GpuOutputHandle {
+                    texture: target.texture,
+                    view: target.view,
+                    sampler: Arc::new(
+                        render
+                            .device()
+                            .create_sampler(&wgpu::SamplerDescriptor::default()),
+                    ),
+                    lease: None,
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Rgba32Float,
+                },
+            )
+            .unwrap();
+        assert!(render
+            .preview_source("float")
+            .err()
+            .unwrap()
+            .contains("native preview requires rgba8unorm"));
+        assert!(render
+            .read_output_rgba_async("float")
+            .await
+            .unwrap_err()
+            .contains("native readback requires rgba8unorm"));
 
         // A fresh owner per injected failure preserves the executor's existing
         // readback error contract without reusing failed staging buffers.
@@ -179,9 +249,13 @@ fn execution_upload_preview_and_readback_keep_error_attribution() {
                 original.device.as_ref().clone(),
                 original.queue.as_ref().clone(),
                 &adapter,
-            ).unwrap();
+            )
+            .unwrap();
             render.upload_rgba("image", &[0, 0, 0, 255], 1, 1).unwrap();
-            render.backend().readback_fault.store(fault, std::sync::atomic::Ordering::Release);
+            render
+                .backend()
+                .readback_fault
+                .store(fault, std::sync::atomic::Ordering::Release);
             let error = render.read_output_rgba_async("image").await.unwrap_err();
             assert!(error.starts_with("GPU node image:"), "{error}");
         }
@@ -195,49 +269,80 @@ fn failed_plan_staging_preserves_current_output_and_successful_commit_reuses_it(
         let graph = graph();
         let plan = build_execution_plan(&graph.nodes, &graph.edges);
         let mut renderer = command("renderer", "renderer");
-        renderer.texture_inputs.insert("in".to_owned(), "shader".to_owned());
-        render.execute(&plan, &[command("shader", "shader"), renderer]).unwrap();
+        renderer
+            .texture_inputs
+            .insert("in".to_owned(), "shader".to_owned());
+        render
+            .execute(&plan, &[command("shader", "shader"), renderer])
+            .unwrap();
         let output = render.output_handle("renderer").unwrap();
         let pixels = render.read_output_rgba_async("renderer").await.unwrap();
         for failure in ["validation", "missing-target", "oversized", "zero-size"] {
             let mut invalid = plan.clone();
-            let shader = invalid.nodes.iter_mut().find(|node| node.id == "shader").unwrap();
+            let shader = invalid
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "shader")
+                .unwrap();
             shader.target.as_mut().unwrap().width = 8;
             let mut bad = shader.clone();
             bad.id = "replacement".to_owned();
             if failure == "missing-target" {
                 bad.target = None;
             } else if failure == "oversized" {
-                bad.target.as_mut().unwrap().width = render.device().limits().max_texture_dimension_2d + 1;
+                bad.target.as_mut().unwrap().width =
+                    render.device().limits().max_texture_dimension_2d + 1;
             } else if failure == "zero-size" {
                 bad.target.as_mut().unwrap().height = 0;
             } else {
-                bad.validation_errors.push(crate::compiler::shader::WgslCompilationError {
-                    message: "invalid replacement shader".to_owned(),
-                    line: 1,
-                    column: 1,
-                    offset: 0,
-                    length: 1,
-                });
+                bad.validation_errors
+                    .push(crate::compiler::shader::WgslCompilationError {
+                        message: "invalid replacement shader".to_owned(),
+                        line: 1,
+                        column: 1,
+                        offset: 0,
+                        length: 1,
+                    });
             }
             invalid.nodes.push(bad);
             let error = render.sync_plan(&invalid).unwrap_err();
             assert_eq!(error.node_id.as_deref(), Some("replacement"));
             assert!(render.prepare_plan(&invalid, &graph).is_err());
-            assert!(Arc::ptr_eq(&output.texture, &render.output_handle("renderer").unwrap().texture));
-            assert_eq!(render.read_output_rgba_async("renderer").await.unwrap(), pixels);
+            assert!(Arc::ptr_eq(
+                &output.texture,
+                &render.output_handle("renderer").unwrap().texture
+            ));
+            assert_eq!(
+                render.read_output_rgba_async("renderer").await.unwrap(),
+                pixels
+            );
         }
         let prepared = render.prepare_plan(&plan, &graph).unwrap();
-        assert!(Arc::ptr_eq(&output.texture, &render.output_handle("renderer").unwrap().texture));
+        assert!(Arc::ptr_eq(
+            &output.texture,
+            &render.output_handle("renderer").unwrap().texture
+        ));
         render.commit_plan(prepared).unwrap();
-        assert!(Arc::ptr_eq(&output.texture, &render.output_handle("renderer").unwrap().texture));
-        assert_eq!(render.read_output_rgba_async("renderer").await.unwrap(), pixels);
+        assert!(Arc::ptr_eq(
+            &output.texture,
+            &render.output_handle("renderer").unwrap().texture
+        ));
+        assert_eq!(
+            render.read_output_rgba_async("renderer").await.unwrap(),
+            pixels
+        );
         let backend = render.backend();
         render.reset().unwrap();
         assert!(!render.has_output_texture("renderer"));
         assert!(!render.has_output_texture("shader"));
         assert!(Arc::ptr_eq(&backend, &render.backend()));
-        assert_eq!(backend.read_texture_rgba(&output.texture, output.width, output.height).await.unwrap(), pixels.0);
+        assert_eq!(
+            backend
+                .read_texture_rgba(&output.texture, output.width, output.height)
+                .await
+                .unwrap(),
+            pixels.0
+        );
     });
 }
 
@@ -253,7 +358,9 @@ fn shared_presentation_caps_dimensions_uses_origin_and_releases_leases() {
             return;
         }
         let width = PRESENTATION_MAX_DIMENSION + 2;
-        render.upload_rgba("image", &vec![255; width as usize * 2 * 4], width, 2).unwrap();
+        render
+            .upload_rgba("image", &vec![255; width as usize * 2 * 4], width, 2)
+            .unwrap();
         render.set_shared_texture_enabled(true).unwrap();
         render.present("image", 7, u64::MAX).unwrap();
         assert!(render.has_shared_texture_pending());
@@ -270,7 +377,13 @@ fn shared_presentation_caps_dimensions_uses_origin_and_releases_leases() {
         render.upload_rgba("image", &[0, 0, 0, 255], 1, 1).unwrap();
         render.set_shared_texture_enabled(true).unwrap();
         render.present("image", 8, 0).unwrap();
-        let pending_lease = render.shared_presenter.as_ref().unwrap().latest().unwrap().lease_id;
+        let pending_lease = render
+            .shared_presenter
+            .as_ref()
+            .unwrap()
+            .latest()
+            .unwrap()
+            .lease_id;
         render.reset().unwrap();
         assert!(!render.has_shared_texture_pending());
         assert!(render.release_shared_texture(pending_lease).is_err());
@@ -325,33 +438,132 @@ fn staged_image_uploads_and_removals_leave_active_pixels_unchanged_until_commit(
         discarded.stage_image("image", &blue, 1, 1).unwrap();
         assert_eq!(render.read_output_rgba_async("image").await.unwrap().0, red);
         drop(discarded);
-        assert!(Arc::ptr_eq(&original.texture, &render.output_handle("image").unwrap().texture));
+        assert!(Arc::ptr_eq(
+            &original.texture,
+            &render.output_handle("image").unwrap().texture
+        ));
         assert_eq!(render.read_output_rgba_async("image").await.unwrap().0, red);
 
         let mut staged = render.prepare_plan(&plan, &graph).unwrap();
         let error = staged.stage_image("image", &[0; 3], 1, 1).unwrap_err();
         assert_eq!(error.node_id.as_deref(), Some("image"));
-        let error = staged.stage_image("image", &[], render.device().limits().max_texture_dimension_2d + 1, 1).unwrap_err();
+        let error = staged
+            .stage_image(
+                "image",
+                &[],
+                render.device().limits().max_texture_dimension_2d + 1,
+                1,
+            )
+            .unwrap_err();
         assert_eq!(error.node_id.as_deref(), Some("image"));
         render.commit_plan(staged).unwrap();
-        assert!(Arc::ptr_eq(&original.texture, &render.output_handle("image").unwrap().texture));
+        assert!(Arc::ptr_eq(
+            &original.texture,
+            &render.output_handle("image").unwrap().texture
+        ));
         assert_eq!(render.read_output_rgba_async("image").await.unwrap().0, red);
 
         let mut staged = render.prepare_plan(&plan, &graph).unwrap();
         staged.stage_image("image", &blue, 1, 1).unwrap();
         render.commit_plan(staged).unwrap();
-        assert!(!Arc::ptr_eq(&original.texture, &render.output_handle("image").unwrap().texture));
-        assert_eq!(render.read_output_rgba_async("image").await.unwrap().0, blue);
-        assert_eq!(render.backend().read_texture_rgba(&original.texture, 1, 1).await.unwrap(), red);
+        assert!(!Arc::ptr_eq(
+            &original.texture,
+            &render.output_handle("image").unwrap().texture
+        ));
+        assert_eq!(
+            render.read_output_rgba_async("image").await.unwrap().0,
+            blue
+        );
+        assert_eq!(
+            render
+                .backend()
+                .read_texture_rgba(&original.texture, 1, 1)
+                .await
+                .unwrap(),
+            red
+        );
 
         let mut discarded = render.prepare_plan(&plan, &graph).unwrap();
         discarded.stage_remove_texture("image");
-        assert_eq!(render.read_output_rgba_async("image").await.unwrap().0, blue);
+        assert_eq!(
+            render.read_output_rgba_async("image").await.unwrap().0,
+            blue
+        );
         drop(discarded);
         assert!(render.has_output_texture("image"));
         let mut staged = render.prepare_plan(&plan, &graph).unwrap();
         staged.stage_remove_texture("image");
         render.commit_plan(staged).unwrap();
         assert!(!render.has_output_texture("image"));
+    });
+}
+
+#[test]
+fn foreign_prepared_plan_is_rejected_without_replacing_current_pixels() {
+    pollster::block_on(async {
+        let (mut active, _, _, _) = shared_device().await;
+        let (foreign, _, _, _) = shared_device().await;
+        let graph = graph();
+        let plan = build_execution_plan(&graph.nodes, &graph.edges);
+        active
+            .upload_rgba("source", &[255, 0, 0, 255], 1, 1)
+            .unwrap();
+        let held = active.output_handle("source").unwrap();
+        let prepared = foreign.prepare_plan(&plan, &graph).unwrap();
+        assert!(active.commit_plan(prepared).is_err());
+        assert_eq!(
+            active.read_output_rgba_async("source").await.unwrap(),
+            (vec![255, 0, 0, 255], 1, 1)
+        );
+        active.reset().unwrap();
+        assert!(!active.has_output_texture("source"));
+        assert_eq!(
+            active
+                .backend()
+                .read_texture_rgba(&held.texture, 1, 1)
+                .await
+                .unwrap(),
+            [255, 0, 0, 255]
+        );
+    });
+}
+
+#[test]
+fn graph_execution_sampling_changes_repeat_to_clamp_without_mutating_external_pixels() {
+    pollster::block_on(async {
+        let (mut render, _, _, _) = shared_device().await;
+        let mut graph: Graph = serde_json::from_value(json!({"nodes":[
+            {"id":"source","type":"input","position":{"x":0,"y":0},"data":{
+                "type":"input","label":"source","shaderCode":"","inputs":[],"outputs":[{"id":"out","label":"image","dataType":"sampler2D","direction":"output"}],"uniforms":{},
+                "inputMode":"image","inputDataType":"sampler2D","texFilter":"nearest","texWrap":"repeat"}},
+            {"id":"shader","type":"shader","position":{"x":0,"y":0},"data":{
+                "type":"shader","label":"sample","shaderCode":"@fragment fn main()->@location(0) vec4f {return textureSample(image,imageSampler,vec2f(1.25,0.5));}",
+                "inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[],"uniforms":{},"autoSize":false,"width":1,"height":1,"texFilter":"nearest","texWrap":"repeat"}}
+        ],"edges":[{"id":"edge","source":"source","sourceHandle":"out","target":"shader","targetHandle":"in"}]})).unwrap();
+        let source = [255, 0, 0, 255, 0, 0, 255, 255];
+        render.upload_rgba("source", &source, 2, 1).unwrap();
+        let mut instance = crate::evaluation::GraphInstance::new_native();
+        for (frame, wrap, expected) in [
+            (1, "repeat", [255, 0, 0, 255]),
+            (2, "repeat", [255, 0, 0, 255]),
+            (3, "clamp", [0, 0, 255, 255]),
+        ] {
+            graph.nodes[0].data.tex_wrap = Some(serde_json::from_value(json!(wrap)).unwrap());
+            instance.set_graph(graph.clone()).unwrap();
+            render.sync_sampling(&graph);
+            instance
+                .run_frame(frame as f64, 1.0, frame, &[0.0; 4], &[0.0; 4], &[1.0; 3])
+                .unwrap();
+            let commands = instance.drain_commands();
+            instance.execute_gpu(&mut render, &commands).unwrap();
+            assert_eq!(
+                render.read_output_rgba_async("shader").await.unwrap().0,
+                expected
+            );
+            assert_eq!(
+                render.read_output_rgba_async("source").await.unwrap().0,
+                source
+            );
+        }
     });
 }

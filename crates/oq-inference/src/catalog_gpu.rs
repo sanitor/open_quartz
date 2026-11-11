@@ -239,3 +239,14 @@ fn pollster_validation(scope:wgpu::ErrorScopeGuard)->Option<String>{
     let waker=Waker::from(Arc::new(WakeThread(std::thread::current())));let mut context=Context::from_waker(&waker);let mut future=std::pin::pin!(scope.pop());
     loop{match future.as_mut().poll(&mut context){Poll::Ready(error)=>return error.map(|e|e.to_string()),Poll::Pending=>std::thread::park()}}
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_tensor_byte_sizes_are_checked() {
+        assert_eq!(buffer_bytes(&[1, 3, 2, 4]).unwrap(), 96);
+        assert!(buffer_bytes(&[1,0,3]).is_err());
+        assert!(buffer_bytes(&[usize::MAX, 2]).is_err());
+    }
+}

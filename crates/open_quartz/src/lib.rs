@@ -78,3 +78,7 @@ mod coverage_presenter;
 #[cfg(test)]
 #[path = "../tests/playback_session_test.rs"]
 mod coverage_playback_session;
+
+#[cfg(all(test, target_os = "macos", feature = "gpu", feature = "native-video"))]
+#[path = "../tests/videotoolbox_test.rs"]
+mod coverage_videotoolbox;

@@ -396,6 +396,40 @@ fn separates_required_inputs_from_dense_and_sparse_initializer_defaults() {
 }
 
 #[test]
+fn sparse_initializer_optional_components_and_duplicate_metadata_are_reported() {
+    let interface = inspect_graph(proto::GraphProto {
+        sparse_initializer: vec![proto::SparseTensorProto {
+            dims: vec![4, 5],
+            values: None,
+            indices: None,
+        }],
+        ..Default::default()
+    }).unwrap();
+    let ArtifactInitializer::Sparse { dimensions, values, indices } = &interface.initializers[0] else {
+        panic!("expected sparse initializer")
+    };
+    assert_eq!(dimensions, &[4, 5]);
+    assert!(values.is_none());
+    assert!(indices.is_none());
+    assert_eq!(interface.initializers[0].name(), None);
+
+    let duplicate_type_metadata = proto::GraphProto {
+        sparse_initializer: vec![proto::SparseTensorProto {
+            values: Some(proto::TensorProto {
+                metadata_props: vec![entry("type", "first"), entry("type", "second")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(matches!(
+        inspect_graph(duplicate_type_metadata),
+        Err(ArtifactError::DuplicateMetadata { key, .. }) if key == "type"
+    ));
+}
+
+#[test]
 fn payload_fields_are_skipped_and_packed_dimensions_are_accepted() {
     // An independent fixture schema includes the intentionally omitted payload.
     #[derive(Clone, PartialEq, prost::Message)]

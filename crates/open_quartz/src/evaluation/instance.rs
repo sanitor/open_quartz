@@ -1,14 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-
-use crate::evaluation::{ExecutionCommand, GraphEvaluator, FrameInputs};
-use crate::compiler::{ExecutionPlan};
+use crate::compiler::ExecutionPlan;
+use crate::evaluation::{ExecutionCommand, FrameInputs, GraphEvaluator};
 use crate::project::model::{Edge, Graph, ProjectNode};
 
 use crate::evaluation::event::{EngineEvent, EngineState};
 use crate::project::model::{SdkError, SdkErrorCode};
-
 
 #[derive(Clone)]
 pub struct GraphInstance {
@@ -189,10 +187,17 @@ impl GraphInstance {
 
     pub(crate) fn reset_temporal_state(&mut self) -> Result<(), SdkError> {
         self.ensure_active()?;
-        let graph = self.graph.as_ref().ok_or_else(|| SdkError::new(
-            SdkErrorCode::NotPrepared, "GraphInstance must receive a graph before reset"))?;
+        let graph = self.graph.as_ref().ok_or_else(|| {
+            SdkError::new(
+                SdkErrorCode::NotPrepared,
+                "GraphInstance must receive a graph before reset",
+            )
+        })?;
         self.inner = Some(GraphEvaluator::prepare_with_options(
-            graph.nodes.clone(), graph.edges.clone(), self.external_video_textures));
+            graph.nodes.clone(),
+            graph.edges.clone(),
+            self.external_video_textures,
+        ));
         self.pending_commands.clear();
         self.last_frame = None;
         Ok(())
@@ -207,7 +212,8 @@ impl GraphInstance {
     }
 
     pub fn drain_events_json(&mut self) -> String {
-        serde_json::to_string(&self.drain_events()).expect("EngineEvent is always JSON serializable")
+        serde_json::to_string(&self.drain_events())
+            .expect("EngineEvent is always JSON serializable")
     }
 
     pub fn drain_events(&mut self) -> Vec<EngineEvent> {
@@ -401,6 +407,13 @@ impl GraphInstance {
             )
         })?;
         facade.execute(plan, commands)
+    }
+
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn rollback_feedback(&mut self, commands: &[ExecutionCommand]) {
+        if let Some(engine) = &mut self.inner {
+            engine.rollback_feedback(commands);
+        }
     }
 }
 
