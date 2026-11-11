@@ -1,7 +1,7 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
 > 状态：完整跨平台会话/编码/Slint 组件仍为提案，§17.1 首轮 macOS 验收为历史。当前生产实时图只接受 hardware buffer/texture，不允许软件 RGBA fallback；下面未来可选政策不放宽此约束。本轮 resident cutover 的实测计数、画面与未通过覆盖率门槛见 [DESIGN](DESIGN.md#validation)，旧结果不得复用。当前产品仅 Rust/Slint 与独立 .scr。
-> 2026-11-11 架构更新：原 `open_quartz` 采用[同 crate 渲染/执行职责分离](DESIGN.md#execution-rendering-split)，不新建双引擎；本媒体库保持无图/无 UI/无 wgpu 依赖。§8.4 明确按源时间的前瞻取帧、切点预热、credit 与非阻塞完成目标，尚未实现；剪辑器宿主策略见[视频编辑器 §9](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)。
+> 2026-11-11 架构更新：[同 crate 渲染/执行职责分离](DESIGN.md#execution-rendering-split)的 Phase 2 共享 FramePipeline 已接入 NativePlayer，以所属 worker 上的 progress 顺序推进一个 demand，不新增引擎/crate/设备；本媒体库保持无图/无 UI/无 wgpu 依赖。媒体仍为既有顺序源和阻塞 GPU 导入，§8.4 的精确源时间选择、前瞻取帧、切点预热、credit 与非阻塞媒体完成均未实现；剪辑器宿主策略见[视频编辑器 §9](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)。
 
 ## 1. 决策与目标
 
@@ -27,8 +27,8 @@
 | Rust `NativeVideoSource` 管理文件/摄像头、解码线程、暂停恢复和帧槽 | [`media/native.rs`](../crates/open_quartz/src/media/native.rs)，advanced 路径 `open_quartz::media::native` | 提取为媒体后端，不让 UI 拥有解码生命周期 |
 | Windows 图视频要求 D3D12VA，硬件初始化/解码失败不能切到 FFmpeg RGBA CPU-upload | `media/native.rs` 的平台源选择 | 无 D3D12 明确拒绝，不将软件执行冒充硬件 |
 | macOS 文件使用 oq-media/VideoToolbox；Linux/未支持相机拒绝实时图接入 | `media/native.rs`；§17.1 为首轮历史证据 | 不从已删除的软件路径推断当前 fallback |
-| VideoSources 拥有图源 map/lifecycle，借用 upload callback 上传帧并返回 dirty/尺寸变化 | 内部 [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs) → callback → [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs) | NodeId 与图源映射留在 OpenQuartz adapter，oq-media decoder/session 不接收 NodeId |
-| Slint 与 RenderDevice 共用同一 wgpu Device/Queue 实例，NativePlayer 在原 render thread 驱动 | [`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs) 与 [`player/native.rs`](../crates/open_quartz/src/player/native.rs) | 共享 UI/GPU 不意味着解码设备天然一致；不为提取创建设备实例 |
+| FramePipeline 持有 VideoSources 的图源 map/lifecycle，借用 upload callback 上传帧并返回 dirty/尺寸变化 | [`execution/pipeline.rs`](../crates/open_quartz/src/execution/pipeline.rs) → 内部 [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs) → [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs) | NodeId 与图源映射留在 OpenQuartz adapter，oq-media decoder/session 不接收 NodeId；FrameExecutionSession 不持有媒体资源 |
+| Slint 与 RenderDevice 共用同一 wgpu Device/Queue，NativePlayer 在原 render worker 驱动 FramePipeline::progress | [`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)、[`player/native.rs`](../crates/open_quartz/src/player/native.rs) 与 `execution/pipeline.rs` | pipeline 无 clock/UI；共享 UI/GPU 不意味着解码设备天然一致，不为提取创建设备实例 |
 | Windows 管理解码 fence、NV12/P010、纹理子资源及必要 GPU detach copy | [`rendering/dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs)；[当前索引](./DESIGN.md#source-map) | 保留同步/lease，新接口不能只传纹理指针 |
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
 | 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
@@ -78,7 +78,7 @@ flowchart TD
 
 `media_core` 逻辑协议部分应可不启用 FFmpeg、wgpu、浏览器依赖而测试。初期 backend modules 可以共包，稳定后根据链接大小和分发需要拆包。FFmpeg 类型仅存在于后端，不从公共协议泄漏 `AVFrame*`。GPU 适配器是可选依赖；软件解码、离线编码、命令行和其他 UI 可独立使用核心。
 
-当前依赖方向为 **Slint → 媒体核心/GPU 适配**。oq-media 拥有 decoder/session/FrameLease，不依赖 Slint、NodeId、graph、inference 或 wgpu。VideoSources 拥有 NodeId→NativeVideoSource map 与源生命周期，经 upload callback 借用 RenderDevice；NativePlayer 协调这些 owner，PlaybackSession 保存 GraphInstance+clock+OutputHub。模型服务留在 resources::models。此前无生产消费者的 execution/runtime namespace/alias 已删除；[目标 FramePipeline](DESIGN.md#execution-rendering-split)是为 NativePlayer 与编辑器统一流水的新职责，不恢复旧 facade 或第二套帧/同步契约。当前文件见[模块所有权](DESIGN.md#module-ownership)和[源码索引](DESIGN.md#source-map)。
+当前依赖方向为 **Slint → OpenQuartz 图适配 → 媒体核心/GPU 导入**。oq-media 拥有 decoder/session/FrameLease，不依赖 Slint、NodeId、graph、inference 或 wgpu。NativePlayer 拥有实时 clock + FramePipeline；pipeline 持有 VideoSources 的 NodeId→NativeVideoSource map、InferenceTasks、RenderDevice 与稳定帧池，源上传 callback 借用 RenderDevice。FrameExecutionSession 只组合 GraphInstance+OutputHub；PlaybackSession 为该无时钟 owner 加 clock，不复制执行状态。Phase 2 的真实 execution 实现不恢复早期空 facade 或第二套媒体帧/同步契约。当前 demand 支持显式 stamp 和版本化 ExternalFrameInput/StableFrame，但原生媒体只提供顺序当前帧，不能据此声称按 demand 时间选择了媒体 PTS。模型服务仍留在 resources::models；详见[模块所有权](DESIGN.md#module-ownership)和[源码索引](DESIGN.md#source-map)。
 
 当前通用推理实现与图适配边界见[推理架构](INFERENCE_ARCHITECTURE.md)，本轮核心、真实模型、窗口/Shader、独立依赖与原生包结果统一见 [DESIGN 验证基线](./DESIGN.md#validation)。独立推理库的 ORT 验证不替代媒体硬解、设备驻留或其他平台验收；相机/Windows/Linux/.scr/移动端未实测，公开 Player driver/graph_mut 限制未改变。
 
@@ -269,7 +269,7 @@ Preview 不消耗正式播放起点：可在同一 session 下执行独立 previ
 
 ### 8.4 前瞻取帧与阶段流水（目标协议）
 
-本节是未来完整会话要求，当前 oq-media::Session 的 open/next_frame/reset 不等于窗口/seek API。NativePlayer 与编辑器宿主将各自图/时间线需求映射成源时间区间，交给核心 execution::FramePipeline；共享流水通过宿主注入的源适配器驱动媒体预取/查询/取消，不由两个宿主各建调度循环。媒体层只接收源身份、time base、epoch、区间、优先级/取消与预算，不接收 ClipId/Slint/工程命令；decoder 状态仍归媒体 worker，流水内部 FrameExecutionSession 只处理图阶段。
+本节是未来完整会话要求，当前 oq-media::Session 的 open/next_frame/reset 不等于窗口/seek API。Phase 2 已有共享 execution::FramePipeline、单请求 admission、显式外部 StableFrame 输入和带 ready 的稳定输出；一个 pending 或未取走终态占住 admission，所属 worker 显式调用 progress，poll_completion 只取结果。它仍消费既有顺序媒体源，导入仍阻塞，不实现以下源时间窗口/多帧调度。后续 NativePlayer 与编辑器宿主将图/时间线需求映射成源时间区间，由同一流水经注入源适配器驱动预取/查询/取消，不各建调度循环。媒体层只接收源身份、time base、epoch、区间、优先级/取消与预算，不接收 ClipId/Slint/工程命令；decoder 状态归媒体 worker，FrameExecutionSession 只管图/输出事务，源/推理/render 资源归 FramePipeline。
 
 拟议 `prefetch_window` 表达可撤销的前瞻需求，`frame_at` 查询覆盖指定 presentation 时刻的帧，返回 Item(lease)/Pending/EOF/Error；后台 worker 被新需求、输入可用或下游释放唤醒，不能用 UI timer 忙轮询。精确随机查询与顺序预取共用帧选择/后端：缓存命中复用 owner；相近后续请求沿既有 cursor 推进，离散跨度才重新 seek/flush；禁止每一输出帧重新定位。仅改变呈现需求不等于恢复/重开整个 codec。
 

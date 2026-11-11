@@ -187,6 +187,17 @@ impl GraphInstance {
         self.pending_commands.len() as u32
     }
 
+    pub(crate) fn reset_temporal_state(&mut self) -> Result<(), SdkError> {
+        self.ensure_active()?;
+        let graph = self.graph.as_ref().ok_or_else(|| SdkError::new(
+            SdkErrorCode::NotPrepared, "GraphInstance must receive a graph before reset"))?;
+        self.inner = Some(GraphEvaluator::prepare_with_options(
+            graph.nodes.clone(), graph.edges.clone(), self.external_video_textures));
+        self.pending_commands.clear();
+        self.last_frame = None;
+        Ok(())
+    }
+
     pub fn engine_state(&self) -> String {
         engine_state_name(self.state).to_owned()
     }

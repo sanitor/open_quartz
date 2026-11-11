@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Shared frame execution (Phase 2)
+
+- Route NativePlayer through the same-crate, clock-free FramePipeline; PlaybackSession composes its clock with the shared FrameExecutionSession graph/output state. Remove the old native graph/inference completion loop without introducing another device or crate.
+- Admit one explicit revision/epoch/request demand at a time, preserving external stable source/version ownership on rejection or backpressure; complete downstream inference within the same demand before publishing immutable output. Keep physical GPU readiness separate from the submitted terminal, and preserve external output subscriptions when consuming internal inference notifications.
+- Exercise real Metal explicit-time/source-version, cancellation/replacement, bounded pool, Every/Latest, feedback reset and same-frame SR3 regressions; verify the original Slint Shader/video → SR3 → Renderer Play/Pause/replace/resume/close path with ORT unavailable and zero host transfer counters. Exact evidence and coverage failures: [Phase 2 implementation record](apps/open_quartz_video_editor/DESIGN.md#phase-2共享执行与原图宿主切换). Sequential media/blocking import remain; precise seek, prefetch/credit and encoding are later phases, not delivered here.
+
 ### Seven-model production and native-window E2E regression
 
 - Add `npm run test:desktop:inference`: SHA-pinned original model preparation from the Rust catalog, real RenderBridge/model-worker/NativePlayer image and hardware-video execution with ORT unavailable, a separate independent CPU oracle, then all seven models through native Slint menus, typed connections, Load/Play/Pause/Resume/Unload/Reload and Save/reopen. Missing assets or hardware fail instead of silently skipping; actual renderer pixels and diagnostic artifacts remain in per-case reports.

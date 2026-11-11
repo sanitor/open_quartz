@@ -4,7 +4,7 @@
 
 当前产品仅为 `apps/open_quartz_slint` 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 已退役。`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。没有 Vite/Web/Tauri 构建入口。`dist-desktop/` 是可重新生成的忽略产物；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
 
-本轮生产已切到 hardware-only resident 推理；workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过。真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 历史记录不作为本轮验收，其他平台能力不由 Apple Metal 结果推断。
+历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
@@ -14,13 +14,13 @@ Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` �
 
 图任务契约要求一个图像输入与一个显式选定输出，而非模型只有一个输出。U²Net-P 保留全部 `1959`–`1965` 并绑定主 mask `1959`；未知多输出无 binding 拒绝。Metal 后端可执行七个目录 profile，完整生产链路、数值对照与原生窗口显示由下方七模型 E2E 单独验收；其他平台和未知模型在 frame access 前报错。`.scr` 推理导出/stub 明确不可用，不能回退 CPU，非推理 Shader/硬件视频导出保留。
 
-图语义核心为单一 open_quartz，根部仅 lib.rs。compiler 拥有 shader/topology/plan，GraphEvaluator 拥有 dirty/Math/feedback，GraphInstance 拥有 identity/generation/state，PlaybackSession 拥有 graph/clock/OutputHub，NativePlayer 协调，RenderDevice 拥有 GPU/import/presentation，VideoSources 拥有图源 map/lifecycle，InferenceTasks 拥有 resident session/图任务身份/输出适配；独立 oq-inference 拥有 GPU compiler/session 与显式 reference Tensor APIs，oq-media 拥有媒体 session/FrameLease。project/resources 分别负责编辑/history 与准备/规划。
+图语义核心为单一 open_quartz，根部仅 lib.rs。compiler 拥有 shader/topology/plan，GraphEvaluator 拥有 dirty/Math/feedback，GraphInstance 拥有 identity/generation/state。execution::FrameExecutionSession 组合 GraphInstance+OutputHub；PlaybackSession 为同一 owner 加 clock。NativePlayer 拥有共享 FramePipeline+实时 clock；FramePipeline 拥有 session、RenderDevice、VideoSources、InferenceTasks、有界稳定帧池与在途请求。RenderDevice 管 GPU/import/presentation，VideoSources 管图源 map/lifecycle，InferenceTasks 管 resident session/图任务身份/输出适配；独立 oq-inference 管 GPU compiler/session 与显式 reference Tensor APIs，oq-media 管媒体 session/FrameLease。project/resources 分别负责编辑/history 与准备/规划。
 
-advanced host 路径为 open_quartz::{compiler,evaluation,player,outputs,rendering,inference,media,resources} 与 project::catalog。Slint 使用 NativePlayer；独立 .scr 在自有 Win32 loop 中直接组合 PlaybackSession、evaluation work 与 GpuExecutor。内部 media::sources / inference::tasks 拥有 VideoSources/InferenceTasks，不新增 root alias。实现与生产调用随 owner 迁移，不保留 execution/runtime namespace 或类 alias，实际路径见 [设计 源码索引](DESIGN.md#source-map)。root 类型、既有 feature、独立组件边界保持，WASM/Tauri/bindings/browser 不恢复。
+advanced host 路径为 open_quartz::{compiler,evaluation,execution,player,outputs,rendering,inference,media,resources} 与 project::catalog。Slint 使用 NativePlayer→FramePipeline；独立 .scr 在自有 Win32 loop 中组合 PlaybackSession（复用 FrameExecutionSession）、evaluation work 与 GpuExecutor。execution 是 Phase 2 真实共享实现，不恢复早先已删除的空 execution/runtime facade、类 alias 或第二套媒体帧类型；内部 media::sources / inference::tasks 保留 VideoSources/InferenceTasks。实际路径见[设计 源码索引](DESIGN.md#source-map)。不新增 crate、设备或默认设备依赖，既有 feature 和独立组件边界保持，WASM/Tauri/bindings/browser 不恢复。
 
 NativePlayer/RenderDevice 在原 render thread 与 Slint 共用 wgpu30 Metal Device/Queue：texture → GPU BT.601/resize224 → 完整四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA → Slint/Shader。固定网络 224→672，输出源尺寸 ×3，不是 tiling 或大图全分辨率质量承诺。source pixels 不经 CPU；模型/weights 解析和 initial upload 仅准备时进行。一次性文件图片/framebuffer decode-ingress 可 CPU 解码并上传，capture/reference/test readback 必须 opt in。TextureHandle/GpuOutputHandle/RenderUpdate/Slint 当前 handles 保留 lease，最多三槽，持有期间不复用，饱和 backpressure；queue order/fences 保证生命周期。
 
-Phase 1 稳定输出已落地：主预览通过 NativePlayer::try_stable_preview 和有界 StableFramePool detach GPU copy 保像素；节点卡仍为 live view。macOS 原生 texture drop guard 保留 Slint 实际消费的 slot，consumer 最后释放后由安全池维护安排 queue completion。尚未迁移 FramePipeline，也不新增默认设备依赖。[本阶段完整验证/失败限制](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)与旧记录分开。可重跑：准备 desktop runtime 后设置 `OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg`，执行 `cargo test --locked -p open_quartz --features native-runtime,native-video stable_frame::tests -- --test-threads=1`；应用 worker 回归用 `npm run test:desktop`，真实窗口用 `npm run test:desktop:ui` / `npm run test:desktop:shaders`。UI runner 最终通过 ui-automation 专用 stdin lane 投递真实 CloseRequested，run.json 必须 exit 0/signal null；不把 SIGTERM 当正常关闭，正常 build 不提供此测试入口。现有全局 100% coverage gates 仍失败，未放宽。
+Phase 1 稳定输出保留：主/选中预览使用有界 StableFramePool 的 GPU detach copy；节点卡仍为 live view。macOS 原生 texture drop guard 保留 Slint 实际消费的 slot，consumer 最后释放后由安全池维护安排 queue completion。Phase 2 已切到共享 FramePipeline：显式 FrameDemand 携带 request/revision、FrameEvaluationInput stamp 与版本化 ExternalFrameInput/StableFrame，所属 worker 调用 progress，poll_completion 只取终态。一个 pending 或未取走终态即阻止下次 admission；异步推理完成前，同一 demand 的下游命令不执行。Submitted 输出带独立 ready completion，不代表物理 GPU 已完成。当前媒体仍顺序源与阻塞导入，精确源时间选择、预取/credit 和多帧窗口留待后续 Phase。[分阶段验证/失败限制](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)与历史记录分开，不复用 Phase 1 通过数。可重跑：准备 desktop runtime 后设置 `OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg`，执行 `cargo test --locked -p open_quartz --features native-runtime,native-video execution:: -- --test-threads=1`；稳定池回归用同一命令的 `stable_frame::tests` filter，应用 worker 回归用 `npm run test:desktop`，真实窗口用 `npm run test:desktop:ui` / `npm run test:desktop:shaders`。这些是重跑入口，不是本次通过记录。UI runner 最终通过 ui-automation 专用 stdin lane 投递真实 CloseRequested，run.json 必须 exit 0/signal null；不把 SIGTERM 当正常关闭，正常 build 不提供此测试入口。现有全局 100% coverage gates 仍失败，未放宽。
 
 ### 桌面是否需要 FFI？
 
@@ -30,8 +30,8 @@ Phase 1 稳定输出已落地：主预览通过 NativePlayer::try_stable_preview
 
 ### 核心能力选择与验收
 
-- `default = []`：Graph/Project、compiler、GraphEvaluator/GraphInstance、PlaybackSession/OutputHub 的纯状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出采用无设备配置。
-- `gpu`：RenderDevice 的 executor/纹理/readback/presenter；`native-runtime` 仅蕴含 gpu，不自动启用媒体、推理或下载，保留既有 feature 名称与行为。
+- `default = []`：Graph/Project、compiler、GraphEvaluator/GraphInstance、FrameExecutionSession、PlaybackSession/OutputHub 的纯状态；不拉入 wgpu、ORT、FFmpeg、reqwest 或 UI。纯 SDK consumer 与屏保包导出采用无设备配置。
+- `gpu`：RenderDevice 的 executor/纹理/readback/presenter；`native-runtime` 启用 FramePipeline/NativePlayer 且仅蕴含 gpu，不自动启用媒体、推理或下载，保留既有 feature 名称与行为。
 - `native-video`：平台视频 source/worker，macOS 选择独立 oq-media；`native-video-d3d12` 蕴含 native-video 与 gpu，供 Windows D3D12 路径显式选择。
 - `native-onnx`：图推理适配选择独立 `oq-inference/gpu` 的实际 compiler/GpuImageSession；GPU 编译验证原始 ONNX topology/weights/reshape layout，不用近似网络，scratch STORAGE-only，weights 仅初始化上传。ORT feature 仅显式 reference/诊断。`model-cache` 为下载/哈希/文件缓存，仍可无设备使用。
 

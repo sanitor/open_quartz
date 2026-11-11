@@ -58,7 +58,7 @@ mod resident {
     use crate::inference::{InferenceConfig, InferenceSessionInfo, RequestStamp, SessionGeneration};
     use crate::outputs::{AsyncCompletionEnvelope, ContentStamp, DeliveryPolicy, FrameStamp,
         OutputKey, OutputPayload, OutputSubscription, OutputTransport};
-    use crate::player::PlaybackSession;
+    use crate::execution::FrameExecutionSession;
     use crate::project::model::{DataType, Graph, NodeType};
     use crate::rendering::{GpuOutputHandle, RenderDevice, TextureFormat};
     use super::{InferenceMetrics, InferenceOutputEvent};
@@ -132,7 +132,7 @@ mod resident {
         pub image: ResidentImage,
         pub envelope: AsyncCompletionEnvelope,
         pub event: InferenceOutputEvent,
-        subscription_id: Option<String>,
+        pub(crate) subscription_id: Option<String>,
     }
     /// Render-thread coordinator. All inference submissions use the renderer's device and queue.
     pub(crate) struct InferenceTasks {
@@ -159,7 +159,7 @@ mod resident {
                 #[cfg(feature = "inference-diagnostics")]
                 diagnostics: DiagnosticState { requested: HashSet::new(), pending: HashMap::new(), accepted: HashMap::new() } }
         }
-        pub(crate) fn sync_graph(&mut self, graph: &Graph, session: &mut PlaybackSession) -> Result<(), String> {
+        pub(crate) fn sync_graph(&mut self, graph: &Graph, session: &mut FrameExecutionSession) -> Result<(), String> {
             self.cancel_pending();
             for (_, id) in self.event_subscriptions.drain() { let _ = session.unsubscribe_output(&id); }
             self.outputs = graph.nodes.iter().filter(|node| node.node_type == NodeType::Inference)
@@ -227,6 +227,8 @@ mod resident {
             self.outputs.clear(); self.event_subscriptions.clear();
         }
         pub(crate) fn has_pending(&self) -> bool { !self.active.is_empty() || !self.queued_nodes.is_empty() }
+        pub(crate) fn is_loaded(&self, node: &str) -> bool { self.resources.contains_key(node) }
+        pub(crate) fn is_active(&self, node: &str) -> bool { self.active.contains_key(node) }
         pub(crate) fn metrics(&self) -> InferenceMetrics {
             let mut metrics = self.metrics.clone();
             metrics.in_flight = self.active.len(); metrics.queue_depth = self.queued_nodes.len(); metrics
@@ -258,7 +260,7 @@ mod resident {
             self.diagnostics.accepted.remove(node)
         }
         pub(crate) fn schedule(&mut self, command: &ExecutionCommand, input_stamp: &FrameStamp,
-            playback: &PlaybackSession, render: &RenderDevice) -> Result<(), String> {
+            playback: &FrameExecutionSession, render: &RenderDevice) -> Result<(), String> {
             if self.active.contains_key(&command.node_id) {
                 self.metrics.queued += 1; self.queued_nodes.insert(command.node_id.clone()); return Ok(());
             }
@@ -312,7 +314,7 @@ mod resident {
             self.metrics.submitted += 1;
             Ok(())
         }
-        pub(crate) fn next_completion(&mut self, playback: &PlaybackSession) -> Result<Option<AcceptedInferenceCompletion>, String> {
+        pub(crate) fn next_completion(&mut self, playback: &FrameExecutionSession) -> Result<Option<AcceptedInferenceCompletion>, String> {
             while let Some(completion) = self.completions.pop_front() {
                 self.metrics.completed += 1;
                 let matches = self.active.get(&completion.node_id).is_some_and(|active|
@@ -345,8 +347,7 @@ mod resident {
             Ok(None)
         }
         /// Retain the output lease while the graph can sample its registered native texture.
-        pub(crate) fn record_delivery(&mut self, accepted: AcceptedInferenceCompletion,
-            subscriptions: impl IntoIterator<Item = String>) {
+        pub(crate) fn record_delivery(&mut self, accepted: AcceptedInferenceCompletion, delivered: bool) {
             #[cfg(feature = "inference-diagnostics")]
             if let Some(snapshot) = self.diagnostics.pending.remove(&accepted.node_id) {
                 self.diagnostics.accepted.insert(accepted.node_id.clone(), snapshot);
@@ -354,14 +355,15 @@ mod resident {
             self.metrics.accepted += 1;
             self.retained_images.insert(accepted.node_id.clone(), accepted.image);
             if let Some(id) = accepted.subscription_id {
-                if self.event_subscriptions.get(&accepted.node_id) == Some(&id)
-                    && subscriptions.into_iter().any(|delivered| delivered == id) { self.output_events.push(accepted.event); }
+                if delivered && self.event_subscriptions.get(&accepted.node_id) == Some(&id) {
+                    self.output_events.push(accepted.event);
+                }
             }
         }
         pub(crate) fn record_rejection(&mut self) { self.metrics.rejected += 1; }
         pub(crate) fn take_output_events(&mut self) -> Vec<InferenceOutputEvent> { std::mem::take(&mut self.output_events) }
         #[cfg(test)]
-        pub(crate) fn queue_test_completion(&mut self, node: &str, playback: &PlaybackSession, image: GpuOutputHandle) {
+        pub(crate) fn queue_test_completion(&mut self, node: &str, playback: &FrameExecutionSession, image: GpuOutputHandle, input_stamp: FrameStamp) {
             self.next_task += 1;
             let active = Active { task_id: self.next_task, session_generation: SessionGeneration(0),
                 revision: playback.revision(), generation: playback.node_generation(node).unwrap() };
@@ -369,7 +371,7 @@ mod resident {
             self.completions.push_back(Completion { node_id: node.to_owned(), task_id: active.task_id,
                 stamp: RequestStamp { request_id: active.task_id, session_generation: active.session_generation },
                 revision: active.revision, generation: active.generation,
-                input_stamp: FrameStamp { epoch: 1, frame: active.task_id, timeline_ns: active.task_id, deadline_ns: active.task_id },
+                input_stamp,
                 result: Ok(ResidentImage::Test(image)) });
         }
     }

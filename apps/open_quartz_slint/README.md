@@ -17,13 +17,18 @@ pure dirty/Math/feedback to `evaluation::GraphEvaluator`, and applied graph
 identity/revision/generation/state to `evaluation::GraphInstance`.
 
 Slint's production coordinator is `open_quartz::player::NativePlayer` on the
-existing render worker. PlaybackSession owns only GraphInstance, composition
-clock and OutputHub. `outputs::OutputHub` owns contracts, subscriptions/registry,
-presentation planning, resources/backend/capabilities. `rendering::RenderDevice`
-owns GPU execution/readback/Windows presentation and uses the **same wgpu
-Device/Queue instance** as Slint. The internal `media::sources::VideoSources`
-owns the graph-source map/lifecycle/upload callback; `inference::tasks::InferenceTasks`
-owns resident graph-task identity/session/output adaptation. Independent `oq-inference/gpu`
+existing render worker. It owns the realtime CompositionClock and a shared
+`execution::FramePipeline`, not a separate PlaybackSession execution loop.
+`FrameExecutionSession` contains GraphInstance, OutputHub and the last evaluation
+stamp; `PlaybackSession` combines that same clock-free graph/output owner with a
+composition clock. The pipeline owns the session, RenderDevice, VideoSources,
+InferenceTasks, bounded stable-frame pool and admitted-request state.
+`outputs::OutputHub` owns contracts, subscriptions/registry, presentation planning,
+resources/backend/capabilities. `rendering::RenderDevice` owns GPU execution/readback/
+Windows presentation and uses the **same wgpu Device/Queue instance** as Slint.
+The internal `media::sources::VideoSources` owns graph-source map/lifecycle/upload
+callbacks; `inference::tasks::InferenceTasks` owns resident graph-task identity,
+session and output adaptation. Independent `oq-inference/gpu`
 owns the real ONNX GPU compiler and GpuImageSession, with no OpenQuartz/NodeId/UI
 dependency; wgpu is optional under its gpu feature. ORT named FP32 Tensor APIs
 remain explicit reference/diagnostics only, never a production fallback. Project/history/catalog remain in
@@ -39,14 +44,28 @@ The SR3 path is GPU texture → GPU BT.601/resize224 → full four-layer FP32 Co
 
 Source-only JSON: `cargo run -p oq-inference --example inspect_model -- MODEL.onnx`. Explicit resident/reference diagnostic: `ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --example resident_compare -- MODEL.onnx REPORT_DIR`. See [architecture and evidence](../../docs/INFERENCE_ARCHITECTURE.md); ORT/CoreML EP examples remain diagnostic only.
 
-The frame contract uploads current media, validates inference completions through
-`session.validate_completion` before changing GPU textures, advances/evaluates,
-and submits upstream GPU work before resident texture inference. NativePlayer selects
-the graph output for RenderDevice to present; OutputHub also supports an independent
-presentation backend path. Scalar advance preflights a candidate graph/clock and
-the whole scalar batch before commit; shared Arc graph/plan data avoids per-frame
-WGSL deep copies. PreparedNativeGraph stages images in fresh textures and owns
-prepared video handles; UI request generation differs from accepted graph revision.
+Phase 2 uses `FramePipeline::submit(FrameDemand)` with explicit request/revision,
+FrameEvaluationInput/FrameStamp, target output, and optional versioned external
+StableFrame inputs. Accepted demands progress only through `progress` on the owning
+render worker; `poll_completion` drains a terminal result without executing work or
+advancing a clock. One pending demand **or undrained terminal** blocks admission;
+WouldBlock/Rejected return the unaccepted demand and its leases. NativePlayer commits
+its candidate clock only after admission. The clock-free session preflights the
+candidate graph and whole scalar output batch; shared Arc graph/plan data avoids
+per-frame WGSL deep copies.
+
+The pipeline submits upstream GPU work before resident inference, validates its
+completion identity/contracts/capacity before changing textures, and waits for the
+same demand's input stamp before running downstream Shader/Renderer commands.
+All dependencies must resolve before the bounded pool captures a stable output.
+Submitted(StableFrame) means graph work and the detach copy are enqueued; physical
+GPU completion is separate in `frame.ready`. Pool saturation retains the demand
+until capacity returns. NativePlayer consumes completion and asks RenderDevice to
+present; OutputHub retains its independent backend presentation path. Current media
+still uses sequential sources and blocking GPU import: precise source-time selection,
+prefetch, credits and multiple in-flight frames remain future phases.
+PreparedNativeGraph stages images in fresh textures and owns prepared video handles;
+UI request generation differs from accepted graph revision.
 
 Close invalidates pending publication and releases descriptors, not live GPU leases.
 TextureHandle/GpuOutputHandle/RenderUpdate and Slint's current handles retain the output
@@ -57,10 +76,10 @@ source/pixels; request generation differs from accepted revision. Independent `.
 keeps its own loop but inference export/stub execution is unavailable (CPU forbidden);
 non-inference Shader/hardware-video export remains available.
 
-Advanced paths use these modules without old execution/runtime namespaces or
-class aliases; the old directories are removed. Actual state, resources and calls
-have moved to their owners. Confirmed files are in the
-[source index](../../docs/DESIGN.md#source-map).
+The `execution` module now contains this shared production implementation; it does
+not restore the former empty execution/runtime facades, class aliases or duplicate
+media frame contracts. No extra crate, device or default device dependency is added.
+Confirmed files are in the [source index](../../docs/DESIGN.md#source-map).
 The default remains device-free; Slint explicitly selects `native-runtime`
 (enables gpu only), `native-video`, `native-onnx`, `model-cache`, and Windows
 `native-video-d3d12`, retaining the existing feature names and behavior.
@@ -228,7 +247,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   the UI does not interpret project JSON.
 - A file worker performs disk I/O, resource decoding, and SDK parsing/serialization.
   A separate render worker owns `open_quartz::player::NativePlayer`;
-  it coordinates PlaybackSession and GPU/video/inference owners.
+  its realtime clock feeds the shared FramePipeline, which owns graph/GPU/video/inference execution.
   The former native host crate and PlayerHost forwarding layer have been removed.
 - The render bridge creates one wgpu 30 device/queue, clones those same handles
   into `NativePlayer::from_shared_wgpu`, and passes the originals to Slint's
@@ -236,14 +255,16 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   and provides its output texture. A Slint timer imports the latest texture using
   `slint::Image::try_from`; frames do not go through pixel readback or encoded URLs.
   Graph generations discard stale output after opening another project.
-  Phase 1 now snapshots the main/selected preview through NativePlayer's bounded
-  stable-frame pool (three slots / 256 MiB by default). GPU detach copies preserve
-  pixels while asynchronous consumers retain them; node cards remain live views.
+  Phase 1's bounded stable-frame pool (three slots / 256 MiB by default) remains.
+  Phase 2 returns stable demand output through that pool; main/selected preview
+  reuses the completed snapshot or captures another output when needed. GPU detach
+  copies preserve pixels while asynchronous consumers retain them; node cards stay live.
   On macOS, a Metal texture ownership guard follows Slint's actual texture clones,
   including screenshot/cache use, and pool reuse waits for queue completion.
   Paused preview requests retry capacity exhaustion without resuming playback.
-  Other platforms have not received this phase's hardware acceptance. See the
-  [Phase 1 evidence and limitations](../open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
+  Historical Phase 1 evidence is not Phase 2 verification; other platforms have not
+  received this phase's hardware acceptance. See the
+  [phase implementation and evidence records](../open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
 - Model cache/download/checksum/session preparation lives in `open_quartz::resources::models`, and runs on model workers. Ticket/generation validation still precedes session attachment; the render loop performs no downloads. Capabilities are enabled by the Slint app's explicit core features.
   Historical acceptance records below use the former NativeHost implementation name.
 - If GPU/host initialization fails, the shell attempts Slint's default UI backend

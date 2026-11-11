@@ -215,6 +215,11 @@ impl OutputHub {
         self.outputs.drain()
     }
 
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn take_latest_delivery(&mut self, subscription_id: &str) -> bool {
+        self.outputs.take_latest_delivery(subscription_id)
+    }
+
     pub fn subscribe_presentation(
         &mut self,
         subscription: PresentationSubscription,

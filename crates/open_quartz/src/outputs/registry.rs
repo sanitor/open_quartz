@@ -300,6 +300,12 @@ impl OutputRegistry {
         }
     }
 
+    /// Consume only an internal Latest/OnChange notification, preserving public queues.
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn take_latest_delivery(&mut self, subscription_id: &str) -> bool {
+        self.pending_latest.remove(subscription_id).is_some()
+    }
+
     pub fn drain(&mut self) -> OutputDeliveryBatch {
         let mut deliveries = self.pending_every.drain(..).collect::<Vec<_>>();
         deliveries.extend(std::mem::take(&mut self.pending_latest).into_values());

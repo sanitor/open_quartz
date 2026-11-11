@@ -507,10 +507,11 @@ fn native_player_stable_preview_backpressure_and_graph_replacement() {
         for (n, frame) in held.iter().enumerate() {
             frame.ready.wait(Duration::from_secs(5)).unwrap();
             assert_eq!(frame.identity.graph_revision, first_revision);
-            assert!(
-                frame.identity.content_stamp.is_none(),
-                "unknown graph content time must not be invented"
-            );
+            let evaluated = frame.identity.evaluation_stamp.as_ref().expect("accepted frame stamp");
+            let content = frame.identity.content_stamp.as_ref().expect("composition identity");
+            assert_eq!(content.timeline_ns, evaluated.timeline_ns);
+            assert_eq!(content.epoch, evaluated.epoch);
+            assert!(content.media_pts_ns.is_none(), "source PTS is not inferred from the playback clock");
             let got = backend
                 .read_texture_rgba(&frame.output().texture, 2, 2)
                 .await
@@ -532,6 +533,11 @@ fn native_player_stable_preview_backpressure_and_graph_replacement() {
                     timeout: Some(Duration::from_secs(5)),
                 })
                 .unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if player.render_next().unwrap().width > 0 { break; }
+            assert!(std::time::Instant::now() < deadline, "released pool did not complete the admitted frame");
         }
         let green = player.try_stable_preview("color").unwrap().unwrap();
         assert_eq!(green.identity.graph_revision, next_revision);

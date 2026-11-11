@@ -4,42 +4,34 @@ use crate::media::native::NativeVideoSourceKind;
 use std::time::{Duration, Instant};
 
 #[test]
-fn prepared_camera_rejection_leaves_source_collection_unchanged() {
-    let mut sources = VideoSources::new();
+fn camera_preparation_rejects_cpu_fallback() {
     for preview in [false, true] {
-        let error = sources.attach("camera", NativeVideoConfig {
+        let error = PreparedVideoSource::open(NativeVideoConfig {
             kind: NativeVideoSourceKind::Camera,
             source: "__fail_reader_spawn__".to_owned(),
             looping: false,
             playback_rate: 1.0,
-        }, preview).unwrap_err();
+        }, preview).err().expect("camera preparation must reject CPU fallback");
         assert!(error.contains("camera capture"), "{error}");
         assert!(error.contains("CPU decode/upload fallback is disabled"), "{error}");
-        assert!(sources.node_ids().is_empty());
-        assert_eq!(sources.frame_counts(), (0, 0));
-        assert!(!sources.is_active());
-        assert!(sources.upload_frames(|_, _, _, _| panic!("rejected source produced a frame")).unwrap().is_empty());
     }
 }
 
 #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
 #[test]
 fn prepared_file_rejects_unsupported_backend_before_file_access() {
-    let mut sources = VideoSources::new();
-    let error = sources.attach("video", NativeVideoConfig {
+    let error = PreparedVideoSource::open(NativeVideoConfig {
         kind: NativeVideoSourceKind::File,
         source: "missing".to_owned(),
         looping: false,
         playback_rate: 1.0,
-    }, true).unwrap_err();
+    }, true).err().expect("unsupported backend must reject before file access");
     assert!(error.contains("no hardware-resident video decoder"), "{error}");
-    assert!(sources.node_ids().is_empty());
-    assert_eq!(sources.frame_counts(), (0, 0));
 }
 
 #[cfg(any(target_os = "macos", all(windows, feature = "native-video-d3d12")))]
 #[test]
-fn hardware_source_upload_retries_and_failed_replacement_preserves_decoder() {
+fn hardware_source_upload_retries_and_tracks_lifecycle() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/white_64x64.mp4");
     if !path.is_file() { return; }
@@ -50,8 +42,9 @@ fn hardware_source_upload_retries_and_failed_replacement_preserves_decoder() {
         playback_rate: 1.0,
     };
     let mut sources = VideoSources::new();
-    let info = sources.attach("video", config.clone(), true)
+    let prepared = PreparedVideoSource::open(config.clone(), true)
         .expect("fixture must open through the real hardware backend, never software fallback");
+    let info = sources.attach_prepared("video", prepared);
     assert_eq!((info.width, info.height), (64, 64));
     assert!(info.fallback_reason.is_none());
     #[cfg(target_os = "macos")]
@@ -69,14 +62,6 @@ fn hardware_source_upload_retries_and_failed_replacement_preserves_decoder() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(sources.metrics("video").unwrap().uploaded_frames, 0);
-    let error = sources.attach("video", NativeVideoConfig {
-        kind: NativeVideoSourceKind::Camera,
-        source: "0".to_owned(),
-        looping: false,
-        playback_rate: 1.0,
-    }, true).unwrap_err();
-    assert!(error.contains("camera capture"), "{error}");
-    assert_eq!(sources.node_ids(), ["video"]);
     let dirty = sources.upload_frames(|node_id, frame, width, height| {
         assert_eq!(node_id, "video");
         assert_eq!((width, height), (64, 64));
@@ -104,7 +89,7 @@ fn hardware_source_upload_retries_and_failed_replacement_preserves_decoder() {
     assert!(!sources.is_active());
     assert_eq!(sources.frame_counts(), (0, 0));
     assert!(sources.metrics("video").is_err());
-    sources.attach("video", config, true).unwrap();
+    sources.attach_prepared("video", PreparedVideoSource::open(config, true).unwrap());
     assert_eq!(sources.node_ids(), ["video"]);
     sources.clear();
     assert!(sources.node_ids().is_empty());

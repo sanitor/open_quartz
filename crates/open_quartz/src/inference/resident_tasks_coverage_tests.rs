@@ -1,16 +1,16 @@
 use super::*;
-fn setup() -> (InferenceTasks, PlaybackSession) {
+fn setup() -> (InferenceTasks, FrameExecutionSession) {
     let graph: Graph = serde_json::from_value(serde_json::json!({"nodes":[{
         "id":"model","type":"inference","position":{"x":0,"y":0},"data":{
             "type":"inference","label":"Model","shaderCode":"","inputs":[],"uniforms":{},
             "outputs":[{"id":"out","label":"image","dataType":"sampler2D","direction":"output"}]}
     }],"edges":[]})).unwrap();
-    let mut playback = PlaybackSession::new_native(crate::outputs::PlaybackCapabilities { data_paths: vec![] });
+    let mut playback = FrameExecutionSession::new_native(crate::outputs::PlaybackCapabilities { data_paths: vec![] });
     playback.set_graph(&graph).unwrap();
     let mut tasks = InferenceTasks::new(); tasks.sync_graph(&graph, &mut playback).unwrap();
     (tasks, playback)
 }
-fn pending(tasks: &mut InferenceTasks, playback: &PlaybackSession, id: u64) -> Completion {
+fn pending(tasks: &mut InferenceTasks, playback: &FrameExecutionSession, id: u64) -> Completion {
     let active = Active { task_id: id, session_generation: SessionGeneration(7), revision: playback.revision(),
         generation: playback.node_generation("model").unwrap() };
     tasks.active.insert("model".to_owned(), active);

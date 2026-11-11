@@ -30,16 +30,6 @@ impl VideoSources {
         Self::default()
     }
 
-    pub fn attach(
-        &mut self,
-        node_id: &str,
-        config: NativeVideoConfig,
-        preview_only: bool,
-    ) -> Result<NativeVideoInfo, String> {
-        let prepared = PreparedVideoSource::open(config, preview_only)?;
-        Ok(self.attach_prepared(node_id, prepared))
-    }
-
     pub fn attach_prepared(&mut self, node_id: &str, prepared: PreparedVideoSource) -> NativeVideoInfo {
         let info = prepared.source.info().clone();
         self.sources.insert(node_id.to_owned(), prepared.source);

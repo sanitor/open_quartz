@@ -297,7 +297,7 @@ fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
         node_id: "onnx-1".to_owned(),
         graph_revision: runtime.revision(),
         node_generation: runtime.node_generation("onnx-1").unwrap(),
-        input_stamp: stamp(4),
+        input_stamp: runtime.last_evaluation().unwrap().clone(),
         content_stamp: ContentStamp {
             epoch: 3,
             timeline_ns: 60,
@@ -308,6 +308,9 @@ fn runtime_rejects_stale_async_completions_and_preserves_launch_stamp() {
             OutputPayload::Json(json!({ "ok": true })),
         )],
     };
+    let mut stale_epoch = completion.clone();
+    stale_epoch.input_stamp.epoch = stale_epoch.input_stamp.epoch.saturating_add(1);
+    assert!(runtime.submit_completion(stale_epoch).is_err());
     runtime.submit_completion(completion.clone()).unwrap();
     let delivered = runtime.drain_deliveries().deliveries.remove(0).state;
     assert_eq!(delivered.evaluation_stamp, completion.input_stamp);

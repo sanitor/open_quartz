@@ -8,18 +8,21 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::evaluation::EngineEvent;
-use crate::media::native::{find_ffmpeg, NativeVideoSourceKind};
+use crate::media::native::{find_ffmpeg, NativeVideoSourceKind, NativeVideoConfig};
 use crate::project::model::InputMode;
 
 use super::*;
 
 fn planned_dirty_node_count(host: &mut NativePlayer, input: &mut SessionFrameInput) -> u32 {
-    host.session.drain_events();
-    host.session.advance(input).unwrap();
+    host.pipeline.session.drain_events();
+    host.pipeline.session.evaluate(&FrameEvaluationInput {
+        stamp: FrameStamp { epoch: 1, frame: input.now_ns, timeline_ns: input.now_ns, deadline_ns: input.now_ns },
+        previous_timeline_ns: input.now_ns.saturating_sub(16_666_667),
+        date: input.date, mouse: input.mouse, resolution: input.resolution,
+    }).unwrap();
     input.now_ns += 16_666_667;
-    host.session.drain_commands();
-    let counts: Vec<_> = host
-        .session
+    host.pipeline.session.drain_commands();
+    let counts: Vec<_> = host.pipeline.session
         .drain_events()
         .into_iter()
         .filter_map(|event| match event {
@@ -132,10 +135,43 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
     let metrics = host.video_metrics("source").unwrap();
     assert!(metrics.decoded_frames > 0);
     assert!(metrics.uploaded_frames > 0);
-    let (video_pixels, width, height) = host.render_device.read_output_rgba("source").unwrap();
+    let (video_pixels, width, height) = host.pipeline.render_device.read_output_rgba("source").unwrap();
     assert_eq!((width, height), (64, 64));
     assert_eq!(video_pixels.len(), 64 * 64 * 4);
     assert!(host.videos.is_active(), "looping decoder must still be active");
+
+    for detach in [false, true] {
+        let request = crate::execution::FrameDemand {
+            request_id: if detach { 2 } else { 1 }, graph_revision: host.revision(),
+            output_node_id: "source".into(), sources: vec![],
+            input: FrameEvaluationInput {
+                stamp: FrameStamp { epoch: 1, frame: if detach { 2 } else { 1 }, timeline_ns: 0, deadline_ns: 100 },
+                previous_timeline_ns: 0, date: [0.0; 4], mouse: [0.0; 4], resolution: [64.0, 64.0, 1.0],
+            },
+        };
+        assert!(matches!(host.pipeline.submit(request), crate::execution::FrameAdmission::Accepted));
+        if detach { host.detach_video("source").unwrap(); }
+        else {
+            host.attach_video("source", NativeVideoConfig {
+                kind: NativeVideoSourceKind::File, source: path.to_string_lossy().into_owned(),
+                looping: true, playback_rate: 1.0,
+            }).unwrap();
+        }
+        assert!(matches!(host.pipeline.poll_completion().unwrap().outcome, crate::execution::FrameOutcome::Cancelled));
+        host.pipeline.progress();
+        assert!(host.pipeline.poll_completion().is_none());
+        assert!(!host.has_output_texture("source"));
+    }
+    host.attach_video("source", NativeVideoConfig {
+        kind: NativeVideoSourceKind::File, source: path.to_string_lossy().into_owned(),
+        looping: true, playback_rate: 1.0,
+    }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !host.has_output_texture("source") {
+        host.upload_video_frames().unwrap();
+        assert!(Instant::now() < deadline, "replacement video did not publish a frame");
+        thread::sleep(Duration::from_millis(10));
+    }
 
     let mut input = SessionFrameInput {
         now_ns: 1_000_000_000,
@@ -146,11 +182,11 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
     planned_dirty_node_count(&mut host, &mut input);
     assert_eq!(planned_dirty_node_count(&mut host, &mut input), 1);
 
-    let old_revision = host.session.revision();
-    let old_state = host.session.state();
-    let old_plan = serde_json::to_value(host.session.execution_plan().unwrap()).unwrap();
-    let old_source_generation = host.session.node_generation("source").unwrap();
-    let old_image_generation = host.session.node_generation("unchanged").unwrap();
+    let old_revision = host.pipeline.session.revision();
+    let old_state = host.pipeline.session.state();
+    let old_plan = serde_json::to_value(host.pipeline.session.execution_plan().unwrap()).unwrap();
+    let old_source_generation = host.pipeline.session.node_generation("source").unwrap();
+    let old_image_generation = host.pipeline.session.node_generation("unchanged").unwrap();
     let old_metrics = host.video_metrics("source").unwrap();
     let old_video_texture = host.preview_source("source").unwrap();
     let mut candidate_graph = graph.clone();

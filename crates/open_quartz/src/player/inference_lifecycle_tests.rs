@@ -41,7 +41,7 @@ fn configured_resident_model_runs_on_the_renderers_original_device_and_queue() {
     let frame = host.render_next().unwrap();
     assert_eq!((frame.width, frame.height), (6, 6));
     // Test-only observation. Native inference itself never calls read_output.
-    let pixels = host.render_device.read_output_rgba("renderer").unwrap();
+    let pixels = host.pipeline.render_device.read_output_rgba("renderer").unwrap();
     assert_eq!((pixels.1, pixels.2), (6, 6));
     assert!(pixels.0.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
     let metrics = host.inference_metrics();
@@ -54,7 +54,7 @@ fn configured_resident_model_runs_on_the_renderers_original_device_and_queue() {
     assert_eq!(metrics.failed, 0); assert_eq!(metrics.rejected, 0);
     assert!(host.take_inference_events().iter().any(|event| event.node_id == "model" && event.backend == "metal"));
     // Re-evaluation with a retained prior output exercises independent output leases.
-    host.session.mark_dirty("model").unwrap();
+    host.pipeline.session.mark_dirty("model").unwrap();
     host.render_next().unwrap(); host.render_next().unwrap();
     assert_eq!(host.render_device.read_output_rgba("renderer").unwrap().0, pixels.0);
     host.stop().unwrap(); host.unload_inference("model");
@@ -85,17 +85,17 @@ fn retained_output_capacity_coalesces_without_failing_and_retries_after_release(
     host.start_playback().unwrap();
     let mut consumers = Vec::new();
     for _ in 0..3 {
-        host.session.mark_dirty("model").unwrap();
+        host.pipeline.session.mark_dirty("model").unwrap();
         host.render_next().unwrap();
         host.render_next().unwrap();
-        consumers.push(host.render_device.output_handle("model").unwrap());
+        consumers.push(host.pipeline.render_device.output_handle("model").unwrap());
     }
     let before = host.inference_metrics();
     assert_eq!(before.device_submissions, 3);
     assert_eq!(before.accepted, 3);
-    let current = host.render_device.output_handle("model").unwrap();
+    let current = host.pipeline.render_device.output_handle("model").unwrap();
     host.take_inference_events();
-    host.session.mark_dirty("model").unwrap();
+    host.pipeline.session.mark_dirty("model").unwrap();
     host.render_next().unwrap();
     host.render_next().unwrap();
     let blocked = host.inference_metrics();
@@ -108,7 +108,7 @@ fn retained_output_capacity_coalesces_without_failing_and_retries_after_release(
     assert_eq!(blocked.queue_depth, 1);
     assert!(host.take_inference_events().is_empty());
     assert!(Arc::ptr_eq(&current.texture, &host.render_device.output_handle("model").unwrap().texture));
-    let pixels = host.render_device.read_output_rgba("renderer").unwrap().0;
+    let pixels = host.pipeline.render_device.read_output_rgba("renderer").unwrap().0;
     assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
     drop(consumers.remove(0));
     host.render_next().unwrap();

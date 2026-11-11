@@ -40,8 +40,8 @@ fn unsupported_video_and_inference_rejection_preserves_current_rendered_graph() 
         runtime.start_playback().unwrap();
         runtime.render_next().unwrap();
         let before = runtime.read_output("renderer").unwrap();
-        let plan = serde_json::to_value(runtime.session.execution_plan().unwrap()).unwrap();
-        let generation = runtime.session.node_generation("shader").unwrap();
+        let plan = serde_json::to_value(runtime.pipeline.session.execution_plan().unwrap()).unwrap();
+        let generation = runtime.pipeline.session.node_generation("shader").unwrap();
         assert_eq!(before.len(), 8 + 2 * 2 * 4);
         assert!(before[8..].chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
         assert!(runtime.has_graph());
@@ -88,9 +88,9 @@ fn invalid_graph_shader_and_target_leave_revision_generation_and_pixels_intact()
         player.start_playback().unwrap();
         player.render_next().unwrap();
         let pixels = player.read_output("renderer").unwrap();
-        let generation = player.session.node_generation("shader").unwrap();
-        let plan = serde_json::to_value(player.session.execution_plan().unwrap()).unwrap();
-        let state = player.session.state();
+        let generation = player.pipeline.session.node_generation("shader").unwrap();
+        let plan = serde_json::to_value(player.pipeline.session.execution_plan().unwrap()).unwrap();
+        let state = player.pipeline.session.state();
         let mut duplicate: serde_json::Value = serde_json::from_str(&graph).unwrap();
         let shader = duplicate["nodes"][0].clone();
         duplicate["nodes"].as_array_mut().unwrap().push(shader);

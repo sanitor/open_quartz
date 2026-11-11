@@ -6,6 +6,7 @@ pub mod player;
 pub mod compiler;
 pub mod evaluation;
 pub mod outputs;
+pub mod execution;
 #[cfg(feature = "gpu")]
 pub mod rendering;
 pub mod inference;

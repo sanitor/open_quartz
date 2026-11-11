@@ -1,4 +1,6 @@
 use super::*;
+use crate::outputs::{AsyncCompletionEnvelope, ContentStamp, HostBackend, OutputKey, OutputPayload, OutputSubscription, PresentationSet, ResourceDescriptor};
+use crate::project::Graph;
 use serde_json::json;
 use crate::outputs::{DeliveryPolicy, OutputTransport};
 use std::sync::atomic::{AtomicBool, Ordering};

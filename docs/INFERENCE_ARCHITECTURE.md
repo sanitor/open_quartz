@@ -86,9 +86,11 @@ catalog U²Net-P 的全部七个输出 `1959`–`1965` 保留在 source facts，
 
 应用模型 worker 根据 typed `LoadInference` 意图解析来源、下载/校验缓存并准备 GPU 模型；政策参与资源 key。文件/weights 解析与 initial upload 在准备边界执行，不在每帧热路径读取模型文件。ticket/cancel、项目 revision、node/session generation 保证过期准备结果不能挂回当前节点。项目只保存逻辑模型、任务与政策，不保存 live queue、指针、下载进度或设备地址。
 
-`NativePlayer` 在 render worker 上协调 `PlaybackSession`、`RenderDevice` 与内部 `InferenceTasks`。上游 GPU work 先按同一 queue 提交，再使用输入 texture 执行网络，输出直接进入下游 Shader/Slint。queue order 与 completion fences 约束 producer/consumer 生命周期。request/task id、FrameStamp 与 graph/node/session 身份仍用于拒绝过期交付，完整输出契约和容量校验先于发布；内容时间不能冒充显示时间。
+`NativePlayer` 在原 render worker 上拥有实时 CompositionClock 和共享 `execution::FramePipeline`。pipeline 持有 `RenderDevice`、`VideoSources`、`InferenceTasks`、稳定帧池及 `FrameExecutionSession`；session 本身只持有 GraphInstance/OutputHub 与求值 stamp，不持有推理 session 或设备资源。PlaybackSession 为同一无时钟图/输出 owner 加 clock，不另维护执行状态。模型准备仍在应用 worker，真实网络仍由独立 oq-inference 执行，不新增 crate/设备。
 
-输出最多三槽。`TextureHandle` / `GpuOutputHandle` / `RenderUpdate` 与 Slint 当前 handles 保留输出 lease owner；只要任一消费者持有，output pool 不得复用该槽。三槽全部占用时合并为有界 queued/ready 重试，不提交第四个任务、不增加失败计数、不覆盖既有纹理或事件；释放 lease 后使用最新 source 重试。Pause/Stop/卸载/关闭取消新派发或发布身份，不提前释放尚在 GPU/消费者使用的资源。`completed` 表示 publication-ready，不是物理 GPU fence 完成；submission wall 不等于 GPU 执行时间。
+Phase 2 demand 携带 request ID、graph revision、显式 FrameEvaluationInput/FrameStamp 与可选版本化 ExternalFrameInput/StableFrame。一个已接收请求或未取走终态即占 admission；所属 worker 调用 `progress`，`poll_completion` 只取结果。上游 GPU work 先按同一 queue 提交，遇到推理命令便在**同一 demand 内**等待该输入 stamp 的有效完成，再执行下游 Shader/Renderer，而不是下一次 clock tick 使用旧推理纹理。request/task id、FrameStamp 与 graph/node/session 身份用于拒绝过期交付；完整契约和容量校验先于纹理注册/发布。内部推理通知只消费自己的订阅交付，不排空外部 OutputHub 订阅。queue order/fences 约束 producer/consumer 生命周期，内容时间不能冒充显示时间。
+
+推理输出最多三槽。`TextureHandle` / `GpuOutputHandle` / `RenderUpdate` 与 Slint handles 保留 output lease；任一消费者持有时不得复用。饱和时有界等待/重试，不提交第四个任务，不覆盖旧纹理/事件，也不把容量等待计为推理失败；当前 pipeline 保留同一 demand，不用后续帧替换它的依赖。全部依赖满足后，目标图输出再复制为稳定帧；Submitted(StableFrame) 表示图与 copy 已提交，物理 GPU 完成由 `frame.ready` 单独表示，消费者释放决定池复用。推理 metrics 的 `completed` 仍是 publication-ready，不是物理 fence 完成；submission wall 不是 GPU 时间。Pause/Stop/卸载/关闭取消派发/发布身份，不提前释放 GPU/消费者仍使用的资源。精确媒体时间选择、预取、多帧窗口和跨阶段 credit 均属后续 Phase，当前媒体导入仍阻塞。
 
 ## 媒体与允许的 CPU 边界
 

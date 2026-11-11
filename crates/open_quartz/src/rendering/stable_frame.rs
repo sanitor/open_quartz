@@ -110,6 +110,10 @@ pub struct StableFrame {
 }
 
 impl StableFrame {
+    pub(crate) fn belongs_to(&self, backend: &GpuBackend) -> bool {
+        Arc::ptr_eq(&self.ready.device, &backend.device)
+    }
+
     pub fn output(&self) -> &GpuOutputHandle {
         &self.output
     }

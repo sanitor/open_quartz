@@ -357,7 +357,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。顺序为 Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8；每个 Phase 须有真实可运行纵向路径，不用空接口/假 codec 过关。Phase 0 已提交，Phase 1 已实施并完成下列局部行为/硬件验收（整体 coverage gate 仍红），Phase 2～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐；共享流水不能等到最后才迁移 NativePlayer。
+本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。顺序为 Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8；每个 Phase 须有真实可运行纵向路径，不用空接口/假 codec 过关。Phase 0/1 已提交，Phase 2 已实现共享执行及局部硬件验收（整体 coverage gate 仍红），Phase 3～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐；共享流水不能等到最后才迁移 NativePlayer。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -398,7 +398,7 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-Phase 0 设计基线已提交为 `895a32c`。本提交为 **Phase 1 稳定帧与完成协议**；Phase 2～8 未开始，新编辑器仍只有设计目录。本阶段新增功能与受影响回归通过下述验收，**不是全仓 100% coverage 或发布 gate 已通过**。
+Phase 0 设计基线已提交为 `895a32c`，Phase 1 稳定帧与完成协议已提交。以下先保留 Phase 1 的历史证据，再记录本次 **Phase 2 共享流水切换**；Phase 3～8 未开始，新编辑器仍只有设计目录。局部新增功能与受影响回归不等于全仓 100% coverage 或发布 gate 已通过。
 
 实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
 
@@ -432,6 +432,43 @@ Phase 0 设计基线已提交为 `895a32c`。本提交为 **Phase 1 稳定帧与
 | 同 FFmpeg 环境下 `npm run test:sdk-coverage` | 测试默认 143+16、native 238+33（1 ignored）通过，但两项 100% gates 失败；默认 lines/functions/regions=96.29/95.32/95.98%，native=90.68/83.80/84.54%。新增 stable_frame.rs=95.80/86.96/91.30%；未覆盖含格式化错误诊断和设备错误分支，不通过测试字符串来填数，不增加 exclusion/放宽门槛 |
 
 限制：整体 coverage 红色状态保留，未发布；未测其他平台、硬件 encoder/随机 seek、完整流水性能或新编辑器；未运行本轮七模型完整 inference UI。此阶段只交付稳定快照和消费回收，Phase 2 才迁移共享执行流水。默认预算是保守配置不是吞吐保证；时间 provenance 未知不伪造，也不因独立快照可用就宣称预览/导出帧已完整同帧绑定。
+
+#### Phase 2：共享执行与原图宿主切换
+
+实际边界：`FrameExecutionSession` 只拥有 GraphInstance/OutputHub 与显式求值事务；`FramePipeline` 组合该状态、RenderDevice、VideoSources、InferenceTasks 和稳定池。这样默认无设备的 PlaybackSession 可以复用同一图/输出实现，不把 GPU/codec 依赖拉入默认闭包。NativePlayer 保留 CompositionClock、内容需求/输入/呈现政策，源上传→命令→同 demand 推理依赖→稳定完成统一由 pipeline 执行；不保留旧图求值/推理完成循环。
+
+每会话一个 admitted demand（含未取走终态）；满时 WouldBlock 返回原需求与所有输入 lease。请求携带 revision、epoch/request id、显式时间/前一时间、目标输出和外部源版本；拒绝过期身份、版本别名和跨设备输入，Every 预检失败恢复绑定。`progress` 在所属 worker 推进、`poll_completion` 只取终态；Submitted 表示图依赖和快照 copy 已提交，物理完成仍由 frame.ready 表达。池满保留同请求，取消/替图/卸载/关闭只产生一个终态，已提交 GPU 资源仍按 owner/completion 回收。推理完成只消费内部 OnChange 通知，不吞掉外部 Every/Latest 交付（新增真实 GPU 回归曾失败为空队列，修复后通过）。
+
+补充错误恢复：已加载推理缺少纹理且无活动生产者时明确失败，不无限 pending；失败后恢复未完成命令的 dirty 状态，下一请求不能把已分配但从未执行的空纹理当成成功（两项均保留失败前/修复后回归）。直接 attach/detach 视频与图提交一样取消旧 demand、清除 latest/旧 source binding；替换源先准备成功再改变当前状态，准备失败保留旧源。永久 `video_to_image_same_id_drops_decoder_and_preserves_image_textures` 同时验证这两种在途取消/无重复终态。
+
+媒体仍使用顺序当前帧，VideoToolbox importer 的宿主等待保留；无可靠 source PTS 时保持 None，不将 composition timeline 冒作媒体 PTS。无时钟并不等于随机取帧或多帧并行；精确帧区间/seek 属 Phase 3，多窗口/credit/共享物理预算和非阻塞完成属 Phase 4，encoder/mux 属 Phase 5。
+
+需求映射（永久 case 位于 `execution/session_tests.rs` 与 `execution/pipeline_tests.rs`；GPU 使用真实 Metal，读回只作为 oracle）：
+
+| 不变量 | case / 可观察断言 |
+|---|---|
+| 显式内容时间、请求顺序/唯一终态 | `explicit_time_frames_have_one_terminal_and_return_blocked_input_ownership`：0.25/0.75 秒输出红蓝通道精确像素；旧/重复 request、旧 epoch 拒绝，新 epoch 可重置编号 |
+| 输入版本/设备和失败前状态 | `external_source_versions_and_wrong_owner_reject_before_mutation`；`every_preflight_restores_external_binding_and_retries_without_losing_demand`：拒绝不改旧红色绑定/求值，容量释放后重试蓝色 |
+| 同帧依赖、不可覆盖源/结果、外部订阅 | `real_gpu_inference_keeps_each_demand_source_until_same_frame_result_and_cancels_unload`：真实 GPU SR3 红→蓝、launch stamp 123/456、旧帧不变、两次 Every 均交付、卸载只取消一次、host bytes=0 |
+| 有界池/取消/关闭/恢复 | `output_pool_backpressure_cancellation_and_close_keep_exactly_one_terminal`；`released_consumer_finishes_the_same_admitted_request_without_resubmission`；原 NativePlayer 慢消费者/替图回归 |
+| 图准备失败和旧 revision | `rejected_graph_staging_keeps_request_and_valid_replacement_cancels_old_revision`：无效图保留 pending，合法替图先取消旧请求，下一请求显示新图 |
+| Every/Latest、epoch 和 feedback | `no_clock_evaluation_and_every_rejection_preserve_graph_until_retry`；`completion_epoch_is_checked_before_publication_and_dirty_changes`；`new_epoch_resets_feedback_but_same_epoch_preserves_history`；真实 Gray-Scott 窗口演化 |
+| 真实窗口生命周期 | Shader→原始 SR3→Renderer 24×24：暂停 hash 相等，真实源码替图红→蓝；硬解视频→SR3→Renderer 960×576：像素变化、暂停 hash 相等、Resume 继续；两实例 CloseRequested 正常 exit 0 |
+
+本轮命令与证据（macOS / Apple M4 Pro / Metal）：
+
+| 命令/场景 | 结果 |
+|---|---|
+| `cargo test --locked --workspace` | 275 passed；默认边界保持 |
+| 设置 FFmpeg executable 后，`cargo test --locked -p open_quartz -p oq-inference --features native-runtime,native-video,native-onnx,model-cache -- --test-threads=1` | 405 passed、1 ignored；新增 12 项 execution 回归与原宿主均运行。删除旧 source attach 后，`cargo test ... media::sources:: -- --test-threads=1` 两项硬件源测试通过；完整 coverage 重跑包含最终入口 |
+| `npm run test:desktop` | 80 passed、2 原有 opt-in ignored |
+| `npm run test:desktop:ui` | 19/19，[最终报告](../../test-results/slint-ui/interaction-2026-11-11T12-03-19-248Z/report.html) |
+| `npm run test:desktop:shaders` | 34/34，[报告](../../test-results/slint-ui/shaders-2026-11-11T11-47-44-778Z/report.html) |
+| MCP 实际模型窗口 smoke | [最终证据/样本 hash](../../test-results/slint-ui/phase2-2026-11-11T12-05-18-256Z/evidence.json)、[视频 Resume](../../test-results/slint-ui/phase2-2026-11-11T12-05-18-256Z/video-resumed.png)。原始 SR3 SHA256=85f36ff88cc504a24af5e0602148bc56a8aa09a58eca8c0da2756f3e8186035e；NASA 公共领域夹具沿 manifest 许可/hash。ORT 路径不存在；视频提交 98、接受 97、暂停取消 1，failed/rejected/stale=0，逐帧四项 host bytes=0。仅传输/生命周期验收，不重测模型数值精度；MCP 调用实际 Load/Play/Pause/Resume/Apply，通过 stdin 注入真实 CloseRequested，非标题栏鼠标关闭 |
+| `npm run check:rust-boundaries` | 默认/feature/独立推理边界通过 |
+| 同 FFmpeg 环境 `npm run test:sdk-coverage` | 默认 147+16、native 250+33（1 ignored）测试通过，两个 100% gates **仍失败**；line/function/region：默认 96.11/95.30/95.96%，native 90.11/83.40/84.54%。execution/pipeline.rs=81.94/73.96/82.98%，session.rs=89.39/88.00/90.37%；迁移代码纳入统计，未加 exclusion/改阈值；rustfmt 后物理行数变化，百分比不与格式化前逐行直比 |
+
+窗口 smoke 最初两次因指标在可视区域外未读到而失败；改为滚动到指标文本。另一次运行中查询遇已销毁 MCP handle，改为暂停后采集再恢复；这些是验收探针修正，不伪称前次通过。限制：整体 coverage 仍红、未发布；本轮未重跑七模型完整 E2E/独立数值 oracle、发布包或 Windows/Linux/.scr 实机；不得把 SR3 验收推广为这些路径已通过。
 
 首轮提交序列明确覆盖 P0～P2，不取消 P3/P4。声音、多轨/转场、关键帧、代理/后台缓存、现有模型剪辑接入分别作为后续独立实施 Phase，沿用相同“一 Phase 一 commit＋文档 revise＋单元/E2E”纪律；每项启动前根据前序真实接口、平台能力和 §12/§19 的范围补齐同粒度验收/依赖，未规划细节不能先写占位。HDR/其他平台等仍须独立规格与硬件门槛，不混入当前单轨无音轨发布承诺。
 
