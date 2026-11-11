@@ -10,6 +10,7 @@ license = "MIT"
 default = []
 ort = ["dep:ort", "dep:sha2"]
 gpu = ["dep:wgpu", "dep:sha2", "dep:serde_json", "dep:objc2", "dep:objc2-metal"]
+gpu-diagnostics = ["gpu"]
 
 [dependencies]
 prost = { version = "0.14", default-features = false, features = ["derive", "std"] }

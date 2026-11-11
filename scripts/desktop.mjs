@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
-if (!['dev', 'build', 'prepare', 'test', 'test-ui', 'test-ui-shaders', 'dev-ui', 'build-ui'].includes(mode) || (!['dev', 'dev-ui'].includes(mode) && appArgs.length)) {
-  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui | test-ui-shaders | build-ui');
+if (!['dev', 'build', 'prepare', 'test', 'test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference', 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode) || (!['dev', 'dev-ui'].includes(mode) && appArgs.length)) {
+  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui | test-ui-shaders | test-inference | test-ui-inference | test-inference-performance | build-ui');
 }
 const platform = process.platform;
 const arch = process.arch;
@@ -316,8 +316,31 @@ async function packageDesktop(binary) {
 try {
 await prepareRuntime();
 const env = nativeEnv();
+let inferenceReferenceFailure;
+if (['test-inference', 'test-ui-inference', 'test-inference-performance'].includes(mode)) {
+  if (platform !== 'darwin') throw new Error('The seven-model resident E2E suite requires hardware Metal and VideoToolbox on macOS; CPU fallback is forbidden');
+  const output = resolve(env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || join(root, 'test-results', 'inference-e2e'));
+  env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT = output;
+  if (!env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST) {
+    await run(process.execPath, ['scripts/prepare-inference-e2e.mjs', '--output-dir', output], { env });
+    env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST = join(output, 'manifest.json');
+  }
+  if (mode === 'test-inference') {
+    const testArgs = ['test', '--locked', '--manifest-path', manifest, '--features', 'inference-e2e'];
+    await run('cargo', [...testArgs, 'inference_e2e_production', '--', '--ignored', '--test-threads=1'],
+      { env: { ...env, ORT_DYLIB_PATH: join(output, 'forbidden-production-ort.dylib') } });
+    try {
+      await run('cargo', [...testArgs, 'inference_e2e_reference', '--', '--ignored', '--test-threads=1'], { env });
+    } catch (error) {
+      inferenceReferenceFailure = error;
+      console.error('[inference] Independent numerical reference failed; collecting native UI display diagnostics without waiving the failure.');
+    }
+  }
+}
 if (mode === 'prepare') {
   console.log(`[desktop] Runtime: ${runtime}`);
+} else if (mode === 'test-inference-performance') {
+  await run(process.execPath, ['scripts/inference-performance.mjs'], { env });
 } else if (mode === 'test') {
   await run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
 } else {
@@ -326,17 +349,18 @@ if (mode === 'prepare') {
     await copyRequired(join(helperRuntime, 'open-quartz-screensaver-stub.exe'), join(runtime, 'open-quartz-screensaver-stub.exe'));
   }
   const release = mode === 'build';
-  const automation = ['test-ui', 'test-ui-shaders', 'dev-ui', 'build-ui'].includes(mode);
+  const automation = ['test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference', 'dev-ui', 'build-ui'].includes(mode);
   await run('cargo', ['build', '--locked', '--manifest-path', manifest, ...(release ? ['--release'] : []), ...(automation ? ['--features', 'ui-automation'] : [])], { env });
   const directory = join(target, release ? 'release' : 'debug');
   const binary = join(directory, exe);
   await installRuntime(directory);
   if (release) await packageDesktop(binary);
-  else if (mode === 'test-ui' || mode === 'test-ui-shaders') await run(process.execPath,
-    ['scripts/slint-ui-test.mjs', binary, ...(mode === 'test-ui-shaders' ? ['--shaders'] : [])], { env });
+  else if (['test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference'].includes(mode)) await run(process.execPath,
+    ['scripts/slint-ui-test.mjs', binary, ...(mode === 'test-ui-shaders' ? ['--shaders'] : ['test-inference', 'test-ui-inference'].includes(mode) ? ['--inference'] : [])], { env });
   else if (mode === 'build-ui') console.log(`[desktop] UI automation binary: ${binary}`);
   else await run(binary, appArgs, { env: automation ? { ...env, SLINT_MCP_PORT: env.SLINT_MCP_PORT || '8080' } : env });
 }
+if (inferenceReferenceFailure) throw inferenceReferenceFailure;
 } catch (error) {
   console.error(error.stack || String(error));
   process.exitCode ||= 1;

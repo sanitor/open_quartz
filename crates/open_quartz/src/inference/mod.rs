@@ -13,6 +13,12 @@ mod contract;
 pub(crate) mod prepared;
 #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
 pub use prepared::{PreparedInferenceModel, PreparedModel, ResidentInferenceSession};
+#[cfg(all(feature = "inference-diagnostics", not(target_arch = "wasm32")))]
+pub(crate) mod diagnostics;
+#[cfg(all(feature = "inference-diagnostics", not(target_arch = "wasm32")))]
+pub use diagnostics::InferenceDiagnosticSnapshot;
+#[cfg(all(feature = "inference-diagnostics", not(target_arch = "wasm32")))]
+pub use oq_inference::diagnostic_reference;
 #[cfg(all(test, feature = "native-runtime", not(target_arch = "wasm32")))]
 pub(crate) mod resident_test_model;
 #[cfg(all(test, feature = "native-onnx", not(target_arch = "wasm32")))]

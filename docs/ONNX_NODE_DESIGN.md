@@ -24,7 +24,7 @@
 
 `ImageInterfaceReport` 是通用 image convenience API 的结构报告，不代替任务绑定。typed `ImageTaskContract` 包含精确命名输入/选定输出、layout、adapter/decoder、preprocessing/resize 与声明/实际 shape constraints；声明在 frame access 前验证，实际输出在解码/交付前验证。任务拥有颜色与输出语义，不按长度猜 decoder。COCO decoder 要求 `[1,84,8400]`，通用检查不误拒 `[1,84,N]`。U²Net-P 全部 `1959`–`1965` 与显式 mask binding `1959` 保留；历史 ORT reference 的 409600 字节 RGBA parity 不是 resident 支持证据。JSON 分别报告 `model` 与 `taskContract`；`.scr` 推理当前不可用。
 
-生产仅支持 SR3 的完整四层 FP32 Conv/ReLU 与 PixelShuffle ×3，GPU BT.601/resize 224×224 后执行固定 224→672 profile，再重建源宽高各 ×3 的 RGBA texture。任意源尺寸不表示 window tiling 或大图全分辨率质量。其他 catalog/custom 模型保留自省与契约，但在 frame access 前拒绝 resident 执行，不退回 ORT。
+生产 Metal 后端可执行七个目录 profile：SR3、RealESRGAN-x4、U²Net-P、MODNet、MiDaS-small、YOLOv8n 与 YOLO26n-sem。SR3 保持完整四层 FP32 Conv/ReLU 与 PixelShuffle ×3，固定 224→672 profile 后重建源宽高各 ×3；RealESRGAN 按源分辨率执行并输出 ×4。其余模型按明确的输入尺寸、命名输出和任务 decoder 执行原图。任意源尺寸不意味着 SR3 的 window tiling 或大图全分辨率质量；未知/custom 模型与其他平台仍拒绝，不退回 ORT。完整 E2E 回归入口为 `npm run test:desktop:inference`，执行能力与数值/UI 验收是否通过分别报告。
 
 源接口查看：`cargo run -p oq-inference --example inspect_model -- MODEL.onnx`。resident 数值诊断命令与 Apple M4 Pro 的完整网络/reference、零 host image bytes、六 dispatch 和 lease/backpressure 证据见[推理架构](INFERENCE_ARCHITECTURE.md#resident-数值与所有权证据)。CPU reference 仅用于显式测试。
 

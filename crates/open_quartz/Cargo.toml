@@ -15,6 +15,7 @@ native-video = ["dep:oq-media", "dep:log"]
 native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
 native-onnx = ["oq-inference/ort"]
 model-cache = ["dep:reqwest", "dep:sha2"]
+inference-diagnostics = ["native-runtime", "oq-inference/gpu-diagnostics"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

@@ -31,6 +31,8 @@ pub struct CatalogModel {
     pub output_shape: Vec<usize>,
     pub output_name: String,
     pub output_dtype: i32,
+    #[cfg(feature = "gpu-diagnostics")]
+    pub diagnostic_logits_shape: Option<Vec<usize>>,
 }
 
 impl CatalogModel {
@@ -159,16 +161,37 @@ impl CatalogModel {
             if !available.contains(&value.name) { return Err(format!("output {:?} has no producer", value.name)); }
         }
         let output_name = output.name.clone();
-        let graph_json = serde_json::to_vec(&json!({"nodes":nodes,"initializers":initializers,
+        let graph_descriptor = json!({"nodes":nodes,"initializers":initializers,
             "inputs":[{"name":input.name,"shape":input_shape,"dtype":1}],"outputs":outputs,
-            "selected_output":output_name,"opset":opset.version,"model_id":model_id})).map_err(|error| error.to_string())?;
+            "selected_output":output_name,"opset":opset.version,"model_id":model_id});
+        #[cfg(feature = "gpu-diagnostics")]
+        let mut graph_descriptor = graph_descriptor;
+        #[cfg(feature = "gpu-diagnostics")]
+        let diagnostic_logits_shape = if model_id == "yolo26n-sem" {
+            let argmax: Vec<_> = graph.node.iter().filter(|n| n.op_type == "ArgMax").collect();
+            if argmax.len()!=1 || argmax[0].input.len()!=1 { return Err("semantic diagnostic requires one original ArgMax".into()); }
+            let logits_name=&argmax[0].input[0];
+            let resize=graph.node.iter().find(|n| n.output.contains(logits_name)).ok_or("missing semantic logits producer")?;
+            if resize.op_type!="Resize" { return Err("semantic diagnostic logits must be spatial Resize".into()); }
+            let conv=graph.node.iter().find(|n| n.output.first()==resize.input.first()).ok_or("missing semantic classifier producer")?;
+            if conv.op_type!="Conv" || conv.input.len()<2 { return Err("semantic diagnostic classifier must be Conv".into()); }
+            let weights=graph.initializer.iter().find(|t|t.name==conv.input[1]).ok_or("missing semantic classifier weights")?;
+            let classes=usize::try_from(*weights.dims.first().ok_or("missing semantic classifier channels")?).map_err(|_|"invalid semantic classifier channels")?;
+            if classes==0 { return Err("empty semantic classifier channels".into()); }
+            let shape=vec![1,classes,input_height as usize,input_width as usize];
+            graph_descriptor["diagnostic_output"]=json!({"name":logits_name,"shape":shape,"dtype":1});
+            Some(shape)
+        } else { None };
+        let graph_json = serde_json::to_vec(&graph_descriptor).map_err(|error| error.to_string())?;
         let plan = ModelPlan {
             input_width, input_height, output_width, output_height, scale,
             input_name: input.name.clone(), output_name: output_name.clone(),
             source_sha256: format!("{:x}", Sha256::digest(bytes)),
             source_byte_length: bytes.len() as u64, source_interface: interface,
         };
-        Ok(Self { plan, model_id: model_id.into(), graph_json, tensor_blob, input_shape, output_shape, output_name, output_dtype })
+        Ok(Self { plan, model_id: model_id.into(), graph_json, tensor_blob, input_shape, output_shape, output_name, output_dtype,
+            #[cfg(feature = "gpu-diagnostics")]
+            diagnostic_logits_shape })
     }
 }
 

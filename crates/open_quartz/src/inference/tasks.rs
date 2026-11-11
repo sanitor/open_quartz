@@ -66,6 +66,8 @@ mod resident {
     struct Resource {
         session: ResidentInferenceSession,
         info: InferenceSessionInfo,
+        #[cfg(feature = "inference-diagnostics")]
+        model_id: String,
     }
 
     pub(crate) enum ResidentImage {
@@ -112,6 +114,12 @@ mod resident {
         input_stamp: FrameStamp,
         result: Result<ResidentImage, String>,
     }
+    #[cfg(feature = "inference-diagnostics")]
+    struct DiagnosticState {
+        requested: HashSet<String>,
+        pending: HashMap<String, crate::inference::InferenceDiagnosticSnapshot>,
+        accepted: HashMap<String, crate::inference::InferenceDiagnosticSnapshot>,
+    }
     #[derive(Clone, Copy)]
     struct Active {
         task_id: u64,
@@ -139,13 +147,17 @@ mod resident {
         output_events: Vec<InferenceOutputEvent>,
         metrics: InferenceMetrics,
         next_task: u64,
+        #[cfg(feature = "inference-diagnostics")]
+        diagnostics: DiagnosticState,
     }
     impl InferenceTasks {
         pub(crate) fn new() -> Self {
             Self { resources: HashMap::new(), active: HashMap::new(), completions: VecDeque::new(),
                 queued_nodes: HashSet::new(), ready_nodes: HashSet::new(), retained_images: HashMap::new(),
                 outputs: HashMap::new(), event_subscriptions: HashMap::new(), output_events: Vec::new(),
-                metrics: InferenceMetrics::default(), next_task: 0 }
+                metrics: InferenceMetrics::default(), next_task: 0,
+                #[cfg(feature = "inference-diagnostics")]
+                diagnostics: DiagnosticState { requested: HashSet::new(), pending: HashMap::new(), accepted: HashMap::new() } }
         }
         pub(crate) fn sync_graph(&mut self, graph: &Graph, session: &mut PlaybackSession) -> Result<(), String> {
             self.cancel_pending();
@@ -170,7 +182,10 @@ mod resident {
             super::super::prepared::validate_resident_config(&config)?;
             crate::inference::image_task_contract(&config, &info)?;
             self.cancel_node(&node);
-            self.resources.insert(node.clone(), Resource { session, info: info.clone() });
+            self.resources.insert(node.clone(), Resource { session, info: info.clone(),
+                #[cfg(feature = "inference-diagnostics")]
+                model_id: config.model_id.clone(),
+            });
             self.retained_images.remove(&node);
             self.output_events.retain(|event| event.node_id != node);
             Ok(info)
@@ -186,6 +201,12 @@ mod resident {
             self.completions.retain(|completion| completion.node_id != node);
             self.queued_nodes.remove(node);
             self.ready_nodes.remove(node);
+            #[cfg(feature = "inference-diagnostics")]
+            {
+                self.diagnostics.requested.remove(node);
+                self.diagnostics.pending.remove(node);
+                self.diagnostics.accepted.remove(node);
+            }
         }
         pub(crate) fn cancel_pending(&mut self) {
             self.metrics.cancelled = self.metrics.cancelled.saturating_add(self.active.len() as u64);
@@ -194,6 +215,12 @@ mod resident {
             self.queued_nodes.clear();
             self.ready_nodes.clear();
             self.output_events.clear();
+            #[cfg(feature = "inference-diagnostics")]
+            {
+                self.diagnostics.requested.clear();
+                self.diagnostics.pending.clear();
+                self.diagnostics.accepted.clear();
+            }
         }
         pub(crate) fn clear(&mut self) {
             self.cancel_pending(); self.resources.clear(); self.retained_images.clear();
@@ -216,6 +243,19 @@ mod resident {
                 ResidentImage::Catalog(output) => Some((output.raw_result_buffer(), output.lease())),
                 _ => None,
             }
+        }
+        #[cfg(feature = "inference-diagnostics")]
+        pub(crate) fn request_snapshot(&mut self, node: &str) -> Result<(), String> {
+            if !self.resources.contains_key(node) { return Err(format!("No resident model attached to {node}")); }
+            if self.active.contains_key(node) { return Err(format!("Inference {node} still has an unpublished request")); }
+            self.diagnostics.pending.remove(node);
+            self.diagnostics.accepted.remove(node);
+            self.diagnostics.requested.insert(node.to_owned());
+            Ok(())
+        }
+        #[cfg(feature = "inference-diagnostics")]
+        pub(crate) fn take_snapshot(&mut self, node: &str) -> Option<crate::inference::InferenceDiagnosticSnapshot> {
+            self.diagnostics.accepted.remove(node)
         }
         pub(crate) fn schedule(&mut self, command: &ExecutionCommand, input_stamp: &FrameStamp,
             playback: &PlaybackSession, render: &RenderDevice) -> Result<(), String> {
@@ -246,6 +286,17 @@ mod resident {
             self.queued_nodes.remove(&command.node_id);
             self.ready_nodes.remove(&command.node_id);
             let stamp = RequestStamp { request_id: task_id, session_generation: resource.info.generation };
+            #[cfg(feature = "inference-diagnostics")]
+            if self.diagnostics.requested.remove(&command.node_id) {
+                if let Ok(image) = &result {
+                    let dtype = resource.info.outputs.iter()
+                        .find(|output| output.name == resource.session.model_plan().output_name)
+                        .ok_or("Selected diagnostic output is absent from model metadata")?.element_type.clone();
+                    let snapshot = crate::inference::diagnostics::capture(&resource.session, image,
+                        source.texture, source_id, &resource.model_id, stamp, dtype)?;
+                    self.diagnostics.pending.insert(command.node_id.clone(), snapshot);
+                }
+            }
             let after = resource.session.counters();
             let submissions = after.submissions.saturating_sub(before.submissions);
             self.metrics.device_submissions += submissions;
@@ -296,6 +347,10 @@ mod resident {
         /// Retain the output lease while the graph can sample its registered native texture.
         pub(crate) fn record_delivery(&mut self, accepted: AcceptedInferenceCompletion,
             subscriptions: impl IntoIterator<Item = String>) {
+            #[cfg(feature = "inference-diagnostics")]
+            if let Some(snapshot) = self.diagnostics.pending.remove(&accepted.node_id) {
+                self.diagnostics.accepted.insert(accepted.node_id.clone(), snapshot);
+            }
             self.metrics.accepted += 1;
             self.retained_images.insert(accepted.node_id.clone(), accepted.image);
             if let Some(id) = accepted.subscription_id {

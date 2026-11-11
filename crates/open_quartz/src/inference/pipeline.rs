@@ -436,11 +436,14 @@ fn run_detection(
     );
     let mut overlay = rgba.to_vec();
     for detection in &detections {
+        // Structured detections stay normalized; only rasterization uses pixels.
+        let [left, top, right, bottom] = detection.bbox;
         draw_box(
             &mut overlay,
             width,
             height,
-            detection.bbox,
+            [left * width as f32, top * height as f32,
+                right * width as f32, bottom * height as f32],
             [255, 59, 48, 255],
         );
     }

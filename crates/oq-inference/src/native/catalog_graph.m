@@ -642,6 +642,9 @@ static NSArray<OQCatalogValue *> *OQTranslate(MPSGraph *g, NSDictionary *node, N
 @property(nonatomic, copy) NSArray *outputShape;
 @property(nonatomic) NSUInteger inputBytes;
 @property(nonatomic) NSUInteger outputBytes;
+@property(nonatomic, copy) NSArray *diagnosticShape;
+@property(nonatomic) NSUInteger diagnosticBytes;
+@property(nonatomic) BOOL diagnosticFirst;
 @property(nonatomic, strong) NSMutableDictionary<NSValue *, NSArray<MPSGraphTensorData *> *> *inputCache;
 @property(nonatomic, strong) NSMutableDictionary<NSValue *, NSArray<MPSGraphTensorData *> *> *outputCache;
 @property(nonatomic, copy) NSString *asynchronousError;
@@ -655,12 +658,18 @@ static void OQRecordError(OQCatalogGraph *owner, NSString *message) {
 static void OQCommandError(OQCatalogGraph *owner, id<MTLCommandBuffer> command) {
     if(command.status==MTLCommandBufferStatusError) OQRecordError(owner,[NSString stringWithFormat:@"catalog Metal command failed: %@",command.error.localizedDescription ?: @"unknown GPU error"]);
 }
-static NSArray<MPSGraphTensorData *> *OQWrappedBuffer(NSMutableDictionary *cache, id<MTLBuffer> buffer, NSArray *shape) {
+static NSArray<MPSGraphTensorData *> *OQWrappedBuffer(NSMutableDictionary *cache, id<MTLBuffer> buffer, NSArray *shape, id<MTLBuffer> diagnostic, NSArray *diagnosticShape, BOOL diagnosticFirst) {
     NSValue *key=[NSValue valueWithPointer:(__bridge const void *)buffer];
     NSArray *data=cache[key];
     if(!data) {
         MPSGraphTensorData *tensor=[[MPSGraphTensorData alloc] initWithMTLBuffer:buffer shape:shape dataType:MPSDataTypeFloat32];
-        OQCheck(tensor!=nil,@"MPSGraph could not alias caller Metal buffer"); data=@[tensor]; cache[key]=data;
+        OQCheck(tensor!=nil,@"MPSGraph could not alias caller Metal buffer");
+        if(diagnostic) {
+            MPSGraphTensorData *extra=[[MPSGraphTensorData alloc] initWithMTLBuffer:diagnostic shape:diagnosticShape dataType:MPSDataTypeFloat32];
+            OQCheck(extra!=nil,@"MPSGraph could not alias diagnostic logits buffer");
+            data=diagnosticFirst?@[extra,tensor]:@[tensor,extra];
+        } else data=@[tensor];
+        cache[key]=data;
     }
     return data;
 }
@@ -711,6 +720,16 @@ void *oq_catalog_graph_create(void *mtl_device, const uint8_t *json, size_t json
             MPSGraphTensor *target=OQTensor(owner.graph,result);
             if(result.dtype!=1) target=[owner.graph castTensor:target toType:MPSDataTypeFloat32 name:@"catalog_export_fp32"];
             owner.outputShape=result.shape; owner.outputBytes=OQBytes(result.shape,1);
+            NSMutableArray *targets=[NSMutableArray arrayWithObject:target];
+            MPSGraphTensor *diagnosticTarget=nil;
+            NSDictionary *diagnostic=model[@"diagnostic_output"];
+            if(diagnostic) {
+                OQCatalogValue *value=values[diagnostic[@"name"]];
+                OQCheck(value && value.dtype==1 && [value.shape isEqual:diagnostic[@"shape"]],@"diagnostic logits descriptor disagrees with original graph");
+                diagnosticTarget=OQTensor(owner.graph,value);[targets addObject:diagnosticTarget];
+                owner.diagnosticShape=value.shape;owner.diagnosticBytes=OQBytes(value.shape,1);
+                OQCheck(owner.diagnosticBytes<=device.maxBufferLength,@"diagnostic logits exceed render-device buffer limit");
+            }
             OQCheck(owner.inputBytes<=device.maxBufferLength && owner.outputBytes<=device.maxBufferLength,@"catalog input/output exceeds render-device buffer limit");
             MPSGraphDevice *graphDevice=[MPSGraphDevice deviceWithMTLDevice:device];
             MPSGraphCompilationDescriptor *compilation=[MPSGraphCompilationDescriptor new]; compilation.optimizationLevel=MPSGraphOptimizationLevel0; compilation.waitForCompilationCompletion=YES;
@@ -718,10 +737,14 @@ void *oq_catalog_graph_create(void *mtl_device, const uint8_t *json, size_t json
             __block NSString *compilationError=nil;
             compilation.compilationCompletionHandler=^(MPSGraphExecutable *executable,NSError *failure) { (void)executable; if(failure) compilationError=[failure.localizedDescription copy]; };
             MPSGraphShapedType *inputType=[[MPSGraphShapedType alloc] initWithShape:inputShape dataType:MPSDataTypeFloat32];
-            owner.executable=[owner.graph compileWithDevice:graphDevice feeds:@{placeholder:inputType} targetTensors:@[target] targetOperations:nil compilationDescriptor:compilation];
+            owner.executable=[owner.graph compileWithDevice:graphDevice feeds:@{placeholder:inputType} targetTensors:targets targetOperations:nil compilationDescriptor:compilation];
             if(compilationError) OQFail(@"catalog GPU compilation failed for output %@: %@",selected,compilationError);
             OQCheck(owner.executable!=nil,@"catalog GPU graph compilation produced no executable"); owner.executable.options=MPSGraphOptionsNone;
-            OQCheck(owner.executable.feedTensors.count==1 && owner.executable.targetTensors.count==1,@"compiled catalog executable has unexpected input/output arity");
+            OQCheck(owner.executable.feedTensors.count==1 && owner.executable.targetTensors.count==targets.count,@"compiled catalog executable has unexpected input/output arity");
+            if(diagnosticTarget) {
+                OQCheck([owner.executable.targetTensors containsObject:target] && [owner.executable.targetTensors containsObject:diagnosticTarget],@"compiled diagnostic targets changed identity");
+                owner.diagnosticFirst=owner.executable.targetTensors[0]==diagnosticTarget;
+            }
             return (__bridge_retained void *)owner;
         } @catch(NSException *exception) { OQError(error,error_cap,exception.reason ?: exception.name); return NULL; }
     }
@@ -746,7 +769,7 @@ void *oq_catalog_buffer_create(void *mtl_device,size_t bytes,char *error,size_t 
 void oq_catalog_buffer_release(void *buffer) {
     @autoreleasepool { @try { if(buffer) { id released=CFBridgingRelease(buffer); (void)released; } } @catch(NSException *exception) { (void)exception; } }
 }
-int oq_catalog_graph_encode(void *graph,void *queue,void *input_buffer,void *output_buffer,char *error,size_t error_cap) {
+int oq_catalog_graph_encode(void *graph,void *queue,void *input_buffer,void *output_buffer,void *diagnostic_buffer,char *error,size_t error_cap) {
     @autoreleasepool {
         if(error && error_cap) error[0]=0;
         @try {
@@ -754,13 +777,19 @@ int oq_catalog_graph_encode(void *graph,void *queue,void *input_buffer,void *out
             OQCatalogGraph *owner=(__bridge OQCatalogGraph *)graph;
             id<MTLCommandQueue> commands=(__bridge id<MTLCommandQueue>)queue;
             id<MTLBuffer> input=(__bridge id<MTLBuffer>)input_buffer, output=(__bridge id<MTLBuffer>)output_buffer;
+            id<MTLBuffer> diagnostic=(__bridge id<MTLBuffer>)diagnostic_buffer;
             @synchronized(owner) {
                 if(owner.asynchronousError) OQFail(@"%@",owner.asynchronousError);
                 OQCheck(commands.device==owner.device && input.device==owner.device && output.device==owner.device,@"catalog execution must use the exact render Metal device and command queue");
                 OQCheck(input!=output && input.length>=owner.inputBytes && output.length>=owner.outputBytes,@"catalog input/output buffers alias or are undersized");
                 OQCheck(input.storageMode==MTLStorageModePrivate && output.storageMode==MTLStorageModePrivate,@"catalog frame tensors must use private Metal storage");
                 OQCheck(input.hazardTrackingMode==MTLHazardTrackingModeTracked && output.hazardTrackingMode==MTLHazardTrackingModeTracked,@"catalog frame tensors require tracked Metal hazards");
-                NSArray *feeds=OQWrappedBuffer(owner.inputCache,input,owner.inputShape), *results=OQWrappedBuffer(owner.outputCache,output,owner.outputShape);
+                OQCheck((owner.diagnosticBytes>0)==(diagnostic!=nil),@"missing or unexpected diagnostic logits buffer");
+                if(diagnostic) {
+                    OQCheck(diagnostic.device==owner.device && diagnostic!=input && diagnostic!=output && diagnostic.length>=owner.diagnosticBytes,@"diagnostic logits buffer aliases, is undersized, or uses wrong device");
+                    OQCheck(diagnostic.storageMode==MTLStorageModePrivate && diagnostic.hazardTrackingMode==MTLHazardTrackingModeTracked,@"diagnostic logits require tracked private Metal storage");
+                }
+                NSArray *feeds=OQWrappedBuffer(owner.inputCache,input,owner.inputShape,nil,nil,NO), *results=OQWrappedBuffer(owner.outputCache,output,owner.outputShape,diagnostic,owner.diagnosticShape,owner.diagnosticFirst);
                 id<MTLCommandBuffer> native=[commands commandBuffer]; OQCheck(native!=nil,@"render Metal queue could not allocate command buffer"); native.label=@"OpenQuartz catalog GPU graph";
                 MPSCommandBuffer *command=[MPSCommandBuffer commandBufferWithCommandBuffer:native];
                 [native addCompletedHandler:^(id<MTLCommandBuffer> completed) { OQCommandError(owner,completed); }];
@@ -769,7 +798,7 @@ int oq_catalog_graph_encode(void *graph,void *queue,void *input_buffer,void *out
                     (void)returned; if(failure) OQRecordError(owner,[NSString stringWithFormat:@"catalog executable failed: %@",failure.localizedDescription]);
                 };
                 NSArray *encoded=[owner.executable encodeToCommandBuffer:command inputsArray:feeds resultsArray:results executionDescriptor:execution];
-                OQCheck(encoded.count==1,@"catalog executable did not encode its selected output");
+                OQCheck(encoded.count==results.count,@"catalog executable did not encode all selected diagnostic targets");
                 // encode may commitAndContinue internally. Attach ownership to its
                 // final root, not the already-committed original command buffer.
                 id<MTLCommandBuffer> final=command.rootCommandBuffer;

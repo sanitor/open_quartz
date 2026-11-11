@@ -12,7 +12,7 @@ unsafe extern "C" {
     fn oq_catalog_graph_release(graph:*mut c_void);
     fn oq_catalog_buffer_create(device:*mut c_void,bytes:usize,error:*mut c_char,cap:usize)->*mut c_void;
     fn oq_catalog_buffer_release(buffer:*mut c_void);
-    fn oq_catalog_graph_encode(graph:*mut c_void,queue:*mut c_void,input:*mut c_void,output:*mut c_void,error:*mut c_char,cap:usize)->i32;
+    fn oq_catalog_graph_encode(graph:*mut c_void,queue:*mut c_void,input:*mut c_void,output:*mut c_void,diagnostic:*mut c_void,error:*mut c_char,cap:usize)->i32;
 }
 fn native_error(error:&[c_char])->GpuError {
     // Native ABI always terminates its fixed-capacity error string.
@@ -33,15 +33,15 @@ impl NativeGraph {
     #[cfg(not(target_os="macos"))]
     fn new(_: &wgpu::Device,_:&CatalogModel)->Result<Self,GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires native Metal on macOS".into()))}
     #[cfg(target_os="macos")]
-    fn encode(&mut self,queue:&wgpu::Queue,input:&NativeBuffer,output:&NativeBuffer)->Result<(),GpuError>{
+    fn encode(&mut self,queue:&wgpu::Queue,input:&NativeBuffer,output:&NativeBuffer,diagnostic:Option<&NativeBuffer>)->Result<(),GpuError>{
         let native=unsafe{queue.as_hal::<wgpu::hal::api::Metal>()}.ok_or(GpuError::WrongDevice)?;
         let raw=native.as_raw() as *const _ as *mut c_void;
         let mut error=[0 as c_char;4096];
-        let result=unsafe{oq_catalog_graph_encode(self.0.as_ptr(),raw,input.raw.as_ptr(),output.raw.as_ptr(),error.as_mut_ptr(),error.len())};
+        let result=unsafe{oq_catalog_graph_encode(self.0.as_ptr(),raw,input.raw.as_ptr(),output.raw.as_ptr(),diagnostic.map_or(std::ptr::null_mut(),|b|b.raw.as_ptr()),error.as_mut_ptr(),error.len())};
         if result==0 {Err(native_error(&error))}else{Ok(())}
     }
     #[cfg(not(target_os="macos"))]
-    fn encode(&mut self,_:&wgpu::Queue,_:&NativeBuffer,_:&NativeBuffer)->Result<(),GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires Metal".into()))}
+    fn encode(&mut self,_:&wgpu::Queue,_:&NativeBuffer,_:&NativeBuffer,_:Option<&NativeBuffer>)->Result<(),GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires Metal".into()))}
 }
 impl Drop for NativeGraph {fn drop(&mut self){#[cfg(target_os="macos")]unsafe{oq_catalog_graph_release(self.0.as_ptr())}}}
 struct NativeBuffer {raw:NonNull<c_void>, buffer:Arc<wgpu::Buffer>}
@@ -70,6 +70,8 @@ struct Slot {
     depth:wgpu::Buffer,depth_range:wgpu::Buffer,reduce_binding:wgpu::BindGroup,reduce_final_binding:wgpu::BindGroup,
     draw_binding:Option<wgpu::BindGroup>,detector:Option<crate::catalog_detect::DetectionSlot>,
     width:u32,height:u32,
+    #[cfg(feature = "gpu-diagnostics")]
+    logits:Option<NativeBuffer>,
 }
 #[derive(Clone)]
 pub struct CatalogGpuOutput {slot:Arc<Slot>,submission:wgpu::SubmissionIndex}
@@ -89,6 +91,8 @@ impl CatalogGpuOutput {
     /// Header [count,0,0,0], then count 32-byte xyxy/score/class/index/reserved records.
     pub fn depth_partial_buffer(&self)->Option<Arc<wgpu::Buffer>> { (self.slot.width>0).then(||Arc::new(self.slot.depth.clone())) }
     pub fn detection_buffer(&self)->Option<Arc<wgpu::Buffer>>{self.slot.detector.as_ref().map(|d|d.buffer.clone())}
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn diagnostic_logits_buffer(&self)->Option<Arc<wgpu::Buffer>>{self.slot.logits.as_ref().map(|b|b.buffer.clone())}
 }
 struct Binding {texture:wgpu::Texture,output:wgpu::Texture,pre:wgpu::BindGroup,post:wgpu::BindGroup}
 pub struct CatalogGpuSession {
@@ -134,6 +138,10 @@ impl CatalogGpuSession {
     pub fn counters(&self)->GpuCounters{self.counters}
     /// Explicit diagnostic consumer only; production never maps the input tensor.
     pub fn input_buffer(&self)->Arc<wgpu::Buffer>{self.input.buffer.clone()}
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn diagnostic_output_shape(&self) -> &[usize] { &self.model.output_shape }
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn diagnostic_logits_shape(&self)->Option<&[usize]>{self.model.diagnostic_logits_shape.as_deref()}
     fn resize_profile(&mut self,width:u32,height:u32)->Result<(),GpuError>{
         if self.kind!=0||self.model.input_shape[2..]==[height as usize,width as usize]{return Ok(());}
         let output_width=width.checked_mul(4).ok_or_else(||GpuError::InvalidImage("4x dimension overflow".into()))?;
@@ -177,6 +185,8 @@ impl CatalogGpuSession {
         let slot=if let Some(slot)=self.slots.iter().find(|s|s.width==ow&&s.height==oh&&Arc::strong_count(s)==1){slot.clone()}else{
             if self.slots.len()>=3{return Err(GpuError::Capacity);}
             let raw=NativeBuffer::new(&self.owner.device,buffer_bytes(&self.model.output_shape)?)?;
+            #[cfg(feature = "gpu-diagnostics")]
+            let logits=self.model.diagnostic_logits_shape.as_ref().map(|shape|NativeBuffer::new(&self.owner.device,buffer_bytes(shape)?)).transpose()?;
             let texture=Arc::new(self.owner.device.create_texture(&wgpu::TextureDescriptor{label:Some("resident catalog leased output"),size:wgpu::Extent3d{width:ow,height:oh,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::STORAGE_BINDING|wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]}));
             let view=Arc::new(texture.create_view(&Default::default()));
             let depth=self.owner.device.create_buffer(&wgpu::BufferDescriptor{label:Some("resident depth reduction partials"),size:2048,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
@@ -187,7 +197,9 @@ impl CatalogGpuSession {
             let draw_dimensions=self.owner.device.create_buffer(&wgpu::BufferDescriptor{label:Some("YOLO box dimensions"),size:8,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             self.owner.queue.write_buffer(&draw_dimensions,0,&[ow.to_ne_bytes(),oh.to_ne_bytes()].concat());
             let draw_binding=if let(Some(pipeline),Some(detector))=(&self.draw_boxes,&detector){Some(self.owner.device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("resident YOLO box binding"),layout:&pipeline.get_bind_group_layout(0),entries:&[entry(0,&detector.buffer),entry(1,&draw_dimensions)]}))}else{None};
-            let slot=Arc::new(Slot{texture,view,raw,depth,depth_range,reduce_binding,reduce_final_binding,draw_binding,detector,width:ow,height:oh});self.slots.push(slot.clone());slot
+            let slot=Arc::new(Slot{texture,view,raw,depth,depth_range,reduce_binding,reduce_final_binding,draw_binding,detector,width:ow,height:oh,
+                #[cfg(feature = "gpu-diagnostics")]
+                logits});self.slots.push(slot.clone());slot
         };
         let binding_index=if let Some(index)=self.bindings.iter().position(|b|b.texture==*texture&&b.output==*slot.texture){index}else{
             let view=texture.create_view(&Default::default());
@@ -200,7 +212,11 @@ impl CatalogGpuSession {
         let mut encoder=self.owner.device.create_command_encoder(&Default::default());
         {let mut pass=encoder.begin_compute_pass(&Default::default());pass.set_pipeline(&self.preprocess);pass.set_bind_group(0,&self.bindings[binding_index].pre,&[]);pass.dispatch_workgroups((self.model.input_shape[3]as u32).div_ceil(8),(self.model.input_shape[2]as u32).div_ceil(8),1);}
         self.owner.queue.submit([encoder.finish()]);
-        self.native.encode(&self.owner.queue,&self.input,&slot.raw)?;
+        #[cfg(feature = "gpu-diagnostics")]
+        let diagnostic=slot.logits.as_ref();
+        #[cfg(not(feature = "gpu-diagnostics"))]
+        let diagnostic=None;
+        self.native.encode(&self.owner.queue,&self.input,&slot.raw,diagnostic)?;
         let mut encoder=self.owner.device.create_command_encoder(&Default::default());
         if self.kind==2 {
             {let mut pass=encoder.begin_compute_pass(&Default::default());pass.set_pipeline(&self.reduce);pass.set_bind_group(0,&slot.reduce_binding,&[]);pass.dispatch_workgroups(256,1,1);}

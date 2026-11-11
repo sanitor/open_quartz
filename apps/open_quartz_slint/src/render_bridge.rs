@@ -6,6 +6,10 @@ mod replacement_tests;
 #[path = "inference_render_tests.rs"]
 mod inference_tests;
 
+#[cfg(all(test, feature = "inference-e2e"))]
+#[path = "inference_e2e_tests.rs"]
+mod inference_e2e_tests;
+
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -109,6 +113,18 @@ pub(crate) struct ImageUpload {
     pub rgba: Arc<Vec<u8>>,
 }
 pub(crate) enum Command {
+    #[cfg(all(test, feature = "inference-e2e"))]
+    RequestInferenceSnapshot {
+        generation: u64,
+        node_id: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    #[cfg(all(test, feature = "inference-e2e"))]
+    TakeInferenceSnapshot {
+        generation: u64,
+        node_id: String,
+        response: mpsc::Sender<Result<Option<open_quartz::inference::InferenceDiagnosticSnapshot>, String>>,
+    },
     SetGraph {
         generation: u64,
         graph: Graph,
@@ -433,6 +449,10 @@ fn render_worker(
     let mut preview_tick = Instant::now();
     let mut pending_video_previews = BTreeMap::<String, Instant>::new();
     let mut meter = RenderMeter::new(Instant::now());
+    #[cfg(all(test, feature = "inference-e2e"))]
+    let mut diagnostic_node: Option<String> = None;
+    #[cfg(all(test, feature = "inference-e2e"))]
+    let mut diagnostic_snapshot: Option<open_quartz::inference::InferenceDiagnosticSnapshot> = None;
     loop {
         if inference.reap_workers() {
             publish_inference(&updates, generation, &inference);
@@ -450,6 +470,25 @@ fn render_worker(
             }
         };
         match command {
+            #[cfg(all(test, feature = "inference-e2e"))]
+            Some(Command::RequestInferenceSnapshot { generation: requested, node_id, response }) => {
+                let result = if requested == generation {
+                    host.request_inference_snapshot(&node_id).map(|()| {
+                        diagnostic_node = Some(node_id);
+                        diagnostic_snapshot = None;
+                    })
+                } else { Err("Snapshot belongs to a replaced project".into()) };
+                let _ = response.send(result);
+            }
+            #[cfg(all(test, feature = "inference-e2e"))]
+            Some(Command::TakeInferenceSnapshot { generation: requested, node_id, response }) => {
+                let result = if requested == generation {
+                    Ok(if diagnostic_snapshot.is_some() && diagnostic_node.as_deref() == Some(node_id.as_str()) {
+                        diagnostic_snapshot.take()
+                    } else { None })
+                } else { Err("Snapshot belongs to a replaced project".into()) };
+                let _ = response.send(result);
+            }
             Some(Command::Shutdown) => break,
             Some(Command::Pause) => {
                 let _ = host.pause();
@@ -865,6 +904,19 @@ fn render_worker(
                 inference.render_failed(&error);
                 publish_inference(&updates, generation, &inference);
                 publish_failure(&updates, generation, "Rendering stopped", &error);
+            }
+        }
+        // Only the explicit test lane freezes immediately at the accepted
+        // diagnostic publication, before a later video frame can replace it.
+        #[cfg(all(test, feature = "inference-e2e"))]
+        if diagnostic_snapshot.is_none() {
+            if let Some(node) = diagnostic_node.as_deref() {
+                if let Some(snapshot) = host.take_inference_snapshot(node) {
+                    diagnostic_snapshot = Some(snapshot);
+                    let _ = host.pause();
+                    running = false;
+                    playback_requested = false;
+                }
             }
         }
     }

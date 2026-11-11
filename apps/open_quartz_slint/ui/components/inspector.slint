@@ -420,7 +420,7 @@ export component Inspector inherits Rectangle {
 
                 if root.inference-config.length > 0: InspectorSection {
                     title: "EXECUTION";
-                    Text { text: root.inference-status; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
+                    Text { text: root.inference-status; accessible-label: "Inference session status"; accessible-description: root.inference-status; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
                     Text { text: root.inference-policy-summary; color: root.inference-policy-valid ? Theme.foreground : #b42318; font-size: 11px; wrap: word-wrap; }
                     Text { text: root.inference-metrics-summary; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Backend"; color: Theme.secondary; font-size: 11px; }
@@ -432,7 +432,7 @@ export component Inspector inherits Rectangle {
                     }
                     Text { text: "Resident GPU buffers only · no host pixel/tensor transfers · no fallback"; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Local model path (optional)"; color: Theme.secondary; font-size: 11px; }
-                    LineEdit { text <=> root.inference-path; enabled: !root.project-busy && !root.inference-loading; placeholder-text: "Saved path or catalog model"; }
+                    LineEdit { text <=> root.inference-path; accessible-label: "Local model path"; enabled: !root.project-busy && !root.inference-loading; placeholder-text: "Saved path or catalog model"; }
                     Text { text: "Blank uses the saved path or catalog cache/download. This path and live session are not saved."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 6px;

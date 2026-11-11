@@ -19,7 +19,10 @@ export component AppWindow inherits Window {
         + "; Project path: " + root.project-path
         + "; Inspector dirty: " + (root.inspector-dirty ? "true" : "false")
         + "; IO status: " + root.io-status
-        + "; Runtime status: " + root.runtime-status;
+        + "; Runtime status: " + root.runtime-status
+        + "; Inference status: " + root.inspector-inference-status
+        + "; Inference attached: " + (root.inspector-inference-attached ? "true" : "false")
+        + "; Inference loading: " + (root.inspector-inference-loading ? "true" : "false");
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 800px;

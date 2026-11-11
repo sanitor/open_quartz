@@ -11,6 +11,8 @@ pub mod catalog_model;
 pub mod catalog_gpu;
 #[cfg(feature = "gpu")]
 mod catalog_detect;
+#[cfg(feature = "gpu-diagnostics")]
+pub mod diagnostic_reference;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(any(test, all(feature = "ort", not(target_arch = "wasm32"))))]

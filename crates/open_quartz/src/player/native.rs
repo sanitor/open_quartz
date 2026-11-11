@@ -417,6 +417,20 @@ impl NativePlayer {
         self.inference.raw_result_buffer(node_id)
     }
 
+    /// Arm one explicit same-frame GPU snapshot. This is never called by normal playback.
+    #[cfg(feature = "inference-diagnostics")]
+    pub fn request_inference_snapshot(&mut self, node_id: &str) -> Result<(), String> {
+        self.drain_inference_completions()?;
+        self.inference.request_snapshot(node_id)?;
+        self.session.mark_dirty(node_id).map_err(runtime_error)
+    }
+
+    /// Retrieve only a snapshot whose production request passed graph publication.
+    #[cfg(feature = "inference-diagnostics")]
+    pub fn take_inference_snapshot(&mut self, node_id: &str) -> Option<crate::inference::InferenceDiagnosticSnapshot> {
+        self.inference.take_snapshot(node_id)
+    }
+
     pub fn unload_inference(&mut self, node_id: &str) {
         self.inference.unload(node_id);
         self.render_device.remove_texture(node_id);

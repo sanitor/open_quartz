@@ -11,6 +11,7 @@ description = "Native Slint application shell for OpenQuartz"
 
 [features]
 ui-automation = ["slint/mcp"]
+inference-e2e = ["open_quartz/inference-diagnostics"]
 
 [dependencies]
 open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video", "native-onnx", "model-cache"] }

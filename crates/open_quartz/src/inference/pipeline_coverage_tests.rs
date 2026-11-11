@@ -151,6 +151,58 @@ fn every_native_task_family_runs_through_tensor_runner() {
 }
 
 #[test]
+fn detection_overlay_uses_source_pixels_and_preserves_normalized_results() {
+    // A 16x8 source is letterboxed into 16x16 with four rows of top padding.
+    // Row masks independently specify every painted source pixel (bit x).
+    let cases = [
+        (
+            [8.0, 8.0, 7.5, 3.5],
+            [0.265625, 0.28125, 0.734375, 0.71875],
+            [0u16, 0, 0x1ff0, 0x1ff0, 0x1830, 0x1ff0, 0x1ff0, 0],
+        ),
+        (
+            [8.0, 8.0, 32.0, 32.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0xffff, 0xffff, 0xc003, 0xc003, 0xc003, 0xc003, 0xffff, 0xffff],
+        ),
+        (
+            [16.0, 12.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0, 0, 0, 0, 0, 0, 0x8000, 0xc000],
+        ),
+    ];
+    let source = [7, 11, 19, 255].repeat(16 * 8);
+    for (xywh, normalized_bbox, expected_rows) in cases {
+        let mut raw = vec![0.0; 84 * 8400];
+        for (channel, value) in xywh.into_iter().enumerate() {
+            raw[channel * 8400] = value;
+        }
+        raw[4 * 8400] = 0.9;
+        let mut runner = FakeRunner::one(raw, vec![1, 84, 8400]);
+        let output = run_image_task_with_runner(
+            &mut runner, InferenceTask::Detection, "yolo", &source,
+            16, 8, 16, 0.25, 0.45,
+        ).unwrap();
+        assert_eq!((output.width, output.height), (16, 8));
+        let detections = output.data.unwrap();
+        assert_eq!(detections.as_array().unwrap().len(), 1);
+        assert_eq!(detections[0]["bbox"], json!(normalized_bbox));
+        for (y, row) in expected_rows.into_iter().enumerate() {
+            for x in 0..16 {
+                let expected = if row & (1u16 << x) != 0 {
+                    [255, 59, 48, 255]
+                } else {
+                    [7, 11, 19, 255]
+                };
+                let index = (y * 16 + x) * 4;
+                assert_eq!(&output.rgba[index..index + 4], &expected,
+                    "box {xywh:?}, pixel ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
 fn native_pipeline_helpers_cover_shapes_pixels_resize_and_errors() {
     let rgb = TensorOutput { data: vec![1.0, 0.0, 0.0], shape: vec![1, 3, 1, 1] };
     assert_eq!(image_output_size(&rgb, 3, false).unwrap(), (1, 1));

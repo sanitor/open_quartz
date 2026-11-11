@@ -30,9 +30,18 @@ YOLOv8n 的第一个输出是 `detections`（ROI），第二个才是 `overlay`�
 实际操作：Video 选择视频文件 → image 接 YOLOv8n → **overlay** 接 Renderer → 在 YOLO 执行面板点击 **Load model** → Play。用原 1920×1080 VideoToolbox 视频验证了运动图像、非空检测叠框和暂停后画面保留；核心 smoke 接受了 5 次完成，检测 buffer 存在，video CPU-copy bytes 为 0。这是实际出图证据，不是非空检测框与 CPU reference 的逐框数值一致性证明。截图：`test-results/yolo-video-renderer-fixed.png`、`test-results/yolo-video-renderer-fixed-paused.png`。
 
 
+## 七模型完整 E2E 回归
+
+正式入口：`npm run test:desktop:inference`。本机 Apple M4 Pro / Metal 的完整运行已通过：7/7 原模型经真实生产 worker 执行；37/37 同帧独立参考用例通过（七模型各含原图、镜像图、常量图、两个不同视频帧组，RealESRGAN 另含源尺寸切换与恢复）；原生 UI 预检与 14 个模型×图像/视频场景共 15/15 通过。生产进程设置不存在的 ORT 路径；CPU oracle 在独立进程执行；UI 模型/Renderer 菜单、连接、Load、播放控制、卸载重载、保存重开均真实操作，不直接注入推理结果。输入资源预置通过普通项目加载，不声称覆盖系统文件选择器。
+
+数值验收按明确批准的稳定契约执行，而非把 ORT FP32 当成逐位真值。MODNet 的 16 个 InstanceNormalization 在诊断参考图中使用稳定 FP64 归约/affine 后转回 FP32；本次常量输入最大原始输出误差 `8.9138746e-5`，零容差违反，生产模型未替换。YOLO26 全部 logits 满足原 `1e-3 + 1e-3*abs(cpu)` 容差，双方 UInt8 class ID 都精确等于自身同次执行 logits 的首项 ArgMax；原图 1、镜像图 1、更新视频帧 2 个像素因近乎平票不同，均满足预先声明的误差区间重叠判据。报告原样保留 `parity.raw.passed:false` / `exactIdPassed:false` 和每个坐标、类别、logits、间隔、逻辑与观测误差；稳定语义判定独立为通过，不声称 class ID 完全相等。
+
+报告：`test-results/inference-e2e/production.json`；完整原生窗口报告与截图：`test-results/inference-e2e/ui-2026-11-10T13-47-52-135Z/report.html`。这些是固定 320×192 公有领域样本的本机正确性与显示验收，不是 720p 性能、任意模型精度、模型对现实内容的识别质量或远端 CI 已通过的承诺。模型/fixture 哈希、诊断 feature 与复现步骤见[开发文档](DEVELOPMENT.md#七模型推理-e2e-回归)。
+常规回归另通过 core 211、独立 inference backend 37（1 ignored）、桌面 79（2 opt-in ignored）、JavaScript 报告/参考 13 项。独立 `test:desktop:inference:performance` 已完成七模型 Release 串行采样（每路径预热 3、采样 30），结果位于 `test-results/inference-e2e/performance/summary.json`；SR3 含其原 benchmark 的三种源尺寸，其他六模型源为 1280×720。性能任务不设置共享 runner 的严格 FPS 门槛，也不代替上述自然样本 E2E。
+
 ## 当前实现与边界
 
-生产 macOS 路径使用与 Slint **wgpu 30 同一个 Metal Device/Queue**：
+生产 macOS 路径使用与 Slint **wgpu 30 同一个 Metal Device/Queue**。下图为 SR3 专用 profile；其余六个目录模型通过 `CatalogGpuSession` 执行原始 native GPU graph 与对应 GPU 前后处理：
 
 ```text
 GPU source texture
@@ -43,15 +52,15 @@ GPU source texture
   → Slint preview / downstream Shader
 ```
 
-`oq-inference` 的独立 `gpu` feature 提供实际 GPU 模型编译器与 `GpuImageSession`，不依赖 OpenQuartz 图或 Slint。编译器验证原始 ONNX topology、weights 与 reshape layout，运行完整网络，不以近似滤镜替代。`GpuImageSession` scratch 为 STORAGE-only；模型文件解析、weights 初始上传与 scalar controls 属于准备边界。逐帧 source pixels 不进入 CPU，不创建 host image Tensor，不做 CPU 前后处理、读回或结果重上传。
+`oq-inference` 的独立 `gpu` feature 提供实际 GPU 模型编译器、SR3 的 `GpuImageSession` 和六模型的 `CatalogGpuSession`，不依赖 OpenQuartz 图或 Slint。编译器验证原始 ONNX topology、weights 与 reshape layout，运行完整网络，不以近似滤镜替代。正常 `GpuImageSession` scratch 为 STORAGE-only；显式 `gpu-diagnostics` 测试构建才允许复制原始输入和有效输出区。模型文件解析、weights 初始上传与 scalar controls 属于准备边界。逐帧 source pixels 不进入 CPU，不创建 host image Tensor，不做 CPU 前后处理、读回或结果重上传。
 
 卷积使用按已验证层几何专门编译的 FP32 内核：一个 64-thread workgroup 覆盖 32 个输出通道 × 32 个邻接像素，每线程累加 4×4 register tile；归约以 K=32 的输入/权重共享分块执行，workgroup storage 为 8KB。输出仍是 NCHW；9-channel 尾部、padding、bias 和 ReLU 保持原模型语义。专门编译和权重上传只发生在准备阶段，不增加逐帧 CPU 图像处理。
 
-当前生产 resident 模型仅 **super-resolution-3x（SR3）**，网络 profile 固定 `[1,1,224,224] → [1,1,672,672]`。任意源尺寸仍先缩到 224×224，最终 RGBA 尺寸为源宽高各 ×3。这不是 window tiling，也不是原始大图全分辨率推理；不据此声称大图完整质量或更快吞吐。其他模型可通过下述 opt-in Metal catalog 诊断路径运行，但不属于生产 resident 支持；其他平台在 frame access 前报错。
-目录图像模型另有 opt-in 的 macOS Metal execution 与 `catalog_benchmark` 对照，不改变以上生产 resident policy。Apple M4 Pro 720p 的 U²Net-P、MiDaS、MODNet、YOLO26n、YOLOv8n、RealESRGAN-x4 全部完成原始选定输出核对及最终 RGBA 核对；原始输出逐元素满足 FP32 绝对/相对容差 1e-3，图像最大差异不超过 1 byte，GPU 源纹理核验 host upload/readback 计数均为 0。真实生产适用性、其他硬件与输入内容不可由梯度图案外推。YOLOv8n 梯度图案产生 0 个检测框；该结果没有验证非空框的 decoder 覆盖。
+Metal 后端可执行七个目录 profile：SR3、RealESRGAN-x4、U²Net-P、MODNet、MiDaS-small、YOLOv8n、YOLO26n-sem。SR3 网络固定 `[1,1,224,224] → [1,1,672,672]`，任意源尺寸仍缩到 224×224 并重建源宽高各 ×3，不是 tiling 或原始大图全分辨率推理；RealESRGAN 按源分辨率执行并输出 ×4。其他平台与未知模型拒绝，不退回 ORT。执行支持与完整回归是否通过分开报告：入口为 `npm run test:desktop:inference`，详见[开发文档](DEVELOPMENT.md#七模型推理-e2e-回归)。
+此前 `catalog_benchmark` 的 Apple M4 Pro 720p 记录覆盖六模型原始选定输出与最终 RGBA，但绕过桌面模型加载和图输出契约；它不是完整 E2E。历史梯度样本最大字节差异 1，YOLOv8n 检测框为 0；不能由该结果外推自然图像、非空检测、其他硬件或完整生产验收。
 六个 catalog 模型各自另执行了不计时的 Metal 生命周期检查：同时持有三份 consumer output lease 时拒绝第四次提交；释放一个 lease 后复用对应 slot；销毁 session 后等待中仍可读到持有中的输出纹理。RealESRGAN 另验证源分辨率从 1280×720 切到 640×360、再恢复 1280×720 后，输出尺寸分别为 2560×1440 与 5120×2880。每个模型额外执行 3 次 CPU 与 3 次 GPU completion 样本；含 lifecycle 字段的专用记录为 `test-results/output-metrics/catalog-<model>-1280x720-lifecycle.json`，不作为性能统计。SR3 的独立真实 Metal pool/resource/device 验收及多尺寸性能记录见下方历史条目。
 
-该诊断将 GPU completion-wall 与完整 ORT CPU readback/preprocess/infer/postprocess/upload 分开测量；它不是 UI 延迟或 GPU execution timestamp。`realesrgan-x4` 的 720p 源输入输出 `[1,3,2880,5120]`，CPU P50 4228.36 ms、GPU completion P50 340.51 ms（12.42×）；其 44,236,800 个 FP32 值均匹配容差，58,982,400 个 RGBA 字节最大差异 1。其他五模型原始报告位于 `test-results/output-metrics/catalog-<model>-1280x720.json`。此 opt-in GPU catalog 与当前生产支持的固定尺寸 resident SR3 是不同执行路径。
+上述诊断将 GPU completion-wall 与完整 ORT CPU readback/preprocess/infer/postprocess/upload 分开测量，不是 UI 延迟或 GPU timestamp。`realesrgan-x4` 的 720p 源输入输出 `[1,3,2880,5120]`，CPU P50 4228.36 ms、GPU completion P50 340.51 ms（12.42×）；历史梯度样本的 44,236,800 个 FP32 值满足容差，58,982,400 个 RGBA 字节最大差异 1。其他原始报告为 `test-results/output-metrics/catalog-<model>-1280x720.json`，与完整 E2E 的 `test-results/inference-e2e/production.json` 分开保存。
 
 ## 执行政策与方案
 

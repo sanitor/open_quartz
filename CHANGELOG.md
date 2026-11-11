@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Seven-model production and native-window E2E regression
+
+- Add `npm run test:desktop:inference`: SHA-pinned original model preparation from the Rust catalog, real RenderBridge/model-worker/NativePlayer image and hardware-video execution with ORT unavailable, a separate independent CPU oracle, then all seven models through native Slint menus, typed connections, Load/Play/Pause/Resume/Unload/Reload and Save/reopen. Missing assets or hardware fail instead of silently skipping; actual renderer pixels and diagnostic artifacts remain in per-case reports.
+- Commit public-domain NASA portrait fixtures and a deterministic H.264 two-frame-group clip with source attribution and hashes. Preserve production artifacts separately from opt-in same-request GPU source/input/raw/logit snapshots, and keep performance sampling in a separate scheduled/manual lane without UI FPS gates.
+- Adopt explicitly approved numerically stable reference semantics: every diagnostic InstanceNormalization uses centered FP64 population/affine arithmetic before FP32 export; production graphs/weights stay unchanged. Semantic labels must equal their own same-run logits ArgMax, all logits retain the existing FP32 tolerance, and only overlapping predeclared error intervals may explain cross-backend near-tie label differences. Exact-ID equality, differences and accepted-boundary evidence remain separately reported; no blanket pixel exemption.
+- Correct CPU YOLO overlay conversion from normalized coordinates to source pixels and align GPU inclusive/clamped two-pixel strokes; preserve normalized detection data. Add real low-variance normalization, mixed typed-output lifetime, high-margin/wrong-ArgMax rejection and bounding-box location regressions.
+- Verify locally on Apple M4 Pro: all seven production models and all 37 same-frame stable-reference cases passed; native-window suite 15/15 (preflight plus seven image/video pairs), core 211, inference backend 37 (1 ignored), desktop 79 (2 opt-in ignored), and report/reference JavaScript 13 passed. Separate serial seven-model Release performance task completed with 3 warmups and 30 samples/path. YOLO26 preserves four reported near-tie class differences across three fixtures; semantic acceptance is not exact-ID equality. Native reports: `test-results/inference-e2e/production.json`, `ui-2026-11-10T13-47-52-135Z/report.html`, `performance/summary.json`. Hosted CI execution has not been observed locally.
+
 ### Video → YOLO → Renderer output fix
 
 - Select an inference image port by its sampler type for preview subscriptions instead of assuming the first output is an image. YOLOv8n declares ROI detections before its overlay; subscribing that ROI as Preview rejected graph commit and left the model-loading plan unset.

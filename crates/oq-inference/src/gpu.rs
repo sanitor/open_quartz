@@ -246,6 +246,11 @@ impl GpuImageSession {
     pub fn model_plan(&self) -> &ModelPlan { &self.plan }
     pub fn device_owner(&self) -> &GpuDeviceOwner { &self.owner }
     pub fn counters(&self) -> GpuCounters { self.counters }
+    /// Explicit regression diagnostics only: pre-PixelShuffle NCHW [1,9,224,224].
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn diagnostic_raw_buffer(&self) -> &wgpu::Buffer { &self.final_convolution }
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn diagnostic_input_buffer(&self) -> &wgpu::Buffer { &self.planes }
 
     /// Register a native texture once, then reuse the resulting binding per frame.
     /// wgpu's native bind-group validation proves device identity before submission;
@@ -465,7 +470,9 @@ fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePi
 
 fn scratch(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label), size, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false,
+        label: Some(label), size,
+        usage: if cfg!(feature = "gpu-diagnostics") { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC } else { wgpu::BufferUsages::STORAGE },
+        mapped_at_creation: false,
     })
 }
 

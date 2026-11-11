@@ -1,0 +1,76 @@
+name: Inference E2E (Metal)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inference-metal-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inference-e2e:
+    name: Seven-model production and native UI E2E
+    # Hosted runners isolate untrusted PR code. Do not switch this PR job to a
+    # persistent self-hosted Mac without a separate trust/approval boundary.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Cache SHA-pinned model artifacts
+        uses: actions/cache@v4
+        with:
+          path: test-results/inference-e2e/models
+          key: inference-models-${{ hashFiles('tests/fixtures/inference/assets.json') }}
+      - name: Seven models, production without ORT, CPU oracle, actual native UI
+        run: npm run test:desktop:inference
+      - name: Upload all diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inference-metal-${{ runner.arch }}
+          path: |
+            test-results/inference-e2e/
+            !test-results/inference-e2e/models/**
+          if-no-files-found: error
+          retention-days: 14
+
+  performance:
+    name: Resident completion latency (not UI FPS)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Serial seven-model completion measurement
+        run: npm run test:desktop:inference:performance
+      - name: Upload raw samples and measurement limits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inference-performance-${{ runner.arch }}
+          path: |
+            test-results/inference-e2e/
+            !test-results/inference-e2e/models/**
+          if-no-files-found: error
+          retention-days: 14

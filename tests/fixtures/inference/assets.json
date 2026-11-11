@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "models": {
+    "yolov8n": {
+      "sha256": "9e7e3921595672c4b97e78f78bf5604d86ffc117773da49f142d1047109d07ad",
+      "byteLength": 12851098,
+      "url": "https://raw.githubusercontent.com/caozisheng/rimeflow-yolov8n/7710a93a029bbb6851bc222999191153aaee4916/models/yolov8n.onnx",
+      "catalogUrl": "https://raw.githubusercontent.com/caozisheng/rimeflow-yolov8n/main/models/yolov8n.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    },
+    "super-resolution-3x": {
+      "sha256": "85f36ff88cc504a24af5e0602148bc56a8aa09a58eca8c0da2756f3e8186035e",
+      "byteLength": 240078,
+      "url": "https://media.githubusercontent.com/media/onnx/models/c5cae0f1942c8d7727372c7b1f6b485aa39e4421/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx",
+      "catalogUrl": "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    },
+    "realesrgan-x4": {
+      "sha256": "ee28b94a5d06ff32c4920370417e094d1dc7aae4e568e2502afb3371377e41fd",
+      "byteLength": 4866421,
+      "url": "https://huggingface.co/Samo629/real-esrgan-onnx/resolve/4e98d089bf844f4ddeb2e76248e5c94d3938bf7c/realesr-general-x4v3.onnx",
+      "catalogUrl": "https://huggingface.co/Samo629/real-esrgan-onnx/resolve/main/realesr-general-x4v3.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    },
+    "u2netp": {
+      "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+      "byteLength": 4574861,
+      "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+      "catalogUrl": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked.",
+      "releaseAssetId": 85857953,
+      "revisionNote": "Upstream v0.0.0 release asset has no immutable Git content revision; exact SHA-256 and byte length are authoritative."
+    },
+    "modnet": {
+      "sha256": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+      "byteLength": 25888640,
+      "url": "https://huggingface.co/onnx-community/modnet-webnn/resolve/6af52070d14deafc5e55ce6cc4d752a322cdff76/onnx/model.onnx",
+      "catalogUrl": "https://huggingface.co/onnx-community/modnet-webnn/resolve/main/onnx/model.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    },
+    "midas-small": {
+      "sha256": "b0a5b3f12625137e626805167907fe0410665bec671685d59daaa2daab19f977",
+      "byteLength": 66389153,
+      "url": "https://huggingface.co/Heliosoph/midas-small-onnx/resolve/f3a5a5e4c852c7bfac10517767e5b0636cb42b92/midas_v21_small_256.onnx",
+      "catalogUrl": "https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    },
+    "yolo26n-sem": {
+      "sha256": "fe2fff4b4089a044285531cb678dc504f951b6075dc66a5c10f3296c346b3f01",
+      "byteLength": 6284385,
+      "url": "https://raw.githubusercontent.com/caozisheng/rimeflow-yolo26n-sem/bcb513f906ee22c28bb287a56f513457034c3b11/models/yolo26n-sem.onnx",
+      "catalogUrl": "https://github.com/caozisheng/rimeflow-yolo26n-sem/raw/refs/heads/master/models/yolo26n-sem.onnx",
+      "provenance": "Original unmodified ONNX; local cache and pinned remote bytes independently SHA-256 checked."
+    }
+  },
+  "sources": [
+    {
+      "file": "astronaut.png",
+      "sha256": "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5",
+      "byteLength": 791555,
+      "url": "https://raw.githubusercontent.com/scikit-image/scikit-image/e8a42ba85aaf5fd9322ef9ca51bc21063b22fcae/skimage/data/astronaut.png",
+      "title": "Astronaut Eileen Collins",
+      "creator": "NASA",
+      "attribution": "NASA photograph of Eileen Collins, distributed by scikit-image. No NASA endorsement is implied. Used solely as factual software-regression test media.",
+      "license": "Public domain (no known copyright restrictions)",
+      "licenseEvidenceUrl": "https://raw.githubusercontent.com/scikit-image/scikit-image/e8a42ba85aaf5fd9322ef9ca51bc21063b22fcae/skimage/data/_fetchers.py",
+      "licenseEvidenceText": "This image was downloaded from the NASA Great Images database <https://flic.kr/p/r9qvLn>. No known copyright restrictions, released into the public domain.",
+      "originalSourceUrl": "https://flic.kr/p/r9qvLn",
+      "usageGuidelinesUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "redistributionNote": "Photograph and its deterministic resize/padding/mirror derivatives are redistributed as test data, not promotional material; person likeness and NASA identifiers are not used to imply endorsement."
+    }
+  ],
+  "fixtures": {
+    "image": {
+      "file": "image.png",
+      "sha256": "00596aba247a2f396dc21ed86995d8e5bb352cefe9afaf4a3192fd8976215f59",
+      "byteLength": 102118,
+      "width": 320,
+      "height": 192
+    },
+    "alternateImage": {
+      "file": "alternate.png",
+      "sha256": "2ddcf97c83cdb85a06aafeda14196c527ee151d9aa40d7feddcb165e2f2295b0",
+      "byteLength": 102314,
+      "width": 320,
+      "height": 192
+    },
+    "constantImage": {
+      "file": "constant.png",
+      "sha256": "e52803e0f3a96361708854131e5611bfc87a18135c521ad45ccc987a6bc46c8d",
+      "byteLength": 848,
+      "width": 320,
+      "height": 192
+    },
+    "video": {
+      "file": "video.mp4",
+      "sha256": "264fbc0435f45ff066bee76f7f729654fae2806292ea691fa18b11cba14048ea",
+      "byteLength": 51335,
+      "width": 320,
+      "height": 192,
+      "frameCount": 48,
+      "frameRate": 12,
+      "codec": "h264",
+      "profile": "Constrained Baseline",
+      "pixelFormat": "yuv420p",
+      "frameGroups": [
+        {
+          "firstFrame": 0,
+          "frameCount": 24,
+          "source": "image",
+          "marker": "red rectangle at (8,8), 24x16"
+        },
+        {
+          "firstFrame": 24,
+          "frameCount": 24,
+          "source": "alternateImage",
+          "marker": "blue rectangle at (8,8), 24x16"
+        }
+      ]
+    }
+  },
+  "generation": {
+    "tool": "FFmpeg",
+    "version": "92718-g092cb17983",
+    "executableSha256": "a2ad6f0fc42a3c8f5183ef1d53e906d6bb35478d14a6b67175c30ce6c17e9214",
+    "distributionUrl": "https://www.osxexperts.net/",
+    "workingDirectory": "tests/fixtures/inference",
+    "commands": [
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        "astronaut.png",
+        "-vf",
+        "scale=192:192:flags=lanczos,pad=320:192:64:0:color=0x808080,format=rgba",
+        "-frames:v",
+        "1",
+        "-threads",
+        "1",
+        "image.png"
+      ],
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        "image.png",
+        "-vf",
+        "hflip",
+        "-frames:v",
+        "1",
+        "-threads",
+        "1",
+        "alternate.png"
+      ],
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=0x808080:s=320x192:r=1",
+        "-vf",
+        "format=rgba",
+        "-frames:v",
+        "1",
+        "-threads",
+        "1",
+        "constant.png"
+      ],
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-loop",
+        "1",
+        "-framerate",
+        "12",
+        "-i",
+        "image.png",
+        "-loop",
+        "1",
+        "-framerate",
+        "12",
+        "-i",
+        "alternate.png",
+        "-filter_complex",
+        "[0:v]trim=end_frame=24,setpts=PTS-STARTPTS,drawbox=x=8:y=8:w=24:h=16:color=red:t=fill[a];[1:v]trim=end_frame=24,setpts=PTS-STARTPTS,drawbox=x=8:y=8:w=24:h=16:color=blue:t=fill[b];[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]",
+        "-map",
+        "[v]",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "baseline",
+        "-level:v",
+        "3.0",
+        "-preset",
+        "veryslow",
+        "-crf",
+        "12",
+        "-threads",
+        "1",
+        "-g",
+        "24",
+        "-keyint_min",
+        "24",
+        "-sc_threshold",
+        "0",
+        "-bf",
+        "0",
+        "-flags",
+        "+bitexact",
+        "-fflags",
+        "+bitexact",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "video.mp4"
+      ]
+    ],
+    "note": "All derivatives were generated with the real FFmpeg executable using these argument arrays in order. Prepared tests copy the committed SHA-256-pinned results, not platform-dependent re-encodes. Each video group repeats one natural image with a fixed marker; a new keyframe begins the second group. No wall-clock FPS assertion is needed."
+  }
+}

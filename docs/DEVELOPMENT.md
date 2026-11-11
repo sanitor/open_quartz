@@ -12,7 +12,7 @@ Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` �
 
 当前推理边界见[推理架构](INFERENCE_ARCHITECTURE.md)和[节点契约](ONNX_NODE_DESIGN.md)。`inspect_onnx(model)` 无需 ORT，保留完整 source facts：IR/producer/model versions、domain、graph name、模型/图/值 metadata、opsets、递归类型与精确 dtype codes、scalar/UnknownRank、维度/符号/denotation、Required/Optional/OverridableInitializer 及 dense/sparse external-data 引用；自省不加载权重。runtime metadata/ValueKind/元素分类、hash/size/format 分开，不把 runtime sentinel 当源版本。`ImageInterfaceReport` 仅结构兼容，typed `ImageTaskContract` 才定义命名输出、layout/preprocessing/resize/color/shape/decoder；声明在 frame access 前检查，实际输出在解码/交付前检查。JSON 分列 `model`/`taskContract`。旧 CoreML EP 混合执行数据仅为历史 reference，不是 resident fallback。
 
-图任务契约要求一个图像输入与一个显式选定输出，而非模型只有一个输出。U²Net-P 的全部 `1959`–`1965` 与精确 mask binding `1959` 仍保留，历史 reference 的 409600 字节 RGBA parity 不代表 resident 支持；未知多输出无 binding 拒绝。生产仅 SR3，其他模型在 frame access 前报错；`.scr` 推理导出/stub 明确不可用，不能回退 CPU，非推理 Shader/硬件视频导出保留。
+图任务契约要求一个图像输入与一个显式选定输出，而非模型只有一个输出。U²Net-P 保留全部 `1959`–`1965` 并绑定主 mask `1959`；未知多输出无 binding 拒绝。Metal 后端可执行七个目录 profile，完整生产链路、数值对照与原生窗口显示由下方七模型 E2E 单独验收；其他平台和未知模型在 frame access 前报错。`.scr` 推理导出/stub 明确不可用，不能回退 CPU，非推理 Shader/硬件视频导出保留。
 
 图语义核心为单一 open_quartz，根部仅 lib.rs。compiler 拥有 shader/topology/plan，GraphEvaluator 拥有 dirty/Math/feedback，GraphInstance 拥有 identity/generation/state，PlaybackSession 拥有 graph/clock/OutputHub，NativePlayer 协调，RenderDevice 拥有 GPU/import/presentation，VideoSources 拥有图源 map/lifecycle，InferenceTasks 拥有 resident session/图任务身份/输出适配；独立 oq-inference 拥有 GPU compiler/session 与显式 reference Tensor APIs，oq-media 拥有媒体 session/FrameLease。project/resources 分别负责编辑/history 与准备/规划。
 
@@ -51,6 +51,10 @@ ORT_DYLIB_PATH=... cargo run --release -p oq-inference --features gpu,ort --exam
 npm run test:desktop                 # Slint 独立 workspace
 npm run test:desktop:ui              # 真实原生窗口交互
 npm run test:desktop:shaders         # catalog GPU 像素用例
+npm run prepare:inference            # 固定哈希模型与已提交图像/视频样本
+npm run test:desktop:inference       # 七模型生产链路 + 独立 CPU oracle + 原生 UI E2E
+npm run test:desktop:inference:ui    # 重用已完成 production.json，只运行原生窗口套件
+npm run test:desktop:inference:performance # 独立性能采样，不作为 UI FPS 门槛
 npm run test:editor                 # 独立编辑器 workspace
 npm run check:rust-boundaries
 npm run test:sdk-coverage
@@ -59,6 +63,18 @@ npm run test:sdk-coverage
 `inspect_model` 仅源自省。`resident_compare` 在 Apple M4 Pro Metal 的 GPU 生成 8×8 source（无 COPY_DST）上执行完整 SR3，输出 24×24 对显式 ORT CPU reference max/mean byte error 0/0，host image bytes 0、六 dispatch、scratch 26,292,224 B、weights 238,628 B；wrong-device submit 前拒绝、三槽饱和与 released-lease 复用已观察。首 completion wall 69.494292 ms 包含诊断 copy 和首次 pipeline compilation，不是 GPU 时间或稳态吞吐。命令和数字只属于显式诊断，不让 CPU/reference 或 readback 进入生产。旧 coreml_compare 仍为 reference example。
 
 图标源为 `apps/open_quartz_slint/icons/`；准备生成的运行库、媒体 SDK、许可证和对应源码在 `apps/open_quartz_slint/runtime/`，不再使用 `src-tauri/` 或 `public/`。`.scr` stub 从 `target/screensaver-stub/` 构建后暂存到 app runtime。macOS numeric bundle version 来自 `package.json`。Shader 唯一源为 `crates/open_quartz/src/project/shader_catalog.json`，原生 catalog 与 Shader automation 共用；根 `tests/fixtures/` 保留原生图像/Shader fixtures。以上是可运行命令与路径，不是本次已通过的检查记录。
+### 七模型推理 E2E 回归
+
+`test:desktop:inference` 是显式 macOS Metal / VideoToolbox 硬件任务。模型目录由 `inference_e2e_catalog` 从 Rust `inference_models()` 导出；`tests/fixtures/inference/assets.json` 固定七份原始 ONNX 和全部样本的 SHA-256、大小、来源与许可证说明。NASA 公有领域人像及固定 H.264 视频随仓提交；视频含红/蓝标记与镜像人像两个稳定帧组，不使用私有用户媒体。准备完成后测试只访问固定本地路径；缺文件、哈希不符或硬件不可用均失败，不跳过或退回 CPU。已有缓存可执行 `npm run prepare:inference -- --offline`。
+
+运行分三个进程边界：`inference_e2e_production` 在不存在的 ORT 路径下驱动真实 RenderBridge/model worker/NativePlayer/Renderer；`inference_e2e_reference` 才加载 ORT，用同帧 GPU 源快照独立 CPU 前处理并核对原始输出、任务结果及 RGBA；随后 Slint MCP 套件从实际菜单创建每个推理节点和 Renderer、点击端口连接、Load、Play、Pause/Resume、Unload/Reload、Save/重开。UI 图仅预置输入资源，不声称覆盖系统文件选择器；实际窗口与生产 PNG 的同构显示比较只证明显示传递，独立数学一致性单列报告。数值失败仍可收集 UI 证据，但最终命令不得因此通过。
+
+普通生产构建不启用 `inference-diagnostics`。该 feature 仅由 app 的 `inference-e2e` 测试 feature 打开：显式请求在同一 GPU queue 复制 source、原始输入/输出和任务附属 buffer，只有对应图请求被接受后才交付；读回属于测试消费者，不属于生产逐帧路径。SR3 副本只包含有效 PixelShuffle 前 `[1,9,224,224]`，测试映射回原输出；YOLO26 保留原 UInt8 dtype 和实际 class ID，诊断同时保存 FP32 logits，不把浮点存储误称原始输出类型。
+
+数值契约经明确确认采用稳定验收，而非跨后端逐位一致：FP32 仍使用 `abs(gpu-cpu) <= 1e-3 + 1e-3*abs(cpu)`。包含 InstanceNormalization 的诊断 CPU oracle 用 FP64 稳定计算归约后转回 FP32，其余原始节点、权重及源 artifact 不变，并在报告列出 reference 变换；这是参考算法边界，不是生产模型替换。分类要求 GPU class ID 精确等于同次执行的 GPU logits ArgMax；所有 logits 必须先通过原 FP32 容差。跨后端 class ID 不同仅能在预先声明的数值误差区间重叠、无法确定唯一赢家时接受，所有坐标、类别、logits、间隔和判据必须报告。明显高间隔错误、错误 ArgMax、非有限值或形状错误仍失败，不能按 fixture/pixel 特判。`exactIdPassed` 与稳定分类判定分开，不能声称接受了边界差异就获得逐位一致。
+
+默认报告根为 `test-results/inference-e2e/`；可设绝对 `OPEN_QUARTZ_INFERENCE_E2E_OUTPUT` 和 `OPEN_QUARTZ_INFERENCE_E2E_MANIFEST`。`production.json` 只有全部模型、所有输入与 CPU 对照通过后才设置 `passed:true`；每例保留实际 source/raw/renderer/reference 和失败阶段。UI 子目录包含 JSON、日志、截图与 HTML 报告。性能子目录保存独立 Release 采样，禁止用串行 completion wall 冒充 UI FPS。`.github/workflows/inference-e2e.yml` 在 PR/master 运行功能链路，在定时/手动任务额外执行性能采样；GitHub hosted macOS 必须实际通过 Metal/VideoToolbox 检查才算通过，不由 runner 标签推断硬件能力，PR 代码不自动派发到持久 self-hosted 主机。
+
 
 ### 可复用 Slint 编辑器
 

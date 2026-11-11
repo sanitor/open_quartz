@@ -356,6 +356,52 @@ impl InferenceSession {
         checked_total(input_bytes, bytes, limits)?;
         Ok((data.to_vec(), shape.to_vec()))
     }
+    /// Explicit diagnostic-only mixed output extraction from one CPU execution.
+    /// The original selected UInt8 output is retained alongside existing logits.
+    #[cfg(feature = "gpu-diagnostics")]
+    pub fn run_u8_with_logits(&mut self, input: Vec<f32>, shape: Vec<i64>, selected: &str,
+        logits_name: &str, logits_shape: &[i64]) -> Result<((Vec<u8>, Vec<i64>), NamedTensor), InferenceError> {
+        if self.info.inputs.len()!=1 || selected==logits_name {
+            return Err(InferenceError::InvalidModelInterface("diagnostic requires one input and distinct selected/logits names".into()));
+        }
+        validate_names([selected.to_owned(),logits_name.to_owned()].into_iter(),&self.info.outputs,false)?;
+        let input_metadata=&self.info.inputs[0];
+        let output_metadata=self.info.outputs.iter().find(|m|m.name==selected).ok_or_else(||InferenceError::UnknownName(selected.into()))?;
+        let logits_metadata=self.info.outputs.iter().find(|m|m.name==logits_name).ok_or_else(||InferenceError::UnknownName(logits_name.into()))?;
+        for (metadata,expected) in [(output_metadata,TensorElementType::Uint8),(logits_metadata,TensorElementType::Float32)] {
+            if metadata.element_type!=expected { return Err(InferenceError::UnsupportedType {name:metadata.name.clone(),element_type:format!("{:?}",metadata.element_type)}); }
+        }
+        let limits=TensorLimits::default();let mut symbols=BTreeMap::new();
+        let input_bytes=validate_tensor(&input_metadata.name,&shape,input.len(),input_metadata,&mut symbols,limits)?;
+        let logits_count=logits_shape.iter().try_fold(1usize,|n,&d|usize::try_from(d).ok().filter(|&d|d>0).and_then(|d|n.checked_mul(d)))
+            .ok_or_else(||InferenceError::SizeOverflow(logits_name.into()))?;
+        let logits_bytes=validate_tensor(logits_name,logits_shape,logits_count,logits_metadata,&mut symbols,limits)?;
+        checked_total(input_bytes,logits_bytes,limits)?;
+        let known_shape=output_metadata.dimensions.iter().map(|d|match d {
+            TensorDimension::Static(n)=>i64::try_from(*n).map(Some).map_err(|_|InferenceError::SizeOverflow(selected.into())),
+            TensorDimension::Symbol(s)=>Ok(symbols.get(s).copied()),TensorDimension::Dynamic=>Ok(None),
+        }).collect::<Result<Option<Vec<_>>,_>>()?;
+        if let Some(known)=known_shape {
+            let bytes=validate_u8_output(&known,None,output_metadata,&mut symbols,limits)?;
+            checked_total(checked_total(input_bytes,logits_bytes,limits)?,bytes,limits)?;
+        }
+        let value=ort::value::Tensor::from_array((shape,input)).map_err(|e|runtime_error("create diagnostic input",e))?;
+        let selector=OutputSelector::no_default().with(selected.to_owned()).with(logits_name.to_owned());
+        let options=RunOptions::new().map_err(|e|runtime_error("create diagnostic options",e))?.with_outputs(selector);
+        // An exposed logits output may alias the input (e.g. a minimal ArgMax graph).
+        // Keep the Rust allocation alive through extraction, not just through Run.
+        let results=self.session.run_with_options(vec![(input_metadata.name.as_str(),&value)],&options).map_err(|e|runtime_error("run diagnostic reference",e))?;
+        let ids=results.get(selected).ok_or_else(||InferenceError::UnknownName(selected.into()))?;
+        let (id_shape,id_data)=ids.try_extract_tensor::<u8>().map_err(|e|runtime_error("extract original UInt8 output",e))?;
+        let id_bytes=validate_u8_output(id_shape,Some(id_data.len()),output_metadata,&mut symbols,limits)?;
+        let logits=results.get(logits_name).ok_or_else(||InferenceError::UnknownName(logits_name.into()))?;
+        let (actual_shape,data)=logits.try_extract_tensor::<f32>().map_err(|e|runtime_error("extract diagnostic logits",e))?;
+        if &actual_shape[..]!=logits_shape { return Err(InferenceError::InvalidModelInterface(format!("diagnostic logits shape {actual_shape:?}, expected {logits_shape:?}"))); }
+        let bytes=validate_tensor(logits_name,actual_shape,data.len(),logits_metadata,&mut symbols,limits)?;
+        checked_total(checked_total(input_bytes,id_bytes,limits)?,bytes,limits)?;
+        Ok(((id_data.to_vec(),id_shape.to_vec()),NamedTensor {name:logits_name.into(),data:data.to_vec(),shape:actual_shape.to_vec()}))
+    }
+
     pub fn run_f32_scoped(
         &mut self,
         stamp: RequestStamp,

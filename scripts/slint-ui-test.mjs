@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,8 +22,10 @@ async function availablePort() {
 }
 
 export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTPUT_DIR, suite = 'interaction' } = {}) {
-  if (!['interaction', 'shaders'].includes(suite)) throw new Error(`Unknown UI suite: ${suite}`);
-  const directory = resolve(outputDir || join('test-results', 'slint-ui', `${suite}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`));
+  if (!['interaction', 'shaders', 'inference'].includes(suite)) throw new Error(`Unknown UI suite: ${suite}`);
+  const directory = resolve(outputDir || (suite === 'inference'
+    ? join(process.env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || 'test-results/inference-e2e', `ui-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)
+    : join('test-results', 'slint-ui', `${suite}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)));
   await mkdir(directory, { recursive: true });
   const projectPath = join(directory, 'ui-roundtrip.quartz.json');
   await writeFile(projectPath, JSON.stringify({
@@ -42,7 +44,7 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
   });
   lifecycleFailure.catch(() => {});
   const launches = [];
-  const timeoutMs = Number(process.env.SLINT_UI_TIMEOUT_MS || (suite === 'shaders' ? 600_000 : 180_000));
+  const timeoutMs = Number(process.env.SLINT_UI_TIMEOUT_MS || (suite === 'inference' ? 900_000 : suite === 'shaders' ? 600_000 : 180_000));
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('SLINT_UI_TIMEOUT_MS must be positive');
 
   function stop() {
@@ -131,7 +133,19 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
     }))), steps: [], screenshots: [] };
   }
   try {
-    const execute = suite === 'shaders' ? (await import('./slint-shader-scenarios.mjs')).runShaderScenarios : runScenarios;
+    if (suite === 'inference') {
+      const manifestPath = process.env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST;
+      if (!manifestPath) throw new Error('Inference UI regression requires OPEN_QUARTZ_INFERENCE_E2E_MANIFEST; run npm run test:desktop:inference');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      scenarioReport = { suite, caseDefinitions: [
+        { id: 'inference-prerequisites', title: 'Pinned artifacts and complete production execution', description: '固定模型、样本和硬件前提', screenshotPrefixes: [] },
+        ...manifest.catalog.flatMap((model) => ['image', 'video'].map((lane) => ({
+          id: `inference-${model.id}-${lane}`, title: `${model.label} · ${lane}`, description: '模型加载、Renderer 显示及生命周期', screenshotPrefixes: [],
+        }))),
+      ], steps: [], screenshots: [] };
+    }
+    const execute = suite === 'shaders' ? (await import('./slint-shader-scenarios.mjs')).runShaderScenarios
+      : suite === 'inference' ? (await import('./slint-inference-scenarios.mjs')).runInferenceScenarios : runScenarios;
     await Promise.race([restart(), lifecycleFailure]);
     const scenarios = await Promise.race([
       execute({ endpoint, outputDir: directory, projectPath, requireGpu: true, restart, signal,
@@ -161,9 +175,10 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [binary, ...args] = process.argv.slice(2);
-  const suite = args.includes('--shaders') ? 'shaders' : 'interaction';
-  const remaining = args.filter((arg) => arg !== '--shaders');
-  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders]');
+  if (args.includes('--shaders') && args.includes('--inference')) throw new Error('Select only one UI suite');
+  const suite = args.includes('--inference') ? 'inference' : args.includes('--shaders') ? 'shaders' : 'interaction';
+  const remaining = args.filter((arg) => !['--shaders', '--inference'].includes(arg));
+  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders | --inference]');
   try { await runUiTests(binary, { outputDir: remaining[0], suite }); }
   catch (error) { console.error(error.stack || String(error)); process.exitCode ||= 1; }
 }
