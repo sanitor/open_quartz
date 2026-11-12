@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Resident hardware H.264/MP4 export (Phase 5)
+
+- Add a clock-free `ExportJob` consumer of the shared FramePipeline: checked half-open CFR ranges, ordered stable frames, explicit SDR sRGB interpretation, same-queue GPU BT.709 limited NV12 conversion and bounded VideoToolbox source-consumption credits. No CPU image fallback; no editor UI or audio track.
+- Add `oq-media` hardware-required H.264 encoder/MP4 mux worker with delayed-packet drain, exclusive descriptor-backed temporary output, trailer/fsync, source-identity validation, atomic no-clobber/explicit-overwrite commit, cancellation and existing-target protection. Include the runnable `export_video` example.
+- Rebuild the LGPL-only FFmpeg 8.1.1 SDK as `oq-vt-hw3-metal-encode-r2`, enable native encoder/muxers and backport upstream `2da55bf59a68801a8157ab141a487196ce3416a8` for actual H.264 two-frame reorder depth; ship both patches and corresponding notices/source.
+- Cover real Metal color/alpha/stride conversion and surface lifetime, hardware reorder with small-pool backpressure, rational PTS/DTS and tail frames, source changes, disk-full writes, cancellation and competing target commits. Phase evidence and unchanged global coverage limits are recorded in the [implementation record](apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
+
 ### Bounded source lookahead and nonblocking frame execution (Phase 4)
 
 - Extend the shared FramePipeline with bounded demand/terminal windows, prefill and low/high watermarks, source preparation and cross-stage credits. NativePlayer plans ahead on its existing composition clock and presents the exact stable completion, not a newer live graph texture; feedback evaluation stays deadline-ordered.

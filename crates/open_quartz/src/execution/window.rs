@@ -517,7 +517,7 @@ impl super::FramePipeline {
         stamp.deadline_ns.saturating_add(delay)
     }
 
-    fn window_output_extent(
+    pub(super) fn window_output_extent(
         &self,
         node_id: &str,
         depth: usize,
@@ -561,6 +561,9 @@ impl super::FramePipeline {
                     return (width, height, TextureFormat::Rgba8Unorm);
                 }
             }
+        }
+        if let Some(source) = node.and_then(|node| node.upstream.values().next()) {
+            return self.window_output_extent(source, depth + 1);
         }
         self.render_device.output_texture(node_id).map_or(
             (

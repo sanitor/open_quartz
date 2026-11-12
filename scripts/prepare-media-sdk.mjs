@@ -14,7 +14,7 @@ export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
-const revision = 'videotoolbox-lgpl-hw2-metal';
+const revision = 'oq-vt-hw3-metal-encode-r2';
 
 function run(command, args, cwd) {
   return new Promise((accept, reject) => {
@@ -47,14 +47,16 @@ export async function prepareMediaSdk() {
   await rm(source, { recursive: true, force: true });
   await run('tar', ['-xf', archive, '-C', cache], root);
   await run('patch', ['-p1', '-i', join(root, 'scripts', 'ffmpeg-videotoolbox-hardware.patch')], source);
+  await run('patch', ['-p1', '-i', join(root, 'scripts', 'ffmpeg-videotoolbox-reorder.patch')], source);
   const install = join(cache, 'install');
   await rm(install, { recursive: true, force: true });
   const args = [
     `--prefix=${install}`, '--disable-autodetect', '--disable-everything',
-    '--extra-version=oq-vt-hw2-metal',
+    `--extra-version=${revision}`,
     '--disable-programs', '--disable-doc', '--disable-debug', '--disable-static', '--enable-shared',
     '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--disable-avfilter', '--disable-swresample',
     '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-videotoolbox',
+    '--enable-encoder=h264_videotoolbox', '--enable-muxer=mp4,mov',
     '--enable-decoder=h264,hevc,mpeg4,vp9,av1', '--enable-parser=h264,hevc,mpeg4video,vp9,av1',
     '--enable-demuxer=mov,matroska,avi,mpegts', '--enable-protocol=file',
     '--enable-hwaccel=h264_videotoolbox,hevc_videotoolbox',
@@ -78,8 +80,9 @@ export async function prepareMediaSdk() {
   await copyFile(join(source, 'COPYING.LGPLv2.1'), join(staging, 'COPYING.LGPLv2.1'));
   await copyFile(archive, join(staging, `ffmpeg-${version}.tar.xz`));
   await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-hardware.patch'), join(staging, 'ffmpeg-videotoolbox-hardware.patch'));
+  await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-reorder.patch'), join(staging, 'ffmpeg-videotoolbox-reorder.patch'));
   await writeFile(join(staging, 'BUILD-CONFIG.txt'), `${sourceUrl}\nSHA-256: ${sha256}\n./configure ${args.join(' ')}\n`);
-  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require hardware acceleration for HEVC as well as H.264 VideoToolbox; request Metal-compatible decoder output on macOS instead of OpenGL-compatible output. The iOS OpenGLES branch is unchanged.\nOriginal corresponding source, exact patch, license and build options are included.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch before configuring.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
+  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require H.264/HEVC hardware decode and Metal-compatible output; enable hardware H.264 encoder and MP4/MOV mux; backport upstream H.264 reorder-depth correction 2da55bf59a68801a8157ab141a487196ce3416a8.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch and patch -p1 < ffmpeg-videotoolbox-reorder.patch before configuring. Original source, exact patches, LGPL license and build options included.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
   await writeFile(join(staging, '.build-id'), marker);
   await rm(mediaSdk, { recursive: true, force: true });
   await rename(staging, mediaSdk);

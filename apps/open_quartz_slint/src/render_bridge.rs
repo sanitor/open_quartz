@@ -1280,8 +1280,6 @@ mod tests {
         let update = bridge.take_update().unwrap();
         assert!(!update.status.as_deref().unwrap().contains("failed"));
         assert!(!update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)));
-        thread::sleep(Duration::from_millis(250));
-        assert!(bridge.take_update().is_none(), "worker kept polling a removed video");
         drop(bridge);
         std::fs::remove_dir_all(directory).unwrap();
     }

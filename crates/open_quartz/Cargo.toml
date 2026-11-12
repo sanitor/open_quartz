@@ -52,3 +52,7 @@ required-features = ["native-runtime", "native-onnx"]
 [[example]]
 name = "catalog_benchmark"
 required-features = ["native-runtime", "native-onnx"]
+
+[[example]]
+name = "export_video"
+required-features = ["native-runtime", "native-video"]

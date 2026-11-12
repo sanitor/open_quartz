@@ -13,6 +13,8 @@ pub mod target;
 pub mod stable_frame;
 #[cfg(all(target_os = "macos", feature = "native-video"))]
 pub mod videotoolbox;
+#[cfg(all(target_os = "macos", feature = "native-video"))]
+pub mod encode_surface;
 
 pub use crate::compiler::shader::{BLIT_FRAG, FULLSCREEN_VERT_WITH_UV};
 pub use backend::{GpuBackend, TextureHandle};
@@ -34,6 +36,8 @@ pub use readback::{align_bytes_per_row, copy_padded_rgba};
 pub use target::{RenderTarget, TextureFormat};
 #[cfg(not(target_arch = "wasm32"))]
 pub use stable_frame::{FrameCaptureError, FrameReady, StableFrame, StableFrameBudget, StableFramePool};
+#[cfg(all(target_os = "macos", feature = "native-video"))]
+pub use encode_surface::{ConversionAdmission, ConversionReady, ConvertedFrame, InputInterpretation, Nv12Converter};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "gpu_coverage_tests.rs"]

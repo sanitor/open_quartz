@@ -26,6 +26,12 @@ mod window;
 pub use window::{FrameStageEvent, FrameWindowConfig};
 use window::{FrameWindow, QueuedFrame};
 
+#[cfg(all(target_os = "macos", feature = "native-video"))]
+#[path = "export.rs"]
+mod export;
+#[cfg(all(target_os = "macos", feature = "native-video"))]
+pub use export::{ExportConfig, ExportJob, ExportPhase, ExportStageEvent, ExportStatus};
+
 fn runtime_error(error: SdkError) -> String {
     error.to_json()
 }

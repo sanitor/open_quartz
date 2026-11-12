@@ -1,5 +1,7 @@
 mod catalog;
 mod frame_budget;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-video"))]
+pub(crate) mod source_identity;
 
 pub use frame_budget::{FrameAdmissionGuard, FrameBudget, FrameCredit, FrameWakeRegistration};
 

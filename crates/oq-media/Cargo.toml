@@ -14,6 +14,9 @@ videotoolbox = ["dep:ffmpeg-next"]
 [target.'cfg(target_os = "macos")'.dependencies]
 ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [[example]]
 name = "decode"
 required-features = ["videotoolbox"]

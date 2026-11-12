@@ -357,7 +357,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑P0～P2拆为实际实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～4已完成，Phase4按本次单阶段commit提交；Phase5～8未开始。P0在Phase1～5收齐，P1在Phase6收齐，P2在Phase7～8收齐。精确source窗口当前实机为macOS文件VideoToolbox，不宣称非macOS/HDR/camera已验收；全局100% coverage gates仍红、不发布。
+本节将产品里程碑P0～P2拆为实际实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～4已提交（Phase4：`ff3d709`），Phase5已实现并通过下方真实macOS验收；Phase6～8未开始。Phase5提供无窗口硬解→GPU效果→硬件H264/MP4，不提供编辑器窗口；Phase6素材库/单轨时间线/监视器，Phase7完整预览效果，Phase8UI导出/打包闭环。全局100% gates仍红，不发布。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -376,6 +376,11 @@ Phase 3 只接受 stream-relative nonnegative nanoseconds，并以目标之前�
 Phase 4 实施契约（2026-11-12）：沿用同一个FramePipeline，图/feedback按序执行；新增有界需求窗口将解码未来帧、当前GPU提交与较早稳定输出消费分离。媒体cursor移到有界worker，render owner仅request/poll/import，不同步seek/decode。保留单请求显式submit边界用于离线/现有调用；窗口入口复用同一求值、推理与终态实现，不建立第二执行循环。窗口按时间跨度、计划/终态总量、原生surface和bytes限额；取消清未提交投机任务，已提交GPU资源至真实completion归还。预热复用PreparedNativeGraph的真实source游标，不造剪辑/时间线业务层。默认prefill/低高水位在本Phase真实冷启动、切点与过载实验后确定；未验收前不把配置值当性能结论。Phase开始基线：SDK的100% gates仍红（default 98.37/96.99/98.45%，native95.93/90.01/94.35%）；全仓fmt check报告既有非本Phase文件差异。保留scope/threshold，不发布。
 
 Phase 4资源门槛已由用户明确选择“修订为可执行的资源门槛”：共享硬预算覆盖应用持有的原生表面、GPU中间纹理、推理输出和稳定帧；codec参考/重排工作集另列，VideoToolbox私有池和同类不可观测driver/runtime内存明确不作硬上限保证。若后续要求整个decoder/private runtime硬限额，必须先具备后端分配观测/约束能力，不通过FFmpeg pool参数冒充完成。
+
+Phase5实施契约（2026-11-12）：锁定libav8.1.1在原LGPL-only配置启用h264_videotoolbox及MOV/MP4 mux，build identity为`oq-vt-hw3-metal-encode-r2`，拒绝旧SDK并回移上游two-frame reorder-depth修复。媒体库仅拥有编码参数/CoreVideo NV12 surface/AVFrame消费/packets/mux；GPU适配在同Device/Queue将显式SDR sRGB RGBA8转BT709 limited NV12，不map/readback。跨GPU→VT在实际queue callback后送encoder，AVFrame buf[0]留存surface/pool credit至真实消费。
+
+文件任务使用已冻结的FramePipeline图/源配置和checked CFR半开帧范围，无UI clock、不丢帧/不使用latest-only；bounded需求→稳定输出→NV12转换→有界编码worker按帧序衔接。encoder `finish`只排空并写trailer/fsync/close至ReadyToCommit；宿主核对源身份后显式commit，同目录临时文件原子提交。取消/错误/源变化不覆盖既有目标，已有目标必须明确overwrite许可。默认B-frame0降低最小工作集，但send/receive按0..N packets处理；可配置reorder须有足够input capacity。应用可观测资源沿用共享FrameBudget，VT/driver私有池仍不冒报硬上限。Phase5真实互操作、独立FFmpeg/ffprobe时间戳/尾帧/颜色/像素、受限池/取消/写入失败均通过后才独立commit。
+
 
 
 ### 14.2 每个 Phase 的硬性完成与提交协议
@@ -403,7 +408,7 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-Phase0设计、Phase1稳定帧、Phase2共享流水和Phase3精确source time已提交（Phase3：`6945fac`）。Phase4按下方独立实现/验证记录推进；新编辑器仍只有设计目录。本轮局部与全量gate状态分别报告，不把历史通过数冒充当前验收。
+Phase0～4已提交；Phase5实现、真实硬件验收和本轮回归见下。新编辑器仍只有设计目录，局部行为与全量100% gate分别报告，不以历史通过数替代本轮证据。
 
 实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
 
@@ -536,7 +541,7 @@ FramePipeline新增`submit_window/configure_window`和有界planned/completed队
 
 配置按这一小样本的工作集与抖动采用保守默认：low=1/high=3、prefill=2、timeline span≤100ms；source最多6表面/128MiB，稳定池3槽/256MiB，共享backend默认64 application surfaces/512MiB，可显式注入更小/更大预算。不是自动读取device建议工作集10%，也不是任意4K/模型实时保证；超出最小工作集明确失败。feedback图只做source前瞻、GPU求值按deadline，启动以首个真实完成而非两帧投机feedback建立时钟。静态图视频启动prefill后平移wall-clock起点；持续过载不减慢composition clock，只记录late，不丢必需的时域依赖。Trace默认关闭，显式开启后各ring≤512。
 
-资源范围严格按本节用户批准的修订：VT/driver私有DPB和MPSGraph私有runtime不作硬上限，应用owned buffers/retained surface可计费；weights/model准备内存另列。尚无encoder，所以不存在对编码0..N/reorder/mux/drain与导出前进性的本轮通过声明。非mac精确source worker/HDR/camera/完整编辑器scrub不据Apple路径推断。
+资源范围严格按本节用户批准的修订：VT/driver私有DPB和MPSGraph私有runtime不作硬上限，应用owned buffers/retained surface可计费；weights/model准备内存另列。Phase5已覆盖encoder 0..N/reorder/mux/drain、导出前进性与文件终态；非mac精确source worker/HDR/camera/完整编辑器scrub不据Apple路径推断。
 
 本轮命令与实测（macOS26/Apple M4 Pro；FFmpeg executable与ORT1.21显式配置，ORT只供reference）：
 
@@ -559,7 +564,32 @@ FramePipeline新增`submit_window/configure_window`和有界planned/completed队
 Shader窗口首轮33/34，Ripple在Connections=1且“Output selected”的连接阶段超时，而非像素oracle失败。自动化改为点击Shader输出后再读取Renderer输入端口，避免用选择重绘前的handle/坐标；重跑34/34。不增加retry、延长超时或修改shader/像素容差，完整报告保留失败前证据。
 
 
-Phase0～4已完成，Phase4代码/回归/文档按本次独立commit提交；Phase5硬件编码/封装及编辑器应用仍待实施。声音、多轨/转场、关键帧、代理/后台缓存和模型剪辑接入仍各为后续Phase，不在当前source-window阶段冒称完成。沿用每Phase单commit，不自动push；全局coverage门槛未关时不发布。
+Phase0～4已完成，Phase5硬件编码/封装实现与真实macOS验收完成；编辑器应用仍待实施。声音、多轨/转场、关键帧、代理/后台缓存和模型剪辑接入仍各为后续Phase，不在当前headless导出阶段冒称完成。沿用每Phase单commit，不自动push；全局coverage门槛未关时不发布。
+
+#### Phase 5：驻留硬件H.264/MP4导出（2026-11-12）
+
+Phase5在同一个`FramePipeline`上冻结图/source identity和checked CFR半开范围，顺序执行真实VideoToolbox source→GPU effect→NV12→hardware H.264→MP4。GPU到编码器跨queue completion交接；`EncoderSurface`为Metal-compatible 420v IOSurface，AVFrame owner持续到VideoToolbox source-consumption callback，CPU image bytes保持0。`Mp4Encoder`的bounded `Accepted/WouldBlock` credit覆盖queue+worker+AVBuffer在途，finish完成0..N packet drain/trailer/fsync后才ReadyToCommit，commit做同目录exclusive-descriptor临时文件原子rename；错误/取消/source-change/write failure不替换目标。
+
+| 命令/产物 | 实际结果 |
+|---|---|
+| `cargo test --locked -p oq-media --features videotoolbox encoder::mp4::tests -- --nocapture` | 4 real encoder cases passed：two-frame reorder/small credit/backpressure（24 packets，DTS严格递增，in_flight归零）、ENOSPC、取消/目标竞争、非法PTS/admission |
+| `cargo test --locked -p oq-media --features videotoolbox --test encode -- --nocapture` | 2 passed：硬编MP4 packets/PTS/target cancel |
+| `env OPEN_QUARTZ_FFMPEG_PATH=.../runtime/ffmpeg cargo test --locked -p open_quartz --features native-runtime,native-video --lib execution::pipeline::export::tests -- --nocapture` | 4 passed：真实source PTS→effect→NV12→H264/MP4、12帧半开范围、尾帧/BT709/独立software luma oracle、源变更/取消/alias |
+| `cargo test --locked -p open_quartz --features native-runtime,native-video --lib -- --test-threads=1` | 297 passed |
+| `cargo test --locked --workspace` | 293 passed / 37 suites；source identity仅在native-video/non-wasm构建，默认不编译无消费者的原生实现 |
+| `npm run test:desktop` | 80 passed / 2既有opt-in ignored；旧video preview回归修复后通过 |
+| `npm run test:desktop:ui` | 19/19真实Slint cases passed；[报告](../../test-results/slint-ui/interaction-2026-11-12T09-55-48-968Z/report.html) |
+| `npm run test:desktop:shaders` | 34/34，真实shader/feedback像素与pause回归；[报告](../../test-results/slint-ui/shaders-2026-11-12T10-00-59-509Z/report.html) |
+| `npm run test:desktop:inference:ui` | 15/15：七模型Image+Video，实际Load/Play/Pause/Resume/Unload/重载/保存重开；[报告](../../test-results/inference-e2e/ui-2026-11-12T10-02-09-967Z/report.html) |
+| `npm run check:rust-boundaries` | 通过 |
+| `cargo run --locked -p open_quartz --features native-runtime,native-video --example export_video -- crates/oq-media/tests/source-time.mp4 test-results/phase5/cli-export.mp4 1 13 10 1 --invert --overwrite` | Apple M4 Pro/Metal成功：12 frames，hardware=true，12 packets |
+| 独立`ffprobe` | `cli-export`/`resident-export`: 12 frames、PTS 0..1.1/0.1、tv/bt709；`reordered-export`: 24 frames、has_b_frames=2、PTS 0..0.767433、DTS严格递增；完整JSON在`test-results/phase5/*-ffprobe.json` |
+| `cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase5/media-coverage.json -- --test-threads=1` | 16 passed（lib7/decode7/encode2）；media line/function/region=78.35/69.77/79.21%，不替代核心100% gate |
+| `npm run test:sdk-coverage` | 行为测试通过但100% gate仍exit1：最终default line/function/region=98.02/95.86/97.99%，native=94.00/87.04/92.11%；scope/exclusions/threshold均未放宽 |
+
+固定FFmpeg8.1.1 SDK的`oq-vt-hw3-metal-encode-r2`应用上游H.264 reorder-depth patch `2da55bf59a68801a8157ab141a487196ce3416a8`，避免宿主伪造DTS或关闭B-frame。完整源码、hardware patch、reorder patch、build config与LGPL notices随SDK。CI媒体job保留source coverage并新增Phase5 native build/CLI artifact；现有coverage gate仍按仓库协议失败即不发布。
+
+本轮失败前/修复后：ExportJob最初stop了图后直接evaluate，现按合法pause/resume冻结空闲会话；独立软件oracle须保留copyts并取原始Y plane，避免减两次stream origin和低亮RGB转换量化造成错误期望。原SDK的真实B-frame测试观察到PTS=1/DTS=2非法packet，回移上游depth2后24帧及独立ffprobe通过。桌面video移除回归的“250ms内绝无update”将合法异步budget wake误判为继续poll视频，按协议删除这一实现细节断言，保留真实像素/替图拒绝/节点移除/preview缺席契约；桌面80 passed。
 
 ## 15. 回归与验收方案
 

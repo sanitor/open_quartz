@@ -2,7 +2,7 @@
 
 `oq-media`（Rust 导入名 `oq_media`）是在本仓孵化的独立媒体库。`oq` 记录 OpenQuartz 出处，不代表依赖；OpenQuartz 是消费者。公共媒体类型不依赖节点图、Slint 或 wgpu。
 
-当前实现 macOS H.264/HEVC 文件的进程内 VideoToolbox 硬解和 Phase 3 精确 source-time 读取。`Session` 提供 source stream time base / start / duration / seekability；`frame_at_ns` 选择 stream-relative 目标时间之后的首张 presentation surface，保留原始 PTS/time base 与 source/timeline epoch。前向请求沿同一 decoder cursor，向后 discontinuity 按新 epoch seek 前置关键帧、flush 并读取 presentation preroll；重复目标复用 retained frame。未知 origin/PTS 不按 FPS 猜；无 duration 时精确读取会顺序推进至 EOF。`FrameLease` 保留 AVFrame/CVPixelBuffer；此 API 不依赖图、Slint 或 wgpu。跨平台精确定位、camera、prefetch window、encoder/mux 未实现。
+当前实现macOS H.264/HEVC文件VideoToolbox硬解、精确source-time cursor，以及Phase5硬件H.264/MP4编码。Session保留stream timebase/start/duration/seekability及original PTS，frame_at_ns选择目标之后第一张presentation surface，顺播复用cursor、反向新epoch seek关键帧并丢preroll；unknown origin/PTS不按FPS猜。FrameLease保留AVFrame/CVPixelBuffer。编码器接受CoreVideo NV12原生surface，不做CPU图像转换；跨平台精确定位/编码、camera、完整统一播放器组件仍未实现。
 
 Phase 4宿主在有界source worker上调用该cursor；媒体库新增`frame_at_ns_cancellable`接收请求局部取消token，取消不污染Session的全局关闭状态。取消按packet/frame/I/O边界协作；正在执行的VideoToolbox原生decode调用仍须安全返回。`VideoToolboxFrame::allocation_size()`报告实际IOSurface分配bytes供宿主按表面身份计费，不读取CPU像素。该数字不包含VTDecompressionSession/driver私有DPB池；不能用FFmpeg pool参数或已保留帧数量宣称整个decoder硬内存上限。窗口、水位、credit、waker和跨阶段调度属于宿主execution，不把NodeId/wgpu/Slint引入oq-media。
 
@@ -20,11 +20,21 @@ env OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg \
 
 SDK 构建脚本、补丁和 LGPL 对应源码分发当前由宿主仓库提供；独立部署仍需配置 libav 的链接和运行库发现。媒体核心没有 OpenQuartz Rust 依赖，但 SDK 准备尚未提取成独立分发工具。
 
-运行时要求 `oq-vt-hw2-metal` 构建标识。其补丁要求 H.264/HEVC 使用硬件解码，并让 macOS 解码输出请求 Metal 兼容，而非 OpenGL 兼容。旧 `oq-vt-hw1` 运行库不能通过此版本的检查；重新运行准备脚本会依据新构建标识重建 SDK。源码归档、精确补丁、构建参数及 LGPL 许可证随 SDK 一起提供。
+运行时要求`oq-vt-hw3-metal-encode-r2`构建标识；旧decode-only hw2、hw1及未修复重排的hw3 SDK拒绝，不保留alias。锁定FFmpeg8.1.1/LGPL-only，保留H.264/HEVC硬件required/Metal输出，启用`h264_videotoolbox`与MP4/MOV mux；回移上游[2da55bf](https://github.com/FFmpeg/FFmpeg/commit/2da55bf59a68801a8157ab141a487196ce3416a8)修正H.264两级B-pyramid被误报一帧重排造成DTS>PTS。编码allow_sw=0/require_sw=0要求硬件，report.hardware来自此硬件必需配置，不是另一次VT属性查询。准备脚本按新identity重建；原源码、两份精确patch/build config/LGPL notices均分发。历史8K节只代表旧hw2测量。
 
 帧保留原生表面，不映射到 CPU。当前 OpenQuartz 的可选 GPU 消费者通过 CoreVideo/Metal 导入平面，并转换为 SDR sRGB RGBA；该适配尚位于宿主执行层，不是本 crate 的 API。当前支持 NV12/P010/BGRA8、BT.709/BT.470BG primaries 及 BT.709/SMPTE170M/sRGB transfer；BT.470BG 在逆 transfer 后以 D65 线性 RGB 原色矩阵转换到 BT.709，再编码 sRGB，不冒充 BT.709 源。HDR、旋转、crop、非方形像素和隔行呈现等未实现语义明确报错。
 
 解码帧的 `ColorInfo.primaries` 与 YUV `matrix` 独立。H.264 SPS 与 MP4 容器色彩标记冲突时，使用 libav 解码帧报告的实际色彩元数据，不用容器的 BT.709 标签覆盖 BT.470BG/BT.601。真实 1920×1080 H.264 Baseline MP4 曾因此在 Choose File 时被拒绝；现已验证原生文件选择后的首帧、独立 Video 节点播放、暂停和恢复，并由用户确认正常。像素回归用已知 YUV 色块验证 PAL→709 色域转换、容器冲突和交替原色时的 pipeline 缓存隔离。
+
+## 硬件H.264/MP4文件任务
+
+`EncoderSurface`分配/保留Metal兼容IOSurface NV12/420v表面，无CPU plane访问；宿主用GPU完成转换后才submit。`Mp4Encoder`以有界queued/in-flight输入持有`EncodeFrame`，返回Accepted或WouldBlock原frame；PTS严格递增、duration/timebase checked，不从wall-clock推测。原生AVFrame buf[0]owner由FFmpeg保留到VideoToolbox实际消费，不能把packet到达等同source已释放。codec/mux运行独立worker，调用方poll不等待编码完成。
+
+`finish`排空delayed packets、写trailer、flush/fsync/close为ReadyToCommit；宿主核对冻结source身份后调用`commit`。同目录exclusive临时文件通过已打开descriptor写入，不让libav按路径重开；原子提交前取消或任何错误只清理自建临时文件，保留既有目标。overwrite需明确许可。取消与提交使用单个原子边界；提交开始后以真实rename结果决定Completed/Failed，不把成功目标标Cancelled。
+
+可运行的核心consumer：`cargo run --locked -p open_quartz --features native-runtime,native-video --example export_video -- INPUT.mp4 OUTPUT.mp4 START END FPS_NUM FPS_DEN [--invert] [--overwrite]`。START/END为半开序列帧范围，输出PTS从0开始、timebase=FPS_DEN/FPS_NUM，无音轨；该命令是headless媒体能力，不是视频编辑器UI。GPU sRGB→BT709 transfer/limitedNV12在宿主rendering适配，公共媒体库不依赖wgpu/NodeId/Slint。
+
+本轮Apple M4 Pro/Metal真实验收：原生源VFR/B-frame非零起点→反色→NV12→H.264/MP4；独立软件luma+PTS oracle核对12帧半开范围、效果、尾帧和BT709标签，cpu_copy_bytes=0。原生两帧重排以4个input credit输出24 packets，实际发生WouldBlock，drain后in_flight=0；无重排/有重排PTS集合完整、DTS严格递增。覆盖同descriptor写ENOSPC、已有目标、目标竞争、drain后取消、commit/cancel单终态；GPU plane读回只在oracle测试。数值覆盖报告不是100%完成声明，详见Phase记录。
 
 ## 8K 性能与 OpenGL 兼容慢路径
 

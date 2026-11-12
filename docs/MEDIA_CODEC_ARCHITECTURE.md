@@ -1,7 +1,7 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
 > 状态：完整跨平台会话/编码/Slint 组件仍为提案，§17.1 首轮 macOS 验收为历史。当前生产实时图只接受 hardware buffer/texture，不允许软件 RGBA fallback；下面未来可选政策不放宽此约束。本轮 resident cutover 的实测计数、画面与未通过覆盖率门槛见 [DESIGN](DESIGN.md#validation)，旧结果不得复用。当前产品仅 Rust/Slint 与独立 .scr。
-> 2026-11-12架构更新：Phase4在原图macOS文件路径使用有界source worker、需求窗口/水位和共享可观测资源credit；oq-media继续无图/UI/wgpu依赖。render owner只poll实际PTS帧并提交同queue转换/图/推理；预备素材可提前选首帧并移交同一cursor。owner保留到真实queue completion，VideoToolbox importer不再逐帧host wait。验证记录见[编辑器Phase记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。跨平台精确source窗口、硬件encoder/mux和完整Slint媒体组件未交付。
+> 2026-11-12当前实施：Phase4使用有界source worker/窗口/共享credit；Phase5增加同FramePipeline的macOS headless ExportJob，GPU SDR sRGB RGBA→BT709 limited NV12→hardware-required H264→MP4，无CPU像素fallback。oq-media无图/UI/wgpu依赖。文件范围/PTS、source identity、取消、ENOSPC、reorder/tail与实际CLI已验收，详见[Phase记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。跨平台编码/精确source窗口、完整编辑器和Slint媒体组件未交付，整体coverage gate仍红。
 
 ## 1. 决策与目标
 
@@ -331,7 +331,7 @@ stateDiagram-v2
 - `Decoder`：压缩 `Packet` → 原始 `FrameLease`，不负责文件选择或显示。
 - `Encoder`：原始 frame → 编码 packet，codec 实际能力独立协商。
 - `Demuxer/Muxer`：容器与流元数据、extradata、time base 和 packet 顺序；不能把 H.264 packet 直接写入 `.mp4` 就认为成功。
-- `ExportJob`：持有 OutputSink、编码与封装会话、外部图帧生产者、进度与取消；提议供原生 CLI、Slint app 使用，产品外浏览器适配另行评审。
+- 当前`execution::ExportJob`：消费冻结FramePipeline，持有NV12 converter及oq-media Mp4Encoder，CFR范围/进度/源身份/取消/原子提交。真实CLI已运行；Slint导出UI和编辑器时间线消费者未交付。
 
 FFmpeg send/receive 是 0..N 输出协议，正确处理 EAGAIN、EOF 与 drain；不能假设一次 send 一定对应一帧/一个包。B-frame 使 DTS/PTS 不同，交给 muxer 的 timestamp 需重标度且符合流约束。
 
@@ -357,6 +357,10 @@ OpenQuartz 离线导出由独立图执行会话提供固定时间步的帧，不
 首个编码切片建议是 **视频无音轨的 H.264 + MP4**，明确标注无音频，8-bit SDR；codec/container/硬件支持先探测，不承诺所有平台都能输出此组合。FFmpeg native backend 自己完成 mux；浏览器 WebCodecs 不提供 demux/mux，要引入经过评估的容器适配器，或报告尚不支持。音频直通/remux 也需要 seek/rate/clip 对齐，不能作为“顺手复制音轨”。
 
 原生文件导出写 sibling 临时文件，成功写 trailer、关闭并按平台策略提交后才替换最终目标；覆盖许可和目标路径由宿主决定。浏览器 sink 写入授权 FileSystemWritable 或有大小预算的下载 Blob，不能把完整大文件无界累积在内存。写满、取消、关闭窗口和 codec 失败都保留结构化终态。
+
+Phase5当前实现固定macOS VideoToolbox/8-bit NV12/H264/MP4无音轨，非上述完整配置提案。SDK锁定FFmpeg8.1.1 `oq-vt-hw3-metal-encode-r2`；回移上游[H264 reorder-depth修复](https://github.com/FFmpeg/FFmpeg/commit/2da55bf59a68801a8157ab141a487196ce3416a8)，两级B-pyramid对应深度2，输入池至少depth+2。默认B=0；有B时独立ffprobe验证真实PTS集合和DTS单调/不晚于PTS。report.hardware是allow_sw=0/require_sw=0硬件必需契约，不是额外VT property采样，不作全平台推论。
+
+文件worker通过exclusive临时descriptor自定义AVIO，不按路径重开。finish排空delayed packets、trailer、fsync/close，ReadyToCommit后宿主再验证source路径/handle元数据身份；commit/cancel CAS规定单终态边界。正常queue completion后才将surface送codec，FFmpeg AVFrame buf[0] owner消费callback归还credit/wake；packet到达不代替source消费。错误/取消保留已有目标，no-clobber提交保护晚到的其他writer。原源码+hardware/reorder两patch+LGPL notices随SDK打包。
 
 ## 11. Slint 可复用组件设计
 
@@ -517,4 +521,4 @@ A 阶段把 B/C 所需的最小 Slint presenter POC 一起做，C 才将 API 整
 - [WebCodecs specification](https://www.w3.org/TR/webcodecs/)：当前产品之外的浏览器提案参考；不要求实现特定 codec，不提供完整容器播放器。
 - [Slint Web platform](https://docs.slint.dev/latest/docs/slint/guide/platforms/web/)：当前产品之外的浏览器呈现提案参考；不表示保留或已实现 Slint Web 产品。
 
-外部 FFmpeg trunk/Slint latest 文档仅为架构依据；实施以锁定源码和实际证据为准。§17.1 是首轮硬解历史，本轮 native 提取结果见 [DESIGN 验证基线](./DESIGN.md#validation)。编码器/跨平台完整会话仍未实现或验收，架构图不作实现证据，browser 只属于未来另立项提案。
+外部FFmpeg trunk/Slint latest仅为架构参考；实施以锁定源码和实际证据为准。macOS headless硬件H264/MP4已有Phase5证据，完整跨平台会话/编码/Slint组件仍未验收；browser只属于未来另立项提案。

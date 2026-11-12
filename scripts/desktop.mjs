@@ -110,7 +110,7 @@ async function prepareRuntime() {
     for (const file of ['libavcodec.62.dylib', 'libavformat.62.dylib', 'libavutil.60.dylib', 'libswscale.9.dylib']) {
       await copyRequired(join(sdk, 'lib', file), join(runtime, file));
     }
-    for (const file of ['COPYING.LGPLv2.1', 'FFMPEG-MEDIA-NOTICE.txt', 'BUILD-CONFIG.txt', 'ffmpeg-8.1.1.tar.xz', 'ffmpeg-videotoolbox-hardware.patch']) {
+    for (const file of ['COPYING.LGPLv2.1', 'FFMPEG-MEDIA-NOTICE.txt', 'BUILD-CONFIG.txt', 'ffmpeg-8.1.1.tar.xz', 'ffmpeg-videotoolbox-hardware.patch', 'ffmpeg-videotoolbox-reorder.patch']) {
       await copyRequired(join(sdk, file), join(runtime, file));
     }
   }

@@ -19,7 +19,7 @@ pub enum ErrorKind {
 }
 
 /// A media failure; `kind` drives policy, `message` is for diagnostics.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MediaError {
     pub kind: ErrorKind,
     pub message: String,
@@ -188,6 +188,10 @@ pub struct ColorInfo {
     pub primaries_assumed: bool,
 }
 
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+mod encoder;
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+pub use encoder::{EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface, Mp4Encoder};
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 mod videotoolbox;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]

@@ -160,8 +160,8 @@ impl Session {
             return Err(crate::MediaError::cancelled());
         }
         let version = unsafe { CStr::from_ptr(ffi::av_version_info()) }.to_string_lossy();
-        if !version.contains("oq-vt-hw2-metal") {
-            return Err(format!("Unverified FFmpeg build ({version}); VideoToolbox requires the hardware-required, Metal-compatible oq-vt-hw2-metal build").into());
+        if !version.contains("oq-vt-hw3-metal-encode-r2") {
+            return Err(format!("Unverified FFmpeg build ({version}); VideoToolbox requires hardware-required, Metal-compatible oq-vt-hw3-metal-encode-r2").into());
         }
         ffmpeg_next::init().map_err(|e| format!("libav initialization failed: {e}"))?;
         let path = path

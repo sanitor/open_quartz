@@ -27,6 +27,7 @@ pub struct SourceStageEvent {
 /// under its lock, and a request retains its upload position when a callback fails.
 pub struct VideoSources {
     sources: HashMap<String, NativeVideoSource>,
+    file_identities: HashMap<String, crate::resources::source_identity::SourceFileIdentity>,
     requests: HashMap<u64, RequestProgress>,
     capacity: usize,
     max_surfaces: usize,
@@ -54,6 +55,7 @@ impl Default for VideoSources {
     fn default() -> Self {
         Self {
             sources: HashMap::new(),
+            file_identities: HashMap::new(),
             requests: HashMap::new(),
             capacity: 3,
             max_surfaces: usize::MAX,
@@ -71,18 +73,26 @@ pub struct PreparedVideoSource {
     source: Option<NativeVideoSource>,
     info: NativeVideoInfo,
     frame_budget: Option<Arc<FrameBudget>>,
+    file_identity: Option<crate::resources::source_identity::SourceFileIdentity>,
     #[cfg(target_os = "macos")]
     preparation: Option<precise::Preparation>,
 }
 
 impl PreparedVideoSource {
     pub fn open_precise(config: NativeVideoConfig, preview_only: bool) -> Result<Self, String> {
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-d3d12")))]
+        let file_identity = if config.kind == super::native::NativeVideoSourceKind::File {
+            Some(crate::resources::source_identity::SourceFileIdentity::capture(std::path::Path::new(&config.source))?)
+        } else { None };
+        #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
+        let file_identity: Option<crate::resources::source_identity::SourceFileIdentity> = None;
         #[cfg(target_os = "macos")]
         let source = NativeVideoSource::open_hardware_precise(config, preview_only)?;
         #[cfg(not(target_os = "macos"))]
         let source = NativeVideoSource::open_hardware_required(config, preview_only)?;
         let info = source.info().clone();
-        Ok(Self { source: Some(source), info, frame_budget: None,
+        if let Some(identity) = &file_identity { identity.validate()?; }
+        Ok(Self { source: Some(source), info, frame_budget: None, file_identity,
             #[cfg(target_os = "macos")]
             preparation: None,
         })
@@ -126,6 +136,8 @@ impl VideoSources {
     pub fn attach_prepared(&mut self, node_id: &str, mut prepared: PreparedVideoSource) -> NativeVideoInfo {
         self.cancel_prefetch();
         let info = prepared.info.clone();
+        if let Some(identity) = prepared.file_identity.take() { self.file_identities.insert(node_id.to_owned(), identity); }
+        else { self.file_identities.remove(node_id); }
         #[cfg(target_os = "macos")]
         if let Some(preparation) = prepared.preparation.take() {
             self.sources.remove(node_id);
@@ -153,6 +165,7 @@ impl VideoSources {
 
     pub fn detach(&mut self, node_id: &str) {
         self.cancel_prefetch();
+        self.file_identities.remove(node_id);
         self.sources.remove(node_id);
         #[cfg(target_os = "macos")]
         if let Some(worker) = &self.worker {
@@ -171,10 +184,15 @@ impl VideoSources {
     pub fn clear(&mut self) {
         self.cancel_prefetch();
         self.sources.clear();
+        self.file_identities.clear();
         #[cfg(target_os = "macos")]
         if let Some(worker) = &self.worker {
             worker.clear();
         }
+    }
+
+    pub(crate) fn file_identities(&self) -> Vec<crate::resources::source_identity::SourceFileIdentity> {
+        self.file_identities.values().cloned().collect()
     }
 
     pub fn node_ids(&self) -> Vec<String> {

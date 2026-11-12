@@ -55,7 +55,7 @@ jobs:
         run: npm run test:sdk-coverage
 
   media-source-window:
-    name: Native media source window (macOS)
+    name: Native media source and hardware export (macOS)
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -68,17 +68,19 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: npm ci
       - run: npm run prepare:desktop
-      - name: Exercise real VideoToolbox source contracts and record coverage
+      - name: Exercise real VideoToolbox source and export contracts
         env:
           OPEN_QUARTZ_FFMPEG_PATH: ${{ github.workspace }}/apps/open_quartz_slint/runtime/ffmpeg
         run: |
-          mkdir -p test-results/phase4
-          cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase4/media-coverage.json -- --test-threads=1
+          mkdir -p test-results/phase5
+          cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase5/media-coverage.json -- --test-threads=1
+          cargo test --locked -p open_quartz --features native-runtime,native-video --lib -- --test-threads=1
+          cargo run --locked -p open_quartz --features native-runtime,native-video --example export_video -- crates/oq-media/tests/source-time.mp4 test-results/phase5/cli-export.mp4 1 13 10 1 --invert
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: media-source-window-coverage
-          path: test-results/phase4/
+          name: media-source-and-export-evidence
+          path: test-results/phase5/
           if-no-files-found: error
 
   slint-app:
