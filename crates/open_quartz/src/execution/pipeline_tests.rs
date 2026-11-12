@@ -949,7 +949,12 @@ fn exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch() {
             playback_rate: 1.0,
         };
         p.attach_video_preview("image", config).unwrap();
-        p.upload_video_frames().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !p.has_output_texture("image") {
+            p.upload_video_frames().unwrap();
+            assert!(Instant::now() < deadline, "source-only preview did not become ready");
+            std::thread::yield_now();
+        }
         let preview = p.render_device.read_output_rgba("image").unwrap().0;
 
         let mut outputs = Vec::new();
@@ -1086,3 +1091,6 @@ fn exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch() {
         }
     });
 }
+
+#[path = "window_tests.rs"]
+mod window_tests;

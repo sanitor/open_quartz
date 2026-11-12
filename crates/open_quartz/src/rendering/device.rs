@@ -33,6 +33,12 @@ pub struct PreparedRenderPlan {
     executor: GpuExecutor,
 }
 
+/// Reserved graph targets, not yet visible to rendering or output consumers.
+/// Dropping this value cancels the reservation without changing active outputs.
+pub(crate) struct PreparedFrameTargets {
+    executor: GpuExecutor,
+}
+
 impl PreparedRenderPlan {
     /// Upload into a fresh texture so the active plan's shared handles keep their pixels.
     pub fn stage_image(
@@ -187,6 +193,38 @@ impl RenderDevice {
         self.executor.sync_plan(plan)
     }
 
+    /// Reserve graph intermediates using source metadata before source admission.
+    /// False means temporary shared-budget pressure; impossible minima are errors.
+    pub fn try_prepare_frame_targets(
+        &mut self,
+        plan: &ExecutionPlan,
+        source_sizes: &std::collections::HashMap<String, (u32, u32)>,
+    ) -> Result<bool, GpuExecutionError> {
+        let Some(prepared) = self.try_prepare_frame_target_plan(plan, source_sizes)? else { return Ok(false); };
+        self.commit_frame_targets(prepared)?;
+        Ok(true)
+    }
+
+    /// Reserve targets before decoding without changing the live output graph.
+    /// None is temporary pressure; impossible graph minima return an error.
+    /// Commit only after evaluator admission accepts the corresponding demand.
+    pub(crate) fn try_prepare_frame_target_plan(
+        &self,
+        plan: &ExecutionPlan,
+        source_sizes: &std::collections::HashMap<String, (u32, u32)>,
+    ) -> Result<Option<PreparedFrameTargets>, GpuExecutionError> {
+        Ok(self.executor.try_prepare_frame_target_plan(plan, source_sizes)?
+            .map(|executor| PreparedFrameTargets { executor }))
+    }
+
+    /// Activate accepted targets without replacing newly uploaded source inputs.
+    pub(crate) fn commit_frame_targets(
+        &mut self,
+        prepared: PreparedFrameTargets,
+    ) -> Result<(), GpuExecutionError> {
+        self.executor.commit_frame_targets(prepared.executor)
+    }
+
     pub fn prepare_plan(
         &self,
         plan: &ExecutionPlan,
@@ -255,6 +293,41 @@ impl RenderDevice {
         frame: &oq_media::VideoToolboxFrame,
     ) -> Result<(), GpuExecutionError> {
         self.executor.upload_videotoolbox(node_id, frame)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn prepare_video_texture(&mut self, node_id: &str, width: u32, height: u32) -> Result<bool, GpuExecutionError> {
+        self.executor.prepare_video_texture(node_id, width, height)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn configure_videotoolbox_imports(&self, max_surfaces: usize, max_bytes: usize) -> Result<(), String> {
+        self.executor.backend().configure_videotoolbox_imports(max_surfaces, max_bytes)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn set_videotoolbox_budget(&self, budget: Arc<crate::resources::FrameBudget>) -> Result<(), String> {
+        self.executor.backend().set_videotoolbox_budget(budget)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn set_videotoolbox_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        self.executor.backend().set_videotoolbox_waker(waker)
+    }
+
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn videotoolbox_pending(&self) -> (usize, usize) {
+        self.executor.backend().videotoolbox_pending()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn try_upload_videotoolbox(
+        &mut self,
+        node_id: &str,
+        frame: &oq_media::VideoToolboxFrame,
+    ) -> Result<bool, GpuExecutionError> {
+        self.executor.try_upload_videotoolbox(node_id, frame)
     }
 
     #[cfg(windows)]
@@ -382,22 +455,42 @@ impl RenderDevice {
         #[cfg(windows)]
         if self.shared_texture_enabled {
             if let Some(output) = self.output_handle(_output_node_id) {
-                let output = if output.width.max(output.height) > PRESENTATION_MAX_DIMENSION {
-                    self.presentation_scaler.scale(&output, PRESENTATION_MAX_DIMENSION)?
-                } else {
-                    output
-                };
-                if let Some(presenter) = self.shared_presenter.as_mut() {
-                    let timeline_ns = self.presentation_started_at.elapsed().as_nanos()
-                        .min(u128::from(u64::MAX)) as u64;
-                    presenter.submit(GpuPresentationFrame {
-                        node_id: _output_node_id.to_owned(),
-                        frame: _frame,
-                        timeline_ns,
-                        output,
-                    })?;
-                    presenter.process_latest()?;
-                }
+                return self.present_snapshot(_output_node_id, &output, _frame, _timeline_ns);
+            }
+        }
+        Ok(())
+    }
+
+    /// Present the exact retained snapshot, even when graph execution has already
+    /// advanced its live output. The presenter retains its consumer lease.
+    pub fn present_snapshot(
+        &mut self,
+        _output_node_id: &str,
+        _output: &GpuOutputHandle,
+        _frame: u64,
+        _timeline_ns: u64,
+    ) -> Result<(), String> {
+        #[cfg(windows)]
+        if self.shared_texture_enabled {
+            let output = if _output.width.max(_output.height) > PRESENTATION_MAX_DIMENSION {
+                let mut scaled = self.presentation_scaler.scale(_output, PRESENTATION_MAX_DIMENSION)?;
+                let retained = _output.clone();
+                self.executor.backend().queue.on_submitted_work_done(move || drop(retained));
+                scaled.lease = _output.lease.clone();
+                scaled
+            } else {
+                _output.clone()
+            };
+            if let Some(presenter) = self.shared_presenter.as_mut() {
+                let timeline_ns = self.presentation_started_at.elapsed().as_nanos()
+                    .min(u128::from(u64::MAX)) as u64;
+                presenter.submit(GpuPresentationFrame {
+                    node_id: _output_node_id.to_owned(),
+                    frame: _frame,
+                    timeline_ns,
+                    output,
+                })?;
+                presenter.process_latest()?;
             }
         }
         Ok(())

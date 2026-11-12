@@ -325,9 +325,9 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
           }
           const shaderOutputs = await client.byLabel(new RegExp(`^Output ${escapeRegex(shader.data.label)} `), { role: 'Button' });
           assert.equal(shaderOutputs.length, 1, 'Each catalog shader must have one fragment output');
+          await client.click(shaderOutputs[0]);
           const rendererInputs = await client.byLabel(new RegExp(`^Input ${escapeRegex(renderer.data.label)} `), { role: 'Button' });
           assert.equal(rendererInputs.length, 1);
-          await client.click(shaderOutputs[0]);
           await client.click(rendererInputs[0]);
           connections.push({ source: shader.id, output: shaderOutputs[0].accessibleLabel, target: renderer.id, input: rendererInputs[0].accessibleLabel });
           const observed = await rootStatus({ Playback: 'stopped', Busy: 'false', Nodes: graph.nodes.length, Connections: images.length + 1 });

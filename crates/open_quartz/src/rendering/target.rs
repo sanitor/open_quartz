@@ -19,6 +19,8 @@ impl From<TextureFormat> for wgpu::TextureFormat {
 pub struct RenderTarget {
     pub texture: Arc<wgpu::Texture>,
     pub view: Arc<wgpu::TextureView>,
+    /// Retains this physical allocation's shared frame credit.
+    pub lease: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
@@ -47,6 +49,7 @@ impl RenderTarget {
         Self {
             texture: Arc::new(texture),
             view: Arc::new(view),
+            lease: None,
             width,
             height,
             format,

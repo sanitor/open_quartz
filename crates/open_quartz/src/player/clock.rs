@@ -80,6 +80,21 @@ impl CompositionClock {
         self.next_deadline_ns = None;
     }
 
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn defer_start(&mut self, delay_ns: u64) {
+        if let Some(start) = &mut self.running_since_ns {
+            *start = start.saturating_add(delay_ns);
+        }
+        if let Some(deadline) = &mut self.next_deadline_ns {
+            *deadline = deadline.saturating_add(delay_ns);
+        }
+    }
+
+    #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+    pub(crate) fn discard_lookahead(&mut self) {
+        self.previous_timeline_ns = self.accumulated_active_ns;
+    }
+
     pub fn tick(&mut self, now_ns: u64) -> Result<ClockState, SdkError> {
         let Some(running_since) = self.running_since_ns else {
             return Err(SdkError::new(
@@ -90,7 +105,7 @@ impl CompositionClock {
         let timeline_ns = self
             .accumulated_active_ns
             .saturating_add(now_ns.saturating_sub(running_since));
-        let previous_timeline_ns = self.previous_timeline_ns;
+        let previous_timeline_ns = self.previous_timeline_ns.min(timeline_ns);
         let deadline_ns = self.next_deadline_ns.unwrap_or(now_ns);
         self.previous_timeline_ns = timeline_ns;
         self.frame = self.frame.saturating_add(1);

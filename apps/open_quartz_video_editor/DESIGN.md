@@ -259,7 +259,7 @@ flowchart LR
 
 普通 GpuOutputHandle 是 live texture view，不能直接排入异步编码/缓存当作不可变帧。核心 outputs/rendering 扩展稳定输出 lease：明确颜色/alpha/尺寸/格式、内容身份、GpuReady 与 ConsumerReleased，持有期间不覆盖像素；按保留边界使用有界 slot 或 GPU detach copy，不给所有节点强制每帧复制。克隆 Arc 只保对象生存，不保像素稳定；当前推理三槽 lease 也不能被当成所有 shader 都已有的契约。
 
-宿主为共享设备创建并注入统一物理预算协调者；多个核心 FramePipeline 会话共享它，app 只配置份额/优先级，不重复实现 credit 算法。源缓存、GPU 中间结果、推理输出、编码输入按实际资源身份计费。流水统一维护各阶段有界 admission/completion 队列，接收可前进工作单元前预留下游必要 slot，下游满则停止上游扩张。codec 预滚/DPB/encoder reorder 独立计入，0..N 输出不硬套一帧一 slot。禁止拿满资源后互等，未提交投机任务先释放，不能持预算锁等待 codec/GPU/UI。
+宿主为共享设备创建并注入统一物理预算协调者；多个核心FramePipeline会话共享它，app不重复实现credit算法。源缓存、应用分配的GPU中间纹理/推理输出/编码输入按实际资源身份或明确的有界工作集预留计费。流水维护有界admission/completion队列，接收源工作前预留下游最小工作集，下游满则停止上游扩张。**2026-11-12用户确认的验收修订：硬预算只覆盖应用拥有/可观测的资源，不把VideoToolbox私有DPB/表面池、driver或MPSGraph私有runtime内存算成已硬限额。**FFmpeg的VT解码直接由VTDecompressionSession分配目标表面，`initial_pool_size/extra_hw_frames`不能保证限制该私有池；codec参考/重排需求单列，不能按输出帧数或虚构倍率冒报内部bytes。0..N输出沿decoder增量推进，预滚帧不形成无界应用队列。禁止持预算锁等待codec/GPU/UI；未提交投机任务先释放，在途owner按真实完成回收。此边界不等于进程RSS或整机GPU内存硬上限。
 
 目标状态明确区分 Planned、Admitted、SourceReady、GpuSubmitted、GpuReady、ConsumerReleased。Submitted 不是完成；同 queue 依赖优先用顺序/设备同步表达，跨平台 codec/encoder 使用真实完成协议。原 importer 的逐次 CPU wait 只能在 retained AVFrame、原生 wrapper、输出 slot 与 completion 回收被证明正确后替换；不能仅删 wait。错误、取消、timeout 或设备丢失均停止新 admission，已在途资源按真实完成或设备安全销毁协议退出。
 
@@ -268,7 +268,7 @@ flowchart LR
 初始预算为设计默认值，不是实测性能指标：
 
 - scrub 一个活动/一个最新待处理只约束交互意图。播放/导出有各自有界在途窗口，不共享 latest-only 输出槽。
-- GPU 已解码/处理帧缓存的软上限取设备建议工作集的 10%，封顶 512 MiB；无可用设备预算信息时采用保守固定值并报告来源。此值只限制可留存缓存，不代表完整 pipeline 工作集；decoder 内部表面、最小在途 slot、渲染中间目标、模型、Slint 和 encoder 保留另作统一预算核算，不能隐藏在上限之外假称总内存有界。
+- 当前FrameBudget采用保守固定64 application surfaces/512MiB，窗口/稳定池另有局部容量；不是自动读取device建议工作集10%。按用户批准范围，应用拥有的native retained surface、graph/feedback纹理、resident scratch与output slot统一计费；weights/模型准备内存另列，VT/driver/MPSGraph私有pool无法观测/硬限额，明确不属于完整process RSS上限。宿主可显式注入协调者，最小工作集不可能时拒绝，而非无界扩张。
 - 推理输出池当前最多三份 consumer lease；窗口不能假定可无限增加模型在途帧。最终呈现保留、任务执行和必要最小 slot 优先，低优先级缓存只用剩余额度。
 - 缩略图/代理磁盘缓存默认上限 2 GiB、LRU 淘汰；不删除原素材，不将代理误标原片。基础解码前瞻与短窗口预渲染属于 P0～P2，完整磁盘渲染缓存/代理仍属 P4。
 - 前台精确定位优先于投机预取，播放低水位补给优先于缩略图；导出与交互共享物理预算但各有会话，不承诺同时满速。导出必须有最低前进额度；资源不足时暂停可见的背景任务/预览，不能一边让用户导出一边将其永久饿死。
@@ -357,7 +357,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。Phase 0～2 已提交；Phase 3 实现和验收已完成、待独立 Phase commit；Phase 4～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐。Phase 3 精确选帧当前仅为 macOS 文件 VideoToolbox，未宣称非 macOS/HDR/camera 或多帧窗口已验收。
+本节将产品里程碑P0～P2拆为实际实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～4已完成，Phase4按本次单阶段commit提交；Phase5～8未开始。P0在Phase1～5收齐，P1在Phase6收齐，P2在Phase7～8收齐。精确source窗口当前实机为macOS文件VideoToolbox，不宣称非macOS/HDR/camera已验收；全局100% coverage gates仍红、不发布。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -372,6 +372,11 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 | **8 产品导出与分发闭环** `feat(editor): complete export jobs and native distribution` | UI 导出冻结快照、范围/进度/队列/取消/目标覆盖、无音轨确认；独立 app runtime/打包/许可；收齐 P0～P2 场景 | 任务状态/单终态、范围帧数、提交前取消/提交竞争、任务冻结 revision/源身份、排队超限、错误映射、恢复提示与路径权限 | 从真实 UI 两素材剪辑/效果/保存重开→导出，独立解码核对指定帧；导出中继续编辑/取消/关闭窗口/磁盘失败/慢 encoder，验证文件与状态；安装包移出开发路径真实启动/导入/播放/导出/正常退出，记录签名/公证实际状态，原图 app 回归保持 |
 
 Phase 3 只接受 stream-relative nonnegative nanoseconds，并以目标之前可 seek 的关键帧为锚点。顺序播放沿同一 VideoToolbox session/cursor 继续，不逐帧重开 codec；重复/同一已选展示时刻复用 retained surface。需要向后选帧时提高 source timeline epoch；被取消/旧 epoch demand 不发布。无真实起点或 decoded PTS 明确失败，不由 nominal FPS、composition time 或 DTS 造实际 PTS。缺失 stream duration 可顺序解码到 EOF；只有存在可靠容器 duration 时才可按显式 loop 取模。
+
+Phase 4 实施契约（2026-11-12）：沿用同一个FramePipeline，图/feedback按序执行；新增有界需求窗口将解码未来帧、当前GPU提交与较早稳定输出消费分离。媒体cursor移到有界worker，render owner仅request/poll/import，不同步seek/decode。保留单请求显式submit边界用于离线/现有调用；窗口入口复用同一求值、推理与终态实现，不建立第二执行循环。窗口按时间跨度、计划/终态总量、原生surface和bytes限额；取消清未提交投机任务，已提交GPU资源至真实completion归还。预热复用PreparedNativeGraph的真实source游标，不造剪辑/时间线业务层。默认prefill/低高水位在本Phase真实冷启动、切点与过载实验后确定；未验收前不把配置值当性能结论。Phase开始基线：SDK的100% gates仍红（default 98.37/96.99/98.45%，native95.93/90.01/94.35%）；全仓fmt check报告既有非本Phase文件差异。保留scope/threshold，不发布。
+
+Phase 4资源门槛已由用户明确选择“修订为可执行的资源门槛”：共享硬预算覆盖应用持有的原生表面、GPU中间纹理、推理输出和稳定帧；codec参考/重排工作集另列，VideoToolbox私有池和同类不可观测driver/runtime内存明确不作硬上限保证。若后续要求整个decoder/private runtime硬限额，必须先具备后端分配观测/约束能力，不通过FFmpeg pool参数冒充完成。
+
 
 ### 14.2 每个 Phase 的硬性完成与提交协议
 
@@ -398,7 +403,7 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-Phase 0 设计基线、Phase 1 稳定帧与完成协议及 Phase 2 共享流水切换已提交。当前按各阶段历史记录顺序陈列 Phase 1/2/3 代码与证据；Phase 3 实现和验收已完成，提交按单 Phase 纪律独立处理；新编辑器仍只有设计目录。本轮局部与全量 gate 状态分别报告，不把过往 Phase 1/2 通过数复用为本轮验收。
+Phase0设计、Phase1稳定帧、Phase2共享流水和Phase3精确source time已提交（Phase3：`6945fac`）。Phase4按下方独立实现/验证记录推进；新编辑器仍只有设计目录。本轮局部与全量gate状态分别报告，不把历史通过数冒充当前验收。
 
 实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
 
@@ -501,10 +506,60 @@ Phase 0 设计基线、Phase 1 稳定帧与完成协议及 Phase 2 共享流水�
 
 VFR媒体为crate内自生成无第三方数据；软解PTS/Y-plane checksum仅测试oracle，不出现在生产中。限macOS文件 VideoToolbox 实机验证；D3D12/Windows、Linux、相机不据Apple测试推断。视频绘制仍保留 importer host wait，本次不报吞吐/异步 seek改善。精确 source 访问同步在 render worker、一次接收一个 frame；这不满足 Phase 4 前瞻窗口/水位/credit/非阻塞 stage 验收。
 
+#### Phase 4：有界前瞻与非阻塞流水
+
+FramePipeline新增`submit_window/configure_window`和有界planned/completed队列；显式单请求入口继续走同一求值/推理/稳定输出实现。Source worker执行精确cursor，render owner只request/poll/import，准备素材的缓存cursor/首帧可跨图提交移交。每个accepted request最多一个终态；源cancel局部abort不污染Session全局关闭状态，投机失效只提升source epoch，不用composition epoch误重置feedback。真正GPU提交不可抢占，retained AVFrame/CV wrapper/平面纹理和slot credit到queue completion/最后native consumer后释放。
+
+共享`FrameBudget`对native identity去重；graph target/feedback双目标、转换输出、resident预处理/卷积scratch与输出rawtensor slot、稳定帧跨会话计费。图目标先staging、evaluator接受后commit，不因WouldBlock改写旧graph；最小稳定/推理工作集在source admission前预留。临时满保留任务或归还demand，单工作集不可能明确Capacity。Waker仅通知所属worker，所有sharing会话随credit释放被唤醒；Slint合并Wake，不在GPU/native destructor内重入渲染。
+
+| 不变量 / 消费者行为 | 永久回归 / 真实验证 |
+|---|---|
+| 窗口上限、低高水位、ordered PTS与像素、取消后最终epoch不会被旧完成覆盖 | `bounded_window_preserves_order_pixels_and_final_epoch_after_cancellation`；`window_rejects_impossible_working_set_and_reclaims_only_after_consumer_release` |
+| 真实VideoToolbox前瞻与双素材预热切换、旧显示lease不改 | `video_window_prefetches_future_pts_and_cut_prewarm_survives_graph_commit`：VFR marker源→另一white fixture，prewarm selected lease跨commit，实际PTS与独立像素检查 |
+| 慢consumer共享物理预算、lease跨会话dispose/尺寸变更仍保留、归还后前进 | `sharing_pipelines_reject_impossible_working_sets_and_progress_after_slow_session_disposes`；graph executor/native importer/stable pool/coordinator真实设备资源测试 |
+| 部分多源上传不重复prefix、重复PTS只charge一个surface、旧投机取消不毒化cursor | `real_prefetch_preserves_partial_upload_credit_and_surface_reuse`、`real_prefetch_forward_epoch_backseek_and_cancelled_final_request`、source speculative rollback与pending-prewarm handoff回归；媒体crate `cancelled_local_selection_does_not_poison_reusable_session` |
+| 暂停/恢复保持feedback与已显示像素、不算未来未呈现的历史 | `native_feedback_pause_discards_source_lookahead_without_advancing_unpresented_history`；既有feedback与原生窗口回归 |
+| 推理scratch/输出slot实际owner跨unload/resize、满容量前不执行额外模型帧 | `resident_output_credits_follow_live_slots_and_gpu_completion_across_resizes`与persistent minimum rejection；既有resident数值/lifecycle及七模型窗口路径 |
+
+真实阶段smoke：macOS26/Apple M4 Pro/Metal，debug，自生成64×64 VFR文件→1024×1024 shader，256迭代图像处理制造可观察GPU在途；9个请求并保留较早consumer，不是FPS基准。[原始阶段报告](../../test-results/phase4/pipeline-smoke-final.json)、[三轮汇总](../../test-results/phase4/measurements.json)。
+
+| 指标 | 第1轮 | 第2轮 | 第3轮 |
+|---|---:|---:|---:|
+| 冷选帧ms | 49.19 | 49.92 | 49.75 |
+| 首GPU submission ms | 99.82 | 54.83 | 53.95 |
+| 第4帧decode开始ms | 99.88 | 54.90 | 54.02 |
+| 首GPU completion callback ms | 121.86 | 77.40 | 76.70 |
+| 应用physical surface峰值 | 8 | 8 | 8 |
+| 应用physical bytes峰值 | 16,800,320 | 16,800,320 | 16,800,320 |
+
+每轮decode4开始落在GPU1提交与callback之间，证明多帧跨阶段在途；callback是host观察，不证明硬件物理并行或GPU timestamp。GPU提交返回时9/9均尚未ready，实际PTS为0/0.1/0.2/0.4/0.4/0.5/0.6/0.7/0.8秒，重复VFR选帧复用sequence。生产CPU image bytes=0；显式readback仅oracle。
+
+配置按这一小样本的工作集与抖动采用保守默认：low=1/high=3、prefill=2、timeline span≤100ms；source最多6表面/128MiB，稳定池3槽/256MiB，共享backend默认64 application surfaces/512MiB，可显式注入更小/更大预算。不是自动读取device建议工作集10%，也不是任意4K/模型实时保证；超出最小工作集明确失败。feedback图只做source前瞻、GPU求值按deadline，启动以首个真实完成而非两帧投机feedback建立时钟。静态图视频启动prefill后平移wall-clock起点；持续过载不减慢composition clock，只记录late，不丢必需的时域依赖。Trace默认关闭，显式开启后各ring≤512。
+
+资源范围严格按本节用户批准的修订：VT/driver私有DPB和MPSGraph私有runtime不作硬上限，应用owned buffers/retained surface可计费；weights/model准备内存另列。尚无encoder，所以不存在对编码0..N/reorder/mux/drain与导出前进性的本轮通过声明。非mac精确source worker/HDR/camera/完整编辑器scrub不据Apple路径推断。
+
+本轮命令与实测（macOS26/Apple M4 Pro；FFmpeg executable与ORT1.21显式配置，ORT只供reference）：
+
+| 命令 / 范围 | 结果 / 证据 |
+|---|---|
+| `cargo test --locked -p open_quartz -p oq-inference -p oq-media --features native-runtime,native-video,native-onnx,model-cache,videotoolbox -- --test-threads=1` | 504 passed / 1既有cached-model opt-in ignored；含真实source→synthetic MODNet→Renderer连续12个PTS/12次RGB变化、retained首帧和prefill在途身份回归，生产host image/tensor bytes=0 |
+| `cargo test --locked --workspace` | 293 passed / 36 suites，默认core/device-free边界仍独立 |
+| `npm run test:desktop` | 80 passed / 2既有opt-in ignored；源预览、显式Play、拒绝替图保留旧revision/video与暂停满池释放后恢复 |
+| `npm run test:desktop:ui` | 19/19，真实菜单/图连接/播放/暂停/Auto size/稳定纹理；[报告](../../test-results/slint-ui/interaction-2026-11-12T07-35-38-590Z/report.html)，CloseRequested code0/signal null |
+| `npm run test:desktop:shaders` | 34/34，含Gray-Scott feedback演化、真实PAUSE及独立屏幕像素oracle；[最终报告](../../test-results/slint-ui/shaders-2026-11-12T08-13-33-176Z/report.html) |
+| `npm run test:desktop:inference:ui` | 最终15/15，七模型Image+Video完整真实菜单/typed连接/Load/Play/Pause/Resume/Unload/Reload/Save/重开；实际Renderer独立屏幕内容变化与image oracle，不缩减case、不复用失败旧报告；[最终报告](../../test-results/inference-e2e/ui-2026-11-12T08-30-04-373Z/report.html)，CloseRequested code0/signal null |
+| `npm run check:rust-boundaries` | Core API/feature/独立推理contract/backend边界通过 |
+| `npm run test:sdk-coverage` | 测试均通过，原有100% gates仍失败exit1；default line/function/region=98.02/95.86/97.99%，native=94.21/87.53/92.27%；scope/exclusions/threshold未变，未开branch instrumentation |
+| `cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase4/media-coverage.json -- --test-threads=1` | lib3+decode7通过，line/function/region=78.46/70.00/79.96%；[媒体coverage](../../test-results/phase4/media-coverage.json)，独立macOS CI job同命令，不以此替代SDK gates |
+
+本轮失败前/修复后：异步source-only preview原测试曾在无纹理时读回，改为等待真实source完成；catalog output preflight曾把allocated数当writable capacity，两个protected输出不申请合法第三槽/三槽满又不能正确唤醒，修正可写预留和最后外部consumer guard；slot物理credit随GPU callback保留，不用强占consumer槽来表达GPU在途。真实桌面替图回归还发现status-only响应也携带稳定texture，测试持有accepted/rejected/continuing三份lease导致恢复被正确反压；现在用完status即drop，不延长fixture或隐藏失败。完整七模型窗口曾出现5条video停滞，必须以修复后的报告为验收，失败旧报告不作通过。
+
+真实视频重载又暴露prefill时钟身份错误：第3帧已提交resident inference，prefill完成却修改pending `FrameStamp.deadline_ns`，随后completed/accepted均为3但pending永远等同stamp匹配，画面冻结。现在presentation wall-clock偏移独立保存，所有已接受evaluation/content stamp和推理completion envelope保持不可变；仅deadline比较应用偏移。永久`prefill_presentation_delay_preserves_inflight_inference_stamp_and_finishes_once`在真实GPU上覆盖这一竞争，不延长UI超时或降低内容变化oracle。
+
+Shader窗口首轮33/34，Ripple在Connections=1且“Output selected”的连接阶段超时，而非像素oracle失败。自动化改为点击Shader输出后再读取Renderer输入端口，避免用选择重绘前的handle/坐标；重跑34/34。不增加retry、延长超时或修改shader/像素容差，完整报告保留失败前证据。
 
 
-
-Phase 0～3 已完成，P0 的单请求共享流水与 macOS 文件 source-time 路径已实现；Phase 4 的多帧水位/credit/非阻塞流水及 Phase 5 的硬件编码/封装仍未实现。声音、多轨/转场、关键帧、代理/后台缓存、现有模型剪辑接入分别作为后续独立实施 Phase，沿用相同“一 Phase 一 commit＋文档 revise＋单元/E2E”纪律；每项启动前根据前序真实接口、平台能力和 §12/§19 的范围补齐同粒度验收/依赖，未规划细节不能先写占位。HDR/其他平台等仍须独立规格与硬件门槛，不混入当前单轨无音轨发布承诺。
+Phase0～4已完成，Phase4代码/回归/文档按本次独立commit提交；Phase5硬件编码/封装及编辑器应用仍待实施。声音、多轨/转场、关键帧、代理/后台缓存和模型剪辑接入仍各为后续Phase，不在当前source-window阶段冒称完成。沿用每Phase单commit，不自动push；全局coverage门槛未关时不发布。
 
 ## 15. 回归与验收方案
 

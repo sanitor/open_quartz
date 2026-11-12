@@ -190,6 +190,18 @@ mod resident {
             self.output_events.retain(|event| event.node_id != node);
             Ok(info)
         }
+        pub(crate) fn output_dimensions(&self, node: &str, width: u32, height: u32) -> Option<(u32, u32)> {
+            let scale = self.resources.get(node)?.session.model_plan().scale;
+            Some((width.checked_mul(scale)?, height.checked_mul(scale)?))
+        }
+        pub(crate) fn prepare_frame_budget(&mut self,node:&str,width:u32,height:u32)->Result<bool,String>{
+            let Some(resource)=self.resources.get_mut(node) else{return Ok(false);};
+            match resource.session.prepare_output_frame(width,height){
+                Ok(())=>Ok(true),
+                Err(oq_inference::gpu::GpuError::Capacity)=>Ok(false),
+                Err(error)=>Err(error.to_string()),
+            }
+        }
         pub(crate) fn unload(&mut self, node: &str) {
             self.cancel_node(node);
             self.resources.remove(node);

@@ -451,6 +451,8 @@ fn unstarted_software_source() -> NativeVideoSource {
         exact_composition_epoch: None,
         #[cfg(target_os = "macos")]
         exact_loop_cycle: 0,
+        #[cfg(target_os = "macos")]
+        exact_invalidated: false,
         info: super::NativeVideoInfo {
             width: 1,
             height: 1,

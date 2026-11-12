@@ -1,4 +1,7 @@
 mod catalog;
+mod frame_budget;
+
+pub use frame_budget::{FrameAdmissionGuard, FrameBudget, FrameCredit, FrameWakeRegistration};
 
 pub use catalog::{Resource, ResourceCatalog, ResourceKind, ResourceSource};
 

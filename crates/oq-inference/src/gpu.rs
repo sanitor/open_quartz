@@ -18,6 +18,39 @@ use std::{
     task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
 };
+/// Host accounting hook for application-owned per-frame GPU allocations.
+/// Its lease remains attached to the output slot through its physical lifetime.
+/// Opaque native graph runtime scratch allocations are outside this interface.
+pub trait GpuFrameAllocator: Send + Sync {
+    fn reserve(&self, surfaces: usize, bytes: u64)
+        -> Result<Option<Arc<dyn std::any::Any + Send + Sync>>, GpuError>;
+}
+
+/// One guard per produced image, shared by the output and every opaque consumer
+/// handle. Pool ownership retains physical allocation without suppressing the
+/// notification when the final external consumer permits same-queue reuse.
+pub(crate) struct OutputLease<T> {
+    slot: Option<Arc<T>>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+impl<T> OutputLease<T> {
+    pub(crate) fn new(slot: Arc<T>, waker: Option<Arc<dyn Fn() + Send + Sync>>) -> Arc<Self> {
+        Arc::new(Self { slot: Some(slot), waker })
+    }
+}
+impl<T> std::ops::Deref for OutputLease<T> {
+    type Target = T;
+    fn deref(&self) -> &T { self.slot.as_deref().expect("live output consumer guard") }
+}
+impl<T: fmt::Debug> fmt::Debug for OutputLease<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.slot.fmt(f) }
+}
+impl<T> Drop for OutputLease<T> {
+    fn drop(&mut self) {
+        drop(self.slot.take());
+        if let Some(waker) = &self.waker { waker(); }
+    }
+}
 
 const SIDE: u32 = 224;
 const PIXELS: u64 = SIDE as u64 * SIDE as u64;
@@ -92,19 +125,25 @@ impl GpuInput {
     pub fn device_owner(&self) -> &GpuDeviceOwner { &self.owner }
 }
 
-#[derive(Debug)]
 struct OutputSlot {
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
     binding: wgpu::BindGroup,
     width: u32,
     height: u32,
+    _frame_lease: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl fmt::Debug for OutputSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutputSlot").field("width", &self.width).field("height", &self.height).finish_non_exhaustive()
+    }
 }
 
 /// A lease on a resident RGBA8 output. Retain it through consumer submission.
 #[derive(Clone, Debug)]
 pub struct GpuOutput {
-    slot: Arc<OutputSlot>,
+    slot: Arc<OutputLease<OutputSlot>>,
     owner: GpuDeviceOwner,
     submission: wgpu::SubmissionIndex,
 }
@@ -158,6 +197,9 @@ pub struct GpuImageSession {
     _resident_buffers: Vec<wgpu::Buffer>,
     input_cache: Vec<GpuInput>,
     output_pool: Vec<Arc<OutputSlot>>,
+    frame_allocator: Option<Arc<dyn GpuFrameAllocator>>,
+    persistent_frame_lease: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    output_waker: Option<Arc<dyn Fn() + Send + Sync>>,
     counters: GpuCounters,
 }
 
@@ -235,12 +277,52 @@ impl GpuImageSession {
             _resident_buffers: buffers,
             input_cache: Vec::with_capacity(INPUT_CACHE_CAPACITY),
             output_pool: Vec::new(),
+            frame_allocator: None,
+            persistent_frame_lease: None,
+            output_waker: None,
             counters: GpuCounters {
                 weight_upload_bytes,
                 scratch_bytes: 2 * SCRATCH_BYTES + PLANES_BYTES,
                 ..GpuCounters::default()
             },
         })
+    }
+    pub fn set_frame_allocator(&mut self, allocator: Option<Arc<dyn GpuFrameAllocator>>) -> Result<(), GpuError> {
+        if self.frame_allocator.is_some() || !self.output_pool.is_empty() { return Err(GpuError::InvalidImage("frame allocator must be installed once before output allocation".into())); }
+        let persistent_frame_lease=if let Some(a)=&allocator {
+            let bytes=self.planes.size().checked_add(self.final_convolution.size())
+                .and_then(|n|self._resident_buffers.last().map(|buffer|n.checked_add(buffer.size())).flatten())
+                .ok_or_else(||GpuError::InvalidImage("persistent working-set size overflow".into()))?;
+            Some(a.reserve(0,bytes)?.ok_or(GpuError::Capacity)?)
+        }else{None};
+        self.frame_allocator=allocator;
+        self.persistent_frame_lease=persistent_frame_lease;
+        Ok(())
+    }
+    /// Wake the producer after the final external output consumer releases its lease.
+    pub fn set_output_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.output_waker = Some(waker);
+    }
+
+    /// Preallocate enough compatible output slots for source decode plus one in-flight consumer.
+    pub fn prepare_outputs(&mut self, width: u32, height: u32, minimum: usize) -> Result<(), GpuError> {
+        if minimum==0||minimum>2{return Err(GpuError::InvalidImage("resident output preflight supports one or two slots".into()));}
+        let width = width.checked_mul(3).ok_or_else(|| GpuError::InvalidImage("3x output width overflow".into()))?;
+        let height = height.checked_mul(3).ok_or_else(|| GpuError::InvalidImage("3x output height overflow".into()))?;
+        let mut held: [Option<Arc<OutputSlot>>; 2] = [None, None];
+        while self.output_pool.iter().filter(|slot| slot.width == width && slot.height == height).count() < minimum {
+            let index = held.iter().position(Option::is_none).ok_or(GpuError::Capacity)?;
+            held[index] = Some(self.output_slot(width, height)?);
+        }
+        drop(held);
+        if !self.output_pool.iter().any(|slot| slot.width == width && slot.height == height && Arc::strong_count(slot) == 1) {
+            drop(self.output_slot(width, height)?);
+        }
+        Ok(())
+    }
+
+    pub fn prepare_output(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        self.prepare_outputs(width,height,1)
     }
 
     pub fn model_plan(&self) -> &ModelPlan { &self.plan }
@@ -331,11 +413,13 @@ impl GpuImageSession {
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
         let submission = self.owner.queue.submit([encoder.finish()]);
+        let leases=(self.persistent_frame_lease.clone(),output._frame_lease.clone());
+        if leases.0.is_some()||leases.1.is_some(){self.owner.queue.on_submitted_work_done(move||drop(leases));}
         self.counters.submissions = self.counters.submissions.saturating_add(1);
         self.counters.compute_dispatches = self.counters.compute_dispatches.saturating_add(6);
         self.counters.last_wall_time = started.elapsed();
         self.counters.total_wall_time = self.counters.total_wall_time.saturating_add(self.counters.last_wall_time);
-        Ok(GpuOutput { slot: output, owner: self.owner.clone(), submission })
+        Ok(GpuOutput { slot: OutputLease::new(output, self.output_waker.clone()), owner: self.owner.clone(), submission })
     }
 
     fn validate_image(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Result<(), GpuError> {
@@ -380,6 +464,11 @@ impl GpuImageSession {
             return Err(GpuError::Capacity);
         }
         let device = &self.owner.device;
+        let frame_lease = if let Some(allocator) = &self.frame_allocator {
+            let bytes = u64::from(width).checked_mul(u64::from(height)).and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| GpuError::InvalidImage("output allocation size overflow".into()))?;
+            Some(allocator.reserve(1, bytes)?.ok_or(GpuError::Capacity)?)
+        } else { None };
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("resident leased super-resolution RGBA8"),
@@ -388,7 +477,6 @@ impl GpuImageSession {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            // COPY_SRC exists solely for opt-in verification/capture consumers.
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
@@ -403,7 +491,7 @@ impl GpuImageSession {
             ],
         });
         finish_validation(scope)?;
-        let slot = Arc::new(OutputSlot { texture, view, binding, width, height });
+        let slot = Arc::new(OutputSlot { texture, view, binding, width, height, _frame_lease: frame_lease });
         self.output_pool.push(Arc::clone(&slot));
         Ok(slot)
     }

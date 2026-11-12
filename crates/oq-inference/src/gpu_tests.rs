@@ -426,3 +426,26 @@ mod boundary_tests;
 
 #[path = "catalog_gpu_behavior_tests.rs"]
 mod catalog_behavior;
+
+#[test]
+fn output_consumer_guard_wakes_only_after_last_opaque_lease_releases_slot() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let slot = Arc::new(());
+    let weak = Arc::downgrade(&slot);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    let guard = OutputLease::new(slot.clone(), Some(Arc::new(move || {
+        let pool_slot = weak.upgrade().unwrap();
+        assert_eq!(Arc::strong_count(&pool_slot), 2, "consumer releases the slot before notifying producer");
+        observed.fetch_add(1, Ordering::SeqCst);
+    })));
+    let handle: Arc<dyn std::any::Any + Send + Sync> = guard.clone();
+    let submitted_consumer = handle.clone();
+    drop(guard);
+    drop(handle);
+    assert_eq!(wakes.load(Ordering::SeqCst), 0);
+    assert_eq!(Arc::strong_count(&slot), 2);
+    drop(submitted_consumer);
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(Arc::strong_count(&slot), 1);
+}

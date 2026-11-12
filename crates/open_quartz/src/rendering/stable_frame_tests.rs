@@ -499,11 +499,17 @@ fn native_player_stable_preview_backpressure_and_graph_replacement() {
         let backend = player.backend();
         let mut held = Vec::new();
         for _ in 0..3 {
-            player.render_next().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while player.render_next().unwrap().width == 0 {
+                assert!(std::time::Instant::now() < deadline, "next presentation did not arrive");
+                std::thread::yield_now();
+            }
             held.push(player.try_stable_preview("color").unwrap().unwrap());
         }
-        player.render_next().unwrap();
-        assert!(player.try_stable_preview("color").unwrap().is_none());
+        for _ in 0..5 { assert_eq!(player.render_next().unwrap().width, 0); }
+        let retained = player.try_stable_preview("color").unwrap().unwrap();
+        assert_eq!(retained.identity.evaluation_stamp, held.last().unwrap().identity.evaluation_stamp);
+        drop(retained);
         for (n, frame) in held.iter().enumerate() {
             frame.ready.wait(Duration::from_secs(5)).unwrap();
             assert_eq!(frame.identity.graph_revision, first_revision);
@@ -600,5 +606,58 @@ fn slint_style_texture_clone_keeps_the_pool_slot_until_native_resource_release()
             .try_capture(&device, "source", identity("source"))
             .unwrap();
         assert_eq!(pixels(&device, &next).await, [0, 100, 255, 255]);
+    });
+}
+
+#[test]
+fn physical_output_slots_are_prepared_once_and_outlive_the_pool_with_consumers() {
+    pollster::block_on(async {
+        let mut device = render_device().await;
+        let budget = FrameBudget::new(3, 48).unwrap();
+        let mut pool = StableFramePool::with_frame_budget(device.backend(), StableFrameBudget { max_frames: 2, max_bytes: 32 }, budget.clone()).unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = wakes.clone();
+        pool.set_waker(Arc::new(move || { count.fetch_add(1, Ordering::Relaxed); }));
+        pool.prepare_slots(2, 2, TextureFormat::Rgba8Unorm, 2).unwrap();
+        assert_eq!(budget.usage(), (2, 32));
+        pool.prepare_slots(2, 2, TextureFormat::Rgba8Unorm, 2).unwrap();
+        assert_eq!(budget.usage(), (2, 32));
+        let source_credit = budget.try_acquire((0, 1), 1, 16).unwrap().unwrap();
+        device.upload_rgba("source", &[123, 45, 67, 255].repeat(4), 2, 2).unwrap();
+        let frame = pool.try_capture(&device, "source", identity("source")).unwrap();
+        let clone = frame.clone();
+        assert_eq!(budget.usage(), (3, 48), "capture must reuse preallocated physical storage");
+        drop(pool);
+        assert_eq!(budget.usage(), (2, 32), "idle slot allocation is released, consumer's allocation is retained");
+        drop(source_credit);
+        assert_eq!(budget.usage(), (1, 16));
+        assert_eq!(pixels(&device, &frame).await, [123, 45, 67, 255].repeat(4));
+        drop(frame);
+        assert_eq!(budget.usage(), (1, 16));
+        drop(clone);
+        drain(&device);
+        assert_eq!(budget.usage(), (0, 0));
+        assert!(wakes.load(Ordering::Relaxed) > 0);
+    });
+}
+
+#[test]
+fn prepared_output_working_set_backpressures_sources_and_reclaims_incompatible_idle_slots() {
+    pollster::block_on(async {
+        let device = render_device().await;
+        let budget = FrameBudget::new(2, 32).unwrap();
+        let pool = StableFramePool::with_frame_budget(device.backend(), StableFrameBudget { max_frames: 2, max_bytes: 32 }, budget.clone()).unwrap();
+        let source = budget.try_acquire((0, 1), 1, 16).unwrap().unwrap();
+        assert!(matches!(pool.prepare_slots(2, 2, TextureFormat::Rgba8Unorm, 2), Err(FrameCaptureError::WouldBlock)));
+        assert_eq!(budget.usage(), (2, 32));
+        drop(source);
+        pool.prepare_slots(2, 2, TextureFormat::Rgba8Unorm, 2).unwrap();
+        assert_eq!(budget.usage(), (2, 32));
+        assert!(budget.try_acquire((0, 2), 1, 1).unwrap().is_none());
+        pool.prepare_slots(1, 1, TextureFormat::Rgba8Unorm, 2).unwrap();
+        assert_eq!(budget.usage(), (2, 8));
+        assert!(matches!(pool.prepare_slots(3, 3, TextureFormat::Rgba8Unorm, 1), Err(FrameCaptureError::Capacity)));
+        drop(pool);
+        assert_eq!(budget.usage(), (0, 0));
     });
 }

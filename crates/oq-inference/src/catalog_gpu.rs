@@ -1,6 +1,6 @@
 //! GPU-only image ingress and presentation around a native Metal graph.
 use std::{ffi::{c_char, c_void, CStr}, ptr::NonNull, sync::Arc, time::Instant};
-use crate::{catalog_model::CatalogModel, gpu::{GpuCounters, GpuDeviceOwner, GpuError}, gpu_model::ModelPlan};
+use crate::{catalog_model::CatalogModel, gpu::{GpuCounters, GpuDeviceOwner, GpuError, OutputLease}, gpu_model::ModelPlan};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CatalogOptions { pub score_threshold: f32, pub iou_threshold: f32 }
@@ -69,12 +69,12 @@ struct Slot {
     texture:Arc<wgpu::Texture>,view:Arc<wgpu::TextureView>,raw:NativeBuffer,
     depth:wgpu::Buffer,depth_range:wgpu::Buffer,reduce_binding:wgpu::BindGroup,reduce_final_binding:wgpu::BindGroup,
     draw_binding:Option<wgpu::BindGroup>,detector:Option<crate::catalog_detect::DetectionSlot>,
-    width:u32,height:u32,
+    width:u32,height:u32, _frame_lease: Option<Arc<dyn std::any::Any+Send+Sync>>,
     #[cfg(feature = "gpu-diagnostics")]
     logits:Option<NativeBuffer>,
 }
 #[derive(Clone)]
-pub struct CatalogGpuOutput {slot:Arc<Slot>,submission:wgpu::SubmissionIndex}
+pub struct CatalogGpuOutput {slot:Arc<OutputLease<Slot>>,submission:wgpu::SubmissionIndex}
 impl CatalogGpuOutput {
     pub fn texture(&self)->&wgpu::Texture{&self.slot.texture}
     pub fn texture_arc(&self)->Arc<wgpu::Texture>{self.slot.texture.clone()}
@@ -101,6 +101,10 @@ pub struct CatalogGpuSession {
     preprocess:wgpu::ComputePipeline,postprocess:wgpu::ComputePipeline,
     reduce:wgpu::ComputePipeline,reduce_final:wgpu::ComputePipeline,reduce_layout:wgpu::BindGroupLayout,
     detector:Option<crate::catalog_detect::Detector>,draw_boxes:Option<wgpu::RenderPipeline>,slots:Vec<Arc<Slot>>,bindings:Vec<Binding>,validated:Vec<wgpu::Texture>,counters:GpuCounters,
+    frame_allocator:Option<Arc<dyn crate::gpu::GpuFrameAllocator>>,
+    persistent_frame_lease:Option<Arc<dyn std::any::Any+Send+Sync>>,
+    prepared_frame_lease:[Option<(u32,u32,Option<Arc<dyn std::any::Any+Send+Sync>>)>;2],
+    output_waker:Option<Arc<dyn Fn()+Send+Sync>>,
 }
 fn pipeline(device:&wgpu::Device,source:&str,entry:&str)->wgpu::ComputePipeline {
     let module=device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("resident catalog image operation"),source:wgpu::ShaderSource::Wgsl(source.into())});
@@ -131,7 +135,55 @@ impl CatalogGpuSession {
             Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("resident YOLO box renderer"),layout:None,vertex:wgpu::VertexState{module:&shader,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:Default::default(),depth_stencil:None,multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format:wgpu::TextureFormat::Rgba8Unorm,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:None}))
         } else {None};
         let counters=GpuCounters{weight_upload_bytes:model.tensor_blob.len()as u64,scratch_bytes:buffer_bytes(&model.input_shape)?,..Default::default()};
-        Ok(Self{owner:GpuDeviceOwner{device,queue},model,native,input,options,kind,parameters,source_size:(0,0),preprocess,postprocess,reduce,reduce_final,reduce_layout,detector,draw_boxes,slots:Vec::with_capacity(3),bindings:Vec::with_capacity(8),validated:Vec::with_capacity(8),counters})
+        Ok(Self{owner:GpuDeviceOwner{device,queue},model,native,input,options,kind,parameters,source_size:(0,0),preprocess,postprocess,reduce,reduce_final,reduce_layout,detector,draw_boxes,slots:Vec::with_capacity(3),bindings:Vec::with_capacity(8),validated:Vec::with_capacity(8),counters,frame_allocator:None,persistent_frame_lease:None,prepared_frame_lease:[None,None],output_waker:None})
+    }
+    pub fn set_frame_allocator(&mut self, allocator:Option<Arc<dyn crate::gpu::GpuFrameAllocator>>)->Result<(),GpuError>{
+        if self.frame_allocator.is_some()||!self.slots.is_empty(){return Err(GpuError::InvalidImage("frame allocator must be installed once before output allocation".into()));}
+        let persistent_frame_lease=if let Some(a)=&allocator{
+            let bytes=self.input.buffer.size().checked_add(self.parameters.size()).and_then(|n|self.detector.as_ref().map_or(Some(n),|d|n.checked_add(d.persistent_buffer_bytes())))
+                .ok_or_else(||GpuError::InvalidImage("persistent working-set size overflow".into()))?;
+            Some(a.reserve(0,bytes)?.ok_or(GpuError::Capacity)?)
+        }else{None};
+        self.frame_allocator=allocator;self.persistent_frame_lease=persistent_frame_lease;Ok(())
+    }
+    /// Wake after the final external consumer releases a reusable output slot.
+    pub fn set_output_waker(&mut self,waker:Arc<dyn Fn()+Send+Sync>){self.output_waker=Some(waker);}
+    pub fn prepare_outputs(&mut self,width:u32,height:u32,minimum:usize)->Result<(),GpuError>{
+        if minimum==0||minimum>2{return Err(GpuError::InvalidImage("resident output preflight supports one or two slots".into()));}
+        self.resize_profile(width,height)?;
+        let scale=if self.kind==0{4}else{1};let ow=width.checked_mul(scale).ok_or_else(||GpuError::InvalidImage("output overflow".into()))?;let oh=height.checked_mul(scale).ok_or_else(||GpuError::InvalidImage("output overflow".into()))?;
+        // Reclaim obsolete idle profiles before reserving their replacement. Bindings
+        // own the underlying textures/buffers, so evict those alongside the slots.
+        if self.slots.iter().any(|slot|(slot.width!=ow||slot.height!=oh)&&Arc::strong_count(slot)==1){
+            self.bindings.clear();
+            self.slots.retain(|slot|(slot.width==ow&&slot.height==oh)||Arc::strong_count(slot)>1);
+        }
+        for pending in &mut self.prepared_frame_lease{if pending.as_ref().is_some_and(|(w,h,_)|*w!=ow||*h!=oh){*pending=None;}}
+        let count=self.slots.iter().filter(|s|s.width==ow&&s.height==oh).count()
+            +self.prepared_frame_lease.iter().flatten().count();
+        let writable=self.prepared_frame_lease.iter().any(Option::is_some)
+            ||self.slots.iter().any(|slot|slot.width==ow&&slot.height==oh&&Arc::strong_count(slot)==1);
+        // Pool size is not availability: two retained outputs may need a third
+        // slot, while three retained outputs must stop speculative source demand.
+        let additional=minimum.saturating_sub(count).max(usize::from(!writable));
+        if self.slots.len()+self.prepared_frame_lease.iter().flatten().count()+additional>3{return Err(GpuError::Capacity);}
+        for _ in 0..additional {
+            let index=self.prepared_frame_lease.iter().position(Option::is_none).ok_or(GpuError::Capacity)?;
+            let lease=self.reserve_slot(ow,oh)?;
+            self.prepared_frame_lease[index]=Some((ow,oh,lease));
+        }
+        Ok(())
+    }
+    pub fn prepare_output(&mut self,width:u32,height:u32)->Result<(),GpuError>{self.prepare_outputs(width,height,1)}
+    fn reserve_slot(&self,ow:u32,oh:u32)->Result<Option<Arc<dyn std::any::Any+Send+Sync>>,GpuError>{
+        let texture=u64::from(ow).checked_mul(u64::from(oh)).and_then(|n|n.checked_mul(4)).ok_or_else(||GpuError::InvalidImage("output allocation size overflow".into()))?;
+        let raw=buffer_bytes(&self.model.output_shape)?;
+        #[cfg(feature="gpu-diagnostics")]
+        let logits=self.model.diagnostic_logits_shape.as_ref().map(|s|buffer_bytes(s)).transpose()?.unwrap_or(0);
+        #[cfg(not(feature="gpu-diagnostics"))]
+        let logits=0;
+        let bytes=texture.checked_add(raw).and_then(|n|n.checked_add(logits)).and_then(|n|n.checked_add(2048+8+8)).and_then(|n|if self.kind==4{n.checked_add(16+8400*32)}else{Some(n)}).ok_or_else(||GpuError::InvalidImage("output working-set size overflow".into()))?;
+        if let Some(a)=&self.frame_allocator{a.reserve(1,bytes)?.map(Some).ok_or(GpuError::Capacity)}else{Ok(None)}
     }
     pub fn model_plan(&self)->&ModelPlan{&self.model.plan}
     pub fn device_owner(&self)->&GpuDeviceOwner{&self.owner}
@@ -148,12 +200,18 @@ impl CatalogGpuSession {
         let output_height=height.checked_mul(4).ok_or_else(||GpuError::InvalidImage("4x dimension overflow".into()))?;
         let mut model_json:serde_json::Value=serde_json::from_slice(&self.model.graph_json).map_err(|e|GpuError::InvalidImage(e.to_string()))?;
         let input_shape=vec![1,3,height as usize,width as usize];let output_shape=vec![1,3,output_height as usize,output_width as usize];
+        let persistent_frame_lease=if let Some(a)=&self.frame_allocator{
+            let bytes=buffer_bytes(&input_shape)?.checked_add(self.parameters.size()).and_then(|n|self.detector.as_ref().map_or(Some(n),|d|n.checked_add(d.persistent_buffer_bytes())))
+                .ok_or_else(||GpuError::InvalidImage("persistent working-set size overflow".into()))?;
+            Some(a.reserve(0,bytes)?.ok_or(GpuError::Capacity)?)
+        }else{None};
         model_json["inputs"][0]["shape"]=serde_json::json!(input_shape);model_json["outputs"][0]["shape"]=serde_json::json!(output_shape);
         // Recompile only on a source-size transition; original weights/metadata stay intact.
         let old_json=std::mem::replace(&mut self.model.graph_json,serde_json::to_vec(&model_json).map_err(|e|GpuError::InvalidImage(e.to_string()))?);
         let native=match NativeGraph::new(&self.owner.device,&self.model){Ok(n)=>n,Err(e)=>{self.model.graph_json=old_json;return Err(e)}};
         let input=NativeBuffer::new(&self.owner.device,buffer_bytes(&input_shape)?)?;
         self.native=native;self.input=input;self.model.input_shape=input_shape;self.model.output_shape=output_shape;
+        if self.frame_allocator.is_some(){self.persistent_frame_lease=persistent_frame_lease;}
         self.model.plan.input_width=width;self.model.plan.input_height=height;self.model.plan.output_width=output_width;self.model.plan.output_height=output_height;
         self.bindings.clear();self.slots.retain(|slot|Arc::strong_count(slot)>1);Ok(())
     }
@@ -184,6 +242,11 @@ impl CatalogGpuSession {
         self.slots.retain(|s|(s.width==ow&&s.height==oh)||Arc::strong_count(s)>1);
         let slot=if let Some(slot)=self.slots.iter().find(|s|s.width==ow&&s.height==oh&&Arc::strong_count(s)==1){slot.clone()}else{
             if self.slots.len()>=3{return Err(GpuError::Capacity);}
+            let mut frame_lease=None;
+            for pending in &mut self.prepared_frame_lease {
+                if pending.as_ref().is_some_and(|(w,h,_)|*w==ow&&*h==oh) { frame_lease=pending.take().and_then(|(_,_,lease)|lease); break; }
+            }
+            if frame_lease.is_none()&&self.frame_allocator.is_some(){frame_lease=self.reserve_slot(ow,oh)?;}
             let raw=NativeBuffer::new(&self.owner.device,buffer_bytes(&self.model.output_shape)?)?;
             #[cfg(feature = "gpu-diagnostics")]
             let logits=self.model.diagnostic_logits_shape.as_ref().map(|shape|NativeBuffer::new(&self.owner.device,buffer_bytes(shape)?)).transpose()?;
@@ -197,7 +260,7 @@ impl CatalogGpuSession {
             let draw_dimensions=self.owner.device.create_buffer(&wgpu::BufferDescriptor{label:Some("YOLO box dimensions"),size:8,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             self.owner.queue.write_buffer(&draw_dimensions,0,&[ow.to_ne_bytes(),oh.to_ne_bytes()].concat());
             let draw_binding=if let(Some(pipeline),Some(detector))=(&self.draw_boxes,&detector){Some(self.owner.device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("resident YOLO box binding"),layout:&pipeline.get_bind_group_layout(0),entries:&[entry(0,&detector.buffer),entry(1,&draw_dimensions)]}))}else{None};
-            let slot=Arc::new(Slot{texture,view,raw,depth,depth_range,reduce_binding,reduce_final_binding,draw_binding,detector,width:ow,height:oh,
+            let slot=Arc::new(Slot{texture,view,raw,depth,depth_range,reduce_binding,reduce_final_binding,draw_binding,detector,width:ow,height:oh,_frame_lease:frame_lease,
                 #[cfg(feature = "gpu-diagnostics")]
                 logits});self.slots.push(slot.clone());slot
         };
@@ -229,8 +292,13 @@ impl CatalogGpuSession {
             pass.set_pipeline(pipeline);pass.set_bind_group(0,slot.draw_binding.as_ref().expect("detection box binding"),&[]);pass.draw(0..24,0..8400);
         }
         let submission=self.owner.queue.submit([encoder.finish()]);
+        // Submitted native/wgpu work can outlive both the session and consumers.
+        // Keep its physical accounting without treating same-queue work as a
+        // consumer lease that would prevent safe ordered reuse of this slot.
+        let leases=(self.persistent_frame_lease.clone(),slot._frame_lease.clone());
+        if leases.0.is_some()||leases.1.is_some(){self.owner.queue.on_submitted_work_done(move||drop(leases));}
         self.counters.submissions+=1;self.counters.compute_dispatches+=if self.kind==2{3}else if self.kind==4{108}else{1};self.counters.last_wall_time=started.elapsed();self.counters.total_wall_time+=self.counters.last_wall_time;
-        Ok(CatalogGpuOutput{slot,submission})
+        Ok(CatalogGpuOutput{slot:OutputLease::new(slot,self.output_waker.clone()),submission})
     }
 }
 fn pollster_validation(scope:wgpu::ErrorScopeGuard)->Option<String>{

@@ -205,22 +205,53 @@ impl GpuExecutor {
         node_id: &str,
         frame: &oq_media::VideoToolboxFrame,
     ) -> Result<(), GpuExecutionError> {
+        if self.try_upload_videotoolbox(node_id, frame)? { Ok(()) }
+        else { Err(GpuExecutionError::for_node(node_id, "VideoToolbox import credits exhausted")) }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn prepare_video_texture(&mut self, node_id: &str, width: u32, height: u32) -> Result<bool, GpuExecutionError> {
+        if self.video_texture_matches(node_id, width, height) { return Ok(true); }
+        let Some(texture) = self.backend.try_create_video_texture(width, height)
+            .map_err(|message| GpuExecutionError::for_node(node_id, message))? else { return Ok(false); };
+        self.textures.insert(node_id.to_owned(), texture);
+        Ok(true)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    fn video_texture_matches(&self, node_id: &str, width: u32, height: u32) -> bool {
+        self.textures.get(node_id).is_some_and(|texture| {
+            texture.width == width && texture.height == height && texture.format == TextureFormat::Rgba8Unorm
+                && texture.lease.as_ref().is_some_and(|lease| lease.is::<crate::resources::FrameCredit>())
+        })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    pub(crate) fn try_upload_videotoolbox(
+        &mut self,
+        node_id: &str,
+        frame: &oq_media::VideoToolboxFrame,
+    ) -> Result<bool, GpuExecutionError> {
         let (width, height) = (frame.width(), frame.height());
         let limit = self.backend.device.limits().max_texture_dimension_2d;
         if width == 0 || height == 0 || width > limit || height > limit {
             return Err(GpuExecutionError::for_node(node_id, "invalid video dimensions"));
         }
-        let recreate = self.textures.get(node_id).is_none_or(|texture| {
-            texture.width != width || texture.height != height
-                || texture.format != TextureFormat::Rgba8Unorm
-        });
+        let recreate = !self.video_texture_matches(node_id, width, height);
         if recreate {
-            self.textures.insert(node_id.to_owned(),
-                self.backend.create_texture(width, height, TextureFormat::Rgba8Unorm));
+            // Keep the previous graph input intact if another session consumes
+            // the shared credit between preflight and the atomic reservation.
+            let Some(texture) = self.backend.try_create_video_texture(width, height)
+                .map_err(|message| GpuExecutionError::for_node(node_id, message))? else { return Ok(false); };
+            let uploaded = self.backend.try_upload_videotoolbox(frame, &texture)
+                .map_err(|message| GpuExecutionError::for_node(node_id, message))?;
+            if uploaded { self.textures.insert(node_id.to_owned(), texture); }
+            Ok(uploaded)
+        } else {
+            let texture = self.textures.get(node_id).expect("texture exists when not recreated");
+            self.backend.try_upload_videotoolbox(frame, texture)
+                .map_err(|message| GpuExecutionError::for_node(node_id, message))
         }
-        let texture = self.textures.get(node_id).expect("texture was inserted above");
-        self.backend.upload_videotoolbox(frame, texture)
-            .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 
     #[cfg(windows)]
@@ -335,7 +366,7 @@ impl GpuExecutor {
                 width: target.width,
                 height: target.height,
                 format: target.format,
-                lease: None,
+                lease: target.lease.clone(),
             });
         }
         self.textures.get(resolved).map(|texture| GpuOutputHandle {
@@ -384,6 +415,69 @@ impl GpuExecutor {
     }
 
     pub(crate) fn prepare_plan(&self, plan: &ExecutionPlan) -> Result<Self, GpuExecutionError> {
+        self.try_prepare_plan(plan, &HashMap::new())?.ok_or_else(|| GpuExecutionError {
+            node_id: None,
+            message: "graph render targets temporarily exceed available shared frame credits".into(),
+        })
+    }
+
+    /// Reserve the actual graph surfaces before decoding sources. Metadata sizes
+    /// override resident inputs and propagate through every auto-sized target.
+    /// False is temporary fullness; an impossible graph minimum is an error.
+    /// On false/error the active graph and all of its resources remain intact.
+    pub fn try_prepare_targets(
+        &mut self,
+        plan: &ExecutionPlan,
+        source_sizes: &HashMap<String, (u32, u32)>,
+    ) -> Result<bool, GpuExecutionError> {
+        let Some(staged) = self.try_prepare_frame_target_plan(plan, source_sizes)? else { return Ok(false); };
+        self.commit_frame_targets(staged)?;
+        Ok(true)
+    }
+
+    /// Install only graph surfaces/pipelines, preserving source registrations
+    /// uploaded since reservation and feedback advanced by intervening frames.
+    pub(crate) fn commit_frame_targets(&mut self, mut staged: Self) -> Result<(), GpuExecutionError> {
+        if !Arc::ptr_eq(&self.backend, &staged.backend) {
+            return Err(GpuExecutionError {
+                node_id: None,
+                message: "Prepared frame targets belong to another render device".into(),
+            });
+        }
+        for (id, resources) in &mut staged.nodes {
+            if let Some(active) = self.nodes.get(id) {
+                if resources.fragment_code == active.fragment_code
+                    && resources.targets.len() == active.targets.len()
+                    && resources.targets.iter().zip(&active.targets)
+                        .all(|(target, active)| Arc::ptr_eq(&target.texture, &active.texture))
+                {
+                    resources.output_index = active.output_index;
+                }
+            }
+        }
+        self.nodes = staged.nodes;
+        Ok(())
+    }
+
+    pub(crate) fn try_prepare_frame_target_plan(
+        &self,
+        plan: &ExecutionPlan,
+        source_sizes: &HashMap<String, (u32, u32)>,
+    ) -> Result<Option<Self>, GpuExecutionError> {
+        let Some(mut staged) = self.try_prepare_plan(plan, source_sizes)? else { return Ok(None); };
+        // Target reservations must not pin obsolete inputs while the decoder
+        // replaces them, or overwrite newly registered sources at activation.
+        staged.textures.clear();
+        staged.renderer_sources.clear();
+        staged.sampling.clear();
+        Ok(Some(staged))
+    }
+
+    pub(crate) fn try_prepare_plan(
+        &self,
+        plan: &ExecutionPlan,
+        source_sizes: &HashMap<String, (u32, u32)>,
+    ) -> Result<Option<Self>, GpuExecutionError> {
         let mut staged = Self {
             backend: self.backend.clone(),
             nodes: self.nodes.clone(),
@@ -391,11 +485,76 @@ impl GpuExecutor {
             textures: self.textures.clone(),
             sampling: self.sampling.clone(),
         };
-        staged.sync_plan_in_place(plan)?;
-        Ok(staged)
+        if !staged.sync_plan_in_place(plan, source_sizes)? { return Ok(None); }
+        Ok(Some(staged))
     }
 
-    fn sync_plan_in_place(&mut self, plan: &ExecutionPlan) -> Result<(), GpuExecutionError> {
+    fn sync_plan_in_place(
+        &mut self,
+        plan: &ExecutionPlan,
+        source_sizes: &HashMap<String, (u32, u32)>,
+    ) -> Result<bool, GpuExecutionError> {
+        let mut sizes = source_sizes.clone();
+        let mut descriptors = HashMap::new();
+        let (mut total_surfaces, mut total_bytes) = (0usize, 0u64);
+        for node in &plan.nodes {
+            if node.shader.is_none() {
+                if !sizes.contains_key(&node.id) {
+                    let size = node.upstream.values().find_map(|source| sizes.get(source).copied())
+                        .or_else(|| self.output_texture(&node.id).map(|output| (output.width, output.height)));
+                    if let Some(size) = size { sizes.insert(node.id.clone(), size); }
+                }
+                continue;
+            }
+            if let Some(error) = node.validation_errors.first() {
+                return Err(GpuExecutionError::for_node(&node.id, error.message.clone()));
+            }
+            let target = node.target.as_ref().ok_or_else(|| {
+                GpuExecutionError::for_node(&node.id, "shader execution plan has no target")
+            })?;
+            let (width, height) = target.size_source.as_ref()
+                .and_then(|source| sizes.get(source).copied()
+                    .or_else(|| self.textures.get(source).map(|texture| (texture.width, texture.height))))
+                .unwrap_or((target.width, target.height));
+            let limit = self.backend.device.limits().max_texture_dimension_2d;
+            if width == 0 || height == 0 || width > limit || height > limit {
+                return Err(GpuExecutionError::for_node(&node.id,
+                    format!("invalid render target dimensions {width}x{height}; maximum dimension is {limit}")));
+            }
+            let format = target_format(target.float);
+            let count = if node.feedback { 2 } else { 1 };
+            let bytes = u64::from(width) * u64::from(height)
+                * if format == TextureFormat::Rgba32Float { 16 } else { 4 };
+            total_surfaces = total_surfaces.checked_add(count).ok_or_else(||
+                GpuExecutionError::for_node(&node.id, "graph surface count overflow"))?;
+            total_bytes = bytes.checked_mul(count as u64).and_then(|bytes| total_bytes.checked_add(bytes))
+                .ok_or_else(|| GpuExecutionError::for_node(&node.id, "graph surface byte count overflow"))?;
+            sizes.insert(node.id.clone(), (width, height));
+            descriptors.insert(node.id.as_str(), (width, height, format, count, bytes));
+        }
+        let budget = self.backend.frame_budget();
+        budget.validate_working_set(total_surfaces, total_bytes)
+            .map_err(|message| GpuExecutionError { node_id: None, message })?;
+
+        // Reserve every missing allocation before creating even the first GPU
+        // target. Failed reservations drop together without changing the graph.
+        let mut reserved = HashMap::new();
+        for node in plan.nodes.iter().filter(|node| node.shader.is_some()) {
+            let &(width, height, format, count, bytes) = &descriptors[node.id.as_str()];
+            let reusable = self.nodes.get(&node.id).is_some_and(|resources| {
+                resources.width == width && resources.height == height
+                    && resources.format == format && resources.targets.len() == count
+            });
+            if reusable { continue; }
+            let mut credits = Vec::with_capacity(count);
+            for _ in 0..count {
+                let Some(credit) = self.backend.acquire_texture_credit(&budget, bytes)
+                    .map_err(|message| GpuExecutionError::for_node(&node.id, message))?
+                    else { return Ok(false); };
+                credits.push(credit);
+            }
+            reserved.insert(node.id.as_str(), credits);
+        }
         let shader_ids = plan
             .nodes
             .iter()
@@ -413,44 +572,36 @@ impl GpuExecutor {
         });
 
         for node in plan.nodes.iter().filter(|node| node.shader.is_some()) {
-            if !node.validation_errors.is_empty() {
-                return Err(GpuExecutionError::for_node(
-                    &node.id,
-                    node.validation_errors[0].message.clone(),
-                ));
+            let &(width, height, format, _, _) = &descriptors[node.id.as_str()];
+            if !reserved.contains_key(node.id.as_str()) {
+                if let Some(resources) = self.nodes.get_mut(&node.id).filter(|resources| resources.matches(node)) {
+                    resources.builtin_resolution = node.builtin_ports.iter().any(|name| name == "iResolution");
+                    continue;
+                }
             }
-            let target = node.target.as_ref().ok_or_else(|| {
-                GpuExecutionError::for_node(&node.id, "shader execution plan has no target")
-            })?;
-            let (width, height) = target.size_source.as_deref()
-                .and_then(|source| self.output_texture(source))
-                .map(|output| (output.width, output.height))
-                .unwrap_or((target.width, target.height));
-            let limit = self.backend.device.limits().max_texture_dimension_2d;
-            if width == 0 || height == 0 || width > limit || height > limit {
-                return Err(GpuExecutionError::for_node(
-                    &node.id,
-                    format!("invalid render target dimensions {width}x{height}; maximum dimension is {limit}"),
-                ));
-            }
+            let targets = if let Some(credits) = reserved.remove(node.id.as_str()) {
+                credits.into_iter().map(|credit| self.backend.create_frame_target(width, height, format, credit)
+                    .map_err(|message| GpuExecutionError::for_node(&node.id, message)))
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                self.nodes[&node.id].targets.clone()
+            };
             if let Some(resources) = self.nodes.get_mut(&node.id)
                 .filter(|resources| resources.matches(node))
             {
                 resources.builtin_resolution = node.builtin_ports.iter().any(|name| name == "iResolution");
-                if resources.width != width || resources.height != height {
-                    resources.targets = (0..resources.targets.len())
-                        .map(|_| self.backend.create_target(width, height, resources.format))
-                        .collect();
-                    resources.width = width;
-                    resources.height = height;
-                    resources.output_index = 0;
-                }
+                let changed = resources.width != width || resources.height != height
+                    || resources.targets.len() != targets.len();
+                resources.targets = targets;
+                resources.width = width;
+                resources.height = height;
+                if changed { resources.output_index = 0; }
             } else {
-                let resources = self.create_node_resources(node, width, height)?;
+                let resources = self.create_node_resources_with_targets(node, width, height, targets)?;
                 self.nodes.insert(node.id.clone(), resources);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn execute(
@@ -515,6 +666,16 @@ impl GpuExecutor {
 
         if encoded_gpu_work {
             self.backend.queue.submit([encoder.finish()]);
+            // On non-Metal backends native aliases cannot carry Rust owners.
+            // Retain frame leases through the last submitted graph use as well.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let leases = self.nodes.values().flat_map(|node| node.targets.iter())
+                    .filter_map(|target| target.lease.clone())
+                    .chain(self.textures.values().filter_map(|texture| texture.lease.clone()))
+                    .collect::<Vec<_>>();
+                self.backend.queue.on_submitted_work_done(move || drop(leases));
+            }
         }
         Ok(())
     }
@@ -559,11 +720,12 @@ impl GpuExecutor {
         })
     }
 
-    fn create_node_resources(
+    fn create_node_resources_with_targets(
         &self,
         plan: &NodeExecutionPlan,
         width: u32,
         height: u32,
+        targets: Vec<RenderTarget>,
     ) -> Result<NodeGpuResources, GpuExecutionError> {
         let shader = plan.shader.as_ref().expect("filtered shader plan");
         let target = plan.target.as_ref().ok_or_else(|| {
@@ -664,13 +826,6 @@ impl GpuExecutor {
                     mapped_at_creation: false,
                 });
                 (binding.name.clone(), buffer)
-            })
-            .collect();
-        let target_count = if plan.feedback { 2 } else { 1 };
-        let targets = (0..target_count)
-            .map(|_| {
-                self.backend
-                    .create_target(width, height, format)
             })
             .collect();
         let sampler = Arc::new(

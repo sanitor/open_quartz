@@ -79,15 +79,20 @@ fn foreign_device_session_is_rejected_without_pixel_or_resource_mutation() {
 #[test]
 fn retained_output_capacity_coalesces_without_failing_and_retries_after_release() {
     let (mut host, _) = pollster::block_on(NativePlayer::new()).unwrap();
+    host.enable_stage_trace(true);
     host.set_graph(&graph()).unwrap();
     PreparedInferenceModel::from_memory(&crate::inference::resident_test_model::sr3_model(), config())
         .unwrap().attach(&mut host, "model".to_owned()).unwrap();
     host.start_playback().unwrap();
     let mut consumers = Vec::new();
-    for _ in 0..3 {
+    for expected in 1..=3 {
         host.pipeline.session.mark_dirty("model").unwrap();
-        host.render_next().unwrap();
-        host.render_next().unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while host.inference_metrics().accepted < expected {
+            host.render_next().unwrap();
+            assert!(Instant::now() < deadline, "resident frame did not complete");
+            std::thread::yield_now();
+        }
         consumers.push(host.pipeline.render_device.output_handle("model").unwrap());
     }
     let before = host.inference_metrics();
@@ -96,8 +101,12 @@ fn retained_output_capacity_coalesces_without_failing_and_retries_after_release(
     let current = host.pipeline.render_device.output_handle("model").unwrap();
     host.take_inference_events();
     host.pipeline.session.mark_dirty("model").unwrap();
-    host.render_next().unwrap();
-    host.render_next().unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while !host.drain_stage_events().iter().any(|event| event.stage == "BudgetBlocked") {
+        host.render_next().unwrap();
+        assert!(Instant::now() < deadline, "retained inference outputs failed to apply backpressure");
+        std::thread::yield_now();
+    }
     let blocked = host.inference_metrics();
     assert_eq!(blocked.submitted, before.submitted);
     assert_eq!(blocked.device_submissions, before.device_submissions);
@@ -105,19 +114,21 @@ fn retained_output_capacity_coalesces_without_failing_and_retries_after_release(
     assert_eq!(blocked.accepted, before.accepted);
     assert_eq!(blocked.failed, 0);
     assert_eq!(blocked.in_flight, 0);
-    assert_eq!(blocked.queue_depth, 1);
     assert!(host.take_inference_events().is_empty());
     assert!(Arc::ptr_eq(&current.texture, &host.render_device.output_handle("model").unwrap().texture));
     let pixels = host.pipeline.render_device.read_output_rgba("renderer").unwrap().0;
     assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
     drop(consumers.remove(0));
-    host.render_next().unwrap();
-    host.render_next().unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while host.inference_metrics().accepted == before.accepted {
+        host.render_next().unwrap();
+        assert!(Instant::now() < deadline, "released inference lease did not wake progress");
+        std::thread::yield_now();
+    }
     let retried = host.inference_metrics();
     assert_eq!(retried.device_submissions, before.device_submissions + 1);
     assert_eq!(retried.accepted, before.accepted + 1);
     assert_eq!(retried.failed, 0);
-    assert_eq!(retried.queue_depth, 0);
     assert_eq!(host.render_device.read_output_rgba("renderer").unwrap().0, pixels);
     assert_eq!(retried.readback_bytes, 0);
     assert_eq!(retried.upload_bytes, 0);

@@ -20,6 +20,8 @@ pub use backend::{GpuBackend, TextureHandle};
 pub use dxgi::{D3d12VideoFormat, D3d12VideoFrame, DxgiSharedTextureExporter};
 #[cfg(not(target_arch = "wasm32"))]
 pub use device::{PreparedRenderPlan, RenderDevice, RenderDeviceInfo};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use device::PreparedFrameTargets;
 pub use executor::{GpuExecutionError, GpuExecutor, GpuOutput, GpuOutputHandle};
 #[cfg(not(target_arch = "wasm32"))]
 pub use presenter::{

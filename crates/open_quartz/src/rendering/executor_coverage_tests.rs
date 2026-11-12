@@ -181,7 +181,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
             .supported_features()
             .contains(wgpu::Features::FLOAT32_FILTERABLE)
         {
-            assert!(executor.create_node_resources(&float_plan, 1, 1).is_err());
+            assert!(executor.create_node_resources_with_targets(&float_plan, 1, 1, vec![]).is_err());
         }
         assert!(resources.matches(&plan.nodes[0]));
         let mut no_shader = plan.nodes[0].clone();
@@ -190,7 +190,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
         let mut no_target = plan.nodes[0].clone();
         no_target.target = None;
         assert!(!resources.matches(&no_target));
-        assert!(executor.create_node_resources(&no_target, 1, 1).is_err());
+        assert!(executor.create_node_resources_with_targets(&no_target, 1, 1, vec![]).is_err());
 
         let mut external = plan.nodes[0].clone();
         external
@@ -199,7 +199,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
             .unwrap()
             .external_texture_bindings
             .insert("video".to_owned(), 0);
-        assert!(executor.create_node_resources(&external, 1, 1).is_err());
+        assert!(executor.create_node_resources_with_targets(&external, 1, 1, vec![]).is_err());
         let mut invalid = plan.clone();
         invalid.nodes[0]
             .validation_errors
@@ -355,5 +355,131 @@ fn external_texture_lease_survives_registry_replacement_and_held_preview() {
         assert!(released.upgrade().is_some());
         drop(held_preview);
         assert!(released.upgrade().is_none());
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_graph_resources(backend: &GpuBackend) {
+    backend.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(5)),
+    }).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn graph_credits_distinguish_impossible_minimum_from_retained_replacement_pressure() {
+    pollster::block_on(async {
+        let backend = backend().await;
+        let budget = crate::resources::FrameBudget::new(2, 64).unwrap();
+        backend.set_frame_budget(budget.clone()).unwrap();
+        let mut executor = GpuExecutor::new(backend.clone());
+        let mut plan = shader_plan();
+        let target = plan.nodes[0].target.as_mut().unwrap();
+        target.width = 2;
+        target.height = 2;
+        assert!(executor.try_prepare_targets(&plan, &HashMap::new()).unwrap());
+        assert_eq!(budget.usage(), (1, 16));
+        let held = executor.output_handle("shader").unwrap();
+        let held_clone = held.clone();
+        let mut feedback = plan.clone();
+        feedback.nodes[0].feedback = true;
+        assert!(!executor.try_prepare_targets(&feedback, &HashMap::new()).unwrap());
+        assert_eq!(budget.usage(), (1, 16), "partial reservations must roll back");
+        assert!(Arc::ptr_eq(&held.texture, &executor.output_handle("shader").unwrap().texture));
+        let mut impossible = feedback.clone();
+        impossible.nodes[0].target.as_mut().unwrap().width = 3;
+        impossible.nodes[0].target.as_mut().unwrap().height = 3;
+        assert!(executor.try_prepare_targets(&impossible, &HashMap::new()).is_err());
+        assert_eq!(budget.usage(), (1, 16));
+        executor.sync_plan(&empty_plan()).unwrap();
+        drop(held);
+        drain_graph_resources(&backend);
+        assert_eq!(budget.usage(), (1, 16), "a graph output clone owns its real allocation");
+        drop(held_clone);
+        drain_graph_resources(&backend);
+        assert_eq!(budget.usage(), (0, 0));
+        assert!(executor.try_prepare_targets(&feedback, &HashMap::new()).unwrap());
+        assert_eq!(budget.usage(), (2, 32), "feedback ping and pong are separate allocations");
+        drop(executor);
+        drain_graph_resources(&backend);
+        assert_eq!(budget.usage(), (0, 0));
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn graph_reuses_compatible_targets_and_shares_capacity_with_other_sessions() {
+    pollster::block_on(async {
+        let backend = backend().await;
+        let budget = crate::resources::FrameBudget::new(1, 16).unwrap();
+        backend.set_frame_budget(budget.clone()).unwrap();
+        let mut executor = GpuExecutor::new(backend.clone());
+        let mut plan = shader_plan();
+        let target = plan.nodes[0].target.as_mut().unwrap();
+        target.width = 2;
+        target.height = 2;
+        assert!(executor.try_prepare_targets(&plan, &HashMap::new()).unwrap());
+        let output = executor.output_handle("shader").unwrap();
+        plan.nodes[0].shader.as_mut().unwrap().full_fragment_code.push('\n');
+        assert!(executor.try_prepare_targets(&plan, &HashMap::new()).unwrap());
+        assert!(Arc::ptr_eq(&output.texture, &executor.output_handle("shader").unwrap().texture));
+        assert_eq!(budget.usage(), (1, 16), "shader replacement reuses compatible physical targets");
+        let mut other = GpuExecutor::new(backend.clone());
+        assert!(!other.try_prepare_targets(&plan, &HashMap::new()).unwrap());
+        assert!(other.output_handle("shader").is_none());
+        drop(output);
+        drop(executor);
+        drain_graph_resources(&backend);
+        assert!(other.try_prepare_targets(&plan, &HashMap::new()).unwrap());
+        assert_eq!(budget.usage(), (1, 16));
+        #[cfg(target_os = "macos")]
+        {
+            // Native wgpu owners, not only our explicit output lease, must keep
+            // the physical allocation charged after replacing the active graph.
+            let output = other.output_handle("shader").unwrap();
+            let native_owner = output.texture.as_ref().clone();
+            drop(output);
+            other.sync_plan(&empty_plan()).unwrap();
+            drain_graph_resources(&backend);
+            assert_eq!(budget.usage(), (1, 16));
+            drop(native_owner);
+            drain_graph_resources(&backend);
+            assert_eq!(budget.usage(), (0, 0));
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn graph_predecode_metadata_sizes_propagate_and_resize_does_not_steal_credits() {
+    pollster::block_on(async {
+        let backend = backend().await;
+        let budget = crate::resources::FrameBudget::new(3, 96).unwrap();
+        backend.set_frame_budget(budget.clone()).unwrap();
+        let mut executor = GpuExecutor::new(backend.clone());
+        let mut plan = shader_plan();
+        plan.nodes[0].target.as_mut().unwrap().size_source = Some("video".into());
+        let mut downstream = plan.nodes[0].clone();
+        downstream.id = "downstream".into();
+        downstream.feedback = true;
+        downstream.target.as_mut().unwrap().size_source = Some("shader".into());
+        plan.nodes.push(downstream);
+        plan.sorted_ids.push("downstream".into());
+        let sizes = HashMap::from([("video".into(), (4, 2))]);
+        assert!(executor.try_prepare_targets(&plan, &sizes).unwrap());
+        assert_eq!(budget.usage(), (3, 96));
+        for id in ["shader", "downstream"] {
+            let output = executor.output_handle(id).unwrap();
+            assert_eq!((output.width, output.height), (4, 2));
+        }
+        let held = executor.output_handle("shader").unwrap();
+        let smaller = HashMap::from([("video".into(), (2, 2))]);
+        assert!(!executor.try_prepare_targets(&plan, &smaller).unwrap());
+        assert_eq!(budget.usage(), (3, 96));
+        assert!(Arc::ptr_eq(&held.texture, &executor.output_handle("shader").unwrap().texture));
+        let too_large = HashMap::from([("video".into(), (5, 2))]);
+        assert!(executor.try_prepare_targets(&plan, &too_large).is_err());
+        assert_eq!(budget.usage(), (3, 96));
     });
 }

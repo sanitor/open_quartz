@@ -32,6 +32,9 @@ pub(crate) struct DetectionSlot {
 }
 
 impl Detector {
+    pub(crate) fn persistent_buffer_bytes(&self)->u64 {
+        self.sort_steps.iter().map(wgpu::Buffer::size).sum()
+    }
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("catalog resident detector layout"),

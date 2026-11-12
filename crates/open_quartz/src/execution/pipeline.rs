@@ -21,6 +21,11 @@ use crate::rendering::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "window.rs"]
+mod window;
+pub use window::{FrameStageEvent, FrameWindowConfig};
+use window::{FrameWindow, QueuedFrame};
+
 fn runtime_error(error: SdkError) -> String {
     error.to_json()
 }
@@ -89,13 +94,23 @@ impl PreparedNativeGraph {
                 "Video node {node_id} does not exist in the prepared graph"
             ));
         }
-        let source =
+        let mut source =
             crate::media::sources::PreparedVideoSource::open_precise(config, preview_only)?;
+        source.set_frame_budget(self.backend.frame_budget())?;
         let info = source.info().clone();
         self.stage_remove_texture(node_id);
         self.videos.retain(|(id, _)| id != node_id);
         self.videos.push((node_id.to_owned(), source));
         Ok(info)
+    }
+
+    #[cfg(feature = "native-video")]
+    pub fn prewarm_videos(&mut self, timeline_ns: u64, epoch: u64) -> Result<bool, String> {
+        let mut ready = true;
+        for (_, source) in &mut self.videos {
+            ready &= source.prefetch_at(timeline_ns, epoch)?;
+        }
+        Ok(ready)
     }
 
     #[cfg(feature = "native-video")]
@@ -153,8 +168,8 @@ struct PendingFrame {
     media_pts_ns: Option<i64>,
 }
 
-/// One admitted frame per session in Phase 2. No clock, UI, or encoder lives
-/// here. Phase 4 extends the same mechanism with bounded look-ahead windows.
+/// Clock-free bounded source/GPU/output pipeline. Graph/feedback evaluation is
+/// ordered; decoding later demands overlaps submitted GPU and retained outputs.
 pub struct FramePipeline {
     pub(crate) render_device: RenderDevice,
     pub(crate) session: FrameExecutionSession,
@@ -170,6 +185,9 @@ pub struct FramePipeline {
     last_key: Option<(u64, u64)>,
     inference_ready: HashMap<String, FrameStamp>,
     input_versions: HashMap<String, u64>,
+    window: FrameWindow,
+    frame_budget: Arc<crate::resources::FrameBudget>,
+    budget_wake: Option<crate::resources::FrameWakeRegistration>,
 }
 
 impl FramePipeline {
@@ -181,14 +199,21 @@ impl FramePipeline {
             cfg!(target_os = "macos") && render_device.info().backend == "Metal";
         let inference_sampler =
             Arc::new(render_device.device().create_sampler(&Default::default()));
-        let stable_previews =
-            StableFramePool::new(render_device.backend(), StableFrameBudget::default())
-                .expect("default stable preview budget is nonzero");
+        let frame_budget = render_device.backend().frame_budget();
+        let stable_previews = StableFramePool::with_frame_budget(
+            render_device.backend(), StableFrameBudget::default(), frame_budget.clone())
+            .expect("default stable preview budget is nonzero");
+        #[cfg(feature = "native-video")]
+        let mut videos = VideoSources::new();
+        #[cfg(feature = "native-video")]
+        videos.set_frame_budget(frame_budget.clone()).expect("new source set is empty");
+        #[cfg(all(target_os = "macos", feature = "native-video"))]
+        render_device.set_videotoolbox_budget(frame_budget.clone()).expect("backend coordinator is shared");
         Self {
             render_device,
             session: FrameExecutionSession::new_native(capabilities),
             #[cfg(feature = "native-video")]
-            videos: VideoSources::new(),
+            videos,
             inference: InferenceTasks::new(),
             inference_sampler,
             inference_available,
@@ -199,7 +224,39 @@ impl FramePipeline {
             last_key: None,
             inference_ready: HashMap::new(),
             input_versions: HashMap::new(),
+            window: FrameWindow::default(),
+            frame_budget,
+            budget_wake: None,
         }
+    }
+
+    pub fn from_render_device_with_budget(
+        render_device: RenderDevice,
+        capabilities: PlaybackCapabilities,
+        budget: Arc<crate::resources::FrameBudget>,
+    ) -> Result<Self, String> {
+        render_device.backend().set_frame_budget(budget)?;
+        Ok(Self::from_render_device(render_device, capabilities))
+    }
+
+    /// Notification only: enqueue owner work, never run rendering/codec work
+    /// inline. Callbacks can originate in native resource destructors.
+    pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        #[cfg(feature = "native-video")]
+        self.videos.set_waker(waker.clone());
+        self.stable_previews.set_waker(waker.clone());
+        self.budget_wake = Some(self.frame_budget.register_waker(waker.clone()));
+        #[cfg(all(target_os = "macos", feature = "native-video"))]
+        self.render_device.set_videotoolbox_waker(waker)?;
+        Ok(())
+    }
+
+    pub fn frame_budget_usage(&self) -> (usize, u64) { self.frame_budget.usage() }
+
+
+    #[cfg(feature = "native-video")]
+    pub fn drain_source_stage_events(&mut self) -> Vec<crate::media::sources::SourceStageEvent> {
+        self.videos.drain_prefetch_events()
     }
 
     pub fn set_graph(&mut self, graph_json: &str) -> Result<u32, String> {
@@ -351,11 +408,8 @@ impl FramePipeline {
         &self,
         node_id: &str,
     ) -> Result<Option<StableFrame>, FrameCaptureError> {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.demand.output_node_id == node_id)
-        {
+        if !self.window.enabled && self.pending.as_ref()
+            .is_some_and(|pending| pending.demand.output_node_id == node_id) {
             return Ok(None);
         }
         if let Some(frame) = self.latest.as_ref().filter(|frame| {
@@ -456,55 +510,30 @@ impl FramePipeline {
 
     #[cfg(feature = "native-video")]
     fn upload_current_sources(&mut self) -> Result<(), String> {
+        self.render_device.device().poll(wgpu::PollType::Poll).map_err(|e| e.to_string())?;
+        if !self.videos.prefetch_at(u64::MAX, 0, 0, &[])? { return Ok(()); }
         let render_device = &mut self.render_device;
-        let dirty = self
-            .videos
-            .upload_frames(|node_id, frame, _, _| match frame {
-                NativeVideoFrame::Rgba(_) => Err(
-                    "Hardware-resident video required; CPU frame upload is forbidden".to_owned(),
-                ),
-                #[cfg(target_os = "macos")]
-                NativeVideoFrame::VideoToolbox(frame) => render_device
-                    .upload_videotoolbox(node_id, frame)
-                    .map_err(|error| error.to_string()),
-                #[cfg(all(windows, feature = "native-video-d3d12"))]
-                NativeVideoFrame::D3d12(frame) => render_device
-                    .upload_d3d12_yuv(node_id, frame)
-                    .map_err(|error| error.to_string()),
-            })?;
-        for node_id in dirty {
-            self.bump_input(&node_id);
-            self.session.mark_dirty(&node_id).map_err(runtime_error)?;
+        let ready = self.videos.poll_upload_at(u64::MAX, |node_id, frame, _, _| match frame {
+            NativeVideoFrame::Rgba(_) => Err("Hardware-resident video required; CPU upload forbidden".into()),
+            #[cfg(target_os = "macos")]
+            NativeVideoFrame::VideoToolbox(frame) => render_device.try_upload_videotoolbox(node_id, frame).map_err(|e| e.to_string()),
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
+            NativeVideoFrame::D3d12(frame) => render_device.upload_d3d12_yuv(node_id, frame).map(|_| true).map_err(|e| e.to_string()),
+        })?;
+        if ready.is_some() {
+            for node_id in self.videos.node_ids() {
+                self.bump_input(&node_id);
+                self.session.mark_dirty(&node_id).map_err(runtime_error)?;
+            }
         }
         Ok(())
     }
 
-    #[cfg(feature = "native-video")]
-    fn upload_current_sources_at(
-        &mut self,
-        timeline_ns: u64,
-        epoch: u64,
-        excluded: &[String],
-    ) -> Result<Option<i64>, String> {
-        let render_device = &mut self.render_device;
-        let selected = self.videos.upload_frames_at(timeline_ns, epoch, excluded, |node_id, frame, _, _| match frame {
-            NativeVideoFrame::Rgba(_) => Err(format!("Hardware-resident video required for node {node_id}; CPU RGBA upload is forbidden")),
-            #[cfg(target_os = "macos")]
-            NativeVideoFrame::VideoToolbox(frame) => render_device.upload_videotoolbox(node_id, frame).map_err(|error| error.to_string()),
-            #[cfg(all(windows, feature = "native-video-d3d12"))]
-            NativeVideoFrame::D3d12(frame) => render_device.upload_d3d12_yuv(node_id, frame).map_err(|error| error.to_string()),
-        })?;
-        Ok(if selected.len() == 1 {
-            selected[0].1
-        } else {
-            None
-        })
-    }
 
     pub fn load_resident_inference(
         &mut self,
         node_id: String,
-        session: crate::inference::ResidentInferenceSession,
+        mut session: crate::inference::ResidentInferenceSession,
         config: InferenceConfig,
     ) -> Result<crate::inference::InferenceSessionInfo, String> {
         crate::inference::prepared::validate_resident_config(&config)?;
@@ -527,6 +556,7 @@ impl FramePipeline {
         }
         let info =
             crate::inference::prepared::resident_session_info(session.model_plan(), &config)?;
+        session.set_frame_budget(backend.frame_budget())?;
         self.cancel_pending();
         self.latest = None;
         self.inference_ready.remove(&node_id);
@@ -721,6 +751,7 @@ impl FramePipeline {
     }
     pub fn has_in_flight(&self) -> bool {
         self.pending.is_some() || self.completion.is_some()
+            || !self.window.queued.is_empty() || !self.window.completed.is_empty()
     }
     pub fn frame_state(&self) -> crate::evaluation::EngineState {
         self.session.state()
@@ -748,14 +779,29 @@ impl FramePipeline {
 
     #[cfg(feature = "native-video")]
     pub fn upload_video_frames(&mut self) -> Result<(), String> {
-        // A caller explicitly replacing source content invalidates an admitted
-        // frame. The internal progress loop only uploads before GPU work starts.
-        self.cancel_pending();
+        // Preview requests retain their bounded slot across polls. Graph work must
+        // be explicitly stopped before replacing its source-only preview.
+        if self.pending.is_some() { self.cancel_pending(); }
         self.upload_current_sources()
     }
 
     pub fn submit(&mut self, demand: FrameDemand) -> FrameAdmission {
         if self.has_in_flight() {
+            return FrameAdmission::WouldBlock(demand);
+        }
+        if let Err(error) = self.validate_demand(&demand) {
+            return FrameAdmission::Rejected { demand, error };
+        }
+        let targets = match self.prepare_demand_targets(&demand) {
+            Ok(Some(targets)) => targets,
+            Ok(None) => return FrameAdmission::WouldBlock(demand),
+            Err(error) => return FrameAdmission::Rejected { demand, error },
+        };
+        self.submit_prepared(demand, targets)
+    }
+
+    fn submit_prepared(&mut self, demand: FrameDemand, targets: crate::rendering::PreparedFrameTargets) -> FrameAdmission {
+        if self.pending.is_some() || self.completion.is_some() {
             return FrameAdmission::WouldBlock(demand);
         }
         if let Err(error) = self.validate_demand(&demand) {
@@ -795,6 +841,8 @@ impl FramePipeline {
                 error: error.to_json(),
             };
         }
+        self.render_device.commit_frame_targets(targets)
+            .expect("frame targets were prepared on this exact device");
         for source in &demand.sources {
             self.input_versions
                 .insert(source.node_id.clone(), source.version);
@@ -890,13 +938,22 @@ impl FramePipeline {
     /// Progress only on the owning worker/executor. It never advances a clock or
     /// blocks for model, media or snapshot capacity; poll_completion just drains.
     pub fn progress(&mut self) {
+        if let Err(error) = self.render_device.device().poll(wgpu::PollType::Poll) {
+            if let Some(pending) = self.pending.take() {
+                self.finish(pending.demand, FrameOutcome::Failed(error.to_string()));
+            }
+        }
+        self.progress_window();
         let Some(mut pending) = self.pending.take() else {
             return;
         };
         let result = self.progress_frame(&mut pending);
         match result {
             Ok(Some(frame)) => {
-                self.latest = Some(frame.clone());
+                self.record_stage(&pending.demand, "GpuSubmitted");
+                if !self.window.enabled {
+                    self.latest = Some(frame.clone());
+                }
                 self.finish(pending.demand, FrameOutcome::Submitted(frame));
             }
             Ok(None) => {
@@ -911,6 +968,7 @@ impl FramePipeline {
                 self.finish(pending.demand, FrameOutcome::Failed(error));
             }
         }
+        self.collect_window_completion();
     }
 
     fn source_work_pending(&self) -> bool {
@@ -931,25 +989,29 @@ impl FramePipeline {
         if pending.demand.graph_revision != self.session.revision() {
             return Err("Admitted frame graph was replaced".into());
         }
-        #[cfg(feature = "native-video")]
         if !pending.sources_uploaded {
-            let excluded = pending
-                .demand
-                .sources
-                .iter()
-                .map(|source| source.node_id.clone())
-                .collect::<Vec<_>>();
-            let selected_pts = self.upload_current_sources_at(
-                pending.demand.input.stamp.timeline_ns,
-                pending.demand.input.stamp.epoch,
-                &excluded,
-            )?;
-            pending.media_pts_ns = if excluded.is_empty() {
-                selected_pts
-            } else {
-                None
-            };
+            #[cfg(feature = "native-video")]
+            {
+                let excluded = pending.demand.sources.iter()
+                    .map(|source| source.node_id.clone()).collect::<Vec<_>>();
+                if !self.videos.prefetch_at(pending.demand.request_id,
+                    pending.demand.input.stamp.timeline_ns,
+                    pending.demand.input.stamp.epoch, &excluded)? {
+                    return Ok(None);
+                }
+                let render_device = &mut self.render_device;
+                let Some(selected_pts) = self.videos.poll_upload_at(pending.demand.request_id,
+                    |node_id, frame, _, _| match frame {
+                        NativeVideoFrame::Rgba(_) => Err("Hardware-resident video required; CPU upload forbidden".into()),
+                        #[cfg(target_os = "macos")]
+                        NativeVideoFrame::VideoToolbox(frame) => render_device.try_upload_videotoolbox(node_id, frame).map_err(|e| e.to_string()),
+                        #[cfg(all(windows, feature = "native-video-d3d12"))]
+                        NativeVideoFrame::D3d12(frame) => render_device.upload_d3d12_yuv(node_id, frame).map(|_| true).map_err(|e| e.to_string()),
+                    })? else { return Ok(None); };
+                pending.media_pts_ns = if excluded.is_empty() { selected_pts } else { None };
+            }
             pending.sources_uploaded = true;
+            self.record_stage(&pending.demand, "SourceReady");
         }
         self.drain_inference_completions()?;
         if let Some(node) = pending.waiting_inference.as_ref() {
@@ -1061,6 +1123,11 @@ impl FramePipeline {
 
     fn finish(&mut self, demand: FrameDemand, outcome: FrameOutcome) {
         debug_assert!(self.completion.is_none());
+        if self.window.enabled && matches!(outcome, FrameOutcome::Failed(_)) {
+            self.window.failed = true;
+            #[cfg(feature = "native-video")]
+            self.videos.cancel_prefetch();
+        }
         self.completion = Some(FrameCompletion {
             request_id: demand.request_id,
             stamp: demand.input.stamp,
@@ -1070,12 +1137,38 @@ impl FramePipeline {
     }
 
     pub fn poll_completion(&mut self) -> Option<FrameCompletion> {
+        if self.window.enabled {
+            self.collect_window_completion();
+            let completion = self.window.completed.pop_front();
+            if let Some(FrameCompletion { outcome: FrameOutcome::Submitted(frame), .. }) = &completion {
+                self.latest = Some(frame.clone());
+            }
+            return completion;
+        }
         self.completion.take()
     }
 
     pub fn cancel_pending(&mut self) -> bool {
+        self.window.failed = false;
+        if self.window.enabled {
+            for completion in &mut self.window.completed {
+                completion.outcome = FrameOutcome::Cancelled;
+            }
+            if let Some(completion) = &mut self.completion {
+                completion.outcome = FrameOutcome::Cancelled;
+            }
+        }
+        let mut cancelled = false;
+        #[cfg(feature = "native-video")]
+        self.videos.cancel_prefetch();
         let Some(pending) = self.pending.take() else {
-            return false;
+            while let Some(queued) = self.window.queued.pop_front() {
+                self.window.completed.push_back(FrameCompletion { request_id: queued.demand.request_id,
+                    stamp: queued.demand.input.stamp, graph_revision: queued.demand.graph_revision,
+                    outcome: FrameOutcome::Cancelled });
+                cancelled = true;
+            }
+            return cancelled;
         };
         self.inference.cancel_pending();
         self.inference_ready.clear();
@@ -1087,6 +1180,15 @@ impl FramePipeline {
             let _ = self.session.mark_dirty(&command.node_id);
         }
         self.finish(pending.demand, FrameOutcome::Cancelled);
+        self.collect_window_completion();
+        while let Some(queued) = self.window.queued.pop_front() {
+            self.window.completed.push_back(FrameCompletion {
+                request_id: queued.demand.request_id,
+                stamp: queued.demand.input.stamp,
+                graph_revision: queued.demand.graph_revision,
+                outcome: FrameOutcome::Cancelled,
+            });
+        }
         true
     }
 
@@ -1111,6 +1213,9 @@ impl FramePipeline {
         self.inference.clear();
         self.inference_ready.clear();
         self.latest = None;
+        self.window.queued.clear();
+        self.stable_previews.clear_allocations();
+        self.budget_wake = None;
         self.render_device.reset()
     }
 }

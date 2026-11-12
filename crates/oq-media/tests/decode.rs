@@ -434,3 +434,18 @@ fn non_regular_source_is_rejected_before_seeking() {
     assert!(Session::open(&fifo).is_err());
     std::fs::remove_file(fifo).unwrap();
 }
+
+#[test]
+fn cancelled_local_selection_does_not_poison_reusable_session() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/source-time.mp4");
+    let mut session = oq_media::Session::open(path).unwrap();
+    let first = session.frame_at_ns(0, 0).unwrap().unwrap().actual_ns;
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert_eq!(session.frame_at_ns_cancellable(3_000_000_000, 0, cancelled.clone()).err().unwrap().kind, oq_media::ErrorKind::Cancelled);
+    assert!(cancelled.load(Ordering::Acquire));
+    let fresh = Arc::new(AtomicBool::new(false));
+    assert_eq!(session.frame_at_ns_cancellable(0, 1, fresh).unwrap().unwrap().actual_ns, first);
+    assert!(session.frame_at_ns(500_000_000, 1).unwrap().unwrap().actual_ns >= 500_000_000);
+}

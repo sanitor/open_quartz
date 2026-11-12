@@ -4,6 +4,8 @@
 
 当前实现 macOS H.264/HEVC 文件的进程内 VideoToolbox 硬解和 Phase 3 精确 source-time 读取。`Session` 提供 source stream time base / start / duration / seekability；`frame_at_ns` 选择 stream-relative 目标时间之后的首张 presentation surface，保留原始 PTS/time base 与 source/timeline epoch。前向请求沿同一 decoder cursor，向后 discontinuity 按新 epoch seek 前置关键帧、flush 并读取 presentation preroll；重复目标复用 retained frame。未知 origin/PTS 不按 FPS 猜；无 duration 时精确读取会顺序推进至 EOF。`FrameLease` 保留 AVFrame/CVPixelBuffer；此 API 不依赖图、Slint 或 wgpu。跨平台精确定位、camera、prefetch window、encoder/mux 未实现。
 
+Phase 4宿主在有界source worker上调用该cursor；媒体库新增`frame_at_ns_cancellable`接收请求局部取消token，取消不污染Session的全局关闭状态。取消按packet/frame/I/O边界协作；正在执行的VideoToolbox原生decode调用仍须安全返回。`VideoToolboxFrame::allocation_size()`报告实际IOSurface分配bytes供宿主按表面身份计费，不读取CPU像素。该数字不包含VTDecompressionSession/driver私有DPB池；不能用FFmpeg pool参数或已保留帧数量宣称整个decoder硬内存上限。窗口、水位、credit、waker和跨阶段调度属于宿主execution，不把NodeId/wgpu/Slint引入oq-media。
+
 ## 构建与使用
 
 macOS 的 `videotoolbox` feature 使用固定 ABI 的 FFmpeg 8.1.1 动态 libav。先从仓库根目录准备 SDK，再运行示例或测试：

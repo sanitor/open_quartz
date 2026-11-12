@@ -2,12 +2,14 @@
 use std::fmt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{GpuBackend, GpuOutputHandle, RenderDevice, TextureFormat};
 use crate::outputs::{FrameImageDescription, FrameSnapshotIdentity};
+use crate::resources::{FrameBudget, FrameCredit};
+
 
 #[derive(Clone, Copy, Debug)]
 pub struct StableFrameBudget {
@@ -54,10 +56,13 @@ struct Slot {
     bytes: u64,
     busy: Arc<AtomicBool>,
     release_requested: Arc<AtomicBool>,
+    physical_credit: Option<Arc<FrameCredit>>,
 }
 
 struct ConsumerLease {
     release_requested: Arc<AtomicBool>,
+    _physical_credit: Option<Arc<FrameCredit>>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Drop for ConsumerLease {
@@ -65,6 +70,7 @@ impl Drop for ConsumerLease {
         // A native texture may be destroyed under wgpu's internal locks. Do not
         // re-enter wgpu here; pool maintenance establishes queue completion.
         self.release_requested.store(true, Ordering::Release);
+        if let Some(waker) = &self.waker { waker(); }
     }
 }
 
@@ -73,12 +79,23 @@ impl Drop for ConsumerLease {
 pub struct FrameReady {
     device: Arc<wgpu::Device>,
     submission: wgpu::SubmissionIndex,
-    ready: Arc<AtomicBool>,
+    ready: Arc<FrameReadyState>,
+}
+
+struct FrameReadyState {
+    ready: AtomicBool,
+    completed_at: OnceLock<Instant>,
 }
 
 impl FrameReady {
     pub fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
+        self.ready.ready.load(Ordering::Acquire)
+    }
+
+    /// Host observation of the queue completion callback, not a hardware timestamp.
+    /// None unless the producer enabled stage tracing before capture.
+    pub fn completed_at(&self) -> Option<Instant> {
+        self.ready.completed_at.get().copied()
     }
 
     /// Explicit blocking boundary for offline consumers/tests; never call on the UI thread.
@@ -128,6 +145,9 @@ pub struct StableFramePool {
     backend: Arc<GpuBackend>,
     budget: StableFrameBudget,
     slots: Mutex<Vec<Slot>>,
+    frame_budget: Option<Arc<FrameBudget>>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    trace_enabled: bool,
 }
 
 impl StableFramePool {
@@ -144,7 +164,95 @@ impl StableFramePool {
             backend,
             budget,
             slots: Mutex::new(Vec::new()),
+            frame_budget: None,
+            waker: None,
+            trace_enabled: false,
         })
+    }
+
+    pub(crate) fn set_trace_enabled(&mut self, enabled: bool) { self.trace_enabled = enabled; }
+
+
+    pub fn with_frame_budget(
+        backend: Arc<GpuBackend>,
+        budget: StableFrameBudget,
+        frame_budget: Arc<FrameBudget>,
+    ) -> Result<Self, FrameCaptureError> {
+        let mut pool = Self::new(backend, budget)?;
+        pool.frame_budget = Some(frame_budget);
+        Ok(pool)
+    }
+
+    pub fn set_frame_budget(&mut self, frame_budget: Arc<FrameBudget>) -> Result<(), FrameCaptureError> {
+        if let Some(existing) = &self.frame_budget {
+            if Arc::ptr_eq(existing, &frame_budget) { return Ok(()); }
+            return Err(FrameCaptureError::InvalidSource("stable pool already has another shared frame budget".into()));
+        }
+        if !self.slots.get_mut().expect("stable frame pool lock poisoned").is_empty() {
+            return Err(FrameCaptureError::InvalidSource("cannot attach budget after stable allocation".into()));
+        }
+        self.frame_budget = Some(frame_budget);
+        Ok(())
+    }
+
+    pub(crate) fn clear_allocations(&mut self) {
+        self.slots.get_mut().expect("stable frame pool lock poisoned").clear();
+    }
+
+    fn allocate_slot(&self, width: u32, height: u32, format: TextureFormat, bytes: u64) -> Result<Slot, FrameCaptureError> {
+        let physical_credit = if let Some(frame_budget) = &self.frame_budget {
+            let (max_surfaces, max_bytes) = frame_budget.limits();
+            if max_surfaces < 1 || bytes > max_bytes { return Err(FrameCaptureError::Capacity); }
+            let credit = self.backend.acquire_texture_credit(frame_budget, bytes)
+                .map_err(FrameCaptureError::Device)?
+                .ok_or(FrameCaptureError::WouldBlock)?;
+            Some(Arc::new(credit))
+        } else { None };
+        let target = self.backend.create_target(width, height, format);
+        Ok(Slot {
+            texture: target.texture,
+            view: target.view,
+            bytes,
+            busy: Arc::new(AtomicBool::new(false)),
+            release_requested: Arc::new(AtomicBool::new(false)),
+            physical_credit,
+        })
+    }
+
+    /// Reserve physical output allocations before decoder look-ahead can consume
+    /// their working-set capacity. No image copy or GPU submission is performed.
+    pub fn prepare_slots(&self, width: u32, height: u32, format: TextureFormat, count: usize) -> Result<(), FrameCaptureError> {
+        let dimension_limit = self.backend.device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > dimension_limit || height > dimension_limit {
+            return Err(FrameCaptureError::InvalidSource("invalid stable frame dimensions".into()));
+        }
+        let bytes_per_pixel = match format { TextureFormat::Rgba8Unorm => 4, TextureFormat::Rgba32Float => 16 };
+        let bytes = u64::from(width).checked_mul(u64::from(height)).and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
+            .ok_or(FrameCaptureError::Capacity)?;
+        let total = bytes.checked_mul(count as u64).ok_or(FrameCaptureError::Capacity)?;
+        if count > self.budget.max_frames || total > self.budget.max_bytes { return Err(FrameCaptureError::Capacity); }
+        if let Some(budget) = &self.frame_budget {
+            let (max_surfaces, max_bytes) = budget.limits();
+            if count > max_surfaces || total > max_bytes { return Err(FrameCaptureError::Capacity); }
+        }
+        self.poll_releases()?;
+        let mut slots = self.slots.lock().expect("stable frame pool lock poisoned");
+        let compatible = |slot: &Slot| slot.texture.width() == width && slot.texture.height() == height && slot.texture.format() == format.into();
+        slots.retain(|slot| slot.busy.load(Ordering::Acquire) || compatible(slot));
+        let mut present = slots.iter().filter(|slot| compatible(slot)).count();
+        while present < count {
+            let allocated: u64 = slots.iter().map(|slot| slot.bytes).sum();
+            if slots.len() >= self.budget.max_frames || bytes > self.budget.max_bytes - allocated {
+                return Err(FrameCaptureError::WouldBlock);
+            }
+            slots.push(self.allocate_slot(width, height, format, bytes)?);
+            present += 1;
+        }
+        Ok(())
+    }
+
+    pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.waker = Some(waker);
     }
 
     pub fn budget(&self) -> StableFrameBudget {
@@ -161,9 +269,11 @@ impl StableFramePool {
             for slot in slots.iter() {
                 if slot.release_requested.swap(false, Ordering::AcqRel) {
                     let busy = slot.busy.clone();
-                    self.backend
-                        .queue
-                        .on_submitted_work_done(move || busy.store(false, Ordering::Release));
+                    let waker = self.waker.clone();
+                    self.backend.queue.on_submitted_work_done(move || {
+                        busy.store(false, Ordering::Release);
+                        if let Some(waker) = waker { waker(); }
+                    });
                 }
             }
         }
@@ -233,7 +343,7 @@ impl StableFramePool {
             return Err(FrameCaptureError::Capacity);
         }
         self.poll_releases()?;
-        let (texture, view, release_requested) = {
+        let (texture, view, release_requested, physical_credit) = {
             let mut slots = self.slots.lock().expect("stable frame pool lock poisoned");
             let reusable = slots.iter().position(|slot| {
                 !slot.busy.load(Ordering::Acquire)
@@ -251,16 +361,7 @@ impl StableFramePool {
                 {
                     return Err(FrameCaptureError::WouldBlock);
                 }
-                let target = self
-                    .backend
-                    .create_target(source.width, source.height, source.format);
-                slots.push(Slot {
-                    texture: target.texture,
-                    view: target.view,
-                    bytes,
-                    busy: Arc::new(AtomicBool::new(false)),
-                    release_requested: Arc::new(AtomicBool::new(false)),
-                });
+                slots.push(self.allocate_slot(source.width, source.height, source.format, bytes)?);
                 slots.len() - 1
             };
             let slot = &slots[index];
@@ -269,10 +370,15 @@ impl StableFramePool {
                 slot.texture.clone(),
                 slot.view.clone(),
                 slot.release_requested.clone(),
+                slot.physical_credit.clone(),
             )
         };
-        let lease = Arc::new(ConsumerLease { release_requested });
-        let ready = Arc::new(AtomicBool::new(false));
+        let lease = Arc::new(ConsumerLease {
+            release_requested,
+            _physical_credit: physical_credit,
+            waker: self.waker.clone(),
+        });
+        let ready = Arc::new(FrameReadyState { ready: AtomicBool::new(false), completed_at: OnceLock::new() });
         let mut encoder =
             self.backend
                 .device
@@ -289,11 +395,15 @@ impl StableFramePool {
         let completed = ready.clone();
         let sampler = source.sampler.clone();
         let source_format = source.format;
+        let waker = self.waker.clone();
+        let trace_enabled = self.trace_enabled;
         self.backend.queue.on_submitted_work_done(move || {
-            completed.store(true, Ordering::Release);
+            if trace_enabled { let _ = completed.completed_at.set(Instant::now()); }
+            completed.ready.store(true, Ordering::Release);
             // Preserve the actual external source owner until the copy has completed.
             drop(source);
             drop(producer_lease);
+            if let Some(waker) = waker { waker(); }
         });
         #[cfg(target_os = "macos")]
         let (texture, view) = {
@@ -336,54 +446,10 @@ fn leased_metal_texture(
     texture: Arc<wgpu::Texture>,
     lease: Arc<ConsumerLease>,
 ) -> Result<(Arc<wgpu::Texture>, Arc<wgpu::TextureView>), FrameCaptureError> {
-    use objc2::{rc::Retained, runtime::ProtocolObject};
-    use objc2_metal::{MTLTexture, MTLTextureType};
-    let raw: Retained<ProtocolObject<dyn MTLTexture>> = {
-        // SAFETY: a read-only HAL guard is released before importing its retained
-        // Metal resource. The owner and queue are the pool's exact shared context.
-        let native = unsafe { texture.as_hal::<wgpu::hal::api::Metal>() }
-            .ok_or(FrameCaptureError::WrongDevice)?;
-        unsafe { Retained::retain(native.raw_handle() as *const _ as *mut _) }
-            .expect("live Metal texture must be retainable")
-    };
-    let size = texture.size();
-    let format = texture.format();
-    // SAFETY: the resource remains owned by the pool and the closure throughout
-    // this alias's lifetime. All access stays on the same queue. No CPU pixels or
-    // extra Metal texture allocation is involved; only a wgpu ownership wrapper.
-    let native = unsafe {
-        wgpu::hal::metal::Device::texture_from_raw(
-            raw,
-            format,
-            MTLTextureType::Type2D,
-            1,
-            1,
-            size.into(),
-            Some(Box::new(move || drop((texture, lease)))),
-        )
-    };
-    let alias = unsafe {
-        backend
-            .device
-            .create_texture_from_hal::<wgpu::hal::api::Metal>(
-                native,
-                &wgpu::TextureDescriptor {
-                    label: Some("open-quartz-leased-stable-frame"),
-                    size,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                },
-                wgpu::TextureUses::RESOURCE,
-            )
-    };
+    let alias = backend.leased_metal_texture(texture, lease)
+        .map_err(|_| FrameCaptureError::WrongDevice)?;
     let view = Arc::new(alias.create_view(&Default::default()));
-    Ok((Arc::new(alias), view))
+    Ok((alias, view))
 }
 
 #[cfg(test)]

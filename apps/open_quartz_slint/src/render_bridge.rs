@@ -157,6 +157,7 @@ pub(crate) enum Command {
     },
     Model(ModelMessage),
     Pause,
+    Wake,
     Shutdown,
 }
 
@@ -454,6 +455,17 @@ fn render_worker(
     let mut diagnostic_node: Option<String> = None;
     #[cfg(all(test, feature = "inference-e2e"))]
     let mut diagnostic_snapshot: Option<open_quartz::inference::InferenceDiagnosticSnapshot> = None;
+    let wake_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wake_flag = wake_pending.clone();
+    let wake_sender = sender.clone();
+    if let Err(error) = host.set_waker(Arc::new(move || {
+        if !wake_flag.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let _ = wake_sender.send(Command::Wake);
+        }
+    })) {
+        publish_status(&updates, generation, format!("Cannot configure pipeline wake: {error}"), true);
+        return;
+    }
     loop {
         if inference.reap_workers() {
             publish_inference(&updates, generation, &inference);
@@ -491,6 +503,7 @@ fn render_worker(
                 let _ = response.send(result);
             }
             Some(Command::Shutdown) => break,
+            Some(Command::Wake) => { wake_pending.store(false, std::sync::atomic::Ordering::Release); }
             Some(Command::Pause) => {
                 let _ = host.pause();
                 playback_requested = false;
@@ -858,6 +871,12 @@ fn render_worker(
         let mut rendered_revision = None;
         let result: Result<Option<GpuOutputHandle>, String> = (|| {
             let rendered = host.render_next()?;
+            if host.is_preparing() {
+                if let Ok(mut pending) = updates.lock() {
+                    let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+                    update.status = Some(format!("{description} · Preparing bounded video prefill"));
+                }
+            }
             // Prepared shader targets are allocations, not completed previews.
             // A pending inference frame can succeed without producing an output.
             graph_has_rendered |= rendered.width > 0 && rendered.height > 0;

@@ -1,7 +1,7 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
 > 状态：完整跨平台会话/编码/Slint 组件仍为提案，§17.1 首轮 macOS 验收为历史。当前生产实时图只接受 hardware buffer/texture，不允许软件 RGBA fallback；下面未来可选政策不放宽此约束。本轮 resident cutover 的实测计数、画面与未通过覆盖率门槛见 [DESIGN](DESIGN.md#validation)，旧结果不得复用。当前产品仅 Rust/Slint 与独立 .scr。
-> 2026-11-12 架构更新：Phase 3 已在原图 macOS 文件路径接入单 demand 精确 source-time 选择；`oq-media` 保持无图/无UI/wgpu依赖，source cursor 由 `NativePlayer` render worker owner。时间戳与VFR/B-frame/GPU独立oracle见[Phase 3 验收](../apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。预取source window/watermark/credit、异步媒体完成、跨平台seek、编码和完整Slint媒体组件仍未实现。
+> 2026-11-12架构更新：Phase4在原图macOS文件路径使用有界source worker、需求窗口/水位和共享可观测资源credit；oq-media继续无图/UI/wgpu依赖。render owner只poll实际PTS帧并提交同queue转换/图/推理；预备素材可提前选首帧并移交同一cursor。owner保留到真实queue completion，VideoToolbox importer不再逐帧host wait。验证记录见[编辑器Phase记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。跨平台精确source窗口、硬件encoder/mux和完整Slint媒体组件未交付。
 
 ## 1. 决策与目标
 
@@ -265,20 +265,20 @@ GPU 创建必须先汇总 Slint renderer、图执行和媒体导入所需的 **o
 
 `frame_at_ns(target_ns,timeline_epoch)` 接受非负 source-origin-relative ns，返回第一张实际 presentation PTS≥target 的 frame/actual_pts。顺序前向沿同一 decoder cursor；重复/同一已选展示时刻复用 retained FrameLease；epoch 提升后的回退 seek 前关键帧、flush B-frame reorder，再向前解码/丢弃 preroll。无真实 origin/decoded PTS、旧 epoch、同 epoch 回退、EOF 明确错误或 None，不按 FPS/wall time 猜实际媒体PTS。Host负责播放速度和显式loop周期间隔；media API不混淆 source epoch 和 composition epoch。
 
-选帧在所属 NativePlayer/render worker 同步调用，选中 VideoToolbox lease 后导入 GPU，再执行同一 demand 的图/推理。PreviewOnce只请求源相对帧0，第一次正式 Play 的更高 timeline epoch重新从播放目标选帧，不消耗/估算源PTS。此为阻塞单帧正确性切片，不提供异步 SeekCompleted、UI scrub、source window/prefetch或多帧 credit；Phase 4才扩为有界窗口与唤醒。
+Phase3曾在render worker同步选帧；Phase4将精确cursor移动到有界source worker。render owner提交request/poll ready，不同步seek/decode；PreviewOnce异步请求源相对0帧，不消耗正式播放起点。取消投机需求可提升独立source epoch，而不错误重置graph feedback；停止/正式seek的composition epoch仍由宿主控制。源局部取消不污染Session全局关闭状态，未知PTS/EOF不发布旧帧。预热cursor和已选lease在素材切换时转移，不重开decoder冒充cache命中。
 
 
-### 8.4 前瞻取帧与阶段流水（Phase 4 目标协议）
+### 8.4 前瞻取帧与阶段流水（Phase 4）
 
-`oq-media::Session::frame_at_ns(target_ns, epoch)` 给出的source cursor选择契约：Item为actual PTS≥target的第一张presentation surface，保留原始`(pts,time_base)`和source-relative `actual_ns`；相同/早于cached-selected目标复用lease，EOF为None。NativePlayer pause preview从source origin选择，不推进正式composition epoch。向后discontinuity提升source epoch，使用stream timebase向下seek前一keyframe，flush并presentation-order discard；顺序cursor继续推进。缺失PTS不通过`avg_frame_rate`推测。`SourceInfo.duration_ns`优先stream duration，若缺失则用 container duration 换成相对 start origin 的 checked ticks；无可靠duration则loop host发现实际EOF后新epoch seek回源头。媒体核心不自行做loop。Phase3读取在所属worker同步执行，不提供多帧/source window/非阻塞Future。
+媒体核心仍提供同步精确cursor primitive；`frame_at_ns_cancellable`额外接受请求局部abort token，在packet/frame/I/O边界安全返回。宿主VideoSources的有界worker负责window request/result、取消与Wake，不在oq-media引入图或UI线程。相同PTS复用retained surface，实际original pts/timebase不改；EOF与loop策略沿Phase3契约，codec preroll仍按presentation顺序消费。单个正在执行的VT原生decode不能强制抢占。
 
 窗口先在 decoder 支持的前关键帧定位，解码必要 reference/B-frame reorder，保留覆盖目标区间的 presentation frames；source PTS/time base 与区间上界独立于输出帧率。预滚、DPB、重排和 EOF 确认可能需要读超出需求区间，不能把未显示帧一概跳过；读入/表面预算达到硬上限时需反压或明确失败，而非无界预滚。源时间相同的多个输出采样可共享 lease，预算按真实资源身份计费。
 
 宿主提前调度下一素材的 open/probe/seek/首帧，媒体层执行原生游标准备；预算允许时当前与下个 cursor 共存。启动 prefill 与运行中的低/高水位以 presentation 时间、帧数、bytes、native surfaces 同时限制；不能照抄另一引擎固定 buffer=25。具体默认值在目标硬件的 codec/分辨率/首帧与阶段延迟测量后写入配置和验收记录；不能用无界缓存掩盖延迟。高水位停止投机解码，低水位通知补充需求，seek/source epoch 变化淘汰失效未提交工作。
 
-宿主对解码、GPU、推理输出、呈现和编码统一协调物理预算，每阶段有自己的有界队列。一个最小可前进工作单元先获得必要下游 credit，decoder 内部 reference pool 和 encoder reorder 另计；未知 0..N 输出用有界增量推进。编码器满时反压到图 admission/解码窗口，禁止拿满全部表面再等待永远拿不到的输出 slot。慢显示消费者不能阻断独立导出状态机，但共享设备仍有资源争用，需保留导出最低前进额度或显式暂停预览，不能声称天然无干扰。
+宿主统一协调应用可观测的原生表面、GPU中间纹理、推理输出与稳定帧预算；每阶段有有界队列，源工作开始前预留必要下游credit。2026-11-12用户确认Phase4门槛不包含VideoToolbox/driver私有池的硬内存上限：当前VTDecompressionSession自行分配内部参考/重排表面，FFmpeg `initial_pool_size/extra_hw_frames`不能保证私有池上限；该限制必须与可计费的retained presentation surface分列。0..N输出增量推进，preroll每步释放未选frame，不把输出帧数冒充DPB大小。未来encoder reorder/私有池亦须按实际后端能力独立验收。小池反压禁止拿满源表面再互等输出slot，不能持预算锁等待codec/GPU/UI。编码器尚未实现，不据当前预览声明导出前进性。
 
-允许 decoder 准备未来帧、GPU 处理较早帧、presenter/encoder 消费更早帧。FrameExecutionSession 的内容/版本就绪与硬件 ready sync 分开；转换/图计算提交返回的是设备完成条件，不是自动 GpuReady。现有 VideoToolbox importer 用 retained AVFrame + wrapper 保留到 completion，并在 host 等待转换完成；替换此 wait 时必须保留这些 owner 至真实完成，在同 queue 有序依赖或合法跨设备同步成立后才允许消费，不得因取消/timeout 释放在途表面。
+允许decoder准备未来帧、GPU处理较早帧、consumer持有更早稳定帧；这不等于硬件物理并行或吞吐提升。FrameExecutionSession按序求值/feedback，内容依赖ready与GPU ready分开。VideoToolbox转换在同queue提交，AVFrame、CVMetalTexture wrappers和导入平面纹理一直保留到on_submitted_work_done，credit在owner释放后归还；无逐次PollType::Wait。显式readback/离线oracle可等待，正常渲染路径不把这些等待带回。稳定帧ready callback时间是host观察，不是GPU timestamp。
 
 图稳定输出和原生 FrameLease 是相邻但不同契约：媒体库保原生 surface，GPU 适配器将其映射到统一图像描述和稳定输出池；不能在媒体 crate 再定义一套依赖 wgpu/NodeId 的帧类型。首阶段禁止 CPU 图像回传，平台无法提供所需互操作就拒绝；独立媒体产品未来可选策略不放宽 OpenQuartz 约束。
 

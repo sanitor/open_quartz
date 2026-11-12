@@ -14,6 +14,18 @@ use oq_inference::{BackendPreference, ExecutionPolicy, FallbackPolicy, Inference
 use super::InferenceConfig;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_FRAME_ALLOCATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+struct InferenceFrameAllocator(Arc<crate::resources::FrameBudget>);
+impl oq_inference::gpu::GpuFrameAllocator for InferenceFrameAllocator {
+    fn reserve(&self, surfaces: usize, bytes: u64)
+        -> Result<Option<Arc<dyn std::any::Any + Send + Sync>>, GpuError> {
+        let key=NEXT_FRAME_ALLOCATION.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|id|id.checked_add(1))
+            .map_err(|_|GpuError::Validation("inference frame allocation identity exhausted".into()))?;
+        self.0.try_acquire((2,key),surfaces,bytes).map(|credit|credit.map(|credit|Arc::new(credit) as Arc<dyn std::any::Any+Send+Sync>))
+            .map_err(GpuError::Validation)
+    }
+}
 
 pub enum PreparedModel {
     Sr3(GpuModel),
@@ -141,6 +153,23 @@ impl ResidentInferenceSession {
             Self::Sr3(session) => session.submit_texture(texture, width, height).map(super::tasks::ResidentImage::Gpu),
             Self::Catalog(session) => session.submit_texture(texture, width, height).map(super::tasks::ResidentImage::Catalog),
         }
+    }
+    /// Install renderer-owned accounting for application-owned resident allocations.
+    pub fn set_frame_allocator(&mut self, allocator: Option<Arc<dyn oq_inference::gpu::GpuFrameAllocator>>) -> Result<(), String> {
+        match self { Self::Sr3(session) => session.set_frame_allocator(allocator),
+            Self::Catalog(session) => session.set_frame_allocator(allocator) }.map_err(|e|e.to_string())
+    }
+    pub fn set_frame_budget(&mut self, budget: Arc<crate::resources::FrameBudget>) -> Result<(), String> {
+        self.set_frame_allocator(Some(Arc::new(InferenceFrameAllocator(budget.clone()))))?;
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || budget.notify_waiters());
+        match self { Self::Sr3(session) => session.set_output_waker(waker),
+            Self::Catalog(session) => session.set_output_waker(waker) }
+        Ok(())
+    }
+    /// Reserve the inference output working set before source decoding.
+    pub fn prepare_output_frame(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        match self { Self::Sr3(session) => session.prepare_outputs(width,height,2),
+            Self::Catalog(session) => session.prepare_outputs(width,height,2) }
     }
 }
 

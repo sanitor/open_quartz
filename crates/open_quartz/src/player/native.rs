@@ -71,6 +71,8 @@ pub struct NativePlayer {
     mouse: [f32; 4],
     perf: NativeRenderPerf,
     last_stamp: Option<FrameStamp>,
+    next_plan_ns: Option<u64>,
+    preparing_since_ns: Option<u64>,
 }
 
 impl std::ops::Deref for NativePlayer {
@@ -131,7 +133,8 @@ impl NativePlayer {
             data_paths: if shared_texture { vec![DataPathMode::NativePresent] } else { vec![DataPathMode::CpuCopy] },
         });
         (Self { pipeline, clock: CompositionClock::new(16_666_667), clock_origin: Instant::now(),
-            mouse: [0.0; 4], perf: NativeRenderPerf::new(), last_stamp: None }, info)
+            mouse: [0.0; 4], perf: NativeRenderPerf::new(), last_stamp: None, next_plan_ns: None,
+            preparing_since_ns: None }, info)
     }
 
     pub fn set_graph(&mut self, graph_json: &str) -> Result<u32, String> {
@@ -145,6 +148,7 @@ impl NativePlayer {
     pub fn commit_graph(&mut self, prepared: PreparedNativeGraph) -> Result<u32, String> {
         let revision = self.pipeline.commit_graph(prepared)?;
         self.last_stamp = None;
+        self.next_plan_ns = None;
         Ok(revision)
     }
     pub fn output_payload(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
@@ -154,9 +158,13 @@ impl NativePlayer {
         if self.pipeline.frame_state() != crate::evaluation::EngineState::Ready {
             return Err("Playback can only start from a ready graph".into());
         }
+        self.pipeline.cancel_pending();
         #[cfg(feature = "native-video")]
         self.pipeline.videos.resume()?;
         self.clock.start(self.clock_now_ns());
+        #[cfg(feature = "native-video")]
+        { self.preparing_since_ns = (!self.pipeline.videos.node_ids().is_empty()).then_some(self.clock_now_ns()); }
+        self.next_plan_ns = None;
         Ok(())
     }
     fn clock_now_ns(&self) -> u64 {
@@ -169,6 +177,9 @@ impl NativePlayer {
         let now = self.clock_now_ns();
         self.pipeline.pause_execution()?;
         self.clock.pause(now).map_err(runtime_error)?;
+        self.clock.discard_lookahead();
+        self.preparing_since_ns = None;
+        self.next_plan_ns = None;
         #[cfg(feature = "native-video")]
         self.pipeline.videos.pause();
         Ok(())
@@ -185,6 +196,8 @@ impl NativePlayer {
         #[cfg(feature = "native-video")]
         self.pipeline.videos.pause();
         self.clock.stop();
+        self.next_plan_ns = None;
+        self.preparing_since_ns = None;
         Ok(())
     }
     pub fn dispose(&mut self) -> Result<(), String> {
@@ -194,44 +207,74 @@ impl NativePlayer {
     }
     pub fn close(&mut self) -> Result<(), String> { self.dispose() }
     pub fn set_mouse(&mut self, mouse: [f32; 4]) { self.mouse = mouse; }
+    pub fn is_preparing(&self) -> bool { self.preparing_since_ns.is_some() }
 
     fn render(&mut self, now_ns: u64) -> Result<NativeFrameRendered, String> {
         let started = Instant::now();
-        let mut completion = self.pipeline.poll_completion();
-        if completion.as_ref().is_some_and(|value| matches!(value.outcome, FrameOutcome::Cancelled)) {
-            completion = None;
+        self.pipeline.render_device.device().poll(wgpu::PollType::Poll).map_err(|error| error.to_string())?;
+        self.pipeline.discard_cancelled_completions();
+        while self.pipeline.next_completion_stamp().is_some_and(|stamp| {
+            stamp.epoch != self.clock.state().epoch
+        }) {
+            self.pipeline.poll_completion();
         }
+        let mut completion = None;
         let output_node_id = self.pipeline.session.execution_plan()
             .ok_or("Native engine has no execution plan")?.output_nodes.first().cloned()
             .ok_or("Graph has no renderer or terminal texture output")?;
-        if completion.is_none() && !self.pipeline.has_in_flight() {
-            let mut candidate_clock = self.clock.clone();
-            let clock = candidate_clock.tick(now_ns).map_err(runtime_error)?;
-            let stamp = FrameStamp { epoch: clock.epoch, frame: clock.frame,
-                timeline_ns: clock.timeline_ns, deadline_ns: clock.next_deadline_ns };
-            let plan = self.pipeline.session.execution_plan().expect("graph checked");
-            let demand = FrameDemand { request_id: clock.frame, graph_revision: self.pipeline.revision(),
-                input: FrameEvaluationInput { stamp: stamp.clone(), previous_timeline_ns: clock.previous_timeline_ns,
-                    date: utc_date_uniform(SystemTime::now()), mouse: self.mouse,
-                    resolution: [plan.default_width.max(1) as f32, plan.default_height.max(1) as f32, 1.0] },
-                output_node_id: output_node_id.clone(), sources: Vec::new() };
-            match self.pipeline.submit(demand) {
-                FrameAdmission::Accepted => { self.clock = candidate_clock; self.last_stamp = Some(stamp); }
-                FrameAdmission::WouldBlock(_) => {}
-                FrameAdmission::Rejected { error, .. } => return Err(error),
+        if self.pipeline.window_needs_refill() {
+            let high_water = self.pipeline.window_config().high_water;
+            for _ in 0..high_water {
+                if self.pipeline.window_len() >= high_water { break; }
+                let planned_ns = self.next_plan_ns.unwrap_or(now_ns).max(now_ns);
+                let mut candidate_clock = self.clock.clone();
+                let clock = candidate_clock.tick(planned_ns).map_err(runtime_error)?;
+                let stamp = FrameStamp { epoch: clock.epoch, frame: clock.frame,
+                    timeline_ns: clock.timeline_ns, deadline_ns: planned_ns };
+                let plan = self.pipeline.session.execution_plan().expect("graph checked");
+                let demand = FrameDemand { request_id: clock.frame, graph_revision: self.pipeline.revision(),
+                    input: FrameEvaluationInput { stamp: stamp.clone(), previous_timeline_ns: clock.previous_timeline_ns,
+                        date: utc_date_uniform(SystemTime::now()), mouse: self.mouse,
+                        resolution: [plan.default_width.max(1) as f32, plan.default_height.max(1) as f32, 1.0] },
+                    output_node_id: output_node_id.clone(), sources: Vec::new() };
+                match self.pipeline.submit_window(demand) {
+                    FrameAdmission::Accepted => {
+                        self.clock = candidate_clock;
+                        self.next_plan_ns = Some(planned_ns.saturating_add(16_666_667));
+                    }
+                    FrameAdmission::WouldBlock(_) => break,
+                    FrameAdmission::Rejected { error, .. } => return Err(error),
+                }
             }
         }
-        self.pipeline.progress();
+        let temporal = self.pipeline.session.execution_plan().is_some_and(|plan| plan.nodes.iter().any(|node| node.feedback));
+        if temporal { self.pipeline.progress_due(now_ns); } else { self.pipeline.progress(); }
+        if let Some(since) = self.preparing_since_ns {
+            if if temporal { self.pipeline.first_completion_ready() } else { self.pipeline.window_prefilled() } {
+                let delay = now_ns.saturating_sub(since);
+                self.clock.defer_start(delay);
+                self.pipeline.delay_window_deadlines(delay);
+                self.next_plan_ns = self.next_plan_ns.map(|next| next.saturating_add(delay));
+                self.preparing_since_ns = None;
+            }
+        }
+        let next = self.pipeline.next_completion_stamp().cloned();
+        if self.preparing_since_ns.is_none()
+            && next.as_ref().is_some_and(|stamp| self.pipeline.presentation_deadline(stamp) <= now_ns) {
+            completion = self.pipeline.poll_completion();
+        }
         let mut stamp = self.last_stamp.clone().unwrap_or(FrameStamp { epoch: 0,frame: 0,timeline_ns:0,deadline_ns:0 });
         let mut dimensions = (0, 0);
         let mut output_node_id = output_node_id;
-        if let Some(completion) = completion.or_else(|| self.pipeline.poll_completion()) {
+        if let Some(completion) = completion {
             stamp = completion.stamp;
             match completion.outcome {
                 FrameOutcome::Submitted(frame) => {
+                    self.last_stamp = Some(stamp.clone());
+                    self.pipeline.record_presented(&stamp, now_ns.saturating_sub(self.pipeline.presentation_deadline(&stamp)) > 16_666_667);
                     dimensions = (frame.image.width, frame.image.height);
+                    self.pipeline.render_device.present_snapshot(&frame.identity.output_node_id, frame.output(), stamp.frame, stamp.timeline_ns)?;
                     output_node_id = frame.identity.output_node_id;
-                    self.pipeline.render_device.present(&output_node_id, stamp.frame, stamp.timeline_ns)?;
                 }
                 FrameOutcome::Cancelled => {}
                 FrameOutcome::Failed(error) => return Err(error),

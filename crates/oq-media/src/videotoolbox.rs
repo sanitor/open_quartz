@@ -19,6 +19,12 @@ static NEXT_SOURCE_EPOCH: AtomicU64 = AtomicU64::new(1);
 #[link(name = "CoreVideo", kind = "framework")]
 extern "C" {
     fn CVPixelBufferGetPixelFormatType(buffer: *mut c_void) -> u32;
+    fn CVPixelBufferGetIOSurface(buffer: *mut c_void) -> *mut c_void;
+    fn CVPixelBufferGetDataSize(buffer: *mut c_void) -> usize;
+}
+#[link(name = "IOSurface", kind = "framework")]
+extern "C" {
+    fn IOSurfaceGetAllocSize(surface: *mut c_void) -> usize;
 }
 
 /// Owns the FFmpeg frame reference, and therefore its immutable VideoToolbox surface.
@@ -53,6 +59,19 @@ impl VideoToolboxFrame {
     }
     pub fn pixel_buffer(&self) -> *mut c_void {
         unsafe { (*self.raw).data[3].cast() }
+    }
+    /// Physical allocation shared by all retained references to this pixel buffer.
+    pub fn allocation_size(&self) -> u64 {
+        let buffer = self.pixel_buffer();
+        if buffer.is_null() { return 0; }
+        unsafe {
+            let surface = CVPixelBufferGetIOSurface(buffer);
+            if surface.is_null() {
+                CVPixelBufferGetDataSize(buffer) as u64
+            } else {
+                IOSurfaceGetAllocSize(surface) as u64
+            }
+        }
     }
     pub fn width(&self) -> u32 {
         unsafe { (*self.raw).width as u32 }
@@ -117,6 +136,7 @@ pub struct Session {
     stream_index: usize,
     info: SourceInfo,
     cancelled: Arc<AtomicBool>,
+    request_cancelled: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     io_started: Arc<Mutex<Instant>>,
     draining: bool,
     ended: bool,
@@ -154,8 +174,11 @@ impl Session {
         let io_started = Arc::new(Mutex::new(Instant::now()));
         let callback_cancelled = cancelled.clone();
         let callback_started = io_started.clone();
+        let request_cancelled: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::new(Mutex::new(None));
+        let callback_request = request_cancelled.clone();
         let input = format::input_with_interrupt(&path, move || {
             callback_cancelled.load(Ordering::Acquire)
+                || callback_request.lock().map_or(true, |request| request.as_ref().is_some_and(|request| request.load(Ordering::Acquire)))
                 || callback_started
                     .lock()
                     .map_or(true, |started| started.elapsed() > Duration::from_secs(10))
@@ -269,6 +292,7 @@ impl Session {
             stream_index,
             info,
             cancelled,
+            request_cancelled,
             io_started,
             draining: false,
             ended: false,
@@ -291,6 +315,40 @@ impl Session {
         &self.info
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+            || self.request_cancelled.lock().map_or(true, |request| request.as_ref().is_some_and(|request| request.load(Ordering::Acquire)))
+    }
+
+    /// Abort one selection without poisoning this reusable decoder session.
+    pub fn frame_at_ns_cancellable(
+        &mut self,
+        target_ns: i64,
+        timeline_epoch: u64,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Option<SelectedFrame>, MediaError> {
+        *self.request_cancelled.lock().map_err(|_| "Video request cancellation lock is poisoned")? = Some(cancelled.clone());
+        let result = self.frame_at_ns(target_ns, timeline_epoch);
+        *self.request_cancelled.lock().map_err(|_| "Video request cancellation lock is poisoned")? = None;
+        if cancelled.load(Ordering::Acquire) {
+            // The decoder may have advanced during preroll. Permit a fresh demand
+            // to map against the actual cursor; newer epochs perform a real seek.
+            self.last_target_ns = None;
+            self.selected = None;
+            // AVIO records AVERROR_EXIT as a sticky error. The abort belongs to
+            // this demand, not to the input; clear it before the next epoch seeks.
+            unsafe {
+                let input = self.input.as_mut_ptr();
+                if !(*input).pb.is_null() {
+                    (*(*input).pb).error = 0;
+                    (*(*input).pb).eof_reached = 0;
+                }
+            }
+            return Err(MediaError::cancelled());
+        }
+        result
+    }
+
     /// Select the earliest decoded presentation frame at/after stream-relative
     /// nanoseconds. Negative targets are invalid. Missing origin/PTS is an error;
     /// missing duration is supported by decoding through EOF, never FPS guessing.
@@ -300,7 +358,7 @@ impl Session {
         target_ns: i64,
         timeline_epoch: u64,
     ) -> Result<Option<SelectedFrame>, MediaError> {
-        if self.cancelled.load(Ordering::Acquire) || timeline_epoch < self.timeline_epoch {
+        if self.is_cancelled() || timeline_epoch < self.timeline_epoch {
             return Err(MediaError::cancelled());
         }
         if target_ns < 0 {
@@ -354,7 +412,7 @@ impl Session {
                 )
             })?;
             if actual_ns >= target_ns {
-                if self.cancelled.load(Ordering::Acquire) {
+                if self.is_cancelled() {
                     return Err(MediaError::cancelled());
                 }
                 self.selected = Some(frame.try_clone()?);
@@ -365,7 +423,7 @@ impl Session {
     }
 
     fn seek_to(&mut self, pts: i64) -> Result<(), MediaError> {
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             return Err(MediaError::cancelled());
         }
         if !self.info.seekable {
@@ -389,7 +447,7 @@ impl Session {
                 ffi::AVSEEK_FLAG_BACKWARD as i32,
             )
         };
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             return Err(MediaError::cancelled());
         }
         if result < 0 {
@@ -425,14 +483,14 @@ impl Session {
         self.decode_next()
     }
     fn decode_next(&mut self) -> Result<Option<FrameLease>, MediaError> {
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             return Err(MediaError::cancelled());
         }
         if self.ended {
             return Ok(None);
         }
         loop {
-            if self.cancelled.load(Ordering::Acquire) {
+            if self.is_cancelled() {
                 return Err(crate::MediaError::cancelled());
             }
             let mut frame = Video::empty();
@@ -604,7 +662,7 @@ impl Session {
             }
             let mut packet = Packet::empty();
             loop {
-                if self.cancelled.load(Ordering::Acquire) {
+                if self.is_cancelled() {
                     return Err(crate::MediaError::cancelled());
                 }
                 *self
@@ -621,7 +679,7 @@ impl Session {
                         self.draining = true;
                         break;
                     }
-                    Err(_) if self.cancelled.load(Ordering::Acquire) => {
+                    Err(_) if self.is_cancelled() => {
                         return Err(MediaError::cancelled())
                     }
                     Err(e) => return Err(format!("Video demux failed: {e}").into()),

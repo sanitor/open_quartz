@@ -6,5 +6,5 @@ mod pipeline;
 #[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
 pub use pipeline::{
     ExternalFrameInput, FrameAdmission, FrameCompletion, FrameDemand, FrameOutcome, FramePipeline,
-    PreparedNativeGraph,
+    FrameStageEvent, FrameWindowConfig, PreparedNativeGraph,
 };

@@ -6,11 +6,15 @@
 
 历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
-Phase 3 前的覆盖率加固及完成后的复测见[验证记录](DESIGN.md#pre-phase3-coverage)与[Phase 3 实施证据](../apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。最新 `npm run test:sdk-coverage`：default line/function/region=98.37/96.99/98.45%，native=95.93/90.01/94.35%；coverage tests 通过，但保留的 100% gates 仍失败，未改 scope/阈值。命令在清理 profile 前保存 `test-results/sdk-coverage/{default,native}.json`；复跑需准备 desktop runtime 并显式配置 FFmpeg 与 ORT 1.21 路径，ORT 仅 reference 测试使用。未将 line 接近 100% 写成函数/分支覆盖全绿。
+Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.md#pre-phase3-coverage)；Phase4当前命令/百分比按[阶段证据](../apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)单列，不复用Phase3结果。`npm run test:sdk-coverage`保留default/native两套scope及100% lines/functions/regions gates；在清理profile前保存`test-results/sdk-coverage/{default,native}.json`。复跑需准备desktop runtime并显式配置FFmpeg与ORT1.21路径，ORT只供reference。未将测试通过或line接近100%写成全部coverage gates通过。
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
 媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
+
+Phase4共享流水使用`FramePipeline::submit_window/configure_window`，单帧显式`submit`复用同一执行事务；NativePlayer负责clock/prefill/deadline，媒体cursor在有界worker中选择真实PTS。原生source preview同样request/poll，不同步seek/decode；GPU导入保持同queue owner至completion，不逐帧host wait。`FrameBudget`可在创建backend/pipeline前注入，共享设备的多个backend包装须注入同Arc；callback只发送Wake，不在原生析构器内执行渲染。实际阶段trace需显式`enable_stage_trace(true)`，默认不分配/采样事件。窗口/bytes/surfaces满是反压，最小工作集不可能则明确capacity，不退回CPU。
+
+CI新增macOS独立`media-source-window` job：准备真实libav/FFmpeg后运行`cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase4/media-coverage.json -- --test-threads=1`，保留媒体JSON报告；缺硬件/运行库是失败，不skip成绿。该报告不放宽或替代既有SDK default/native两个100% gates。VideoToolbox/driver/MPSGraph私有内存不在可观测应用资源硬预算内，不据Apple测试声明其它平台精确窗口已支持。
 
 当前推理边界见[推理架构](INFERENCE_ARCHITECTURE.md)和[节点契约](ONNX_NODE_DESIGN.md)。`inspect_onnx(model)` 无需 ORT，保留完整 source facts：IR/producer/model versions、domain、graph name、模型/图/值 metadata、opsets、递归类型与精确 dtype codes、scalar/UnknownRank、维度/符号/denotation、Required/Optional/OverridableInitializer 及 dense/sparse external-data 引用；自省不加载权重。runtime metadata/ValueKind/元素分类、hash/size/format 分开，不把 runtime sentinel 当源版本。`ImageInterfaceReport` 仅结构兼容，typed `ImageTaskContract` 才定义命名输出、layout/preprocessing/resize/color/shape/decoder；声明在 frame access 前检查，实际输出在解码/交付前检查。JSON 分列 `model`/`taskContract`。旧 CoreML EP 混合执行数据仅为历史 reference，不是 resident fallback。
 

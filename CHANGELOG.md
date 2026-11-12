@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Bounded source lookahead and nonblocking frame execution (Phase 4)
+
+- Extend the shared FramePipeline with bounded demand/terminal windows, prefill and low/high watermarks, source preparation and cross-stage credits. NativePlayer plans ahead on its existing composition clock and presents the exact stable completion, not a newer live graph texture; feedback evaluation stays deadline-ordered.
+- Move precise VideoToolbox cursor work into bounded source workers, support prepared-material cursor handoff, and cooperatively cancel obsolete selection without poisoning reusable sessions or graph feedback. Source-only previews also use request/poll; ready/completion/consumer release wakes the native render owner.
+- Remove per-import host waits while retaining AVFrame, CoreVideo wrappers and imported plane textures to genuine same-queue completion. Coordinate observable native surfaces, graph/feedback targets, resident inference resources and stable output allocations through a shared physical identity budget. Driver/VideoToolbox/MPSGraph-private allocations are explicitly outside the user-approved hard-budget scope; no process-memory or throughput claim.
+- Add real-device backpressure, lifetime, cancellation, resize and material-cut regressions plus a separate macOS media coverage CI job. Feature/platform limits and exercised results are recorded in the [phase implementation evidence](apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围); existing SDK 100% gates remain unchanged.
+
 ### Precise media source time (Phase 3)
 
 - Retain the selected VideoToolbox stream’s rational time base/origin/duration/seekability and each original decoded AVFrame PTS. `oq-media::Session::frame_at_ns` resolves source-relative nanosecond targets on the current decoder cursor; forward selection stays ordered, backward selection requires a newer timeline epoch, seeks to a preceding keyframe, flushes and discards presentation preroll. No FPS/DTS/wall-clock timestamp is presented as an actual source PTS.

@@ -159,6 +159,8 @@ pub struct NativeVideoSource {
     exact_loop_cycle: u64,
     #[cfg(target_os = "macos")]
     exact_epoch: u64,
+    #[cfg(target_os = "macos")]
+    exact_invalidated: bool,
 }
 
 impl NativeVideoSource {
@@ -270,6 +272,8 @@ impl NativeVideoSource {
             exact_loop_cycle: 0,
             #[cfg(target_os = "macos")]
             exact_epoch: 0,
+            #[cfg(target_os = "macos")]
+            exact_invalidated: false,
             info,
         };
         source.start_decoder()?;
@@ -384,8 +388,8 @@ impl NativeVideoSource {
         Ok(true)
     }
 
-    /// Select and upload the frame covering an explicit source-time demand.
-    /// On macOS the owning render worker drives this session cursor directly.
+    /// Explicit blocking boundary for direct source consumers. Production rendering
+    /// selects on the source worker and uploads the retained result separately.
     pub fn upload_at(
         &mut self,
         timeline_ns: u64,
@@ -397,7 +401,52 @@ impl NativeVideoSource {
         ) -> Result<(), String>,
     ) -> Result<Option<i64>, String> {
         #[cfg(target_os = "macos")]
-        if let Some(session) = &mut self.exact_session {
+        if self.exact_session.is_some() {
+            let selected = self.prepare_exact_at(timeline_ns, epoch)?;
+            let actual_ns = selected.actual_ns;
+            if self.exact_last_pts_ns != Some(actual_ns) {
+                upload(
+                    NativeVideoFrame::VideoToolbox(&selected.frame.frame),
+                    self.info.width,
+                    self.info.height,
+                )?;
+                self.uploaded_frames = self.uploaded_frames.saturating_add(1);
+                self.exact_last_pts_ns = Some(actual_ns);
+            }
+            return Ok(Some(actual_ns));
+        }
+        let _ = (timeline_ns, epoch);
+        self.upload_latest(upload).map(|_| None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn is_precise(&self) -> bool {
+        self.exact_session.is_some()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn invalidate_exact_cursor(&mut self) {
+        self.exact_invalidated = true;
+    }
+
+    /// Runs only at an explicit blocking boundary or on the dedicated source worker.
+    #[cfg(target_os = "macos")]
+    pub(super) fn prepare_exact_at(
+        &mut self,
+        timeline_ns: u64,
+        epoch: u64,
+    ) -> Result<oq_media::SelectedFrame, String> {
+        self.prepare_exact_at_cancellable(timeline_ns, epoch, Arc::new(AtomicBool::new(false)))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn prepare_exact_at_cancellable(
+        &mut self,
+        timeline_ns: u64,
+        epoch: u64,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<oq_media::SelectedFrame, String> {
+        let session = self.exact_session.as_mut().ok_or("Source has no precise cursor")?;
             const RATE_SCALE: u128 = 1_000_000_000;
             let rate_units = (self.config.playback_rate * RATE_SCALE as f64).round() as u128;
             let scaled = u128::from(timeline_ns)
@@ -418,7 +467,12 @@ impl NativeVideoSource {
             let target_ns =
                 i64::try_from(duration.map_or(scaled, |duration| scaled % duration as u128))
                     .map_err(|_| "Video source target exceeds i64 nanoseconds")?;
-            if let Some(previous_composition_epoch) = self.exact_composition_epoch {
+            if self.exact_invalidated {
+                self.exact_epoch = self.exact_epoch.checked_add(1).ok_or("Video source epoch overflow")?.max(epoch);
+                self.exact_loop_cycle = u64::try_from(cycle).map_err(|_| "Video source loop count overflow")?;
+                self.exact_composition_epoch = Some(epoch);
+                self.exact_invalidated = false;
+            } else if let Some(previous_composition_epoch) = self.exact_composition_epoch {
                 if epoch > previous_composition_epoch {
                     self.exact_epoch = self
                         .exact_epoch
@@ -443,7 +497,7 @@ impl NativeVideoSource {
                     u64::try_from(cycle).map_err(|_| "Video source loop count overflow")?;
             }
             let selected = session
-                .frame_at_ns(target_ns, self.exact_epoch)
+                .frame_at_ns_cancellable(target_ns, self.exact_epoch, cancelled.clone())
                 .map_err(|e| e.to_string())?;
             let selected = match selected {
                 Some(selected) => selected,
@@ -457,30 +511,17 @@ impl NativeVideoSource {
                         .saturating_add(1)
                         .max(u64::try_from(cycle).map_err(|_| "Video source loop count overflow")?);
                     session
-                        .frame_at_ns(0, self.exact_epoch)
+                        .frame_at_ns_cancellable(0, self.exact_epoch, cancelled.clone())
                         .map_err(|e| e.to_string())?
                         .ok_or_else(|| "Looping video contains no frame".to_owned())?
                 }
                 None => return Err(format!("Video source reached EOF at {target_ns}ns")),
             };
-            let actual_ns = selected.actual_ns;
-            if self.exact_last_pts_ns != Some(actual_ns) {
-                upload(
-                    NativeVideoFrame::VideoToolbox(&selected.frame.frame),
-                    self.info.width,
-                    self.info.height,
-                )?;
-                self.uploaded_frames = self.uploaded_frames.saturating_add(1);
-                self.exact_last_pts_ns = Some(actual_ns);
-            }
+            let sequence = selected.frame.sequence;
             self.exact_last_target_ns = Some(timeline_ns);
             self.exact_composition_epoch = Some(epoch);
-            self.decoded_frames
-                .fetch_max(selected.frame.sequence, Ordering::AcqRel);
-            return Ok(Some(actual_ns));
-        }
-        let _ = (timeline_ns, epoch);
-        self.upload_latest(upload).map(|_| None)
+            self.decoded_frames.fetch_max(sequence, Ordering::AcqRel);
+            Ok(selected)
     }
     pub fn metrics(&self) -> NativeVideoMetrics {
         NativeVideoMetrics {

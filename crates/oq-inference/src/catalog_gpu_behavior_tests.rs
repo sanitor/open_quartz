@@ -109,6 +109,9 @@ fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_re
         let mut session =
             CatalogGpuSession::prepare(device.clone(), queue.clone(), model, Default::default())
                 .unwrap();
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = wakes.clone();
+        session.set_output_waker(Arc::new(move || { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
         let source = texture(
             &device,
             2,
@@ -122,6 +125,9 @@ fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_re
             ("green", [0, 255, 0, 128]),
             ("blue", [0, 0, 255, 128]),
         ] {
+            // Preflight must find writable capacity, not merely count existing
+            // slots. The third iteration has two protected consumer leases.
+            session.prepare_outputs(2, 2, 2).unwrap();
             generate(&device, &queue, &source, color);
             let output = session.submit_texture(&source, 2, 2).unwrap();
             assert_eq!(
@@ -130,6 +136,7 @@ fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_re
             );
             held.push(output);
         }
+        assert!(matches!(session.prepare_outputs(2, 2, 2), Err(GpuError::Capacity)));
         assert!(matches!(
             session.submit_texture(&source, 2, 2),
             Err(GpuError::Capacity)
@@ -138,8 +145,14 @@ fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_re
             readback_texture(&device, &queue, held[0].texture()),
             [255, 0, 0, 128].repeat(4)
         );
+        let native_consumer = held[1].lease();
         let dropped = held.remove(1);
         drop(dropped);
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(matches!(session.prepare_outputs(2, 2, 2), Err(GpuError::Capacity)));
+        drop(native_consumer);
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        session.prepare_outputs(2, 2, 2).unwrap();
         let replaced = session.submit_texture(&source, 2, 2).unwrap();
         assert_eq!(
             readback_texture(&device, &queue, replaced.texture()),
@@ -155,6 +168,7 @@ fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_re
             wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         generate(&device, &queue, &resized, "green");
+        session.prepare_outputs(3, 1, 2).unwrap();
         let output = session.submit_texture(&resized, 3, 1).unwrap();
         assert_eq!(
             readback_texture(&device, &queue, output.texture()),

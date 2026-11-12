@@ -54,6 +54,33 @@ jobs:
       - name: Enforce 100% Rust SDK coverage
         run: npm run test:sdk-coverage
 
+  media-source-window:
+    name: Native media source window (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: npm ci
+      - run: npm run prepare:desktop
+      - name: Exercise real VideoToolbox source contracts and record coverage
+        env:
+          OPEN_QUARTZ_FFMPEG_PATH: ${{ github.workspace }}/apps/open_quartz_slint/runtime/ffmpeg
+        run: |
+          mkdir -p test-results/phase4
+          cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase4/media-coverage.json -- --test-threads=1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: media-source-window-coverage
+          path: test-results/phase4/
+          if-no-files-found: error
+
   slint-app:
     name: Slint desktop (${{ matrix.os }})
     strategy:

@@ -2,6 +2,8 @@
 
 用户能力为 **INFERENCE / 推理**；ONNX 是模型产物格式，不等于执行后端。生产实时绘制与推理的图像 payload 必须为硬件 buffer/texture，ORT host Tensor 仅供显式 reference/诊断，绝不是生产 fallback。
 
+Phase4资源协议：原图FramePipeline在source admission前预留已加载resident模型的输出slot；oq-inference提供可选`GpuFrameAllocator`，独立调用者不依赖OpenQuartz。宿主FrameBudget对应用拥有的输出纹理/原始结果buffer与固定预处理/卷积scratch进行明确计费，credit随slot、session与queue completion owner保留；换尺寸或卸载不提前释放仍在GPU/consumer使用的资源。weights/model准备内存不是逐帧预算；MPSGraph/driver私有runtime分配不宣称可观测或硬限额。临时满是反压，不是CPU fallback。实际回归与资源边界见[Phase计划和证据](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。
+
 
 ## Metal catalog 收益与结论（2026-11-09 实测）
 
