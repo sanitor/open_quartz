@@ -15,7 +15,10 @@ pub struct PreparedVideoSource {
 }
 
 impl PreparedVideoSource {
-    pub fn open(config: NativeVideoConfig, preview_only: bool) -> Result<Self, String> {
+    pub fn open_precise(config: NativeVideoConfig, preview_only: bool) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        let source = NativeVideoSource::open_hardware_precise(config, preview_only)?;
+        #[cfg(not(target_os = "macos"))]
         let source = NativeVideoSource::open_hardware_required(config, preview_only)?;
         Ok(Self { source })
     }
@@ -30,7 +33,11 @@ impl VideoSources {
         Self::default()
     }
 
-    pub fn attach_prepared(&mut self, node_id: &str, prepared: PreparedVideoSource) -> NativeVideoInfo {
+    pub fn attach_prepared(
+        &mut self,
+        node_id: &str,
+        prepared: PreparedVideoSource,
+    ) -> NativeVideoInfo {
         let info = prepared.source.info().clone();
         self.sources.insert(node_id.to_owned(), prepared.source);
         info
@@ -90,6 +97,36 @@ impl VideoSources {
         Ok(())
     }
 
+    /// Select the presentation frame for an explicit composition-clock demand.
+    /// macOS hardware-required sources use their render-worker-owned oq-media cursor.
+    pub fn upload_frames_at(
+        &mut self,
+        timeline_ns: u64,
+        epoch: u64,
+        excluded: &[String],
+        mut upload: impl for<'frame> FnMut(
+            &str,
+            NativeVideoFrame<'frame>,
+            u32,
+            u32,
+        ) -> Result<(), String>,
+    ) -> Result<Vec<(String, Option<i64>)>, String> {
+        let mut selected = Vec::with_capacity(self.sources.len());
+        for (node_id, source) in &mut self.sources {
+            if excluded.iter().any(|excluded| excluded == node_id) {
+                continue;
+            }
+            let mut pts = None;
+            source
+                .upload_at(timeline_ns, epoch, &mut |frame, width, height| {
+                    upload(node_id, frame, width, height)
+                })
+                .map(|value| pts = value)?;
+            selected.push((node_id.clone(), pts));
+        }
+        Ok(selected)
+    }
+
     pub fn is_active(&self) -> bool {
         self.sources.values().any(NativeVideoSource::is_active)
     }
@@ -102,13 +139,15 @@ impl VideoSources {
     }
 
     pub fn frame_counts(&self) -> (u64, u64) {
-        self.sources.values().fold((0_u64, 0_u64), |(decoded, uploaded), source| {
-            let metrics = source.metrics();
-            (
-                decoded.saturating_add(metrics.decoded_frames),
-                uploaded.saturating_add(metrics.uploaded_frames),
-            )
-        })
+        self.sources
+            .values()
+            .fold((0_u64, 0_u64), |(decoded, uploaded), source| {
+                let metrics = source.metrics();
+                (
+                    decoded.saturating_add(metrics.decoded_frames),
+                    uploaded.saturating_add(metrics.uploaded_frames),
+                )
+            })
     }
 }
 

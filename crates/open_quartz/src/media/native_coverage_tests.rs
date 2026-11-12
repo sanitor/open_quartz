@@ -437,6 +437,20 @@ fn unstarted_software_source() -> NativeVideoSource {
         hardware_position_ns: Arc::new(AtomicU64::new(0)),
         #[cfg(target_os = "macos")]
         decoder_cancelled: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "macos")]
+        exact_session: None,
+        #[cfg(target_os = "macos")]
+        exact_cancelled: None,
+        #[cfg(target_os = "macos")]
+        exact_last_pts_ns: None,
+        #[cfg(target_os = "macos")]
+        exact_last_target_ns: None,
+        #[cfg(target_os = "macos")]
+        exact_epoch: 0,
+        #[cfg(target_os = "macos")]
+        exact_composition_epoch: None,
+        #[cfg(target_os = "macos")]
+        exact_loop_cycle: 0,
         info: super::NativeVideoInfo {
             width: 1,
             height: 1,

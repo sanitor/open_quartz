@@ -370,39 +370,37 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 平台验证 | 相机、Windows/Linux GPU、独立 `.scr` 与移动端未完成本轮实机验证；移动端交付暂缓 |
 | macOS 启动 | 早先出现过未解释的 winit startup abort，后续未复现，不能宣称原因已修复 |
 | 覆盖率 | 默认与完整 native 的整体 100% gates 仍失败，见下节 |
-| 按帧离线执行与流水 | Phase 2 已有无时钟共享执行、显式 stamp/版本化外部 StableFrame 输入与稳定完成；当前单请求串行推进。媒体仍顺序源/阻塞导入，精确源时间选择、预取、多帧窗口和跨阶段 credit 尚未实现，见下节 |
+| 按帧离线执行与流水 | Phase 2 共享单请求执行；Phase 3 macOS file VideoToolbox source 通过同一 cursor 精确选择/上传实际PTS帧再做 GPU/推理/稳定输出。仍同步单请求、顺序source，不含异步窗口/prefetch/credit/import completion，见下节 |
 
 <a id="execution-rendering-split"></a>
-## 渲染与执行分离决策（Phase 2 共享执行已落地，预取待实施）
+## 渲染与执行分离决策（Phase 1～3 已落地，预取待实施）
 
 ### 决策与范围
 
-**决定拆分职责与调用边界，不将 `open_quartz` 拆成渲染/执行两个 crate，不创建设备副本或仅转发的壳包。** Phase 1 稳定快照/完成与主预览消费者保留；Phase 2 已在同 crate 的 `execution` 接入 FramePipeline 和 FrameExecutionSession，并将 NativePlayer 切到共享执行路径。当前只有单请求顺序执行，不代表精确媒体访问、窗口预取或 credit 已完成。
+**决定拆分职责与调用边界，不将 `open_quartz` 拆成渲染/执行两个 crate，不创建设备副本或仅转发的壳包。** Phase 1 稳定快照/完成、Phase 2 共享 FramePipeline 和无时钟图/输出状态、Phase 3 精确媒体 source time 均已落地；当前单请求、串行源 cursor，不代表 Phase 4 窗口预取/credit 已完成。
 
 实际所有权以代码为准：FrameExecutionSession 只组合 GraphInstance/GraphEvaluator 与 OutputHub；FramePipeline 持有它以及 InferenceTasks、VideoSources、RenderDevice、稳定帧池、输入版本与在途请求。推理/source/render 资源没有搬进 session。PlaybackSession 是同一无时钟 graph/output owner 加 CompositionClock；NativePlayer 则拥有 pipeline + 自己的实时 clock，不再包一个 PlaybackSession 或复制旧命令执行循环。
 
-| 层 / 所有者 | 当前 Phase 2 责任 | 后续目标 / 明确不负责 |
+| 层 / 所有者 | 当前 Phase 1～3 责任 | 后续目标 / 明确不负责 |
 |---|---|---|
 | 编辑语义：原图 Project / 新编辑器 EditorDocument、TimelinePlanner | 原图编辑事务；新编辑器尚未接入 | 指定序列帧/前瞻范围 → 不可变需求；不拥有 decoder/GPU queue |
-| 宿主策略：NativePlayer / 未来 PreviewScheduler、ExportJob | NativePlayer 唯一实时 clock、需求构造、播放控制和呈现 | 编辑器时间线映射、实时/离线政策；不复制 pipeline 执行循环 |
-| `execution::FramePipeline` | 单 demand admission、输入版本、源上传、GPU/推理依赖推进、取消、稳定输出完成与容量等待 | 后续源时间窗口、预取、credit 与消费者背压；不拥有 UI/clock/codec |
-| `execution::FrameExecutionSession` | GraphInstance/GraphEvaluator + OutputHub、显式帧求值、输出事务和完成身份校验 | 不拥有 InferenceTasks、源、RenderDevice 或稳定帧池，不推进 clock |
+| 宿主策略：NativePlayer / 未来 PreviewScheduler、ExportJob | NativePlayer 唯一实时 clock、需求构造和呈现；Phase 3 按 clock epoch/timeline 请求内部 VideoToolbox 源帧 | 编辑器 Clip→source 映射、实时/离线政策；不复制 pipeline 执行循环 |
+| `execution::FramePipeline` | 单 demand admission、同 worker 精确源选帧/上传、输入版本、GPU/推理依赖、取消、稳定输出；唯一内部媒体 PTS provenance 仅在单视频源时有效 | 当前只有单 demand 顺序推进；后续窗口/预取/credit；不拥有 UI/clock/codec |
+| 媒体 / 推理算子 / 消费者 | `oq-media::Session::frame_at_ns` 选择并保留原生 PTS/timestamp；`oq-inference` 管 resident network；Slint 消费稳定预览 | 多 frame window/source adapter 扩展和编码消费者仍未实现；不复制图状态 |
 | `rendering::RenderDevice` / GpuExecutor | shader/纹理/平台 GPU import、局部资源池、命令编码/提交、设备完成条件 | 不负责源时间映射、全局调度或 UI 时钟 |
-| 媒体 / 推理算子 / 消费者 | oq-media 管 codec 与原生帧；oq-inference 管网络执行；Slint 消费稳定预览 | 编码消费者和跨阶段预算仍待实现；不复制图状态 |
 
 **NativePlayer 已依赖 FramePipeline，而非绕过它直接驱动 FrameExecutionSession。** 编辑器预览/导出接入同一入口、每会话独立状态和共享物理预算协调者仍为后续目标；共享实现不等于将预览与导出塞进一个 latest-only 队列。下图虚线为未实现的消费者/源窗口接入。
 
 ```mermaid
 flowchart TD
     GraphHost[NativePlayer 实时 clock 与呈现] --> Pipeline[execution FramePipeline 单请求共享执行]
-    EditorHost[未来 编辑器预览与导出宿主] -.-> Pipeline
-    Pipeline --> Sources[现有 VideoSources 顺序源]
-    Sources --> Media[oq-media decoder 与 FrameLease]
-    Pipeline -.-> Provider[未来 源时间窗口适配器与预取]
-    Provider -.-> Media
+    Pipeline --> Sources[Phase3 精确 VideoToolbox cursor]
+    Sources --> Media[oq-media Session/frame_at_ns 与 retained PTS lease]
+    Pipeline -.-> Provider[Phase4 注入窗口/source adapter]
+    Provider -.-> Sources
     Pipeline --> Exec[FrameExecutionSession 图与输出事务]
     Exec --> Eval[evaluation 图身份与求值]
-    Pipeline --> Infer[InferenceTasks 与 oq-inference]
+实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown；Phase 3 仅将可证明的单视频 source PTS填入 content stamp，未填/混合的source身份仍unknown/None，不能伪造 composition time 充当 source PTS。
     Pipeline --> Render[RenderDevice 与 GpuExecutor]
     Infer --> Shared[同一宿主 Device/Queue]
     Render --> Shared
@@ -412,19 +410,19 @@ flowchart TD
     Stable -.-> Encoder[未来 编码消费者与 credit]
 ```
 
-**后续源/消费者接入契约：** 源适配器由宿主注入：原图沿用 VideoSources 的资源映射，编辑器使用资产/序列映射；流水只依赖源需求、就绪/错误回执与 lease，不反向依赖 EditorDocument。codec 状态仍归媒体 worker，未来预取/查询/取消由流水调用适配器；编码/呈现适配器提供消费就绪、背压和释放通知。当前尚无这些窗口/编码接口，不先造空 trait。FrameExecutionSession 虽可供高级纯状态调用复用，普通生产宿主执行 GPU 图仍通过 FramePipeline。
+**当前源接入：** Phase 3 将 NativePlayer demand 的 composition timeline_ns/epoch 乘 per-source playback rate 后交内部 `VideoSources`；macOS strict file source 用 render worker 所属的 oq-media `Session`，沿同一 VideoToolbox decoder cursor 前进或更高 epoch seek，再将 lease 导入 RenderDevice。禁止重新开 decoder 或走 CPU pixel fallback。正常单视频源的 snapshot content stamp 包含 `media_pts_ns`；无可信 PTS 时不伪造，多视频源时单个 scalar PTS 不足表达组合身份，因此留 None。Windows/D3D12仍沿既有 latest sequential 路径，不由macOS结果宣称 exact-seek支持。FrameExecutionSession 不打开媒体或推演源时钟。Phase4 source-window/Pending/watermark接口尚未创建，不预先承诺 worker adapter形状。
 
 ### 按帧接口、图状态与完成
 
-**当前接口：** `submit(FrameDemand)` 接收 request_id、graph_revision、FrameEvaluationInput、output_node_id 和可选 ExternalFrameInput 列表（node_id、非零 version、同 GPU owner 的 StableFrame）。FrameEvaluationInput 显式携带 FrameStamp 和 previous_timeline_ns/date/mouse/resolution；pipeline 不推算内容时间。Accepted 后由所属 worker 调用 `progress`，`poll_completion` 只取回终态。WouldBlock 与 Rejected 均将未接收 demand/lease 归还；一个 pending 或未取走 completion 都阻止下次 admission。
+**当前接口：** `submit(FrameDemand)` 接收 request_id、graph_revision、FrameEvaluationInput、output_node_id 和可选 ExternalFrameInput（node_id、version、同 GPU owner 的 StableFrame）。视频源时间目前由 NativePlayer 的 `FrameEvaluationInput.stamp.timeline_ns/epoch` 映射到已 attach 的内部视频源 playback-rate 时间，不含编辑器Clip/SourceTimeMapping列表。Accepted后所属worker先为每个精确 macOS文件源同步完成 `frame_at_ns`/surface导入，再推进GPU/同帧推理/快照；`poll_completion` 只回终态，不驱动时间。`ContentStamp.media_pts_ns` 仅单源写实际source-relative frame PTS，混合多视频则不谎报单一PTS。WouldBlock/Rejected保留未接收external demand/lease；pending或未取终态阻止新请求。
 
-**当前完成与后续扩展：** 每个已接收请求终态为 Submitted(StableFrame)、Cancelled 或 Failed；Submitted 是所有依赖及输出 copy 已入队，GpuReady 由 frame.ready 单独表示，consumer release 再控制池复用。异步推理在同一 demand 内等待精确输入 stamp 后才继续下游。后续窗口协议再扩展源 rational time/base、尺寸/色彩/质量、时域身份与执行政策，以及 Admitted/InputsReady/GpuSubmitted/GpuReady/ConsumerReleased 阶段；deadline 仅为调度信息，不参与内容时间/hash。当前 snapshot 的 media_pts_ns 未填，色彩/alpha 为 Unknown，不能当作已实现精确源时间/色彩协商。
+**当前完成与后续扩展：** 每个请求终态 Submitted(StableFrame)、Cancelled或Failed。Submitted表示图依赖、稳定输出copy已入队；GpuReady由frame.ready单独表示。异步推理等同一demand精确输入identity后继续下游。macOS `frame_at_ns` 对向前time沿cursor解码，对新的timeline epoch向前keyframe seek并解码preroll；EOF/不可靠源PTS是失败而非重用旧图，暂停PreviewOnce从source origin取帧且不消费正式播放需求。Phase4才扩多帧source区间、watermark、admission credit与无阻塞wakeups；deadline不成为内容时间/hash。
 
 GraphInstance、dirty、feedback 与输出 generation 不在多个宿主中复制实现。求值和计划变更按会话顺序执行；在途帧持有相应图/输入版本与资源，禁止后续请求改写仍会被早先 submission 读取的 uniform/纹理。feedback/时域算子必须声明历史依赖与 reset/preroll/checkpoint 规则，不能把多个时间点任意并发或仅靠修改 iTime 实现随机访问。首个剪辑闭环仅静态效果，但须明确拒绝尚不能随机求值的 recipe。
 
 ### 稳定帧与资源预算
 
-Phase 1 已在现有 `outputs` 身份协议与 `rendering` GPU 资源实现上落地稳定帧，不重建第二套输出 registry，默认无 GPU 依赖的核心边界保持。稳定帧包含图/求值身份、内容时间、图像描述（颜色域、alpha、尺寸/格式）、ready completion 与 consumer lease；Phase 2 输出当前使用 Unknown 色彩/alpha、未填媒体 PTS。普通 live texture view 不能被异步编码队列当作帧保存；输出池 slot 保留或必要的 GPU detach copy 保证后续渲染不改写它。
+Phase 1 已在 `outputs` 身份协议和 `rendering` GPU 资源上落地稳定帧；Phase 3 现在将可靠的单源 source PTS 与 composition evaluation stamp 区分保留，色彩/alpha 协商仍 Unknown。普通 live texture view 不能被异步消费者当作稳定帧；输出池 slot 保留或必要的 GPU detach copy 保证后续渲染不改写它。
 
 沿用现有原生 FrameLease 和推理池 owner；区分“可读”“对象存活”“像素不被覆盖”“消费者已用完”四个条件。同 queue 的 GPU 排序可表达内部依赖时不加逐 pass CPU wait；跨 decoder/encoder/外部设备边界按平台完成协议同步，不能因共用 Device 就省略消费完成。稳定帧不等于每个节点每帧都复制：只在跨异步保留边界按预算保留/分配，发布最终输出前预留必要额度。
 
@@ -438,12 +436,12 @@ Phase 1 已在现有 `outputs` 身份协议与 `rendering` GPU 资源实现上�
 
 ### 当前阻塞点、迁移顺序与验收
 
-Phase 2 已将 NativePlayer 的 admission、图命令/推理依赖与完成循环迁入 FramePipeline，PlaybackSession 复用同一 FrameExecutionSession。尚未切换的媒体事实：macOS worker 仍在 PTS 到来时发布单个当前帧，VideoToolbox importer 转换提交后仍 `device.poll(Wait)`；pipeline 的非阻塞 GPU poll 和稳定输出 ready 不等于媒体导入已非阻塞。不能直接删除 wait 而不补 completion/lease 回收。
+Phase 2 已将图执行/admission/推理依赖/稳定输出完成迁入 FramePipeline，PlaybackSession 复用同一 FrameExecutionSession。Phase 3 再把 macOS 文件 source 精确定位从后台“latest frame”切换为同一 source-owning render worker 调用 oq-media 的 PTS cursor；不是新建 per-frame decoder，也不将完整媒体状态搬出 `open_quartz`。
 
-1. **Phase 1 已实现：** 稳定帧、设备完成与有界池；历史验收证据保持原阶段归属。
-2. **Phase 2 已实现：** 同 crate 共享执行 cutover、显式时间/版本化外部稳定输入、一个请求总额度（包含未取走的终态）；NativePlayer 保留 clock/呈现，PlaybackSession 复用无时钟图/输出 owner。当前验证记录由本阶段真实运行单列，不复用旧通过数。
-3. **Phase 3～4 待实现：** 精确源时间选择、真实媒体需求窗口与 surface/credit 预算成立后，以非阻塞 completion 替换 importer 宿主等待；保留所属 worker/共享 Queue，不无条件增加线程或设备。
-4. **Phase 5 及编辑器待实现：** 硬件编码/封装，再接入时间线范围规划、资产适配器与消费者策略；预取/水位/credit/取消/完成仍只有核心一份。屏保保留独立 loop 和同一图/输出 owner，不把未验证 Windows 能力宣称为已验收。
+1. **Phase 1/2 已实现：** 稳定帧、设备完成、有界池与共享单请求图执行；历史证据各自归属于原阶段。
+2. **Phase 3 已实现（见下方本轮记录）：** oq-media 原始 time base/PTS/seekability/时长 metadata 与 `frame_at_ns`，FramePipeline 每个 admitted composition demand 先按 time/epoch 选并导入实际源帧，再执行图/推理/稳定快照。macOS VideoToolbox 消费同一个有序 cursor；无可信 PTS、过期 epoch、缺依赖或 EOF 明确失败。不承诺未知多视频混合内容只有一个媒体时间戳。
+3. **Phase 4 待实现：** 真实媒体需求窗口、多帧 lookahead、水位/credit、跨阶段公平推进；在 owner/completion 有证据前 importer 宿主等待仍保留，不因本次异步 source time access 删除同步边界。
+4. **Phase 5 及编辑器待实现：** 硬件编码/封装，再接时间线范围规划、资产适配和消费者策略；屏保保持独立 loop。同一阶段的精确源访问只服务原图 timeline→single-file source 映射，不是 NLE clip editing。
 
 具体顺序以[Phase 0～8 计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为准；每个实现 Phase 一个 commit，代码/单元/真实 E2E 与实际修订文档一同提交。[硬性协议](../apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)保留，整体 coverage 红色不标为全部通过或发布。
 
@@ -455,7 +453,7 @@ Phase 2 已将 NativePlayer 的 admission、图命令/推理依赖与完成循�
 <a id="pre-phase3-coverage"></a>
 ### 2026-11-11 Phase 3 前覆盖率加固
 
-用户要求先提升到 100% 或接近 100%，未开始 Phase 3。保留原有 default/native 两套 package/feature、排除范围和 line/function/region=100 门槛，不通过移除生产代码统计、伪造设备失败或测试转发字段补数字；`scripts/test-sdk-coverage.mjs` 现在在清理 profile 前输出各自 JSON，方便按函数/region 复核。
+这项覆盖加固于 Phase 3 开始前完成。它保留原有 default/native 两套 package/feature、排除范围和 line/function/region=100 门槛；`scripts/test-sdk-coverage.mjs` 在清理 profile 前保存两份 JSON，便于按函数/region复核。
 
 | 配置 / 指标 | Phase 2 基线 | 本轮最终 |
 |---|---:|---:|
@@ -486,8 +484,16 @@ default 156+19、native 275+61 passed（另 1 既有 cached-model ignored）。�
 
 其他实测：workspace 287 passed；桌面 80 passed/2 opt-in ignored；依赖边界通过。真实原生 Shader suite 34/34（包含反馈演化与暂停）通过，[报告](../test-results/slint-ui/shaders-2026-11-11T13-50-44-383Z/report.html)。原始 SR3 release example 1 warmup/3 samples 每尺寸，三种输出共逐字节对照 max error=1、resident host bytes=0，[数值 smoke](../test-results/sdk-coverage/resident-smoke.json)；此小样本仅正确性 smoke，不更新性能结论。另 `cargo test -p oq-inference --features gpu-diagnostics,ort catalog_behavior -- --test-threads=1` 的 4 项真实 native catalog 图通过，覆盖诊断 feature 的语义 logits 原图要求。没有重跑七模型完整独立 reference/UI、发布包或其他平台，不能沿用历史通过结果。
 
-残余明确分三类：真实环境故障（adapter/device creation、poll/device loss、CoreVideo import、ORT loader/provider activation/configuration）、由更早模型/尺寸验证挡住的防御错误路径，以及尚未独立覆盖的 accessor/诊断/性能输出与部分 resident/CPU-reference 分支。**不是把后两类称为不可达**。本轮拒绝单独测试错误措辞、只转发字段/handle 或伪造设备对象以凑 100%。`catalog_detect.rs` 已到 line/function/region=100%，共享 session 为98.41/98.04/97.36%；整个 pipeline 的89.64/85.57/90.29%仍有前述残余。100% gates 保持红，不发布；精确 seek/预取/编码仍未实现。
+残余明确分三类：真实环境故障（adapter/device creation、poll/device loss、CoreVideo import、ORT loader/provider activation/configuration）、由更早模型/尺寸验证挡住的防御错误路径，以及尚未独立覆盖的 accessor/诊断/性能输出与部分 resident/CPU-reference 分支。**不是把后两类称为不可达**。Phase 3未修改coverage scope/阈值；复跑`npm run test:sdk-coverage`后 default line/function/region=98.37/96.99/98.45%，native=95.93/90.01/94.35%，全部coverage测试通过但既有100% gates仍失败（命令exit 1），不发布。Phase 4多帧credit与预取、Phase 5编码/封装未实现。
 
+### 2026-11-12 Phase 3 精确媒体源时间
+
+已在 Phase 2 单请求 FramePipeline 中实现 source request 到实际媒体 PTS 的闭环：NativePlayer 的 composition stamp/epoch 按 source playback rate 生成目标时间；macOS VideoToolbox exact source owner 在 pipeline 所属 worker 上使用 oq-media Session cursor，selected surface 导入同一 GPU owner 后才执行 graph/inference。向前沿 decoder 顺序消费，反向不连续用新 source epoch seek keyframe/flush/reorder/preroll；source timestamp 原样保留 rational，稳定输出在单视频源场景附带 source-relative actual PTS。硬件/cancellation/EOF 不回退CPU或旧纹理。
+
+内建64×64 synthetic H.264 source-time fixture 的SHA-256与双独立oracle、严格边界case、完整测试命令/平台限制及 UI/report 都列在[Phase3实施记录](../apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。VFR、2s nonzero start、B-frame/software-PTS+Y-marker pixel oracle与NativePlayer FramePipeline→GPU路径在Mac Metal通过。七模型实际 VideoToolbox image/video resident window回归15/15；这证明可见路径/旧consumer接续，不是对模型画质重新作数值reference或pipeline性能结论。
+
+Phase 3不等于异步 seek/UI scrub、任意多 source NLE映射或多帧窗口；VideoToolbox GPU import wait留存，source owner同步精确读取。仍待Phase4 watermark/prefetch/credits/non-blocking completion，Phase5真实硬件 encoder/mux。PTS信息只在唯一source语义成立时填单个 `ContentStamp.media_pts_ns`，不对多视频mix冒报。
+macOS Apple M4 Pro完整 native/backend suite 468 passed/1既有ignored；oq-media硬解定位E2E 6 passed；workspace 287 passed；desktop UI interaction 19/19；七模型 resident VideoToolbox image/video UI 15/15；Core API/feature dependency boundaries通过。完整测试命令与已知限制见上方Phase3实施记录。UI lane证明真实解码帧持续进入GPU inference并改变实际显示像素，不替代七模型CPU数值reference，也不代表跨平台seek能力。
 ### 2026-11-11 Phase 2 共享执行
 
 NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 FrameExecutionSession 的图/输出状态。默认 workspace 275、完整 native/backend 405（1 ignored）、桌面 80（2 ignored）通过；真实交互 19/19、Shader 像素 34/34。不存在 ORT 路径下，原始 SR3 的 Shader/VideoToolbox 视频→Renderer 完成播放、暂停、源码替图/恢复与正常关闭，逐帧 host image/tensor bytes=0。[需求映射、命令、报告及完整限制](../apps/open_quartz_video_editor/DESIGN.md#phase-2共享执行与原图宿主切换)。
@@ -499,6 +505,7 @@ NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 Fra
 已先创建本地驻留切换基线提交 `e269dea`。随后将独立标量卷积改为每 workgroup 32 通道 × 32 像素、每线程 4×4 register tile、K=32 共享归约分块，并按已验证层几何专门编译；保持完整 FP32 网络、硬件驻留、三槽 lease 和无 CPU fallback。
 
 同模型、同 GPU 图案、每种尺寸预热 10 次/采样 60 次，最终 GPU P50 为 4.34/4.42/4.74 ms；相对同次 CPU 往返路径为 3.20×/3.54×/4.76×，相对基线 GPU 为 10.22×/10.07×/9.46×。逐字节 max error 均 1，resident host image bytes 均 0。详情与持久 benchmark 命令见 [SR3 稳态性能验证](INFERENCE_ARCHITECTURE.md#sr3-稳态性能验证2026-11-09)。这是 submission-completion wall，不是 GPU timestamp/UI FPS；固定 224→672 profile，不宣称原生大图推理。
+
 
 优化后验证：workspace 270、完整 native/backend 373（1 ignored）、桌面 79（2 opt-in ignored）、真实缓存模型/CPU reference 2 均通过；release Metal 稠密数值与 lease/device 生命周期 2 通过。重建后的真实 Slint 窗口在不存在的 ORT 路径下完成 GPU 8×8 → SR3 → 24×24 Renderer，Play/Pause 共享纹理正常、逐帧 host 四项 bytes 均 0：[画面](../test-results/slint-ui/resident-optimized-2026-11-09-playing.png)、[状态证据](../test-results/slint-ui/resident-optimized-2026-11-09-evidence.json)。本次没有重跑完整 UI/Shader suite、coverage 或 release 打包；下面 cutover 基线计数和覆盖率不冒充优化后重测结果。
 

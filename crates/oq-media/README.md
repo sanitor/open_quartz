@@ -2,7 +2,7 @@
 
 `oq-media`（Rust 导入名 `oq_media`）是在本仓孵化的独立媒体库。`oq` 记录 OpenQuartz 出处，不代表依赖；OpenQuartz 是消费者。公共媒体类型不依赖节点图、Slint 或 wgpu。
 
-目前实现 macOS H.264/HEVC 文件的进程内 VideoToolbox 严格硬解，提供 `Session`、保留 AVFrame/CVPixelBuffer 的 `FrameLease`、PTS、source/timeline epoch、reset、取消及 drain。跨平台会话、编码、任意 seek 和独立播放器组件仍未实现，不能把当前切片当作完整跨平台媒体框架。
+当前实现 macOS H.264/HEVC 文件的进程内 VideoToolbox 硬解和 Phase 3 精确 source-time 读取。`Session` 提供 source stream time base / start / duration / seekability；`frame_at_ns` 选择 stream-relative 目标时间之后的首张 presentation surface，保留原始 PTS/time base 与 source/timeline epoch。前向请求沿同一 decoder cursor，向后 discontinuity 按新 epoch seek 前置关键帧、flush 并读取 presentation preroll；重复目标复用 retained frame。未知 origin/PTS 不按 FPS 猜；无 duration 时精确读取会顺序推进至 EOF。`FrameLease` 保留 AVFrame/CVPixelBuffer；此 API 不依赖图、Slint 或 wgpu。跨平台精确定位、camera、prefetch window、encoder/mux 未实现。
 
 ## 构建与使用
 
@@ -12,6 +12,8 @@ macOS 的 `videotoolbox` feature 使用固定 ABI 的 FFmpeg 8.1.1 动态 libav�
 node scripts/prepare-media-sdk.mjs
 cargo run -p oq-media --release --features videotoolbox --example decode -- VIDEO.mp4
 cargo test -p oq-media --features videotoolbox --locked
+env OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg \
+  cargo test -p oq-media --features videotoolbox --locked source_time_access_matches_software_pts_and_frame_markers -- --exact
 ```
 
 SDK 构建脚本、补丁和 LGPL 对应源码分发当前由宿主仓库提供；独立部署仍需配置 libav 的链接和运行库发现。媒体核心没有 OpenQuartz Rust 依赖，但 SDK 准备尚未提取成独立分发工具。

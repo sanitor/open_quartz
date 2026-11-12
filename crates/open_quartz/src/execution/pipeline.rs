@@ -89,7 +89,8 @@ impl PreparedNativeGraph {
                 "Video node {node_id} does not exist in the prepared graph"
             ));
         }
-        let source = crate::media::sources::PreparedVideoSource::open(config, preview_only)?;
+        let source =
+            crate::media::sources::PreparedVideoSource::open_precise(config, preview_only)?;
         let info = source.info().clone();
         self.stage_remove_texture(node_id);
         self.videos.retain(|(id, _)| id != node_id);
@@ -148,6 +149,8 @@ struct PendingFrame {
     next: usize,
     started: bool,
     waiting_inference: Option<String>,
+    sources_uploaded: bool,
+    media_pts_ns: Option<i64>,
 }
 
 /// One admitted frame per session in Phase 2. No clock, UI, or encoder lives
@@ -422,7 +425,8 @@ impl FramePipeline {
         self.session
             .node_generation(node_id)
             .map_err(runtime_error)?;
-        let source = crate::media::sources::PreparedVideoSource::open(config, preview_only)?;
+        let source =
+            crate::media::sources::PreparedVideoSource::open_precise(config, preview_only)?;
         self.cancel_pending();
         self.latest = None;
         self.bump_input(node_id);
@@ -473,6 +477,28 @@ impl FramePipeline {
             self.session.mark_dirty(&node_id).map_err(runtime_error)?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "native-video")]
+    fn upload_current_sources_at(
+        &mut self,
+        timeline_ns: u64,
+        epoch: u64,
+        excluded: &[String],
+    ) -> Result<Option<i64>, String> {
+        let render_device = &mut self.render_device;
+        let selected = self.videos.upload_frames_at(timeline_ns, epoch, excluded, |node_id, frame, _, _| match frame {
+            NativeVideoFrame::Rgba(_) => Err(format!("Hardware-resident video required for node {node_id}; CPU RGBA upload is forbidden")),
+            #[cfg(target_os = "macos")]
+            NativeVideoFrame::VideoToolbox(frame) => render_device.upload_videotoolbox(node_id, frame).map_err(|error| error.to_string()),
+            #[cfg(all(windows, feature = "native-video-d3d12"))]
+            NativeVideoFrame::D3d12(frame) => render_device.upload_d3d12_yuv(node_id, frame).map_err(|error| error.to_string()),
+        })?;
+        Ok(if selected.len() == 1 {
+            selected[0].1
+        } else {
+            None
+        })
     }
 
     pub fn load_resident_inference(
@@ -735,10 +761,6 @@ impl FramePipeline {
         if let Err(error) = self.validate_demand(&demand) {
             return FrameAdmission::Rejected { demand, error };
         }
-        #[cfg(feature = "native-video")]
-        if let Err(error) = self.upload_current_sources() {
-            return FrameAdmission::Rejected { demand, error };
-        }
         // Texture registration itself enqueues no GPU mutation. Keep original
         // bindings until graph/output preflight accepts the whole request.
         let mut original = Vec::with_capacity(demand.sources.len());
@@ -786,6 +808,8 @@ impl FramePipeline {
             next: 0,
             started: false,
             waiting_inference: None,
+            sources_uploaded: false,
+            media_pts_ns: None,
         });
         FrameAdmission::Accepted
     }
@@ -907,6 +931,26 @@ impl FramePipeline {
         if pending.demand.graph_revision != self.session.revision() {
             return Err("Admitted frame graph was replaced".into());
         }
+        #[cfg(feature = "native-video")]
+        if !pending.sources_uploaded {
+            let excluded = pending
+                .demand
+                .sources
+                .iter()
+                .map(|source| source.node_id.clone())
+                .collect::<Vec<_>>();
+            let selected_pts = self.upload_current_sources_at(
+                pending.demand.input.stamp.timeline_ns,
+                pending.demand.input.stamp.epoch,
+                &excluded,
+            )?;
+            pending.media_pts_ns = if excluded.is_empty() {
+                selected_pts
+            } else {
+                None
+            };
+            pending.sources_uploaded = true;
+        }
         self.drain_inference_completions()?;
         if let Some(node) = pending.waiting_inference.as_ref() {
             if self.inference_ready.get(node) != Some(&pending.demand.input.stamp) {
@@ -914,10 +958,6 @@ impl FramePipeline {
             }
             pending.waiting_inference = None;
             pending.next += 1;
-        }
-        #[cfg(feature = "native-video")]
-        if !pending.started && pending.demand.sources.is_empty() {
-            self.upload_current_sources()?;
         }
         while pending.next < pending.commands.len() {
             let command = &pending.commands[pending.next];
@@ -1003,7 +1043,7 @@ impl FramePipeline {
             content_stamp: Some(ContentStamp {
                 epoch: stamp.epoch,
                 timeline_ns: stamp.timeline_ns,
-                media_pts_ns: None,
+                media_pts_ns: pending.media_pts_ns,
             }),
             color_space: FrameColorSpace::Unknown,
             alpha_mode: FrameAlphaMode::Unknown,

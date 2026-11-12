@@ -357,21 +357,21 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。顺序为 Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8；每个 Phase 须有真实可运行纵向路径，不用空接口/假 codec 过关。Phase 0/1 已提交，Phase 2 已实现共享执行及局部硬件验收（整体 coverage gate 仍红），Phase 3～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐；共享流水不能等到最后才迁移 NativePlayer。
+本节将产品里程碑 P0～P2 拆为实际实施提交；**Phase 与 P0/P1/P2 不是同一编号体系**。Phase 0～2 已提交；Phase 3 实现和验收已完成、待独立 Phase commit；Phase 4～8 未开始。P0 在 Phase 1～5 收齐，P1 在 Phase 6 收齐，P2 在 Phase 7～8 收齐。Phase 3 精确选帧当前仅为 macOS 文件 VideoToolbox，未宣称非 macOS/HDR/camera 或多帧窗口已验收。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
 | **0 设计基线** `docs: plan shared frame pipeline implementation phases` | 本设计、核心/媒体边界、提交/测试纪律；不创建源代码骨架 | 文档链接/锚点、阶段依赖与估算口径一致性检查；不为文字创建产品测试 | 明确现有 GPU smoke 仅为旧能力证据，不能将目标流水记为通过；提交后再实施 Phase 1 |
 | **1 稳定帧与完成** `feat(rendering): add bounded stable frame output leases` | 在现有 rendering/outputs 增量实现稳定输出、图像描述与设备/消费者完成；接入 NativePlayer 的异步保留/显示输出，不先造无人调用的 API | 保留帧后新帧不改写；池饱和 WouldBlock/输入归还；克隆/多消费者最后释放；取消/超时不提前复用；尺寸/格式/设备拒绝 | 真实 Metal 两源/动态图生成连续编号帧，慢消费者持有 n 时继续绘制 n+1，独立读回比较；真实 Slint 窗口播放/暂停/替图/关闭无像素串帧。readback 仅测试 oracle，正常显示不走 CPU |
 | **2 共享流水切换** `refactor(execution): route NativePlayer through shared FramePipeline` | 同 crate FramePipeline + 内部 FrameExecutionSession 接入当前实际图源/呈现/推理适配器；迁移 NativePlayer/PlaybackSession 受影响调用方，删除旧循环；此时媒体仍可保当前顺序源，未冒称精确 seek | demand admission/单终态、输入版本/图内依赖、revision/epoch 失效、Every/Latest 背压、图准备失败保留旧图、feedback 顺序与 reset、关闭与 pending 竞争 | 同一生产 pipeline 无窗口显式时间/外部源执行＋真实原图 app 的 Shader→当前支持 resident 推理→Renderer；视频 Play/Pause/替换与关闭；生产路径禁用 ORT/CPU fallback，检查共享设备/输出 lease。不能只 mock 源回显即称迁移完成 |
-| **3 精确源时间访问** `feat(media): add precise seek and presentation frame selection` | oq-media 探测/原始 time base/有效帧区间/seek；核心源适配器消费，沿同一顺序 cursor 查询/缓存，不每帧 seek | rational 重标度/溢出、负/非零起点、半开区间/EOF/重复 PTS、取消与旧 epoch、损坏/不可靠时间拒绝、缓存身份与不连续定位 | 固定许可/hash 的长 GOP、B-frame、VFR、非零起点/尾帧样本：真实硬解→共享流水→GPU 输出，用独立编号帧/PTS oracle 断言任意目标；保留顺序播放、暂停选源首帧不消耗正式起点的 E2E |
+| **3 精确源时间访问** `feat(media): add precise seek and presentation frame selection` | oq-media 保存 source rational time base / origin / duration / seekability，顺序 cursor 上 `frame_at_ns` 前推筛选、断点向前关键帧 seek+flush+presentation decode；macOS 原图 pipeline 消费 NativeVideoSource 精确 demand；完整视频编解码状态不移动到别的 crate | rational 重标度/溢出、VFR与长 GOP/B-frame 实际 PTS、负/非零起点、半开目标/EOF/重复 PTS、取消与旧 epoch、真实像素 oracle、快进 cursor 不重复 seek；保留原图 app 顺序播放/暂停与 PreviewOnce 不消耗播放起点 | 固定许可/hash 的 VFR/长 GOP/B-frame/非零起点样本：真实 VideoToolbox→FramePipeline→GPU 输出，以独立软件解码 PTS+编号亮度图案对照任意目标、后退 epoch seek、EOF；macOS CI 与实际 hardware 路径必须通过，不因不支持而 skip；Windows/Linux 仍运行既有路径但不据此宣称精确访问 |
 | **4 前瞻与非阻塞流水** `feat(execution): add bounded prefetch and cross-stage flow control` | FramePipeline 统一窗口/水位/credit/预热/源就绪；NativePlayer 使用该机制；在 owner/completion 证明后替换 importer 逐帧宿主 wait | 高/低水位、不重复计费、最小工作集/容量错误、阶段反压/公平前进、邻近 scrub 复用、seek 清投机任务、慢消费者释放与唤醒、codec 0..N/时域依赖不误丢 | 真实双素材切点预热、冷启动、持续过载、最终 scrub、受限 surface/慢 GPU/慢呈现，记录阶段起止/PTS/bytes/surfaces/credit；证明 decode 与 GPU 多帧跨阶段在途且无死锁；测定默认 prefill/水位并 revise §9。尚无 encoder，编码侧端到端压力在 Phase 5 补齐 |
 | **5 硬件编码与封装** `feat(media): add resident H264 MP4 export pipeline` | SDK 启用实际 VideoToolbox encoder/MOV-MP4 mux，更新 build/cache identity/notices；GPU NV12 表面、编码消费/排空与按序 sink 接入同一 FramePipeline；现阶段真实 headless 文件任务 | encoder Accepted/WouldBlock、0..N packets、PTS/DTS/time base、reorder/drain/trailer、颜色转换/标签、取消/错误/磁盘失败不提交、已有目标保护、lease 消费完成 | 真实硬解→效果→GPU NV12→硬件编码→MP4，独立 FFmpeg/ffprobe 检查帧数/切点/尾帧/时间戳/颜色/画面；慢 encoder/小池、取消各边界、源变化、写入失败；正常路径 CPU 图像 bytes=0；无法互操作时停止并修订方案，不交软件 fallback |
 | **6 工程与可操作编辑器** `feat(editor): add timeline document and native editing workflow` | 创建真实独立 app，EditorDocument/TimelinePlanner/保存恢复/relink；素材库、单轨放置/trim/split/move/lift、撤销/重做、基础监视器接共享 pipeline；无空控制器或不可用编辑控件 | 每条命令合法/非法边界、时长/源入点守恒、overlap 拒绝、revision/redo、拖动一次历史/Esc、schema/相对路径/指纹/relink、原子保存失败、帧/范围计划 | Slint MCP 真菜单/键盘/拖动导入两素材→放置/修剪/分割/移动/lift→撤销重做→保存关闭重开→缺素材重定位；定位/显示来自真实流水并核对帧，不能源码创建项目代替交互覆盖 |
 | **7 完整预览与效果** `feat(editor): complete precise playback and static effects` | 连续播放/暂停/单步/scrub、吸附缩放/可见区缩略图、静态变换/透明度/曝光、质量状态与跨切点前瞻；不重复实现核心水位循环 | 参数/坐标/颜色域、效果顺序与 cache invalidation、缩放不改编辑时间、选择不写历史、最终目标不丢、降质不改剪辑结果、未知时域 recipe 拒绝 | 真实窗口多个切点/空隙、30000/1001、快速 scrub/暂停步进、效果编辑、同尺寸不同颜色源切换、慢 UI；独立图像 oracle 核对画面和实际 PTS，截图/状态/日志报告完整，纯数值测试不能代替窗口验证 |
 | **8 产品导出与分发闭环** `feat(editor): complete export jobs and native distribution` | UI 导出冻结快照、范围/进度/队列/取消/目标覆盖、无音轨确认；独立 app runtime/打包/许可；收齐 P0～P2 场景 | 任务状态/单终态、范围帧数、提交前取消/提交竞争、任务冻结 revision/源身份、排队超限、错误映射、恢复提示与路径权限 | 从真实 UI 两素材剪辑/效果/保存重开→导出，独立解码核对指定帧；导出中继续编辑/取消/关闭窗口/磁盘失败/慢 encoder，验证文件与状态；安装包移出开发路径真实启动/导入/播放/导出/正常退出，记录签名/公证实际状态，原图 app 回归保持 |
 
-Phase 1 不先完成全部流水；Phase 2 不谎称媒体随机访问已交付；Phase 4 不以模拟 encoder 代替未来真实编码验收。已有消费者在每一步接入其已可用能力，未交付能力不露出假按钮/假成功。后续 Phase 为前面路径补充完整回归，不能以“下个 Phase 会测”为由省略本 Phase 已新增行为的测试。
+Phase 3 只接受 stream-relative nonnegative nanoseconds，并以目标之前可 seek 的关键帧为锚点。顺序播放沿同一 VideoToolbox session/cursor 继续，不逐帧重开 codec；重复/同一已选展示时刻复用 retained surface。需要向后选帧时提高 source timeline epoch；被取消/旧 epoch demand 不发布。无真实起点或 decoded PTS 明确失败，不由 nominal FPS、composition time 或 DTS 造实际 PTS。缺失 stream duration 可顺序解码到 EOF；只有存在可靠容器 duration 时才可按显式 loop 取模。
 
 ### 14.2 每个 Phase 的硬性完成与提交协议
 
@@ -398,7 +398,7 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-Phase 0 设计基线已提交为 `895a32c`，Phase 1 稳定帧与完成协议已提交。以下先保留 Phase 1 的历史证据，再记录本次 **Phase 2 共享流水切换**；Phase 3～8 未开始，新编辑器仍只有设计目录。局部新增功能与受影响回归不等于全仓 100% coverage 或发布 gate 已通过。
+Phase 0 设计基线、Phase 1 稳定帧与完成协议及 Phase 2 共享流水切换已提交。当前按各阶段历史记录顺序陈列 Phase 1/2/3 代码与证据；Phase 3 实现和验收已完成，提交按单 Phase 纪律独立处理；新编辑器仍只有设计目录。本轮局部与全量 gate 状态分别报告，不把过往 Phase 1/2 通过数复用为本轮验收。
 
 实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
 
@@ -472,9 +472,39 @@ Phase 0 设计基线已提交为 `895a32c`，Phase 1 稳定帧与完成协议已
 
 #### Phase 3 前覆盖率加固（独立于功能 Phase）
 
-按用户要求在 Phase 3 之前补齐行为回归并修正暴露的问题。默认 line/function/region 从96.11/95.30/95.96%提高至98.37/96.99/98.45%，native从90.11/83.40/84.54%提高至96.23/90.35/94.52%；未更改两个100% gates、feature或排除规则，仍以失败状态报告，未发布。新增真实 Metal catalog 图/ORT tensor-container-output-shape/VideoToolbox color测试，修正未提交反馈帧取消推进历史、源纹理删除后返回clean旧结果、旧参数规范化覆盖显式配置三类问题。[完整命令、需求映射、残余类型和原始报告](../../docs/DESIGN.md#pre-phase3-coverage)。此加固不是精确seek/预取交付；Phase 3仍未开始。
+按用户要求在 Phase 3 开始前补齐行为回归并修正暴露的问题。默认 line/function/region 从96.11/95.30/95.96%提高至98.37/96.99/98.45%，native从90.11/83.40/84.54%提高至96.23/90.35/94.52%；未更改两个100% gates、feature或排除规则，仍以失败状态报告，未发布。新增真实 Metal catalog 图/ORT tensor-container-output-shape/VideoToolbox color测试，修正未提交反馈帧取消推进历史、源纹理删除后返回clean旧结果、旧参数规范化覆盖显式配置三类问题。[完整命令、需求映射、残余类型和原始报告](../../docs/DESIGN.md#pre-phase3-coverage)。
 
-首轮提交序列明确覆盖 P0～P2，不取消 P3/P4。声音、多轨/转场、关键帧、代理/后台缓存、现有模型剪辑接入分别作为后续独立实施 Phase，沿用相同“一 Phase 一 commit＋文档 revise＋单元/E2E”纪律；每项启动前根据前序真实接口、平台能力和 §12/§19 的范围补齐同粒度验收/依赖，未规划细节不能先写占位。HDR/其他平台等仍须独立规格与硬件门槛，不混入当前单轨无音轨发布承诺。
+
+#### Phase 3：精确 source time
+
+**实现边界：** `oq-media::Session` 保留 selected stream 的 rational `time_base/start_pts/duration/seekable`；frame 同时提供 original `(AVFrame.pts,time_base)` 与 checked source-relative `pts_ns`。`frame_at_ns(target_ns,timeline_epoch)` 收 nonnegative source-origin-relative nanoseconds，返回最早实际 presentation PTS≥target 的 lease；向前沿同 decoder cursor，重复所选帧保留相同 surface/sequence，向后读取需新 epoch 并 seek 前一 keyframe、flush B-frame reorder、顺序 decode/discard preroll。unknown PTS/origin、stale epoch、同 epoch backwards/EOF 不由 FPS/clock/wall time 猜补。 NativePlayer 每个 accepted FramePipeline demand 在所属 render worker 同步按 `timeline_ns × playback_rate` 选 VideoToolbox 输入并上传后再执行本帧 graph/inference，single video source 的 snapshot stamp 保留 actual source-relative media PTS；多输入 scalar PTS 不足以描述时留 None。Loop 仅在有可靠 duration 时按周期取模，EOF再起新source epoch；无已知时长不能制造播放位置。PreviewOnce 固定读 source origin，不消耗正式 Play 起点。现阶段仍同步解码/导入，不代表异步 SeekCompleted/window/credit/多帧缓存或吞吐优化。macOS文件H.264/HEVC为真实exact输入路径；Windows/D3D12旧顺序source仍可用但没有Phase3 exact seek验收，camera/Linux/HDR/剪辑器资产映射未实现。
+
+测试映射和实际 evidence：
+
+| 不变量 | case / oracle / 结果 |
+|---|---|
+| 保留原PTS/time base、VFR/B-frame/long-GOP、nonzero origin、目标边界/EOF、重复lease/顺序cursor/backseek epoch/cancel/reset；采样帧正确 | `oq-media/tests::source_time_access_matches_software_pts_and_frame_markers` 对固定自生成64×64 H.264标记样本的VideoToolbox实际 surface，逐帧匹配另一 FFmpeg software decode 的showinfo PTS与亮度checksum；时间base 1/1000、起点2s、可变duration、含B帧。样本[SHA256 dc6d398a48575e0e3d731c9b28aa8eb1e872a0abad83fa09783213bc04c9b5ee](../../crates/oq-media/tests/source-time.mp4)，MIT自生成、无第三方影像；构造命令[在README](../../crates/oq-media/README.md) |
+| Composition clock→指定source frame→Metal import→GPU graph output，stamp无时间伪造，EOF不交付旧帧 | `execution::pipeline::tests::exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch`：targets 0/0.5/repeat/1.0后退(epoch2)/回源0(epoch3)，PTS与独立marker像素一致，检查 exact VideoToolbox copy bytes=0；loop跨EOF时PTS周期重置，non-loop EOF失败单终态但已持有旧output lease不改 |
+| 原图App连续真实 resident inference 仍有效 | `npm run test:desktop:inference:ui` 15/15，七模型 Image+Video lane；真实菜单/typed graph/local model Load/Play/Pause/Resume/reload，Renderer内容随实际解码视频推进并由独立屏幕内容变化 oracle检查；[最终报告](../../test-results/inference-e2e/ui-2026-11-12T04-31-58-931Z/report.html)，CloseRequested exit0/signal null |
+
+本轮记录（macOS 26 / Apple M4 Pro / Metal）：
+
+| 命令 | 结果 |
+|---|---|
+| 设置真实 FFmpeg executable 与 ORT 1.21 dylib 后，`cargo test --locked -p open_quartz -p oq-inference -p oq-media --features native-runtime,native-video,native-onnx,model-cache,videotoolbox -- --test-threads=1` | 468 passed、1既有 cached-model opt-in ignored；覆盖单请求 exact-source→GPU、resident推理、media native tests。没有用测试中skip掩盖硬件/media prerequisites |
+| `cargo test --locked -p oq-media --features videotoolbox --test decode -- --test-threads=1` | 6 passed；真实VideoToolbox/VFR软件PTS及luma oracle、B-frame顺序/EOF drain、时间映射/取消/恶意输入 |
+| `cargo test --locked --workspace` | 287 passed；default build/device-free closure仍独立 |
+| `npm run test:desktop:ui` | 19/19；[交互报告](../../test-results/slint-ui/interaction-2026-11-12T04-19-59-395Z/report.html)，检查真实GPU渲染、Pause、替图/关闭等旧图宿主场景 |
+| `npm run test:desktop:inference:ui` | 七模型Image+Video 15/15；[最终报告](../../test-results/inference-e2e/ui-2026-11-12T04-31-58-931Z/report.html)，每视频lane走actual VideoToolbox NativePlayer demand→resident GPU inference→Renderer，Play/Pause/Resume/reload/save-reopen；normal CloseRequested exit0/signal null。检测/asset/model源已hash pinned |
+| `npm run check:rust-boundaries` | 默认/feature/Core API/独立推理边界通过 |
+| `npm run test:sdk-coverage` | 所有coverage case通过，但原有100% gates未通过、命令exit 1；default line/function/region=98.37/96.99/98.45%，native=95.93/90.01/94.35%；未改scope/threshold |
+
+VFR媒体为crate内自生成无第三方数据；软解PTS/Y-plane checksum仅测试oracle，不出现在生产中。限macOS文件 VideoToolbox 实机验证；D3D12/Windows、Linux、相机不据Apple测试推断。视频绘制仍保留 importer host wait，本次不报吞吐/异步 seek改善。精确 source 访问同步在 render worker、一次接收一个 frame；这不满足 Phase 4 前瞻窗口/水位/credit/非阻塞 stage 验收。
+
+
+
+
+Phase 0～3 已完成，P0 的单请求共享流水与 macOS 文件 source-time 路径已实现；Phase 4 的多帧水位/credit/非阻塞流水及 Phase 5 的硬件编码/封装仍未实现。声音、多轨/转场、关键帧、代理/后台缓存、现有模型剪辑接入分别作为后续独立实施 Phase，沿用相同“一 Phase 一 commit＋文档 revise＋单元/E2E”纪律；每项启动前根据前序真实接口、平台能力和 §12/§19 的范围补齐同粒度验收/依赖，未规划细节不能先写占位。HDR/其他平台等仍须独立规格与硬件门槛，不混入当前单轨无音轨发布承诺。
 
 ## 15. 回归与验收方案
 

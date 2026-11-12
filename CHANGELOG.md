@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Precise media source time (Phase 3)
+
+- Retain the selected VideoToolbox stream’s rational time base/origin/duration/seekability and each original decoded AVFrame PTS. `oq-media::Session::frame_at_ns` resolves source-relative nanosecond targets on the current decoder cursor; forward selection stays ordered, backward selection requires a newer timeline epoch, seeks to a preceding keyframe, flushes and discards presentation preroll. No FPS/DTS/wall-clock timestamp is presented as an actual source PTS.
+- Integrate exact macOS file-video selection into each admitted NativePlayer FramePipeline demand before graph/inference submission. Import the selected VideoToolbox lease on the shared GPU owner and attach actual single-source media PTS to stable-output content identity. Preserve PreviewOnce start, sequential playback, non-loop EOF failure and explicit-duration loop handling. Keep synchronous importer waits; prefetch windows/credits/non-blocking completion remain Phase 4.
+- Add an MIT self-generated H.264 VFR/long-GOP/B-frame/nonzero-start fixture; compare exact VideoToolbox selection against an independent FFmpeg software PTS/luma oracle. Validate the full resident seven-model image/video UI matrix and default workspace/package regressions. Exact reports, feature/platform limits and commands are in [Phase 3 implementation record](apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time).
+
 ### Pre-Phase-3 coverage hardening
 
 - Add real ORT typed/container/output-shape and execution-error recovery cases; real Metal catalog mask/depth/semantic/detection/reconstruction graphs, source-cache/device-limit/lease tests, and VideoToolbox color/range coverage. Preserve the existing default/native coverage scope and 100% thresholds; export both machine-readable reports before cleaning profiles.

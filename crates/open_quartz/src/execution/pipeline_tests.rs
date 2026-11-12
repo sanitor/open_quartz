@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(all(feature = "native-video", target_os = "macos"))]
+use crate::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use crate::outputs::{
     DeliveryPolicy, OutputKey, OutputPayload, OutputSubscription, OutputTransport,
 };
@@ -927,5 +929,160 @@ fn graph_json_rejection_preserves_active_request_and_missing_output_recovers_wit
         assert!(p.try_stable_preview("image").is_err());
         assert_eq!(pixels(&p, &preview), [12, 34, 56, 255].repeat(4));
         assert_eq!(pixels(&p, &frame), [12, 34, 56, 255].repeat(4));
+    });
+}
+
+#[cfg(all(feature = "native-video", target_os = "macos"))]
+#[test]
+fn exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch() {
+    pollster::block_on(async {
+        let mut graph: Graph =
+            serde_json::from_value(json!({"nodes":[input_node("image")],"edges":[]})).unwrap();
+        graph.nodes[0].data.input_mode = Some(crate::project::model::InputMode::Video);
+        let mut p = pipeline(device().await, &graph);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../oq-media/tests/source-time.mp4");
+        let config = NativeVideoConfig {
+            kind: NativeVideoSourceKind::File,
+            source: path.to_string_lossy().into_owned(),
+            looping: false,
+            playback_rate: 1.0,
+        };
+        p.attach_video_preview("image", config).unwrap();
+        p.upload_video_frames().unwrap();
+        let preview = p.render_device.read_output_rgba("image").unwrap().0;
+
+        let mut outputs = Vec::new();
+        for (id, epoch, target, expected_pts) in [
+            (1, 1, 0, 0),
+            (2, 1, 500_000_000, 500_000_000),
+            (3, 1, 500_000_000, 500_000_000),
+            (4, 2, 1_000_000_000, 1_100_000_000),
+            (5, 3, 500_000_000, 500_000_000),
+        ] {
+            let request = FrameDemand {
+                request_id: id,
+                graph_revision: p.revision(),
+                output_node_id: "image".into(),
+                sources: vec![],
+                input: FrameEvaluationInput {
+                    stamp: FrameStamp {
+                        epoch,
+                        frame: id,
+                        timeline_ns: target,
+                        deadline_ns: target + 1_000_000,
+                    },
+                    previous_timeline_ns: target.saturating_sub(1),
+                    date: [0.0; 4],
+                    mouse: [0.0; 4],
+                    resolution: [64.0, 64.0, 1.0],
+                },
+            };
+            accepted(&mut p, request);
+            let frame = rendered(complete(&mut p));
+            assert_eq!(
+                frame.identity.content_stamp.as_ref().unwrap().media_pts_ns,
+                Some(expected_pts)
+            );
+            assert_eq!(frame.identity.content_stamp.as_ref().unwrap().epoch, epoch);
+            assert_eq!(
+                frame
+                    .identity
+                    .evaluation_stamp
+                    .as_ref()
+                    .unwrap()
+                    .timeline_ns,
+                target
+            );
+            outputs.push(pixels(&p, &frame));
+        }
+        assert_eq!(
+            outputs[0], preview,
+            "a stopped preview does not consume the playback start frame"
+        );
+        assert_eq!(
+            outputs[1], outputs[2],
+            "repeat requests reuse the presentation frame"
+        );
+        assert_ne!(
+            outputs[0], outputs[1],
+            "advancing across the VFR source changes decoded content"
+        );
+        assert_eq!(
+            outputs[1], outputs[4],
+            "a backwards target in a new epoch selects prior source content"
+        );
+        assert_eq!(p.video_metrics("image").unwrap().cpu_copy_bytes, 0);
+
+        let eof = FrameDemand {
+            request_id: 6,
+            graph_revision: p.revision(),
+            output_node_id: "image".into(),
+            sources: vec![],
+            input: FrameEvaluationInput {
+                stamp: FrameStamp {
+                    epoch: 4,
+                    frame: 6,
+                    timeline_ns: 4_000_000_000,
+                    deadline_ns: 4_001_000_000,
+                },
+                previous_timeline_ns: 3_000_000_000,
+                date: [0.0; 4],
+                mouse: [0.0; 4],
+                resolution: [64.0, 64.0, 1.0],
+            },
+        };
+        accepted(&mut p, eof);
+        assert!(
+            matches!(complete(&mut p).outcome, FrameOutcome::Failed(_)),
+            "EOF cannot publish the previous texture as the requested frame"
+        );
+        assert_eq!(
+            p.render_device.read_output_rgba("image").unwrap().0,
+            outputs[4]
+        );
+        let loop_graph = graph.clone();
+        let mut p = pipeline(device().await, &loop_graph);
+        let looping = NativeVideoConfig {
+            looping: true,
+            ..NativeVideoConfig {
+                kind: NativeVideoSourceKind::File,
+                source: path.to_string_lossy().into_owned(),
+                looping: false,
+                playback_rate: 1.0,
+            }
+        };
+        p.attach_video_preview("image", looping).unwrap();
+        for (id, target, expected_pts) in [
+            (1, 3_800_000_000, 3_900_000_000),
+            (2, 3_950_000_000, 100_000_000),
+            (3, 4_000_000_000, 100_000_000),
+            (4, 4_100_000_000, 200_000_000),
+        ] {
+            let request = FrameDemand {
+                request_id: id,
+                graph_revision: p.revision(),
+                output_node_id: "image".into(),
+                sources: vec![],
+                input: FrameEvaluationInput {
+                    stamp: FrameStamp {
+                        epoch: 1,
+                        frame: id,
+                        timeline_ns: target,
+                        deadline_ns: target + 1_000_000,
+                    },
+                    previous_timeline_ns: target.saturating_sub(1),
+                    date: [0.0; 4],
+                    mouse: [0.0; 4],
+                    resolution: [64.0, 64.0, 1.0],
+                },
+            };
+            accepted(&mut p, request);
+            let frame = rendered(complete(&mut p));
+            assert_eq!(
+                frame.identity.content_stamp.as_ref().unwrap().media_pts_ns,
+                Some(expected_pts)
+            );
+        }
     });
 }
