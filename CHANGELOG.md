@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Native Browse crash fix
+
+- Release the editor controller's `RefCell` borrow before synchronously opening AppKit's nested `NSOpenPanel` / `NSSavePanel` modal loop. Slint callbacks and periodic preview updates can re-enter during the native chooser; retaining the mutable borrow caused the observed abort after video import.
+- Restore the custom path dialog on cancellation and keep Browse/Open/Import/Save As/Relink routes on the same checked file-submission path. Regression test deliberately re-enters the controller inside the nested-modal closure.
 
 ### Native timeline editing workflow (Phase 6)
 
@@ -686,3 +690,4 @@ The sections below record earlier stages and their then-current products, paths 
 - Output node with configurable width/height and per-node preview
 - Undo/redo support
 - macOS-style minimal UI with Tailwind CSS
+

@@ -97,134 +97,138 @@ impl Controller {
     fn connect(this: &Rc<RefCell<Self>>, window: &EditorWindow) {
         let weak = Rc::downgrade(this);
         window.on_project_action(move |action| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().action(&action);
+            if let Some(controller) = weak.upgrade() {
+                if let Some(kind) = action.strip_prefix("browse-") {
+                    Self::browse_native_file_dialog(&controller, kind);
+                } else {
+                    controller.borrow_mut().action(&action);
+                }
             }
         });
         let weak = Rc::downgrade(this);
         window.on_import_media(move || {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().import_dialog();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().import_dialog();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_asset_select(move |id| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                c.selected_asset = Some(id.to_string());
-                c.selected_clip = None;
-                c.asset_preview = true;
-                c.requested = None;
-                c.pause();
-                c.refresh();
-                c.request_preview();
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.selected_asset = Some(id.to_string());
+                controller.selected_clip = None;
+                controller.asset_preview = true;
+                controller.requested = None;
+                controller.pause();
+                controller.refresh();
+                controller.request_preview();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_add_to_timeline(move || {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().add_clip();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().add_clip();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_clip_select(move |id| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                if let Some(clip) = c.document.clip(&id).cloned() {
-                    c.selected_clip = Some(id.to_string());
-                    c.selected_asset = Some(clip.asset_id);
-                    c.seek(clip.timeline_start);
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if let Some(clip) = controller.document.clip(&id).cloned() {
+                    controller.selected_clip = Some(id.to_string());
+                    controller.selected_asset = Some(clip.asset_id);
+                    controller.seek(clip.timeline_start);
                 }
             }
         });
         let weak = Rc::downgrade(this);
         window.on_split_clip(move || {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().split();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().split();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_lift_clip(move || {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().lift();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().lift();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_undo(move || {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                c.document.undo();
-                c.changed();
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.document.undo();
+                controller.changed();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_redo(move || {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                c.document.redo();
-                c.changed();
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.document.redo();
+                controller.changed();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_playback(move |action| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
                 if action == "play" {
-                    c.play();
+                    controller.play();
                 } else {
-                    c.pause();
-                    c.refresh();
+                    controller.pause();
+                    controller.refresh();
                 }
             }
         });
         let weak = Rc::downgrade(this);
         window.on_step_frame(move |delta| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                let target = c.playhead.saturating_add_signed(i64::from(delta));
-                c.seek(target);
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let target = controller.playhead.saturating_add_signed(i64::from(delta));
+                controller.seek(target);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_zoom_changed(move |_| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().refresh();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().refresh();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_seek_frame(move |frame| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().seek(frame.max(0) as u64);
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().seek(frame.max(0) as u64);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_clip_gesture(move |id, kind, delta| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().gesture(&id, &kind, delta);
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().gesture(&id, &kind, delta);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_clip_timing_changed(move |field, value| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().timing(&field, &value);
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().timing(&field, &value);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_search_changed(move |_| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().refresh();
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().refresh();
             }
         });
         let weak = Rc::downgrade(this);
         window.on_shortcut(move |action| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut().action(&action);
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().action(&action);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_sequence_settings(move |width, height, numerator, denominator| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
                 let result = (|| {
                     let width = width.parse().map_err(|_| "Width must be an integer")?;
                     let height = height.parse().map_err(|_| "Height must be an integer")?;
@@ -236,23 +240,24 @@ impl Controller {
                             .parse()
                             .map_err(|_| "FPS denominator must be an integer")?,
                     )?;
-                    c.document.set_sequence(width, height, fps)
+                    controller.document.set_sequence(width, height, fps)
                 })();
-                c.finish_edit(result);
+                controller.finish_edit(result);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_rename_project(move |name| {
-            if let Some(c) = weak.upgrade() {
-                let mut c = c.borrow_mut();
-                let result = c.document.rename(&name);
-                c.finish_edit(result);
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let result = controller.document.rename(&name);
+                controller.finish_edit(result);
             }
         });
         let weak = Rc::downgrade(this);
         window.on_file_submit(move |kind, path| {
-            if let Some(c) = weak.upgrade() {
-                c.borrow_mut()
+            if let Some(controller) = weak.upgrade() {
+                controller
+                    .borrow_mut()
                     .file_submit(&kind, PathBuf::from(path.as_str()));
             }
         });
@@ -326,38 +331,6 @@ impl Controller {
     fn action(&mut self, action: &str) {
         match action {
             "import" | "media" => self.import_dialog(),
-            "browse-import" => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Video", &["mp4", "mov", "m4v", "mkv"])
-                    .pick_file()
-                {
-                    self.file_submit("import", path);
-                }
-            }
-            "browse-open" => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Video project", &["json"])
-                    .pick_file()
-                {
-                    self.file_submit("open", path);
-                }
-            }
-            "browse-save-as" => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_file_name("Untitled.oqvideo.json")
-                    .save_file()
-                {
-                    self.file_submit("save-as", path);
-                }
-            }
-            "browse-relink" => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Relink original media")
-                    .pick_file()
-                {
-                    self.file_submit("relink", path);
-                }
-            }
             "new" => {
                 if self.confirm_discard() {
                     self.pause();
@@ -428,13 +401,53 @@ impl Controller {
             window.set_file_path(if kind == "save-as" {
                 self.document
                     .path()
-                    .map(|p| p.to_string_lossy().into_owned())
+                    .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Untitled.oqvideo.json".into())
                     .into()
             } else {
                 "".into()
             });
             window.set_file_dialog_open(true);
+        }
+    }
+    fn browse_native_file_dialog(controller: &Rc<RefCell<Self>>, kind: &str) {
+        let mut state = controller.borrow_mut();
+        if state.busy {
+            return;
+        }
+        let Some(window) = state.window.upgrade() else {
+            return;
+        };
+        let previous_path = window.get_file_path().to_string();
+        state.busy = true;
+        window.set_file_dialog_open(false);
+        state.status("Choose a local file…");
+        let weak_window = state.window.clone();
+        let selected = run_reentrant_native_dialog(state, || match kind {
+            "import" => rfd::FileDialog::new()
+                .add_filter("Video", &["mp4", "mov", "m4v", "mkv"])
+                .pick_file(),
+            "open" => rfd::FileDialog::new()
+                .add_filter("Video project", &["json"])
+                .pick_file(),
+            "save-as" => rfd::FileDialog::new()
+                .set_file_name("Untitled.oqvideo.json")
+                .save_file(),
+            "relink" => rfd::FileDialog::new()
+                .set_title("Relink original media")
+                .pick_file(),
+            _ => None,
+        });
+        let Ok(mut state) = controller.try_borrow_mut() else {
+            return;
+        };
+        state.busy = false;
+        if let Some(path) = selected {
+            state.file_submit(kind, path);
+        } else if let Some(window) = weak_window.upgrade() {
+            window.set_file_path(previous_path.into());
+            window.set_file_dialog_open(true);
+            state.status("File selection cancelled");
         }
     }
     fn file_submit(&mut self, kind: &str, path: PathBuf) {
@@ -1134,4 +1147,35 @@ fn timecode(frame: u64, fps: Rational) -> String {
         seconds % 60,
         frame % rate
     )
+}
+
+/// AppKit's synchronous RFD panel runs a nested UI event loop; transfer the guard
+/// into this helper so the controller borrow is released for every callback.
+fn run_reentrant_native_dialog<T, R>(
+    owner: std::cell::RefMut<'_, T>,
+    dialog: impl FnOnce() -> R,
+) -> R {
+    drop(owner);
+    dialog()
+}
+
+#[cfg(test)]
+mod native_dialog_tests {
+    use super::*;
+    #[test]
+    fn appkit_modal_releases_controller_for_nested_slint_callbacks() {
+        let state = Rc::new(RefCell::new((false, false)));
+        let mut owner = state.borrow_mut();
+        owner.0 = true;
+        let result = run_reentrant_native_dialog(owner, || {
+            let mut callback = state
+                .try_borrow_mut()
+                .expect("nested AppKit callbacks must re-enter the controller");
+            assert!(callback.0);
+            callback.1 = true;
+            None::<()>
+        });
+        assert_eq!(result, None);
+        assert_eq!(*state.borrow(), (true, true));
+    }
 }

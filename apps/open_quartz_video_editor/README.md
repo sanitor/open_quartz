@@ -28,7 +28,7 @@ npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - **RELINK**：恢复丢失素材，必须与保存的内容指纹匹配。同路径换文件会标为 offline，不静默使用新内容。
 
-文件对话框支持粘贴完整本地路径，也可点击 **Browse…** 使用系统文件选择器。无测试专用导入接口；窗口自动化操作同一套实际控件。
+文件对话框支持粘贴完整本地路径，也可点击 **Browse…** 使用系统文件选择器。macOS的OpenPanel是嵌套主线程事件循环；编辑器在进入选择器前先释放controller可变借用，以便Slint计时器/native回调重入，取消也返回原路径对话框。
 
 快捷键：Space 播放/暂停；←/→ 步进；⌘/Ctrl+B 分割；Delete/Backspace lift；⌘/Ctrl+Z 撤销；⌘/Ctrl+Shift+Z 重做；⌘/Ctrl+S 保存；⌘/Ctrl+Shift+S 另存为；⌘/Ctrl+O 打开；⌘/Ctrl+I 导入；Esc 取消。
 
