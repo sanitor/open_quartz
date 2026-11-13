@@ -7,6 +7,11 @@
 - Release the editor controller's `RefCell` borrow before synchronously opening AppKit's nested `NSOpenPanel` / `NSSavePanel` modal loop. Slint callbacks and periodic preview updates can re-enter during the native chooser; retaining the mutable borrow caused the observed abort after video import.
 - Restore the custom path dialog on cancellation and keep Browse/Open/Import/Save As/Relink routes on the same checked file-submission path. Regression test deliberately re-enters the controller inside the nested-modal closure.
 
+### Timeline repeater callback crash fix
+
+- Defer media-card selection/add and timeline clip selection/gesture commands until the Slint input callback has returned. Those commands refresh or mutate the repeated row models; replacing a row while its child callback is active could invalidate the callback's component tree and abort the editor.
+- Verify the adjacent media-card add flow, selection, real clip move/trim/split, and project reopen/relink in the native-window coverage run.
+
 ### Native timeline editing workflow (Phase 6)
 
 - Add the independent `open_quartz_video_editor` Slint application with a dark media-library / program-monitor / timing-inspector / timeline workspace, own OpenQuartz branding and real hardware GPU previews.

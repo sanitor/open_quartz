@@ -15,6 +15,17 @@ enum IoResult {
     Open(u64, Result<EditorDocument, String>),
     Relink(u64, String, PathBuf, Result<(), String>),
 }
+enum UiCommand {
+    SelectAsset(String),
+    AddAsset(String),
+    AddSelectedAsset,
+    SelectClip(String),
+    Gesture {
+        clip_id: String,
+        kind: String,
+        delta: i32,
+    },
+}
 struct Thumbnail {
     image: slint::Image,
     _owner: GpuOutputHandle,
@@ -26,6 +37,8 @@ pub struct Controller {
     backend: Arc<GpuBackend>,
     io_send: mpsc::Sender<IoResult>,
     io_receive: mpsc::Receiver<IoResult>,
+    ui_send: mpsc::Sender<UiCommand>,
+    ui_receive: mpsc::Receiver<UiCommand>,
     generation: u64,
     ticket: u64,
     selected_asset: Option<String>,
@@ -51,6 +64,7 @@ impl Controller {
         backend: Arc<GpuBackend>,
         description: String,
     ) -> Rc<RefCell<Self>> {
+        let (ui_send, ui_receive) = mpsc::channel();
         let (io_send, io_receive) = mpsc::channel();
         let asset_model = Rc::new(VecModel::default());
         let clip_model = Rc::new(VecModel::default());
@@ -63,6 +77,8 @@ impl Controller {
             backend,
             io_send,
             io_receive,
+            ui_send,
+            ui_receive,
             generation: 0,
             ticket: 0,
             selected_asset: None,
@@ -113,37 +129,21 @@ impl Controller {
                 controller.borrow_mut().import_dialog();
             }
         });
-        let weak = Rc::downgrade(this);
-        window.on_asset_select(move |id| {
-            if let Some(controller) = weak.upgrade() {
-                let mut controller = controller.borrow_mut();
-                controller.selected_asset = Some(id.to_string());
-                controller.selected_clip = None;
-                controller.asset_preview = true;
-                controller.requested = None;
-                controller.pause();
-                controller.refresh();
-                controller.request_preview();
-            }
+        let asset_sender = this.borrow().ui_send.clone();
+        window.on_asset_select(move |asset_id| {
+            let _ = asset_sender.send(UiCommand::SelectAsset(asset_id.to_string()));
         });
-        let weak = Rc::downgrade(this);
+        let add_sender = this.borrow().ui_send.clone();
         window.on_add_to_timeline(move || {
-            if let Some(controller) = weak.upgrade() {
-                controller.borrow_mut().add_clip();
-            }
+            let _ = add_sender.send(UiCommand::AddSelectedAsset);
         });
-        let weak=Rc::downgrade(this);
-        window.on_add_asset_to_timeline(move|asset_id|{if let Some(controller)=weak.upgrade(){controller.borrow_mut().add_asset_from_card(&asset_id);}});
-        let weak = Rc::downgrade(this);
-        window.on_clip_select(move |id| {
-            if let Some(controller) = weak.upgrade() {
-                let mut controller = controller.borrow_mut();
-                if let Some(clip) = controller.document.clip(&id).cloned() {
-                    controller.selected_clip = Some(id.to_string());
-                    controller.selected_asset = Some(clip.asset_id);
-                    controller.seek(clip.timeline_start);
-                }
-            }
+        let add_sender = this.borrow().ui_send.clone();
+        window.on_add_asset_to_timeline(move |asset_id| {
+            let _ = add_sender.send(UiCommand::AddAsset(asset_id.to_string()));
+        });
+        let clip_sender = this.borrow().ui_send.clone();
+        window.on_clip_select(move |clip_id| {
+            let _ = clip_sender.send(UiCommand::SelectClip(clip_id.to_string()));
         });
         let weak = Rc::downgrade(this);
         window.on_split_clip(move || {
@@ -205,11 +205,13 @@ impl Controller {
                 controller.borrow_mut().seek(frame.max(0) as u64);
             }
         });
-        let weak = Rc::downgrade(this);
-        window.on_clip_gesture(move |id, kind, delta| {
-            if let Some(controller) = weak.upgrade() {
-                controller.borrow_mut().gesture(&id, &kind, delta);
-            }
+        let gesture_sender = this.borrow().ui_send.clone();
+        window.on_clip_gesture(move |clip_id, kind, delta| {
+            let _ = gesture_sender.send(UiCommand::Gesture {
+                clip_id: clip_id.to_string(),
+                kind: kind.to_string(),
+                delta,
+            });
         });
         let weak = Rc::downgrade(this);
         window.on_clip_timing_changed(move |field, value| {
@@ -288,11 +290,24 @@ impl Controller {
         self.refresh();
         self.request_preview();
     }
-    fn add_asset_from_card(&mut self,id:&str){
-        if !self.document.asset(id).is_some_and(|asset|asset.online){self.status("Selected media is offline and cannot be placed on the timeline");return;}
-        match self.document.add_clip(id){
-            Ok(clip_id)=>{let clip=self.document.clip(&clip_id).expect("inserted clip exists");self.playhead=clip.timeline_start;self.selected_asset=Some(id.to_owned());self.selected_clip=Some(clip_id);self.asset_preview=false;self.requested=None;self.pause();self.deferred_refresh=true;self.status("Clip added · unsaved changes");},
-            Err(error)=>self.status(error),
+    fn add_asset_from_card(&mut self, id: &str) {
+        if !self.document.asset(id).is_some_and(|asset| asset.online) {
+            self.status("Selected media is offline and cannot be placed on the timeline");
+            return;
+        }
+        match self.document.add_clip(id) {
+            Ok(clip_id) => {
+                let clip = self.document.clip(&clip_id).expect("inserted clip exists");
+                self.playhead = clip.timeline_start;
+                self.selected_asset = Some(id.to_owned());
+                self.selected_clip = Some(clip_id);
+                self.asset_preview = false;
+                self.requested = None;
+                self.pause();
+                self.deferred_refresh = true;
+                self.status("Clip added · unsaved changes");
+            }
+            Err(error) => self.status(error),
         }
     }
     pub fn open_path(&mut self, path: PathBuf) {
@@ -703,7 +718,37 @@ impl Controller {
         }
     }
     fn tick(&mut self) {
-        if self.deferred_refresh { self.deferred_refresh=false; self.changed(); }
+        while let Ok(command) = self.ui_receive.try_recv() {
+            match command {
+                UiCommand::SelectAsset(id) => {
+                    self.selected_asset = Some(id);
+                    self.selected_clip = None;
+                    self.asset_preview = true;
+                    self.requested = None;
+                    self.pause();
+                    self.refresh();
+                    self.request_preview();
+                }
+                UiCommand::AddAsset(id) => self.add_asset_from_card(&id),
+                UiCommand::AddSelectedAsset => self.add_clip(),
+                UiCommand::SelectClip(id) => {
+                    if let Some(clip) = self.document.clip(&id).cloned() {
+                        self.selected_clip = Some(id);
+                        self.selected_asset = Some(clip.asset_id);
+                        self.seek(clip.timeline_start);
+                    }
+                }
+                UiCommand::Gesture {
+                    clip_id,
+                    kind,
+                    delta,
+                } => self.gesture(&clip_id, &kind, delta),
+            }
+        }
+        if self.deferred_refresh {
+            self.deferred_refresh = false;
+            self.changed();
+        }
         while let Ok(result) = self.io_receive.try_recv() {
             match result {
                 IoResult::Import(generation, result) if generation == self.generation => {
