@@ -41,6 +41,7 @@ pub struct Controller {
     asset_model: Rc<VecModel<AssetRow>>,
     clip_model: Rc<VecModel<ClipRow>>,
     timer: slint::Timer,
+    deferred_refresh: bool,
     busy: bool,
 }
 impl Controller {
@@ -77,6 +78,7 @@ impl Controller {
             asset_model,
             clip_model,
             timer: slint::Timer::default(),
+            deferred_refresh: false,
             busy: false,
         }));
         window.set_project_status(description.into());
@@ -130,6 +132,8 @@ impl Controller {
                 controller.borrow_mut().add_clip();
             }
         });
+        let weak=Rc::downgrade(this);
+        window.on_add_asset_to_timeline(move|asset_id|{if let Some(controller)=weak.upgrade(){controller.borrow_mut().add_asset_from_card(&asset_id);}});
         let weak = Rc::downgrade(this);
         window.on_clip_select(move |id| {
             if let Some(controller) = weak.upgrade() {
@@ -280,15 +284,16 @@ impl Controller {
         self.pause();
         self.asset_preview = false;
         self.requested = None;
-        if self
-            .selected_clip
-            .as_ref()
-            .is_some_and(|id| self.document.clip(id).is_none())
-        {
-            self.selected_clip = None;
-        }
+        if self.selected_clip.as_ref().is_some_and(|id| self.document.clip(id).is_none()) { self.selected_clip = None; }
         self.refresh();
         self.request_preview();
+    }
+    fn add_asset_from_card(&mut self,id:&str){
+        if !self.document.asset(id).is_some_and(|asset|asset.online){self.status("Selected media is offline and cannot be placed on the timeline");return;}
+        match self.document.add_clip(id){
+            Ok(clip_id)=>{let clip=self.document.clip(&clip_id).expect("inserted clip exists");self.playhead=clip.timeline_start;self.selected_asset=Some(id.to_owned());self.selected_clip=Some(clip_id);self.asset_preview=false;self.requested=None;self.pause();self.deferred_refresh=true;self.status("Clip added · unsaved changes");},
+            Err(error)=>self.status(error),
+        }
     }
     pub fn open_path(&mut self, path: PathBuf) {
         if self.busy {
@@ -698,6 +703,7 @@ impl Controller {
         }
     }
     fn tick(&mut self) {
+        if self.deferred_refresh { self.deferred_refresh=false; self.changed(); }
         while let Ok(result) = self.io_receive.try_recv() {
             match result {
                 IoResult::Import(generation, result) if generation == self.generation => {

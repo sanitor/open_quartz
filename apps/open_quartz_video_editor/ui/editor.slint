@@ -23,7 +23,7 @@ component ToolButton inherits Rectangle {
 component AssetCard inherits Rectangle {
     in property <AssetRow> asset;
     callback clicked();
-    callback add_clicked();
+    callback add_clicked(string);
     height: 76px; background: root.asset.selected ? #29363a : #202427; border-radius: 6px;
     accessible-role: button;
     accessible-label: root.asset.name;
@@ -38,7 +38,7 @@ component AssetCard inherits Rectangle {
     Text { x: 102px; y: 55px; width: 90px; height: 12px; text: root.asset.online ? "● READY" : "● OFFLINE"; color: root.asset.online ? #49cba9 : #fa7373; font-size: 7px; }
     TouchArea { width: parent.width - 30px; height: parent.height; clicked => { root.clicked(); } }
     Text { x: parent.width - 28px; y: 25px; width: 24px; height: 24px; text: "+"; color: #38d9c3; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
-    TouchArea { x: parent.width - 30px; width: 30px; height: parent.height; accessible-role: button; accessible-label: "Add " + root.asset.name + " to timeline"; clicked => { root.add_clicked(); } }
+    TouchArea { x: parent.width - 30px; width: 30px; height: parent.height; accessible-role: button; accessible-label: "Add " + root.asset.name + " to timeline"; clicked => { root.add_clicked(root.asset.id); } }
 }
 
 // Capture absolute pointer coordinates so moving the preview under the pointer
@@ -206,6 +206,7 @@ export component EditorWindow inherits Window {
     callback playback(string); callback step_frame(int); callback zoom_changed(int);
     callback seek_frame(int);
     callback clip_gesture(id: string, kind: string, delta: int);
+    callback add_asset_to_timeline(string);
     callback shortcut(string);
     callback search_changed(string);
     callback clip_timing_changed(field: string, value: string);
@@ -324,7 +325,7 @@ export component EditorWindow inherits Window {
                                         Button { text: "Import media"; primary: true; clicked => { root.project_action("import"); } }
                                     }
                                 }
-                                for asset in root.assets: AssetCard { asset: asset; clicked => { editor_focus.focus(); root.asset_select(asset.id); } add_clicked => { editor_focus.focus(); root.asset_select(asset.id); root.add_to_timeline(); } }
+                                for asset in root.assets: AssetCard { asset: asset; clicked => { editor_focus.focus(); root.asset_select(asset.id); } add_clicked(id) => { editor_focus.focus(); root.add_asset_to_timeline(id); } }
                                 Rectangle { vertical-stretch: 1; }
                             }
                         }
