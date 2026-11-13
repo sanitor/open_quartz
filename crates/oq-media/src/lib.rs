@@ -120,6 +120,8 @@ pub struct SourceInfo {
     pub duration_pts: Option<i64>,
     pub average_frame_rate: Option<RationalTimeBase>,
     pub seekable: bool,
+    pub codec: String,
+    pub has_audio: bool,
 }
 impl SourceInfo {
     /// Checked, nearest-rounded duration. None means unknown, not zero or EOF.
@@ -191,7 +193,10 @@ pub struct ColorInfo {
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 mod encoder;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-pub use encoder::{EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface, Mp4Encoder};
+pub use encoder::{
+    EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface,
+    Mp4Encoder,
+};
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 mod videotoolbox;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]

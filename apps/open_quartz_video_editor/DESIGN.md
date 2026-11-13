@@ -2,7 +2,7 @@
 
 ## 1. 状态与决策
 
-本目录为新的 **Rust + Slint 视频编辑应用**预留，和 `apps/open_quartz_slint` 并列。当前仅交付设计文档；以下新增类型、模块、命令与产品行为均为拟议接口，不表示代码已实现或测试通过。
+本目录现在是独立 **Rust + Slint 视频编辑应用 OpenQuartz Studio**，和原节点图应用并列。Phase6已实现素材库、真实GPU监视器、单轨剪辑事务、撤销/重做、工程保存恢复与匹配素材重定位；启动与当前边界见[README](README.md)。未在Phase记录中验收的音频、多轨、完整效果/预览优化和编辑器导出UI仍是后续设计，不把界面参考等同全部剪映功能对等。
 
 核心决策：
 
@@ -12,7 +12,7 @@
 4. 首个实现目标为 macOS Apple Silicon 上可用的单视频轨、1×速度、8-bit SDR、无音轨编辑与 H.264/MP4 导出闭环。它不是完整 NLE；音频、多轨等后续能力明确分阶段交付。
 5. 精确 seek、按目标时间取帧和无窗口编码是前置工作；当前“视频能播放、模型能出图”不能替代这些前提。
 6. 正常预览和导出保持硬件驻留、CPU 图像回传禁止。不能消费现有 GPU 表面的编码器须明确拒绝，不悄悄读回后走软件编码。
-7. 以固定版本的 Shotcut 约束所选编辑行为，以 Olive 参考渲染任务/缓存职责；不逐文件翻译、不复制 Qt/MLT/OpenGL 后端，也不承诺整个 Shotcut 的功能对等。基线、差异与授权边界见 §17。
+7. 本轮界面按用户要求参考剪映桌面的深色素材库/中央监视器/右侧属性/底部时间线工作流，保留OpenQuartz品牌，不使用剪映商标或专有图标/素材。编辑命令语义继续以固定Shotcut约束、Olive职责分离为参考；不复制Qt/MLT/OpenGL实现，不承诺整个剪映或Shotcut的功能对等。授权和基线见§17。
 8. 明确采用 Rust + Slint + wgpu/Metal + 进程内 libav/VideoToolbox；不引入 MLT、Qt 或 Web 宿主。具体版本、线程和接口见 §18；代码与人力估算见 §19。
 9. **原 OpenQuartz 在同一 crate 内分离无时钟执行流水与实时播放宿主，不拆渲染/执行 crate。** NativePlayer 与编辑器共同依赖拟议 `execution::FramePipeline`，其内部图阶段为 FrameExecutionSession；app 只保留序列需求规划和源/消费者策略，不复制流水或图执行器。决策和迁移见[核心架构](../../docs/DESIGN.md#execution-rendering-split)。
 
@@ -158,7 +158,7 @@ first/last frame、入点等于 EOF、零长区间、非帧边界的源入点、
 
 `requestId`、`sourceEpoch`、`seekEpoch`、`sequenceRevision`、`clipId` 和目标时刻共同标识请求。seek 定位至目标前合适关键帧，flush 并解码到目标区间；回执带目标、实际 PTS 与 precision。快速拖动可以取消旧请求，但每个请求有完成/取消/失败终态；旧帧只释放，不发布到新播放头。
 
-当前 `oq-media` 只有顺序解码和 reset；上述 seek、帧区间与原始 time base 元数据需要先补齐并以 B-frame、VFR 和非零起点素材验证，不能通过新 app 的 UI 先行“模拟”。
+当前oq-media已交付Phase3原始PTS/timebase/精确cursor和epoch seek；实际selection沿既有`frame_at_ns`“目标之后第一张presentation frame”契约。Phase6 source_time_ns以精确有理数映射片段源入点与序列帧，预览显示真实source PTS，不能把尚未实施的覆盖区间hold选择说成当前行为。
 
 ## 7. 模块分层与复用边界
 
@@ -199,7 +199,7 @@ flowchart TD
 | ExportJob | app `export/`；底层 `oq-media` | app 冻结快照/帧序/任务终态；库管编码器与 MP4 mux | 捕获屏幕、依赖 UI 播放 timer、把文件提交成功前标为完成 |
 | EditorController | app `controller/` 与 `ui/` | 命令提交、可访问状态投影和交互草稿 | 保存第二份可变时间线或直接拼 FFmpeg 命令 |
 
-实现时沿用现有 Slint app 的独立 Cargo workspace 与锁定版本模式。未来包名可为 `open_quartz_video_editor`；本次不创建 Cargo.toml、锁文件或 `src/main.rs`，不改根 workspace，也不提供不存在的 `npm run` 命令。
+已按现有模式创建独立Cargo workspace `open_quartz_video_editor`，锁定Slint1.18.1/wgpu30。根workspace不改；真实入口`npm run dev:video-editor`，行为回归`test:video-editor`，原生窗口回归`test:video-editor:ui`。原`dev:editor`仍为代码编辑器组件示例。
 
 共享核心已有显式 FrameInputs 和外部纹理注入；新增的是统一流水、输入版本/图内依赖与稳定输出完成契约，不是重写原语。NativePlayer 和编辑器宿主均调用核心 FramePipeline，不直接驱动其内部 FrameExecutionSession；迁移后删除旧 admission/完成循环，不把它留在 NativePlayer 或复制进 app。原图 app 保留 clock、需求映射和源/呈现政策，编辑器保留时间线规划与资产适配；公共行为与受影响回归须保持，不将历史七模型参考成功当作当前生产能力。
 
@@ -321,7 +321,7 @@ ExportJob：Queued → Preparing → Rendering/Encoding → Draining → Committ
 
 ## 13. 工程与测试布局
 
-下面是确定的首阶段模块归属；模块内部文件名可随实现细化。本次不创建空源文件，也不为每个模块新建 crate：
+下面是完整产品职责目标，不要求为每个框建立空模块。Phase6实际文件为`src/{main,document,media,preview,controller}.rs`与`ui/editor.slint`：document的source_time_ns和controller不可变request构造承担TimelinePlanner，preview仅交接核心FramePipeline，不新增执行引擎。export产品模块留Phase8，不创建空实现。
 
 ```text
 apps/open_quartz_video_editor/
@@ -357,7 +357,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑P0～P2拆为实际实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～4已提交（Phase4：`ff3d709`），Phase5已实现并通过下方真实macOS验收；Phase6～8未开始。Phase5提供无窗口硬解→GPU效果→硬件H264/MP4，不提供编辑器窗口；Phase6素材库/单轨时间线/监视器，Phase7完整预览效果，Phase8UI导出/打包闭环。全局100% gates仍红，不发布。
+本节将产品里程碑P0～P2拆为实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～5已提交（Phase5：`cd1d857`）；Phase6可操作编辑器与本轮真实窗口验收见下。Phase7完整预览/效果、Phase8导出UI/打包尚未交付。既有全局100% coverage gates仍红，不发布。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -408,7 +408,7 @@ Phase 1～5 的新 GPU/媒体/流水行为测试优先进入已有核心/oq-medi
 
 ### 14.4 当前实施记录与后续范围
 
-Phase0～4已提交；Phase5实现、真实硬件验收和本轮回归见下。新编辑器仍只有设计目录，局部行为与全量100% gate分别报告，不以历史通过数替代本轮证据。
+Phase0～5已提交；Phase6独立应用、完整窗口编辑工作流和本轮回归见末尾Phase6记录。CPU行为、实际GPU帧、原生窗口与SDK gate分开报告；不以历史通过数替代本轮证据。
 
 实际实现：新增 `rendering::{StableFramePool,StableFrame,FrameReady,StableFrameBudget,FrameCaptureError}`；设备无关图像描述/快照身份位于 outputs。通过 GPU copy 脱离可重写目标，默认每 NativePlayer 三槽/256 MiB，同时限制 frames/bytes，空闲兼容 slot 复用，尺寸变化只回收空闲旧分配；超过单帧预算报 Capacity，暂时被消费的池满返回 WouldBlock，借用源不被消耗/改写。监视器需至少两帧容量，最小工作集不足明确拒绝，不永久返回无图。NativePlayer::try_stable_preview 接入主监视器/选中节点大图；节点卡仍为低频 live view，不冒称可缓存/编码稳定帧。颜色/alpha 未知明确 Unknown，当前图 source PTS/内容时间不能可靠恢复则 None，Phase 2/3 才补完整按帧 provenance。
 
@@ -564,7 +564,7 @@ FramePipeline新增`submit_window/configure_window`和有界planned/completed队
 Shader窗口首轮33/34，Ripple在Connections=1且“Output selected”的连接阶段超时，而非像素oracle失败。自动化改为点击Shader输出后再读取Renderer输入端口，避免用选择重绘前的handle/坐标；重跑34/34。不增加retry、延长超时或修改shader/像素容差，完整报告保留失败前证据。
 
 
-Phase0～4已完成，Phase5硬件编码/封装实现与真实macOS验收完成；编辑器应用仍待实施。声音、多轨/转场、关键帧、代理/后台缓存和模型剪辑接入仍各为后续Phase，不在当前headless导出阶段冒称完成。沿用每Phase单commit，不自动push；全局coverage门槛未关时不发布。
+Phase0～5已完成；Phase6现已提供实际编辑窗口，详见下方本轮记录。声音、多轨/转场、关键帧、代理/后台缓存、完整效果和导出UI仍属后续阶段。沿用每Phase单commit，不自动push；全局coverage门槛未关时不发布。
 
 #### Phase 5：驻留硬件H.264/MP4导出（2026-11-12）
 
@@ -590,6 +590,27 @@ Phase5在同一个`FramePipeline`上冻结图/source identity和checked CFR半�
 固定FFmpeg8.1.1 SDK的`oq-vt-hw3-metal-encode-r2`应用上游H.264 reorder-depth patch `2da55bf59a68801a8157ab141a487196ce3416a8`，避免宿主伪造DTS或关闭B-frame。完整源码、hardware patch、reorder patch、build config与LGPL notices随SDK。CI媒体job保留source coverage并新增Phase5 native build/CLI artifact；现有coverage gate仍按仓库协议失败即不发布。
 
 本轮失败前/修复后：ExportJob最初stop了图后直接evaluate，现按合法pause/resume冻结空闲会话；独立软件oracle须保留copyts并取原始Y plane，避免减两次stream origin和低亮RGB转换量化造成错误期望。原SDK的真实B-frame测试观察到PTS=1/DTS=2非法packet，回移上游depth2后24帧及独立ffprobe通过。桌面video移除回归的“250ms内绝无update”将合法异步budget wake误判为继续poll视频，按协议删除这一实现细节断言，保留真实像素/替图拒绝/节点移除/preview缺席契约；桌面80 passed。
+
+
+#### Phase 6：OpenQuartz Studio 单轨原生剪辑（2026-11-13）
+
+新建独立`apps/open_quartz_video_editor` workspace（Rust1.92/Slint1.18.1/wgpu30），不改根Cargo workspace、不修改原节点图宿主的窗口/正常启动。真实入口`npm run dev:video-editor`，测试`npm run test:video-editor`、`npm run test:video-editor:ui`；CI Mac job运行combined coverage。实际布局按用户选定的剪映工作流：左素材库/搜索/缩略图、中节目监视器、右时间线片段属性、底部单轨工具与帧标尺；深色OpenQuartz品牌，不复制剪映品牌、私有icon/模板。剪辑数据拥有者为`EditorDocument`；Slint列表更新按asset/clip ID reconcile，异步纹理完成不销毁行及当前pointer/text编辑。
+
+| 行为/边界 | 真实验收 | 结果 |
+|---|---|---|
+| `npm run test:video-editor` | 单轨事务、精确fractional源tick/30000:1001映射、trim端点/EOF、overlap/no-partial mutation、undo/history上限、atomic save、相对路径/fingerprint/relink/unknown schema、真实Metal source/GPU/gap与保留surface | 18 passed |
+| `npm run test:video-editor:ui` | 插桩真实Slint窗口13/13；设置、红蓝素材probe/import、精确首帧、两片段、move/undo/redo、左右trim、frame45 split/lift、重叠拒绝、拖动Esc、play/pause、save/正常退出/reopen、错误与成功relink；独立PNG中心900像素oracle；两个进程正常code0；[完整报告/截图](../../test-results/phase6/ui-2026-11-13T01-55-44-762Z/report.html) |
+| `npm run test:video-editor:coverage` | 同一插桩运行Rust和真实窗口后合并；app line/function/region=90.38/88.21/88.78%；controller=83.35/89.90/81.33%，document=96.08/89.92/94.38%，media=87.10/63.64/86.49%，preview=92.78/80/89.77%；report=`test-results/phase6/editor-coverage.json`，非SDK100% gate |
+| 默认 workspace | `cargo test --locked --workspace` | 293 passed / 37 suites |
+| 原图应用 | `npm run test:desktop`、`npm run test:desktop:ui` | 80 passed / 原有2 ignored；真实窗口19/19，[报告](../../test-results/slint-ui/interaction-2026-11-12T13-57-43-797Z/report.html) |
+| 核心依赖边界 | `npm run check:rust-boundaries` | core/default/独立inference边界通过 |
+| 现有SDK coverage gate | `npm run test:sdk-coverage` | 行为测试通过但100% gate仍exit1：default line/function/region=98.02/95.86/97.99%，native=94.03/87.09/92.13%；未改scope/exclusions/threshold，不发布 |
+
+Phase6失败前/修复后：timebase精度测试最初fixture时长填成300 ticks、但该fixture期望90 frames；按Rational(1/30)修为duration_pts=90，不改生产逻辑。旧Slint文档草案的`.oqvideo`后缀统一修成schema契约`.oqvideo.json`。原生real-world插桩UI在relink时触发“element handle destroyed”不是媒体失败，而是每个GPU preview完成均重建完整VecModel造成真实拖动对象替换；改为stable `Rc<VecModel>`按ID reconciliation，未知异步surface只更新Image数据。修复后combined 13窗口case全部通过，未对MCP加入retry/延长timeout或用纯模型代替拖动。
+
+本阶段产品边界：仅macOS Apple GPU/Metal + VideoToolbox，无CPU解码/图像fallback；无音轨播放、单轨、1×、8-bit SDR、视频only，无关键帧/多轨/转场、无clip transform颜色处理、无编辑器导出UI。音轨在UI真实标为 unused；菜单和面板不显示Phase7/8尚未实现的假控件。导出经核心Phase5 headless CLI单独执行。未来容器/编码能力和多平台支持不能从本阶段测试外推。
+
+README与最终窗口证据：[操作说明](README.md) · [13/13原生UI报告/截图](../../test-results/phase6/ui-2026-11-13T01-55-44-762Z/report.html) · [合并Rust+UI coverage](../../test-results/phase6/editor-coverage.json)。报告工程`edit.oqvideo.json`含红片精确剪切及有gap的蓝片；离线红片以matching SHA256重定位并另存。
 
 ## 15. 回归与验收方案
 

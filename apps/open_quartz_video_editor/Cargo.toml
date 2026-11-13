@@ -1,0 +1,38 @@
+[package]
+name = "open_quartz_video_editor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+publish = false
+license = "MIT"
+description = "Native non-destructive video editor for OpenQuartz"
+
+[workspace]
+
+[features]
+ui-automation = ["slint/mcp"]
+
+[dependencies]
+open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video"] }
+slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
+pollster = "0.4"
+rfd = "0.16"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+oq-media = { path = "../../crates/oq-media", features = ["videotoolbox"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.wgpu-core]
+debug-assertions = false

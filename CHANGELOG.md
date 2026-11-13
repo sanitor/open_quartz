@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+
+### Native timeline editing workflow (Phase 6)
+
+- Add the independent `open_quartz_video_editor` Slint application with a dark media-library / program-monitor / timing-inspector / timeline workspace, own OpenQuartz branding and real hardware GPU previews.
+- Add transactional single-track placement, move, bidirectional trim, split, lift, bounded undo/redo and rational sequence/source mapping. Release-only drag commits preserve one history entry; Escape cancels drafts, overlap and source overruns reject without partial changes.
+- Persist validated `.oqvideo.json` projects with atomic replacement, relative media paths, SHA-256 identities and matching-original relink. Reject unsupported schemas/unknown fields instead of silently dropping future tracks or effects.
+- Reuse the shared FramePipeline and exact Slint Device/Queue; coalesce preview intents into a bounded final-target slot and retain stable frames / GPU thumbnails without CPU pixel fallback. Media probes expose actual codec/audio presence so the UI labels video-only use honestly.
+- Add `dev:video-editor`, model/hardware tests, real Slint editing/reopen/relink/pixel acceptance and combined Rust/UI coverage CI. Full effects, audio/multitrack, editor export UI and portable distribution remain later phases; existing SDK 100% gates are unchanged.
+
 ### Resident hardware H.264/MP4 export (Phase 5)
 
 - Add a clock-free `ExportJob` consumer of the shared FramePipeline: checked half-open CFR ranges, ordered stable frames, explicit SDR sRGB interpretation, same-queue GPU BT.709 limited NV12 conversion and bounded VideoToolbox source-consumption credits. No CPU image fallback; no editor UI or audio track.

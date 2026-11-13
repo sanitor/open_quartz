@@ -83,6 +83,28 @@ jobs:
           path: test-results/phase5/
           if-no-files-found: error
 
+  video-editor:
+    name: Native video editor (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: npm ci
+      - name: Exercise Rust and real editor UI with coverage
+        run: npm run test:video-editor:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-video-editor-evidence
+          path: test-results/phase6/
+          if-no-files-found: error
+
   slint-app:
     name: Slint desktop (${{ matrix.os }})
     strategy:

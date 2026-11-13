@@ -6,6 +6,8 @@
 
 Phase 4宿主在有界source worker上调用该cursor；媒体库新增`frame_at_ns_cancellable`接收请求局部取消token，取消不污染Session的全局关闭状态。取消按packet/frame/I/O边界协作；正在执行的VideoToolbox原生decode调用仍须安全返回。`VideoToolboxFrame::allocation_size()`报告实际IOSurface分配bytes供宿主按表面身份计费，不读取CPU像素。该数字不包含VTDecompressionSession/driver私有DPB池；不能用FFmpeg pool参数或已保留帧数量宣称整个decoder硬内存上限。窗口、水位、credit、waker和跨阶段调度属于宿主execution，不把NodeId/wgpu/Slint引入oq-media。
 
+Phase6素材消费者为独立OpenQuartz Studio编辑器。`SourceInfo`新增真实codec名称和has_audio（仅探测，不解码音轨），用于H264/HEVC素材预检及“只使用视频”的提示；媒体库原格式/硬件政策不因UI需求收窄。原生preview仍使用同一个FramePipeline/source cursor，完整源时间和编辑器当前限制见[编辑器README](../../apps/open_quartz_video_editor/README.md)。
+
 ## 构建与使用
 
 macOS 的 `videotoolbox` feature 使用固定 ABI 的 FFmpeg 8.1.1 动态 libav。先从仓库根目录准备 SDK，再运行示例或测试：

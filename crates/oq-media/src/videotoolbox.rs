@@ -63,7 +63,9 @@ impl VideoToolboxFrame {
     /// Physical allocation shared by all retained references to this pixel buffer.
     pub fn allocation_size(&self) -> u64 {
         let buffer = self.pixel_buffer();
-        if buffer.is_null() { return 0; }
+        if buffer.is_null() {
+            return 0;
+        }
         unsafe {
             let surface = CVPixelBufferGetIOSurface(buffer);
             if surface.is_null() {
@@ -178,7 +180,11 @@ impl Session {
         let callback_request = request_cancelled.clone();
         let input = format::input_with_interrupt(&path, move || {
             callback_cancelled.load(Ordering::Acquire)
-                || callback_request.lock().map_or(true, |request| request.as_ref().is_some_and(|request| request.load(Ordering::Acquire)))
+                || callback_request.lock().map_or(true, |request| {
+                    request
+                        .as_ref()
+                        .is_some_and(|request| request.load(Ordering::Acquire))
+                })
                 || callback_started
                     .lock()
                     .map_or(true, |started| started.elapsed() > Duration::from_secs(10))
@@ -226,6 +232,10 @@ impl Session {
                 })?)
             }
         };
+        let codec = stream.parameters().id().name().to_owned();
+        let has_audio = input
+            .streams()
+            .any(|stream| stream.parameters().medium() == Type::Audio);
         let rate = stream.avg_frame_rate();
         let average_frame_rate =
             (rate.numerator() > 0 && rate.denominator() > 0).then_some(RationalTimeBase {
@@ -248,6 +258,8 @@ impl Session {
             duration_pts,
             average_frame_rate,
             seekable,
+            codec,
+            has_audio,
         };
         // Display matrices require transformation, which this slice does not apply.
         if stream
@@ -317,7 +329,11 @@ impl Session {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-            || self.request_cancelled.lock().map_or(true, |request| request.as_ref().is_some_and(|request| request.load(Ordering::Acquire)))
+            || self.request_cancelled.lock().map_or(true, |request| {
+                request
+                    .as_ref()
+                    .is_some_and(|request| request.load(Ordering::Acquire))
+            })
     }
 
     /// Abort one selection without poisoning this reusable decoder session.
@@ -327,9 +343,15 @@ impl Session {
         timeline_epoch: u64,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Option<SelectedFrame>, MediaError> {
-        *self.request_cancelled.lock().map_err(|_| "Video request cancellation lock is poisoned")? = Some(cancelled.clone());
+        *self
+            .request_cancelled
+            .lock()
+            .map_err(|_| "Video request cancellation lock is poisoned")? = Some(cancelled.clone());
         let result = self.frame_at_ns(target_ns, timeline_epoch);
-        *self.request_cancelled.lock().map_err(|_| "Video request cancellation lock is poisoned")? = None;
+        *self
+            .request_cancelled
+            .lock()
+            .map_err(|_| "Video request cancellation lock is poisoned")? = None;
         if cancelled.load(Ordering::Acquire) {
             // The decoder may have advanced during preroll. Permit a fresh demand
             // to map against the actual cursor; newer epochs perform a real seek.
@@ -679,9 +701,7 @@ impl Session {
                         self.draining = true;
                         break;
                     }
-                    Err(_) if self.is_cancelled() => {
-                        return Err(MediaError::cancelled())
-                    }
+                    Err(_) if self.is_cancelled() => return Err(MediaError::cancelled()),
                     Err(e) => return Err(format!("Video demux failed: {e}").into()),
                 }
             }

@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { createServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
+import { SlintUiClient } from './slint-ui-client.mjs';
+import { decodePng } from './slint-ui-scenarios.mjs';
+import { writeHtmlReport } from './slint-ui-report.mjs';
+
+const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
+const binary=resolve(process.argv[2] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
+const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
+await mkdir(output,{recursive:true});
+const report={passed:false,steps:[],screenshots:[],launches:[]};
+const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
+let child,client,exited,stdout='',stderr='';
+const project=join(output,'edit.oqvideo.json');
+async function launch(path){
+  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1'},stdio:['pipe','pipe','pipe']});
+  child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);
+  exited=new Promise((accept,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>accept({code,signal}));});
+  client=new SlintUiClient(`http://127.0.0.1:${port}/mcp`);
+  await client.waitFor(async()=>{try{await client.init();await client.useWindow();return true;}catch{return false;}},{description:'native editor window'});
+}
+async function close(){child.stdin.write('close\n');const exit=await Promise.race([exited,delay(10000).then(()=>{throw Error('Window did not close normally');})]);assert.deepEqual(exit,{code:0,signal:null});report.launches.push(exit);await writeFile(join(output,`application-${report.launches.length}.log`),stdout+stderr);child=undefined;}
+const state=async()=> (await client.properties(client.rootHandle)).accessibleDescription;
+async function click(label,last=false){const items=await client.byLabel(label,{role:'Button'});assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
+async function fileAction(action,path,submit){await click(action);await client.setValue(await client.find({label:'File path',role:'TextInput'}),path);await click(submit,true);}
+const timeline=async name=>(await client.byLabel(name,{role:'Button'})).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
+async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
+async function snapshot(name,color){
+  const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);
+  if(color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:r<5&&g<5&&b<5)hits++;}assert(hits>=890,`${name}: wrong visible ${color} pixels (${hits}/900)`);}
+  return png;
+}
+async function step(name,run){const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
+function generate(name,color){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=320x180:r=30`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t','3','-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
+const red=generate('red.mp4','red'),blue=generate('blue.mp4','blue');
+try{
+ await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await snapshot('01-empty');});
+ await step('Sequence settings',async()=>{await click('SEQUENCE');for(const [label,value]of [['Sequence width','640'],['Sequence height','360'],['FPS numerator','30'],['FPS denominator','1']])await client.setValue(await client.find({label,role:'TextInput'}),value);await click('Apply settings');await snapshot('02-sequence');});
+ await step('Import red on hardware and place clip',async()=>{await fileAction('IMPORT',red,'Import media');await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('03-red-media','red');await click('ADD CLIP');await waitState('clips 1');});
+ await step('Import blue and verify exact adjacent placement',async()=>{await fileAction('IMPORT',blue,'Import media');await waitState('assets 2');await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('04-blue-media','blue');await click('ADD CLIP');await waitState('clips 2');for(let n=0;n<6;n++)await click('ZOOM OUT');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames; duration 90'));});
+ await step('Move with one undo/redo; black gap',async()=>{const item=(await timeline('blue.mp4'))[0];await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+40,y:item.absolutePosition.y+item.size.height/2});await client.waitFor(async()=> (await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'),{description:'clip move'});await click('UNDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames'));await click('REDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));await waitState('source PTS gap ns');await snapshot('05-gap','black');});
+ await step('Trim both edges with actual gestures',async()=>{for(const [edge,delta]of [['start',40],['end',-40]]){const item=await client.find({label:`Trim ${edge} of red.mp4`,role:'Button'});await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+delta,y:item.absolutePosition.y+item.size.height/2});}assert((await timeline('red.mp4'))[0].accessibleDescription.includes('start 10 frames; duration 70'));});
+ await step('Split at frame45, lift and undo',async()=>{await client.click((await timeline('red.mp4'))[0]);for(let n=0;n<35;n++)await click('NEXT');await waitState('playhead 45 frames');await click('SPLIT');await waitState('clips 3');assert.deepEqual((await timeline('red.mp4')).map(i=>i.accessibleDescription),['Timeline start 10 frames; duration 35 frames','Timeline start 45 frames; duration 35 frames']);await click('DELETE');await waitState('clips 2');await click('UNDO');await waitState('clips 3');await snapshot('06-split');});
+ await step('Inspector overlap rejection leaves clip unchanged',async()=>{await client.click((await timeline('blue.mp4'))[0]);const input=await client.find({label:'Timeline start',role:'TextInput'});await client.click(input);await client.setValue(input,'20');await client.key('\n');await waitState('overlaps');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));});
+ await step('Cancel active drag with Escape',async()=>{const item=(await timeline('blue.mp4'))[0];const moving=client.drag(item,{x:item.absolutePosition.x+item.size.width/2+160,y:item.absolutePosition.y+item.size.height/2});await delay(120);await client.key('\u001b');await moving;assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));});
+ await step('Play and pause real GPU video',async()=>{await client.click((await timeline('blue.mp4'))[0]);await click('PLAY');await client.waitFor(async()=>/playhead 1[1-7]\d frames/.test(await state()),{description:'video playback'});await click('PAUSE');await snapshot('07-playing-paused','blue');const paused=await state();await delay(200);assert.equal((await state()).match(/playhead (\d+)/)[1],paused.match(/playhead (\d+)/)[1]);});
+ await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.clips.map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.clips[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();});
+ await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));});
+ await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();});
+ report.passed=true;
+}catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
+}finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.steps.map(step=>({id:step.name,title:step.name,description:'Real native UI interaction and observable project/GPU result',screenshotPrefixes:[]}))});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}

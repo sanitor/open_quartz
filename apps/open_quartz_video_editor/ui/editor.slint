@@ -1,0 +1,506 @@
+import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+
+export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
+export struct ClipRow { id: string, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
+
+component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> active: true;
+    in property <bool> selected: false;
+    callback clicked();
+    width: max(40px, caption.preferred-width + 14px); height: 38px;
+    background: root.selected ? #293d3d : hover.has-hover && root.active ? #303438 : transparent;
+    border-radius: 5px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if root.active { root.clicked(); } }
+    Text { y: 1px; width: parent.width; height: 22px; text: root.glyph; color: root.active ? #d1d8dc : #565d62; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+    caption := Text { y: 23px; width: parent.width; height: 12px; text: root.label; color: root.active ? #aab3ba : #565d62; font-size: 8px; font-weight: 700; horizontal-alignment: center; }
+    hover := TouchArea { enabled: root.active; clicked => { root.clicked(); } }
+}
+
+component AssetCard inherits Rectangle {
+    in property <AssetRow> asset;
+    callback clicked();
+    callback add_clicked();
+    height: 76px; background: root.asset.selected ? #29363a : #202427; border-radius: 6px;
+    accessible-role: button;
+    accessible-label: root.asset.name;
+    accessible-description: root.asset.details + (root.asset.online ? "; online" : "; offline");
+    Rectangle {
+        x: 7px; y: 8px; width: 88px; height: 60px; background: #101214; border-radius: 4px; clip: true;
+        if root.asset.has_thumbnail: Image { width: parent.width; height: parent.height; source: root.asset.thumbnail; image-fit: cover; }
+        if !root.asset.has_thumbnail: Text { text: root.asset.online ? "▶" : "!"; color: root.asset.online ? #5bdcc9 : #ff7373; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+    }
+    Text { x: 102px; y: 9px; width: parent.width - 136px; height: 18px; text: root.asset.name; color: root.asset.online ? #e4e8eb : #ff7373; font-size: 10px; font-weight: 650; overflow: elide; }
+    Text { x: 102px; y: 30px; width: parent.width - 136px; height: 24px; text: root.asset.details; color: #8e979d; font-size: 8px; wrap: word-wrap; }
+    Text { x: 102px; y: 55px; width: 90px; height: 12px; text: root.asset.online ? "● READY" : "● OFFLINE"; color: root.asset.online ? #49cba9 : #fa7373; font-size: 7px; }
+    TouchArea { width: parent.width - 30px; height: parent.height; clicked => { root.clicked(); } }
+    Text { x: parent.width - 28px; y: 25px; width: 24px; height: 24px; text: "+"; color: #38d9c3; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+    TouchArea { x: parent.width - 30px; width: 30px; height: parent.height; accessible-role: button; accessible-label: "Add " + root.asset.name + " to timeline"; clicked => { root.add_clicked(); } }
+}
+
+// Capture absolute pointer coordinates so moving the preview under the pointer
+// cannot feed its own displacement back into the gesture. Only release commits.
+component ClipGestureArea inherits TouchArea {
+    in property <int> zoom: 16;
+    in property <int> cancel_token;
+    callback began();
+    callback preview(int);
+    callback finished(int);
+    callback cancelled();
+    private property <bool> armed: false;
+    private property <length> origin_x;
+    changed cancel_token => { self.armed = false; root.cancelled(); }
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.cancel {
+            self.armed = false;
+            root.cancelled();
+        } else if event.button == PointerEventButton.left {
+            if event.kind == PointerEventKind.down {
+                self.origin_x = self.absolute-position.x + self.mouse-x;
+                self.armed = true;
+                root.began();
+            } else if event.kind == PointerEventKind.up && self.armed {
+                self.armed = false;
+                root.finished(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(1, root.zoom)));
+            }
+        }
+    }
+    moved => {
+        if self.pressed && self.armed {
+            root.preview(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(1, root.zoom)));
+        }
+    }
+}
+
+component TimelineClip inherits Rectangle {
+    in property <ClipRow> item;
+    in property <int> zoom: 16;
+    in property <int> cancel_token;
+    callback clicked();
+    callback focused();
+    callback gesture(string, int);
+    private property <string> gesture_kind: "";
+    private property <int> delta: 0;
+    function bounded_delta(kind: string, value: int) -> int {
+        if kind == "move" { return max(-root.item.start, value); }
+        if kind == "trim-start" { return clamp(value, -root.item.start, root.item.duration - 1); }
+        return max(1 - root.item.duration, value);
+    }
+    function finish(kind: string, value: int) {
+        let result = root.bounded_delta(kind, value);
+        root.delta = 0;
+        root.gesture_kind = "";
+        root.clicked();
+        if result != 0 { root.gesture(kind, result); }
+    }
+    x: 10px + (root.item.x + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta * root.zoom : 0)) * 1px;
+    y: 52px;
+    width: max(2px, (root.item.width + (root.gesture_kind == "trim-end" ? root.delta * root.zoom : root.gesture_kind == "trim-start" ? -root.delta * root.zoom : 0)) * 1px);
+    height: 72px;
+    clip: true;
+    background: root.item.selected || root.gesture_kind != "" ? #265d59 : root.item.online ? #284844 : #633a3b;
+    border-color: root.item.selected || root.gesture_kind != "" ? #49d8c6 : #32786f;
+    border-width: root.item.selected ? 2px : 1px; border-radius: 5px;
+    accessible-role: button;
+    accessible-label: root.item.asset_name;
+    accessible-description: "Timeline start " + root.item.start + " frames; duration " + root.item.duration + " frames";
+    if root.item.has_thumbnail: Image { x: 7px; y: 23px; width: min(78px, max(0px, parent.width - 14px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
+    Text { x: 9px; y: 5px; width: max(0px, parent.width - 18px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 9px; font-weight: 700; overflow: elide; }
+    Text { x: root.item.has_thumbnail ? 90px : 9px; y: 30px; width: max(0px, parent.width - self.x - 9px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + "f source clip"; color: #c0dbd6; font-size: 8px; }
+    ClipGestureArea {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        zoom: root.zoom; cancel_token: root.cancel_token;
+        began => { root.focused(); root.gesture_kind = "move"; root.delta = 0; }
+        preview(value) => { root.delta = root.bounded_delta("move", value); }
+        finished(value) => { root.finish("move", value); }
+        cancelled => { root.gesture_kind = ""; root.delta = 0; }
+    }
+    Rectangle { x: 2px; y: 24px; width: 3px; height: 24px; background: #86c9bd; border-radius: 1px; }
+    Rectangle { x: parent.width - 5px; y: 24px; width: 3px; height: 24px; background: #86c9bd; border-radius: 1px; }
+    ClipGestureArea {
+        x: 0px; y: 0px;
+        width: min(9px, parent.width / 3); height: parent.height; zoom: root.zoom; cancel_token: root.cancel_token; mouse-cursor: ew-resize;
+        accessible-role: button;
+        accessible-label: "Trim start of " + root.item.asset_name;
+        began => { root.focused(); root.gesture_kind = "trim-start"; root.delta = 0; }
+        preview(value) => { root.delta = root.bounded_delta("trim-start", value); }
+        finished(value) => { root.finish("trim-start", value); }
+        cancelled => { root.gesture_kind = ""; root.delta = 0; }
+    }
+    ClipGestureArea {
+        x: parent.width - self.width; width: min(9px, parent.width / 3); height: parent.height; zoom: root.zoom; cancel_token: root.cancel_token; mouse-cursor: ew-resize;
+        accessible-role: button;
+        accessible-label: "Trim end of " + root.item.asset_name;
+        began => { root.focused(); root.gesture_kind = "trim-end"; root.delta = 0; }
+        preview(value) => { root.delta = root.bounded_delta("trim-end", value); }
+        finished(value) => { root.finish("trim-end", value); }
+        cancelled => { root.gesture_kind = ""; root.delta = 0; }
+    }
+}
+
+component TimingField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> enabled: true;
+    callback committed(string);
+    spacing: 4px;
+    Text { text: root.label; color: #939ba2; font-size: 10px; }
+    LineEdit { accessible-label: root.label; enabled: root.enabled; text: root.value; placeholder-text: "Enter value"; accepted(value) => { root.committed(value); } }
+}
+
+export component EditorWindow inherits Window {
+    title: "OpenQuartz Studio — " + root.project_name;
+    preferred-width: 1440px; preferred-height: 900px; min-width: 1040px; min-height: 700px;
+    background: #111315; default-font-size: 12px;
+    accessible-role: main;
+    accessible-label: "OpenQuartz video editor";
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status;
+    forward-focus: editor_focus;
+    init => { Palette.color-scheme = ColorScheme.dark; }
+    in-out property <string> project_name: "Untitled Video";
+    in-out property <string> project_path: "Not saved";
+    in-out property <string> project_status: "Hardware GPU initializing";
+    in-out property <string> io_status: "All changes saved";
+    in property <[AssetRow]> assets;
+    in property <[ClipRow]> clips;
+    in property <int> selected_frame: 0;
+    in property <int> sequence_duration: 0;
+    in property <string> timecode: "00:00:00:00";
+    in property <string> sequence_timecode: "00:00:00:00";
+    in property <string> sequence_fps: "30";
+    in property <image> monitor_image;
+    in property <bool> has_monitor_image: false;
+    in property <bool> playing: false;
+    in property <bool> can_undo: false;
+    in property <bool> can_redo: false;
+    in property <string> selected_asset_name: "No media selected";
+    in property <string> selected_asset_details: "Import a local H.264 or HEVC clip";
+    in property <string> selected_clip_name: "No clip selected";
+    in property <string> selected_clip_start: "0";
+    in property <string> selected_clip_duration: "0";
+    in property <string> selected_clip_end: "0";
+    in property <string> selected_clip_source_in: "0";
+    in property <string> selected_clip_source_out: "0";
+    in property <string> selected_clip_id: "";
+    in-out property <int> timeline_zoom: 16;
+    in-out property <string> search_query;
+    in-out property <string> file_path;
+    in-out property <string> file_dialog_kind;
+    in-out property <bool> file_dialog_open: false;
+    in property <string> selected_clip_scale: "1.0";
+    in property <string> selected_clip_x: "0.0";
+    in property <string> selected_clip_y: "0.0";
+    in property <string> selected_clip_exposure: "0.0";
+    in property <int> project_data_width: 1920;
+    in property <int> project_data_height: 1080;
+    in property <string> sequence_fps_numerator: "30";
+    in property <string> sequence_fps_denominator: "1";
+    in property <float> timeline_content_width: 900;
+    callback project_action(string);
+    callback import_media(); callback asset_select(string); callback add_to_timeline();
+    callback clip_select(string); callback split_clip(); callback lift_clip();
+    callback trim_clip(string, int); callback undo(); callback redo();
+    callback playback(string); callback step_frame(int); callback zoom_changed(int);
+    callback seek_frame(int);
+    callback clip_gesture(id: string, kind: string, delta: int);
+    callback shortcut(string);
+    callback search_changed(string);
+    callback clip_timing_changed(field: string, value: string);
+    callback sequence_settings(width: string, height: string, fps_numerator: string, fps_denominator: string);
+    callback rename_project(string);
+    callback file_submit(kind: string, path: string);
+    function submit_file() {
+        let kind = root.file_dialog_kind;
+        let path = root.file_path;
+        root.file_dialog_open = false;
+        editor_focus.focus();
+        root.file_submit(kind, path);
+    }
+    private property <bool> settings_open: false;
+    private property <string> draft_width;
+    private property <string> draft_height;
+    private property <string> draft_fps_numerator;
+    private property <string> draft_fps_denominator;
+    function open_settings() {
+        root.draft_width = root.project_data_width + "";
+        root.draft_height = root.project_data_height + "";
+        root.draft_fps_numerator = root.sequence_fps_numerator;
+        root.draft_fps_denominator = root.sequence_fps_denominator;
+        root.settings_open = true;
+        root.cancel_token += 1;
+        root.project_action("settings");
+    }
+    private property <int> cancel_token: 0;
+    private property <int> ruler_step: max(1, Math.round(100 / max(1, root.timeline_zoom)));
+    private property <color> panel: #1b1e21;
+    private property <color> border: #30363b;
+    private property <color> text: #e7eaed;
+    private property <color> secondary: #939ba2;
+    private property <color> accent: #38d9c3;
+
+    editor_focus := FocusScope {
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.settings_open = false;
+                root.file_dialog_open = false;
+                root.cancel_token += 1;
+                root.shortcut("cancel");
+                return accept;
+            }
+            if root.settings_open || root.file_dialog_open { return reject; }
+            // Command is represented as control by Slint on macOS.
+            if event.modifiers.control && !event.modifiers.alt {
+                if event.text == "n" || event.text == "N" { root.shortcut("new"); return accept; }
+                if event.text == "o" || event.text == "O" { root.shortcut("open"); return accept; }
+                if event.text == "s" || event.text == "S" { root.shortcut(event.modifiers.shift ? "save-as" : "save"); return accept; }
+                if event.text == "i" || event.text == "I" { root.shortcut("import"); return accept; }
+                if event.text == "r" || event.text == "R" { root.shortcut("relink"); return accept; }
+                if event.text == "z" || event.text == "Z" { root.shortcut(event.modifiers.shift ? "redo" : "undo"); return accept; }
+                if event.text == "y" || event.text == "Y" { root.shortcut("redo"); return accept; }
+                if event.text == "b" || event.text == "B" { root.shortcut("split"); return accept; }
+            }
+            if !event.modifiers.control && !event.modifiers.alt {
+                if event.text == " " { root.shortcut("play"); return accept; }
+                if event.text == Key.LeftArrow { root.shortcut("step-back"); return accept; }
+                if event.text == Key.RightArrow { root.shortcut("step-forward"); return accept; }
+                if event.text == Key.Delete || event.text == Key.Backspace { root.shortcut("delete"); return accept; }
+            }
+            reject
+        }
+        VerticalLayout {
+            spacing: 0px;
+            Rectangle {
+                height: 54px; background: #181a1c;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; spacing: 12px;
+                    Rectangle { width: 27px; height: 27px; border-radius: 8px; background: root.accent; Text { text: "Q"; color: #111719; font-size: 17px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; } }
+                    Text { text: "OPENQUARTZ"; color: root.text; font-size: 14px; font-weight: 800; vertical-alignment: center; }
+                    Rectangle { width: 1px; height: 24px; background: root.border; }
+                    VerticalLayout { spacing: 1px; LineEdit { text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } } Text { text: root.project_path; color: root.secondary; font-size: 9px; overflow: elide; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.io_status; color: root.secondary; font-size: 10px; vertical-alignment: center; }
+                    ToolButton { label: "UNDO"; glyph: "↶"; active: root.can_undo; clicked => { editor_focus.focus(); root.undo(); } }
+                    ToolButton { label: "REDO"; glyph: "↷"; active: root.can_redo; clicked => { editor_focus.focus(); root.redo(); } }
+                }
+            }
+            Rectangle {
+                height: 44px; background: #202326;
+                HorizontalLayout {
+                    padding-left: 12px; padding-right: 12px; spacing: 6px;
+                    ToolButton { label: "NEW"; glyph: "+"; clicked => { root.project_action("new"); } }
+                    ToolButton { label: "OPEN"; glyph: "▱"; clicked => { root.project_action("open"); } }
+                    ToolButton { label: "SAVE"; glyph: "▣"; clicked => { root.project_action("save"); } }
+                    ToolButton { label: "SAVE AS"; glyph: "▣+"; clicked => { root.project_action("save-as"); } }
+                    ToolButton { label: "RELINK"; glyph: "↔"; clicked => { root.project_action("relink"); } }
+                    ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
+                    ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.project_status; color: root.secondary; vertical-alignment: center; font-size: 10px; overflow: elide; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 1px; vertical-stretch: 1;
+                Rectangle {
+                    width: 260px; background: root.panel;
+                    VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 12px; Text { text: "Media library"; color: root.text; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "+"; clicked => { root.project_action("import"); } } }
+                        LineEdit { text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
+                        HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "PROJECT MEDIA"; color: root.accent; font-size: 9px; font-weight: 700; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 9px; vertical-alignment: center; } }
+                        ScrollView {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            VerticalLayout {
+                                padding: 10px; spacing: 8px;
+                                if root.assets.length == 0: Rectangle {
+                                    height: 160px; background: #151719; border-radius: 8px;
+                                    VerticalLayout {
+                                        alignment: LayoutAlignment.center; padding: 12px; spacing: 8px;
+                                        Text { text: root.search_query == "" ? "Your media library" : "No matching media"; color: root.text; font-size: 12px; font-weight: 650; horizontal-alignment: center; }
+                                        Text { text: root.search_query == "" ? "Import local H.264 / HEVC clips" : "Try another search"; color: root.secondary; font-size: 10px; horizontal-alignment: center; }
+                                        Button { text: "Import media"; primary: true; clicked => { root.project_action("import"); } }
+                                    }
+                                }
+                                for asset in root.assets: AssetCard { asset: asset; clicked => { editor_focus.focus(); root.asset_select(asset.id); } add_clicked => { editor_focus.focus(); root.asset_select(asset.id); root.add_to_timeline(); } }
+                                Rectangle { vertical-stretch: 1; }
+                            }
+                        }
+                        Rectangle { height: 80px; background: #151719; VerticalLayout { padding: 12px; spacing: 5px; Text { text: root.selected_asset_name; color: root.text; font-size: 10px; font-weight: 700; overflow: elide; } Text { text: root.selected_asset_details; color: root.secondary; font-size: 9px; wrap: word-wrap; } } }
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1; background: #101213;
+                    VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout { height: 38px; padding-left: 14px; padding-right: 14px; Text { text: "Preview"; color: root.text; font-size: 11px; font-weight: 650; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 9px; vertical-alignment: center; } }
+                        Rectangle {
+                            horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
+                            accessible-role: image;
+                            accessible-label: "Video preview";
+                            if root.has_monitor_image: Image { width: parent.width; height: parent.height; source: root.monitor_image; image-fit: contain; }
+                            if !root.has_monitor_image: VerticalLayout { alignment: LayoutAlignment.center; spacing: 8px; Text { text: "◩"; color: #444b50; font-size: 36px; horizontal-alignment: center; } Text { text: "Add media to the timeline"; color: #7c848a; font-size: 12px; horizontal-alignment: center; } }
+                        }
+                        Rectangle {
+                            height: 64px; background: #191c1e;
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 12px; spacing: 8px;
+                                Rectangle { horizontal-stretch: 1; }
+                                ToolButton { label: "PREVIOUS"; glyph: "|◀"; clicked => { editor_focus.focus(); root.step_frame(-1); } }
+                                ToolButton { label: root.playing ? "PAUSE" : "PLAY"; glyph: root.playing ? "Ⅱ" : "▶"; selected: root.playing; clicked => { editor_focus.focus(); root.playback(root.playing ? "pause" : "play"); } }
+                                ToolButton { label: "NEXT"; glyph: "▶|"; clicked => { editor_focus.focus(); root.step_frame(1); } }
+                                Text { text: root.timecode; color: root.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; }
+                                Text { text: "/ " + root.sequence_timecode; color: root.secondary; font-size: 10px; vertical-alignment: center; }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 250px; background: root.panel;
+                    VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip timing"; color: root.accent; font-size: 12px; font-weight: 700; vertical-alignment: center; } }
+                        ScrollView {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            VerticalLayout {
+                                padding: 14px; spacing: 12px;
+                                Text { text: root.selected_clip_name; color: root.text; font-size: 13px; font-weight: 700; wrap: word-wrap; }
+                                Text { text: "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 9px; wrap: word-wrap; }
+                                TimingField { label: "Timeline start"; value: root.selected_clip_start; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("start", value); } }
+                                TimingField { label: "Timeline end"; value: root.selected_clip_end; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("end", value); } }
+                                TimingField { label: "Source in"; value: root.selected_clip_source_in; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("source_in", value); } }
+                                TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("source_out", value); } }
+                                Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 10px; }
+                                Text { text: "Press Enter to apply a frame value. Drag a clip to move it; drag an edge to trim. Esc cancels a drag."; color: root.secondary; font-size: 10px; wrap: word-wrap; }
+                                Rectangle { vertical-stretch: 1; }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                height: 280px; background: #191c1e;
+                VerticalLayout {
+                    spacing: 0px;
+                    HorizontalLayout {
+                        height: 44px; padding-left: 15px; padding-right: 12px; spacing: 5px;
+                        Text { text: "Timeline"; color: root.text; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        Rectangle { width: 1px; height: 20px; background: root.border; }
+                        Text { text: "Main track"; color: root.secondary; font-size: 10px; vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        ToolButton { label: "ADD CLIP"; glyph: "+"; active: root.assets.length > 0; clicked => { editor_focus.focus(); root.add_to_timeline(); } }
+                        ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.split_clip(); } }
+                        ToolButton { label: "DELETE"; glyph: "⌫"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.lift_clip(); } }
+                        ToolButton { label: "ZOOM OUT"; glyph: "−"; clicked => { root.cancel_token += 1; root.timeline_zoom = max(4, root.timeline_zoom - 2); root.zoom_changed(root.timeline_zoom); } }
+                        Text { text: root.timeline_zoom + " px/f"; width: 52px; color: root.secondary; font-size: 9px; vertical-alignment: center; horizontal-alignment: center; }
+                        ToolButton { label: "ZOOM IN"; glyph: "+"; clicked => { root.cancel_token += 1; root.timeline_zoom = min(48, root.timeline_zoom + 2); root.zoom_changed(root.timeline_zoom); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 0px; vertical-stretch: 1;
+                        Rectangle { width: 84px; background: #1b1e21; Text { y: 52px; width: parent.width; height: 72px; text: "VIDEO 1\nV1"; color: root.accent; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                        timeline_scroll := ScrollView {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            content-width: max(self.visible-width, root.timeline_content_width * 1px);
+                            content-height: self.visible-height;
+                            Rectangle {
+                                width: timeline_scroll.content-width; height: timeline_scroll.content-height; background: #17191b;
+                                Rectangle { width: parent.width; height: 32px; background: #131517; }
+                                Rectangle { y: 46px; width: parent.width; height: 84px; background: #1e2527; }
+                                for tick in Math.ceil(timeline_scroll.visible-width / 1px / max(1, root.timeline_zoom) / root.ruler_step) + 2: Rectangle {
+                                    private property <int> frame: (tick + Math.floor(-timeline_scroll.content-x / 1px / max(1, root.timeline_zoom) / root.ruler_step)) * root.ruler_step;
+                                    x: 10px + self.frame * root.timeline_zoom * 1px; width: 1px; height: parent.height; background: #242a2d;
+                                    Rectangle { width: 1px; height: 9px; y: 23px; background: #68737a; }
+                                    Text { x: 5px; y: 4px; width: 80px; height: 20px; text: parent.frame + "f"; color: root.secondary; font-size: 9px; vertical-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round((self.mouse-x / 1px - 10) / max(1, root.timeline_zoom)))); }
+                                }
+                                for clip in root.clips: TimelineClip {
+                                    item: clip; zoom: root.timeline_zoom; cancel_token: root.cancel_token;
+                                    focused => { editor_focus.focus(); }
+                                    clicked => { root.clip_select(clip.id); }
+                                    gesture(kind, delta) => { root.clip_gesture(clip.id, kind, delta); }
+                                }
+                                Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px; width: 2px; height: parent.height; background: #ff525b; }
+                                Rectangle { x: 6px + root.selected_frame * root.timeline_zoom * 1px; y: 1px; width: 10px; height: 10px; background: #ff525b; border-radius: 2px; }
+                            }
+                        }
+                    }
+                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " clips · " + root.sequence_duration + " frames · gaps render black"; color: root.secondary; font-size: 9px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "Space play · ← / → step · ⌘/Ctrl+B split · Esc cancel"; color: root.secondary; font-size: 9px; vertical-alignment: center; } } }
+                }
+            }
+            Rectangle { height: 25px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: "OpenQuartz Studio"; color: #737b81; font-size: 9px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #737b81; font-size: 9px; vertical-alignment: center; } } }
+        }
+        if root.settings_open: Rectangle {
+            width: parent.width; height: parent.height; background: #000000b0;
+            TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 420px; height: 432px; background: root.panel;
+                border-width: 1px; border-color: root.border; border-radius: 10px;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 24px; spacing: 10px;
+                    Text { text: "Sequence settings"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
+                    Text { text: "Width (pixels)"; color: root.secondary; font-size: 10px; }
+                    LineEdit { accessible-label: "Sequence width"; text <=> root.draft_width; }
+                    Text { text: "Height (pixels)"; color: root.secondary; font-size: 10px; }
+                    LineEdit { accessible-label: "Sequence height"; text <=> root.draft_height; }
+                    Text { text: "FPS numerator / denominator (e.g. 30000 / 1001)"; color: root.secondary; font-size: 10px; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        LineEdit { accessible-label: "FPS numerator"; text <=> root.draft_fps_numerator; }
+                        Text { text: "/"; color: root.secondary; vertical-alignment: center; }
+                        LineEdit { accessible-label: "FPS denominator"; text <=> root.draft_fps_denominator; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Button { text: "Cancel"; clicked => { root.settings_open = false; editor_focus.focus(); } }
+                        Button { text: "Apply settings"; primary: true; clicked => { root.sequence_settings(root.draft_width, root.draft_height, root.draft_fps_numerator, root.draft_fps_denominator); root.settings_open = false; editor_focus.focus(); } }
+                    }
+                }
+            }
+        }
+        if root.file_dialog_open: Rectangle {
+            width: parent.width; height: parent.height; background: #000000b0;
+            accessible-role: groupbox;
+            accessible-label: "File dialog";
+            accessible-description: "Action " + root.file_dialog_kind + "; path " + root.file_path;
+            TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 680px; height: 264px; background: root.panel;
+                border-width: 1px; border-color: root.border; border-radius: 10px;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 24px; spacing: 12px;
+                    Text { text: root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        LineEdit {
+                            accessible-label: "File path";
+                            text <=> root.file_path;
+                            placeholder-text: root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            accepted(value) => { root.submit_file(); }
+                        }
+                        Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
+                    }
+                    Text { text: root.io_status; color: root.secondary; font-size: 10px; wrap: word-wrap; }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
+                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                    }
+                }
+            }
+        }
+    }
+}

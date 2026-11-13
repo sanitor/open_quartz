@@ -370,10 +370,10 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 | 平台验证 | 相机、Windows/Linux GPU、独立 `.scr` 与移动端未完成本轮实机验证；移动端交付暂缓 |
 | macOS 启动 | 早先出现过未解释的 winit startup abort，后续未复现，不能宣称原因已修复 |
 | 覆盖率 | 默认与完整 native 的整体 100% gates 仍失败，见下节 |
-| 按帧离线执行与流水 | 同一个FramePipeline支持显式单帧/有界窗口；macOS source worker精确选帧，同帧图/推理/稳定输出。ExportJob消费冻结会话经同queue NV12转换→VideoToolbox硬编→原子MP4；编辑器UI/时间线及跨平台精确source窗口未交付 |
+| 按帧离线执行与流水 | 同一FramePipeline供NativePlayer、headless ExportJob和Phase6编辑器预览使用；编辑器已有单轨剪辑/精确源时间映射/真实GPU监视器。完整效果、编辑器导出UI及跨平台精确source窗口未交付 |
 
 <a id="execution-rendering-split"></a>
-## 渲染与执行分离决策（Phase 1～5）
+## 渲染与执行分离决策（Phase 1～6）
 
 ### 决策与范围
 
@@ -383,13 +383,13 @@ Cargo feature 是可加的，完整 workspace 中其他消费者可能重新打�
 
 | 层 / 所有者 | 当前责任 | 后续目标 / 明确不负责 |
 |---|---|---|
-| 编辑语义：原图 Project / 新编辑器 EditorDocument、TimelinePlanner | 原图编辑事务；新编辑器尚未接入 | 指定序列帧/前瞻范围 → 不可变需求；不拥有 decoder/GPU queue |
-| 宿主策略：NativePlayer / ExportJob / 未来PreviewScheduler | NativePlayer clock/prefill/deadline；ExportJob checked CFR半开范围/文件终态/冻结源身份 | 编辑器Clip→source映射仍未实现；不复制pipeline |
+| 编辑语义：原图 Project / EditorDocument、TimelinePlanner | 原图事务及独立编辑器单轨文档、历史、精确有理数片段映射、保存与relink | 指定帧→不可变需求；不拥有decoder/GPU queue |
+| 宿主策略：NativePlayer / ExportJob / 编辑器Controller、PreviewBridge | NativePlayer实时clock；headless ExportJob范围/终态；编辑器唯一播放头/基础clock/最终意图交接 | 不复制pipeline；完整跨切点前瞻/吸附与导出UI仍后续 |
 | `execution::FramePipeline` | 有界demand/terminal、下游工作集预留、源worker预取、输入版本、按序GPU/推理、取消和稳定输出 | 无UI/clock/codec；单个媒体PTS仅在唯一source语义成立时填写 |
-| 媒体 / 推理算子 / 消费者 | oq-media保留PTS/cursor/native lease及有界硬编/mux；oq-inference管resident执行与slot；Slint消费稳定预览 | 编辑器资产时间线尚未实现；媒体库不依赖图/wgpu/Slint |
+| 媒体 / 推理算子 / 消费者 | oq-media PTS/cursor/native lease及硬编/mux；oq-inference resident执行；原图与编辑器Slint消费GPU稳定帧 | 媒体库不依赖图/wgpu/Slint；音频和完整NLE仍未交付 |
 | `rendering::RenderDevice` / GpuExecutor | shader/纹理/平台 GPU import、局部资源池、命令编码/提交、设备完成条件 | 不负责源时间映射、全局调度或 UI 时钟 |
 
-**NativePlayer与ExportJob使用同一个FramePipeline。**同backend共享FrameBudget，多会话可显式注入同Arc。预览和headless导出拥有独立窗口/状态；编辑器UI仍未实现。ExportJob持有冻结pipeline，正常路径无CPU像素readback，跨GPU→codec在queue completion后送frame，原生AVBuffer至真实source-consumed callback才归还credit。
+**NativePlayer、ExportJob与Phase6编辑器预览使用同一FramePipeline。**同backend共享FrameBudget；编辑器Slint与graph使用同Device/Queue。PreviewBridge只做单槽latest intent、ticket/revision屏障与worker交接，核心执行循环不复制。独立GPU缩略图最多六张，按共享预算持有不可变texture；正常路径无CPU图像回传。headless编码仍在真实queue completion后送codec，AVBuffer至消费callback归还credit。
 
 ```mermaid
 flowchart TD
@@ -417,7 +417,7 @@ Phase5新增`rendering::Nv12Converter`和`execution::ExportJob`，稳定帧保�
 
 ### 按帧接口、图状态与完成
 
-**当前接口：**单请求`submit(FrameDemand)`与`submit_window`共享同一求值/依赖/完成实现。demand包含request_id/revision/显式FrameEvaluationInput/output及可选同设备ExternalFrameInput。窗口统一限制queued/terminal/稳定输出、水位、timeline span和共享credit；worker选实际PTS后，owner按序GPU/同帧推理/稳定copy，poll_completion回单终态。WouldBlock/Rejected归还未接收输入。编辑器Clip/SourceTimeMapping仍未实现。
+**当前接口：**submit(FrameDemand)/submit_window共享同一求值与完成。窗口限制queued/terminal/稳定输出、水位、timeline span和共享credit；worker选实际PTS后owner按序GPU/推理/稳定copy。WouldBlock/Rejected归还输入。Phase6的document::source_time_ns保留分割/修剪产生的分数source tick，再由controller构造不可变需求；空隙提交真实黑色图，不把UI时钟冒充实际source PTS。
 
 **当前完成：**每请求终态Submitted(StableFrame)/Cancelled/Failed；Submitted只表示GPU入队，ready另判。异步推理必须匹配原始不可变stamp。source epoch变化seek关键帧/preroll，EOF/未知PTS拒绝而非复用旧图。窗口已有worker/prefill/watermark/admission/wake；deadline只影响呈现比较，不修改内容stamp。ExportJob再经NV12 ready→encoder/drain→原子commit形成文件级终态。
 
@@ -453,9 +453,15 @@ Phase2切换到共享执行、Phase3引入精确PTS cursor；Phase4再把cursor�
 <a id="validation"></a>
 ## 验证基线
 
+### 2026-11-12 Phase 6 原生视频编辑器
+
+macOS/Apple M4 Pro上真实OpenQuartz Studio窗口13/13 case通过：sequence rational设置，VideoToolbox红蓝素材probe/import，GPU真实首帧及audio-present提示，两素材单轨放置、move释放后commit/undo/redo、双边trim、精确45帧split、lift、overlap不提交、拖动Esc撤销草稿、顺序play/pause、`.oqvideo.json`原子保存/关闭/重开、缺素材offline呈现、不同内容relink拒绝、匹配指纹relink恢复预览。独立PNG oracle核对红/蓝/黑画面；保存文件逐字段核对序列设置/范围/source PTS，媒体文件不是源码创建项目mock。详情和截图见[Phase 6报告](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。应用18单测+实际UI插桩综合line/function/region=90.38/88.21/88.78%；root workspace293、原Slint80/2 ignored、UI19和rust dependency boundaries通过。既有SDK100%仍红，最新default=98.02/95.86/97.99%、native=94.03/87.09/92.13%，scope未改；未发布。
+
+产物与独立覆盖报告遵循仓库忽略规则，见`test-results/phase6/`。
+
 ### 2026-11-12 Phase 5 硬件导出
 
-同FramePipeline的真实macOS source→GPU反色→NV12→VideoToolbox H264→MP4与CLI已运行；12帧范围/source PTS/尾帧/颜色由独立FFmpeg+ffprobe核对，24帧NTSC B-frame重排/小池背压与ENOSPC/取消/源变化/目标竞争有真实回归。根workspace293、native-video核心297、Slint80（既有ignored2）、交互19/19、Shader34/34、七模型Image+Video15/15通过。SDK100% gate仍失败（最终default line/function/region98.02/95.86/97.99%，native94.00/87.04/92.11%），未放宽scope；媒体独立16 tests通过、coverage78.35/69.77/79.21%。命令/报告及失败修复见[Phase5记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。不发布，不将headless说成编辑器UI完成。
+同FramePipeline的真实macOS source→GPU反色→NV12→VideoToolbox H264→MP4与CLI已运行；12帧范围/source PTS/尾帧/颜色由独立FFmpeg+ffprobe核对，24帧NTSC B-frame重排/小池背压与ENOSPC/取消/源变化/目标竞争有真实回归。根workspace294、native-video核心297、Slint80（既有ignored2）、交互19/19、Shader34/34、七模型Image+Video15/15通过。SDK100% gate仍失败（本Phase default line/function/region 97.85/94.83/97.69%，native94.02/87.04/92.11%），未放宽scope；媒体独立16 tests通过、coverage78.35/69.77/79.21%。命令/报告及失败修复见[Phase5记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。不发布，不将headless说成编辑器UI完成。
 
 ### 2026-11-12 Phase 4 有界前瞻与非阻塞阶段
 

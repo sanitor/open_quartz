@@ -90,6 +90,8 @@ revision/history. See [Design 模块与所有权](../../docs/DESIGN.md#module-ow
 
 The shared core now also has a macOS hardware H.264/MP4 `execution::ExportJob` and runnable `export_video` example. This is headless infrastructure, **not a new File → Export Video UI** in this application. It uses the same FramePipeline with GPU NV12 conversion, bounded native input-consumption credits and atomic final-file commit; no audio or CPU image fallback. Commands, SDK source/patch distribution and actual evidence are in the [media README](../../crates/oq-media/README.md#硬件h264mp4文件任务).
 
+Phase 6 now has a **separate timeline application**, [OpenQuartz Studio](../open_quartz_video_editor/README.md), launched with `npm run dev:video-editor`. This node-graph application and its normal `npm run dev` entry are unchanged. The timeline app reuses FramePipeline and shared-device GPU textures; it does not yet offer the Phase 8 export UI or audio editing.
+
 ### Does the desktop need FFI?
 
 The pure Rust desktop uses the typed API directly; it needs no SDK C ABI, JNI
