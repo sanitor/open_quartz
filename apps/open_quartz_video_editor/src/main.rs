@@ -24,12 +24,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("Unknown option: {}", arg.to_string_lossy()).into());
         }
     }
+    let controls_on_left = match std::env::var("OPEN_QUARTZ_WINDOW_CONTROLS") {
+        Ok(position) if position == "left" => true,
+        Ok(position) if position == "right" => false,
+        Ok(position) if position == "platform" => cfg!(target_os = "macos"),
+        Ok(position) => return Err(format!(
+            "OPEN_QUARTZ_WINDOW_CONTROLS must be left, right, or platform (got {position:?})"
+        ).into()),
+        Err(std::env::VarError::NotPresent) => cfg!(target_os = "macos"),
+        Err(error) => return Err(error.into()),
+    };
     let (bridge, configuration, description) = preview::PreviewBridge::new()?;
     let backend = bridge.backend.clone();
     slint::BackendSelector::new()
         .require_wgpu_30(configuration)
         .select()?;
     let window = EditorWindow::new()?;
+    window.set_window_controls_on_left(controls_on_left);
+    window.set_mac_style_controls(cfg!(target_os = "macos"));
     let controller = controller::Controller::new(&window, bridge, backend, description);
     if let Some(path) = project {
         controller.borrow_mut().open_path(path);

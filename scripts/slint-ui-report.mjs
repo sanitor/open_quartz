@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 // Stable IDs match checkpoint names; descriptions explain the observable contract.
 export const UI_CASES = [
   ['default-empty-start-stopped', '默认空白启动', '画布没有节点和连线，播放停止，预览无图像。', ['01-']],
+  ['platform-window-controls', '平台化窗口控制按钮', '窗口控件按平台或 OPEN_QUARTZ_WINDOW_CONTROLS 配置放置；最大化后可还原。', []],
   ['open-empty-project-stopped', '打开空项目', '用项目路径重新启动，确认打开正确文件，画布为空且播放停止。', []],
   ['menu-add-default-editable-shader-stopped', '菜单添加 Shader', '通过菜单创建可编辑的自定义 Shader，源码存在，保持停止。', ['02-']],
   ['single-node-drag-positive-x', '单节点向右拖动', '松手后的屏幕落点和世界坐标正确，节点不回中。', ['03-drag-positive-x']],

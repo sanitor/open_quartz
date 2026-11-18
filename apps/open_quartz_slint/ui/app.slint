@@ -8,6 +8,8 @@ import { CodeEditorBridge } from "code_editor.slint";
 export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorInferenceRow, FactoryEntry, FactoryGroup }
 
 export component AppWindow inherits Window {
+    no-frame: true;
+    resize-border-width: 6px;
     title: root.project-name + " — OpenQuartz";
     accessible-role: main;
     accessible-label: root.project-name;
@@ -38,6 +40,8 @@ export component AppWindow inherits Window {
     in property <[FactoryGroup]> factory-groups;
     in property <int> renderer-factory-index: -1;
     in property <string> playback-state: "stopped";
+    in property <bool> window-controls-on-left;
+    in property <bool> mac-style-controls;
     in property <string> playback-time: "00:00:00.0";
     in property <string> render-fps: "0.0";
     callback project-action(string);
@@ -183,6 +187,9 @@ export component AppWindow inherits Window {
             playback-time: root.playback-time;
             native-runtime-available: root.native-runtime-available;
             screen-saver-available: root.screen-saver-available;
+            controls-on-left: root.window-controls-on-left;
+            mac-style-controls: root.mac-style-controls;
+            window-maximized: root.maximized;
             export-selection-valid: root.renderer-index >= 0 && root.graph-selection-count <= 1;
             project-action(action) => { root.project-action(action); }
             rename-project(name) => { root.rename-project(name); }
@@ -192,6 +199,9 @@ export component AppWindow inherits Window {
             capture-png => { root.capture-png(); }
             export-screen-saver => { root.export-screen-saver(); }
             playback(action) => { root.playback(action); }
+            minimize-window => { root.minimized = true; }
+            toggle-maximize-window => { root.maximized = !root.maximized; }
+            close-window => { root.close(); }
         }
         HorizontalLayout {
             spacing: 0px;

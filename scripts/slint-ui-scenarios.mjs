@@ -222,6 +222,31 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       await capture('01-default-empty-stopped');
       return observed;
     });
+    await checkpoint('platform-window-controls', async () => {
+      const labels = ['Close window', 'Minimize window', 'Maximize window'];
+      const controls = await Promise.all(labels.map((label) => client.find({ label, role: 'Button' })));
+      const settings = await client.windowProperties();
+      const logicalWidth = settings.size.width / (settings.scaleFactor || 1);
+      const override = process.env.OPEN_QUARTZ_WINDOW_CONTROLS || 'platform';
+      const controlsOnLeft = override === 'left' || (override === 'platform' && process.platform === 'darwin');
+      for (const control of controls) {
+        const centerX = control.absolutePosition.x + control.size.width / 2;
+        assert.equal(centerX < logicalWidth / 2, controlsOnLeft, `${control.accessibleLabel} is on the wrong side`);
+      }
+      const macOrder = ['Close window', 'Minimize window', 'Maximize window'];
+      const windowsOrder = ['Minimize window', 'Maximize window', 'Close window'];
+      const expectedOrder = process.platform === 'darwin' ? macOrder : windowsOrder;
+      const actualOrder = controls.toSorted((a, b) => a.absolutePosition.x - b.absolutePosition.x).map((control) => control.accessibleLabel);
+      assert.deepEqual(actualOrder, expectedOrder, 'Window controls do not follow platform ordering');
+      await client.click(controls[2]);
+      const restore = await client.waitFor(async () => {
+        const buttons = await client.byLabel('Restore window', { role: 'Button' });
+        return buttons.length === 1 && buttons[0];
+      }, { description: 'maximized window control changes to restore' });
+      await client.click(restore);
+      await client.waitFor(async () => (await client.byLabel('Maximize window', { role: 'Button' })).length === 1, { description: 'window returns to resizable state' });
+      return { controlsOnLeft, actualOrder };
+    });
     await checkpoint('open-empty-project-stopped', async () => {
       const url = await restartApp();
       assert.equal(typeof url, 'string', 'restart must return an endpoint string');

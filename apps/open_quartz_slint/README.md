@@ -165,6 +165,13 @@ to start rendering.
 creates a deterministic spatial fixture with 100 nodes by default and accepts an
 explicit count from 1 through 300. The two options are mutually exclusive.
 
+The main window uses a custom, frameless Slint title bar with draggable header
+and resize borders. Window controls default to the left with macOS traffic-light
+styling/order, and to the right with minimize/maximize/close order elsewhere.
+Set `OPEN_QUARTZ_WINDOW_CONTROLS=left`, `right`, or `platform` to override the
+control-group position; `platform` restores the OS default. The close control
+uses the app's normal window-close/shutdown path.
+
 Use **FILE → OPEN… / SAVE / SAVE AS…** for native project dialogs. Save writes
 the SDK's `Project::to_file()` JSON to the current path; Save As chooses a new
 path and the platform dialog handles overwrite confirmation. Save is manual.

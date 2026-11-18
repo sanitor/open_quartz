@@ -1,9 +1,9 @@
 mod app_controller;
 mod graph_clipboard;
 mod graph_view_model;
+mod inference_runtime;
 mod inspector_forms;
 mod inspector_inference;
-mod inference_runtime;
 mod render_bridge;
 mod shader_catalog;
 mod services {
@@ -45,7 +45,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (None, format!("Renderer not initialized: {error}"))
         }
     };
+    let controls_on_left =
+        match std::env::var("OPEN_QUARTZ_WINDOW_CONTROLS") {
+            Ok(position) if position == "left" => true,
+            Ok(position) if position == "right" => false,
+            Ok(position) if position == "platform" => cfg!(target_os = "macos"),
+            Ok(position) => return Err(format!(
+                "OPEN_QUARTZ_WINDOW_CONTROLS must be left, right, or platform (got {position:?})"
+            )
+            .into()),
+            Err(std::env::VarError::NotPresent) => cfg!(target_os = "macos"),
+            Err(error) => return Err(error.into()),
+        };
     let window = AppWindow::new()?;
+    window.set_window_controls_on_left(controls_on_left);
+    window.set_mac_style_controls(cfg!(target_os = "macos"));
     slint_code_editor::install_editor!(window, CodeEditorBridge);
     let controller = AppController::new(
         &window,

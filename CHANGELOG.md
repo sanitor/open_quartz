@@ -7,6 +7,12 @@
 - Release the editor controller's `RefCell` borrow before synchronously opening AppKit's nested `NSOpenPanel` / `NSSavePanel` modal loop. Slint callbacks and periodic preview updates can re-enter during the native chooser; retaining the mutable borrow caused the observed abort after video import.
 - Restore the custom path dialog on cancellation and keep Browse/Open/Import/Save As/Relink routes on the same checked file-submission path. Regression test deliberately re-enters the controller inside the nested-modal closure.
 
+### Cross-platform integrated title bar
+
+- Replace the native window frame with a custom Slint title bar, platform-positioned controls, drag-to-move region and resizable border. macOS defaults to left-side traffic-light-style controls; other platforms default to right-side minimize/maximize/close controls.
+- Allow overriding placement with `OPEN_QUARTZ_WINDOW_CONTROLS=left|right|platform`; exercise both configured placement and maximize/restore through the real native-window UI suite.
+- Apply the same frameless header to OpenQuartz Studio, sharing the window-button component with the node editor and matching its placement override. Preserve the unsaved-project close confirmation. Native editor acceptance checks actual maximize/restore sizes and exits through the custom close control after saving.
+
 ### Timeline repeater callback crash fix
 
 - Defer media-card selection/add and timeline clip selection/gesture commands until the Slint input callback has returned. Those commands refresh or mutate the repeated row models; replacing a row while its child callback is active could invalidate the callback's component tree and abort the editor.

@@ -17,6 +17,15 @@ npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
+窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭；视频硬件运行路径的平台限制不变。关闭按钮仍走未保存工程确认。
+
+沿用同一位置配置，默认 `platform`，也可强制指定：
+
+```sh
+OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
+# 可选值：left / right / platform
+```
+
 ## Phase 6 可操作范围
 
 - **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频。文件必须可精确定位且有可信 stream origin/duration。显示实际尺寸、平均帧率、在线状态和有界 GPU 缩略图；有音轨的素材明确提示仅使用视频。
@@ -50,8 +59,10 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口13项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。未使用UI回显mock或只测forwarding的占位覆盖。
+最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口14项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。未使用UI回显mock或只测forwarding的占位覆盖。
 
 本轮窗口通过真实控件导入两段视频，设置序列，放置/移动/左右trim/split/lift/undo/redo，验证重叠拒绝、空隙像素和Escape取消，实际播放/暂停，再保存、正常退出、重开、错误relink拒绝及匹配指纹relink恢复。独立PNG oracle检查实际预览中心红/蓝/黑像素；保存后独立解析工程核对帧范围及stream PTS，不以控件文本代替结果。
+
+无边框窗口验收还检查控件位置/顺序、最大化后实际窗口尺寸增长、还原原尺寸，并在保存后点击自绘关闭按钮验证正常退出。macOS 默认左侧和强制右侧配置均通过；Windows/Linux 未实测。
 
 报告和复查文件位于`test-results/phase6/ui-*/`：`report.html`、`result.json`、截图、工程、生成素材及关闭日志。平台限制与详细coverage数值见[Phase6设计记录](DESIGN.md#144-当前实施记录与后续范围)。原仓库SDK 100% gate保持原阈值和排除规则；不满足时不发布。

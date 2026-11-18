@@ -1,0 +1,59 @@
+// Shared by the graph editor and timeline editor; colors follow the host header.
+export component WindowControlButton inherits Rectangle {
+    in property <string> action;
+    in property <bool> mac-style;
+    in property <bool> maximized;
+    in property <color> foreground: #1d1d1f;
+    in property <color> hover-background: #e5e5e5;
+    callback clicked();
+    width: root.mac-style ? 14px : 42px;
+    height: root.mac-style ? 14px : 40px;
+    border-radius: root.mac-style ? 7px : 0px;
+    background: root.mac-style
+        ? root.action == "close" ? #ff5f57 : root.action == "minimize" ? #febc2e : #28c840
+        : area.has-hover ? root.hover-background : transparent;
+    accessible-role: button;
+    accessible-label: root.action == "close" ? "Close window" : root.action == "minimize" ? "Minimize window" : root.maximized ? "Restore window" : "Maximize window";
+    accessible-action-default => { root.clicked(); }
+    Text {
+        width: parent.width; height: parent.height;
+        text: root.action == "close" ? "×" : root.action == "minimize" ? "−" : root.maximized ? "❐" : "□";
+        color: root.mac-style ? #5b2a20 : root.foreground;
+        font-size: root.mac-style ? 9px : 16px;
+        horizontal-alignment: center; vertical-alignment: center;
+        visible: !root.mac-style || area.has-hover;
+    }
+    area := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component WindowControls inherits Rectangle {
+    in property <bool> mac-style;
+    in property <bool> maximized;
+    in property <color> foreground: #1d1d1f;
+    in property <color> hover-background: #e5e5e5;
+    callback minimize-window();
+    callback toggle-maximize-window();
+    callback close-window();
+    width: root.mac-style ? 64px : 126px;
+    height: 40px;
+    HorizontalLayout {
+        spacing: root.mac-style ? 7px : 0px;
+        for action in root.mac-style ? ["close", "minimize", "maximize"] : ["minimize", "maximize", "close"]: Rectangle {
+            width: root.mac-style ? 14px : 42px;
+            height: parent.height;
+            WindowControlButton {
+                y: (parent.height - self.height) / 2;
+                action: action;
+                mac-style: root.mac-style;
+                maximized: root.maximized;
+                foreground: root.foreground;
+                hover-background: root.hover-background;
+                clicked => {
+                    if action == "close" { root.close-window(); }
+                    else if action == "minimize" { root.minimize-window(); }
+                    else { root.toggle-maximize-window(); }
+                }
+            }
+        }
+    }
+}

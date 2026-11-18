@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { WindowControlButton } from "window_controls.slint";
 
 export struct FactoryEntry { label: string, index: int }
 export struct FactoryGroup { label: string, section: string, items: [FactoryEntry] }
@@ -53,6 +54,7 @@ component MenuItem inherits Rectangle {
 }
 component Divider inherits Rectangle { width: 1px; height: 40px; Rectangle { y: 11px; width: 1px; height: 18px; background: #e8e8ed; } }
 
+
 export component TopBar inherits Rectangle {
     in property <string> project-name;
     in property <string> runtime-status;
@@ -67,6 +69,9 @@ export component TopBar inherits Rectangle {
     in property <string> playback-time: "00:00:00.0";
     in property <[FactoryGroup]> factory-groups;
     in property <int> renderer-factory-index: -1;
+    in property <bool> controls-on-left;
+    in property <bool> mac-style-controls;
+    in property <bool> window-maximized;
     callback project-action(string);
     callback rename-project(string);
     callback add-node(int);
@@ -75,6 +80,9 @@ export component TopBar inherits Rectangle {
     callback capture-png();
     callback export-screen-saver();
     callback playback(string);
+    callback minimize-window();
+    callback toggle-maximize-window();
+    callback close-window();
     private property <string> menu-section;
     private property <int> group-index: -1;
     private property <bool> editing-name;
@@ -95,49 +103,70 @@ export component TopBar inherits Rectangle {
     horizontal-stretch: 1;
     background: Theme.panel;
     Rectangle { y: parent.height - 1px; height: 1px; width: parent.width; background: #d2d2d7; }
-    HorizontalLayout {
+    WindowMoveArea {
         x: 0px; y: 0px; width: root.width; height: root.height;
-        padding-left: 16px; padding-right: 16px; spacing: 4px;
-        padding-top: 4px; padding-bottom: 4px;
-        alignment: stretch;
-        Rectangle { width: 16px; height: 40px; Image { y: 12px; source: @image-url("../../icons/favicon.svg"); width: 16px; height: 16px; } }
-        Text { text: root.available-width < 960px ? "OQ" : "OPENQUARTZ"; font-size: 13px; font-weight: 700; color: Theme.foreground; height: 40px; vertical-alignment: center; }
-        if root.available-width >= 1100px: Text { text: "v0.20.0b"; font-size: 11px; color: #aeaeb2; height: 40px; vertical-alignment: center; }
-        name := Rectangle {
-            width: clamp(name-text.preferred-width + 12px, 52px, root.available-width < 1000px ? 80px : 120px); height: 40px;
-            name-text := Text { visible: !root.editing-name; width: parent.width; height: parent.height; text: root.project-name; font-size: 12px; color: Theme.foreground; font-weight: 500; vertical-alignment: center; overflow: elide; }
-            name-area := TouchArea { enabled: !root.busy; double-clicked => { root.name-draft = root.project-name; root.editing-name = true; name-edit.focus(); } }
-            name-edit := TextInput {
-                visible: root.editing-name; width: parent.width; height: parent.height;
-                text <=> root.name-draft; single-line: true; font-size: 12px; color: Theme.foreground;
-                accepted => { root.rename-project(self.text); root.editing-name = false; }
-                key-pressed(event) => { if event.text == Key.Escape { root.editing-name = false; return accept; } return reject; }
+        HorizontalLayout {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            padding-left: root.controls-on-left ? 8px : 16px; padding-right: root.controls-on-left ? 16px : 8px; spacing: 4px;
+            padding-top: 4px; padding-bottom: 4px;
+            alignment: stretch;
+            if root.controls-on-left: HorizontalLayout {
+                spacing: 7px; padding-right: 8px; alignment: center;
+                if root.mac-style-controls: WindowControlButton { action: "close"; mac-style: true; maximized: root.window-maximized; clicked => { root.close-window(); } }
+                if root.mac-style-controls: WindowControlButton { action: "minimize"; mac-style: true; maximized: root.window-maximized; clicked => { root.minimize-window(); } }
+                if root.mac-style-controls: WindowControlButton { action: "maximize"; mac-style: true; maximized: root.window-maximized; clicked => { root.toggle-maximize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "minimize"; mac-style: false; maximized: root.window-maximized; clicked => { root.minimize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "maximize"; mac-style: false; maximized: root.window-maximized; clicked => { root.toggle-maximize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "close"; mac-style: false; maximized: root.window-maximized; clicked => { root.close-window(); } }
             }
-        }
-        Divider {}
-        file-button := ToolButton {
-            text: "FILE ▾"; icon-path: "M2 2.5H6L7.5 4H14L15 5V13L14 14H2L1 13V3.5Z";
-            enabled: !root.busy;
-            clicked => { file-menu.show(); }
-        }
-        Divider {}
-        for section in ["SOURCE", "MATH", "SHADER", "INFERENCE"]: ToolButton {
-            text: section + " ▾";
-            icon-path: section == "SOURCE" ? "M7.5 8H14 M7.5 8A3 3 0 1 1 1.5 8A3 3 0 1 1 7.5 8" : section == "SHADER" ? "M3.5 3.5H12.5V12.5H3.5Z M5 1V3.5 M8 1V3.5 M11 1V3.5 M5 12.5V15 M8 12.5V15 M11 12.5V15 M1 5H3.5 M1 8H3.5 M1 11H3.5 M12.5 5H15 M12.5 8H15 M12.5 11H15" : section == "INFERENCE" ? "M14 8A6 6 0 1 1 2 8A6 6 0 1 1 14 8 M5 8L8 5L11 8L8 11Z" : "";
-            glyph: "±"; enabled: !root.busy;
-            clicked => { root.open-node-menu(section, self.x); }
-        }
-        ToolButton { text: "RENDERER"; icon-path: "M1.5 2.5H14.5V11.5H1.5Z M5 14H11 M8 11.5V14"; enabled: !root.busy && root.renderer-factory-index >= 0; clicked => { root.add-node(root.renderer-factory-index); } }
-        Divider {}
-        ToolButton { text: "UNDO"; icon-path: "M6 3L2 7L6 11 M2 7H10C15 7 15 14 9 14"; enabled: !root.busy && root.can-undo; clicked => { root.undo(); } }
-        ToolButton { text: "REDO"; icon-path: "M10 3L14 7L10 11 M14 7H6C1 7 1 14 7 14"; enabled: !root.busy && root.can-redo; clicked => { root.redo(); } }
-        Divider {}
-        ToolButton { text: "CLEAR"; glyph: "×"; enabled: !root.busy; clicked => { root.project-action("clear"); } }
-        Rectangle { horizontal-stretch: 1; }
-        Text { text: root.playback-time; accessible-label: "Playback time " + root.playback-time; font-size: 11px; color: Theme.secondary; vertical-alignment: center; min-width: 78px; }
-        ToolButton { text: root.playback-state == "playing" ? "PAUSE" : root.playback-state == "paused" ? "RESUME" : "PLAY"; glyph: root.playback-state == "playing" ? "Ⅱ" : "▶"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback(root.playback-state == "playing" ? "pause" : "play"); } }
-        if root.playback-state != "stopped": ToolButton { text: "STOP"; glyph: "■"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
+            Rectangle { width: 16px; height: 40px; Image { y: 12px; source: @image-url("../../icons/favicon.svg"); width: 16px; height: 16px; } }
+            Text { text: root.available-width < 960px ? "OQ" : "OPENQUARTZ"; font-size: 13px; font-weight: 700; color: Theme.foreground; height: 40px; vertical-alignment: center; }
+            if root.available-width >= 1100px: Text { text: "v0.20.0b"; font-size: 11px; color: #aeaeb2; height: 40px; vertical-alignment: center; }
+            name := Rectangle {
+                width: clamp(name-text.preferred-width + 12px, 52px, root.available-width < 1000px ? 80px : 120px); height: 40px;
+                name-text := Text { visible: !root.editing-name; width: parent.width; height: parent.height; text: root.project-name; font-size: 12px; color: Theme.foreground; font-weight: 500; vertical-alignment: center; overflow: elide; }
+                name-area := TouchArea { enabled: !root.busy; double-clicked => { root.name-draft = root.project-name; root.editing-name = true; name-edit.focus(); } }
+                name-edit := TextInput {
+                    visible: root.editing-name; width: parent.width; height: parent.height;
+                    text <=> root.name-draft; single-line: true; font-size: 12px; color: Theme.foreground;
+                    accepted => { root.rename-project(self.text); root.editing-name = false; }
+                    key-pressed(event) => { if event.text == Key.Escape { root.editing-name = false; return accept; } return reject; }
+                }
+            }
+            Divider {}
+            file-button := ToolButton {
+                text: "FILE ▾"; icon-path: "M2 2.5H6L7.5 4H14L15 5V13L14 14H2L1 13V3.5Z";
+                enabled: !root.busy;
+                clicked => { file-menu.show(); }
+            }
+            Divider {}
+            for section in ["SOURCE", "MATH", "SHADER", "INFERENCE"]: ToolButton {
+                text: section + " ▾";
+                icon-path: section == "SOURCE" ? "M7.5 8H14 M7.5 8A3 3 0 1 1 1.5 8A3 3 0 1 1 7.5 8" : section == "SHADER" ? "M3.5 3.5H12.5V12.5H3.5Z M5 1V3.5 M8 1V3.5 M11 1V3.5 M5 12.5V15 M8 12.5V15 M11 12.5V15 M1 5H3.5 M1 8H3.5 M1 11H3.5 M12.5 5H15 M12.5 8H15 M12.5 11H15" : section == "INFERENCE" ? "M14 8A6 6 0 1 1 2 8A6 6 0 1 1 14 8 M5 8L8 5L11 8L8 11Z" : "";
+                glyph: "±"; enabled: !root.busy;
+                clicked => { root.open-node-menu(section, self.x); }
+            }
+            ToolButton { text: "RENDERER"; icon-path: "M1.5 2.5H14.5V11.5H1.5Z M5 14H11 M8 11.5V14"; enabled: !root.busy && root.renderer-factory-index >= 0; clicked => { root.add-node(root.renderer-factory-index); } }
+            Divider {}
+            ToolButton { text: "UNDO"; icon-path: "M6 3L2 7L6 11 M2 7H10C15 7 15 14 9 14"; enabled: !root.busy && root.can-undo; clicked => { root.undo(); } }
+            ToolButton { text: "REDO"; icon-path: "M10 3L14 7L10 11 M14 7H6C1 7 1 14 7 14"; enabled: !root.busy && root.can-redo; clicked => { root.redo(); } }
+            Divider {}
+            ToolButton { text: "CLEAR"; glyph: "×"; enabled: !root.busy; clicked => { root.project-action("clear"); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.playback-time; accessible-label: "Playback time " + root.playback-time; font-size: 11px; color: Theme.secondary; vertical-alignment: center; min-width: 78px; }
+            ToolButton { text: root.playback-state == "playing" ? "PAUSE" : root.playback-state == "paused" ? "RESUME" : "PLAY"; glyph: root.playback-state == "playing" ? "Ⅱ" : "▶"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback(root.playback-state == "playing" ? "pause" : "play"); } }
+            if root.playback-state != "stopped": ToolButton { text: "STOP"; glyph: "■"; enabled: !root.busy && root.native-runtime-available; clicked => { root.playback("stop"); } }
+            if !root.controls-on-left: HorizontalLayout {
+                spacing: 0px; padding-left: 4px; alignment: center;
+                if root.mac-style-controls: WindowControlButton { action: "close"; mac-style: true; maximized: root.window-maximized; clicked => { root.close-window(); } }
+                if root.mac-style-controls: WindowControlButton { action: "minimize"; mac-style: true; maximized: root.window-maximized; clicked => { root.minimize-window(); } }
+                if root.mac-style-controls: WindowControlButton { action: "maximize"; mac-style: true; maximized: root.window-maximized; clicked => { root.toggle-maximize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "minimize"; mac-style: false; maximized: root.window-maximized; clicked => { root.minimize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "maximize"; mac-style: false; maximized: root.window-maximized; clicked => { root.toggle-maximize-window(); } }
+                if !root.mac-style-controls: WindowControlButton { action: "close"; mac-style: false; maximized: root.window-maximized; clicked => { root.close-window(); } }
+            }
     }
+        }
             status-popup := PopupWindow {
                 x: file-button.x; y: root.height; width: 460px;
                 Rectangle { background: white; border-width: 1px; border-color: #d2d2d7; border-radius: 8px;

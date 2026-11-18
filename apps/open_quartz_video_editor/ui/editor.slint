@@ -1,4 +1,5 @@
 import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct ClipRow { id: string, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
@@ -152,6 +153,10 @@ component TimingField inherits VerticalLayout {
 }
 
 export component EditorWindow inherits Window {
+    no-frame: true;
+    resize-border-width: root.maximized ? 0px : 6px;
+    in property <bool> window-controls-on-left;
+    in property <bool> mac-style-controls;
     title: "OpenQuartz Studio — " + root.project_name;
     preferred-width: 1440px; preferred-height: 900px; min-width: 1040px; min-height: 700px;
     background: #111315; default-font-size: 12px;
@@ -276,16 +281,34 @@ export component EditorWindow inherits Window {
             spacing: 0px;
             Rectangle {
                 height: 54px; background: #181a1c;
-                HorizontalLayout {
-                    padding-left: 16px; padding-right: 16px; spacing: 12px;
-                    Rectangle { width: 27px; height: 27px; border-radius: 8px; background: root.accent; Text { text: "Q"; color: #111719; font-size: 17px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; } }
-                    Text { text: "OPENQUARTZ"; color: root.text; font-size: 14px; font-weight: 800; vertical-alignment: center; }
-                    Rectangle { width: 1px; height: 24px; background: root.border; }
-                    VerticalLayout { spacing: 1px; LineEdit { text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } } Text { text: root.project_path; color: root.secondary; font-size: 9px; overflow: elide; } }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.io_status; color: root.secondary; font-size: 10px; vertical-alignment: center; }
-                    ToolButton { label: "UNDO"; glyph: "↶"; active: root.can_undo; clicked => { editor_focus.focus(); root.undo(); } }
-                    ToolButton { label: "REDO"; glyph: "↷"; active: root.can_redo; clicked => { editor_focus.focus(); root.redo(); } }
+                WindowMoveArea {
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 16px; spacing: 12px;
+                        if root.window-controls-on-left: WindowControls {
+                            y: (parent.height - self.height) / 2;
+                            mac-style: root.mac-style-controls; maximized: root.maximized;
+                            foreground: root.text; hover-background: #303438;
+                            minimize-window => { root.minimized = true; }
+                            toggle-maximize-window => { root.maximized = !root.maximized; }
+                            close-window => { root.close(); }
+                        }
+                        Rectangle { width: 27px; height: 27px; border-radius: 8px; background: root.accent; Text { text: "Q"; color: #111719; font-size: 17px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; } }
+                        Text { text: "OPENQUARTZ"; color: root.text; font-size: 14px; font-weight: 800; vertical-alignment: center; }
+                        Rectangle { width: 1px; height: 24px; background: root.border; }
+                        VerticalLayout { spacing: 1px; LineEdit { text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } } Text { text: root.project_path; color: root.secondary; font-size: 9px; overflow: elide; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: root.io_status; color: root.secondary; font-size: 10px; vertical-alignment: center; }
+                        ToolButton { label: "UNDO"; glyph: "↶"; active: root.can_undo; clicked => { editor_focus.focus(); root.undo(); } }
+                        ToolButton { label: "REDO"; glyph: "↷"; active: root.can_redo; clicked => { editor_focus.focus(); root.redo(); } }
+                        if !root.window-controls-on-left: WindowControls {
+                            y: (parent.height - self.height) / 2;
+                            mac-style: root.mac-style-controls; maximized: root.maximized;
+                            foreground: root.text; hover-background: #303438;
+                            minimize-window => { root.minimized = true; }
+                            toggle-maximize-window => { root.maximized = !root.maximized; }
+                            close-window => { root.close(); }
+                        }
+                    }
                 }
             }
             Rectangle {
