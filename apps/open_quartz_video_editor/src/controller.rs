@@ -977,7 +977,7 @@ impl Controller {
         );
         window.set_project_data_width(self.document.data.width as i32);
         window.set_project_data_height(self.document.data.height as i32);
-        let zoom = window.get_timeline_zoom().max(1) as f32;
+        let zoom = window.get_timeline_zoom().max(0.0001);
         window.set_timeline_content_width(
             (self.document.duration_frames() as f32 * zoom + 160.0).max(900.0),
         );

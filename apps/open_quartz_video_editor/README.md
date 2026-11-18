@@ -37,6 +37,14 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - **RELINK**：恢复丢失素材，必须与保存的内容指纹匹配。同路径换文件会标为 offline，不静默使用新内容。
 
+### 界面与时间轴缩放
+
+- 顶栏窗口控件、Q标志、软件名和工程名称输入框统一垂直居中。软件名保留大写18px；固定业务文案统一句首大写，常规文字12px、辅助信息11px；素材名和用户工程名不强制改大小写。
+- 工具栏采用32px图标按钮，18px矢量图形；悬停显示操作名称tooltip，保留原有无障碍按钮名称。预览下三个传输按钮相对画面居中，时间码独立靠右。
+- 时间轴支持 `0.0001–48 px/frame`，低于4px/frame继续按比例缩小，不再停在4px/frame。点击 **Fit entire sequence** 图标可将整个序列放入当前视口；缩放不改变项目帧范围，拖动/裁剪与标尺定位均使用真实小数缩放换算。
+- 交互范围参考 [Premiere 的序列导航](https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/navigate-sequences-in-the-timeline.html)：整段总览与帧级编辑，而非声称复制竞品未公开的像素上下限。缩小时标尺显示秒/分，放大后显示帧。
+
+
 文件对话框支持粘贴完整本地路径，也可点击 **Browse…** 使用系统文件选择器。macOS的OpenPanel是嵌套主线程事件循环；编辑器在进入选择器前先释放controller可变借用，以便Slint计时器/native回调重入，取消也返回原路径对话框。
 
 快捷键：Space 播放/暂停；←/→ 步进；⌘/Ctrl+B 分割；Delete/Backspace lift；⌘/Ctrl+Z 撤销；⌘/Ctrl+Shift+Z 重做；⌘/Ctrl+S 保存；⌘/Ctrl+Shift+S 另存为；⌘/Ctrl+O 打开；⌘/Ctrl+I 导入；Esc 取消。
@@ -59,7 +67,7 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口15项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。包含30秒素材加号、900帧片段在默认/最大缩放下的渲染、撤销重做、保存重开和预览像素验证；未使用UI回显mock或只测forwarding的占位覆盖。
+最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口15项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。包含30秒素材加号、900帧片段在默认/最大缩放下渲染、适合整个序列、低于1px/frame的裁剪及精确撤销、保存重开和预览像素验证；未使用UI回显mock或只测forwarding的占位覆盖。
 
 本轮窗口通过真实控件导入两段视频，设置序列，放置/移动/左右trim/split/lift/undo/redo，验证重叠拒绝、空隙像素和Escape取消，实际播放/暂停，再保存、正常退出、重开、错误relink拒绝及匹配指纹relink恢复。独立PNG oracle检查实际预览中心红/蓝/黑像素；保存后独立解析工程核对帧范围及stream PTS，不以控件文本代替结果。
 

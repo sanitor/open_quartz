@@ -1,0 +1,80 @@
+export component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> active: true;
+    in property <bool> selected: false;
+    in property <string> tooltip-text:
+        root.label == "UNDO" ? "Undo" :
+        root.label == "REDO" ? "Redo" :
+        root.label == "NEW" ? "New" :
+        root.label == "OPEN" ? "Open" :
+        root.label == "SAVE" ? "Save" :
+        root.label == "SAVE AS" ? "Save as" :
+        root.label == "RELINK" ? "Relink" :
+        root.label == "IMPORT" ? "Import" :
+        root.label == "SEQUENCE" ? "Sequence" :
+        root.label == "PREVIOUS" ? "Previous" :
+        root.label == "PAUSE" ? "Pause" :
+        root.label == "PLAY" ? "Play" :
+        root.label == "NEXT" ? "Next" :
+        root.label == "ADD CLIP" ? "Add clip" :
+        root.label == "SPLIT" ? "Split" :
+        root.label == "DELETE" ? "Delete" :
+        root.label == "ZOOM OUT" ? "Zoom out" :
+        root.label == "ZOOM IN" ? "Zoom in" :
+        root.label == "FIT" ? "Fit" :
+        root.label == "FIT TIMELINE" ? "Fit timeline" : root.label;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: 5px;
+    background: root.selected ? #293d3d : root.active && touch.has-hover ? #303438 : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.active;
+    accessible-action-default => {
+        if root.active { root.clicked(); }
+    }
+
+    Path {
+        x: 7px;
+        y: 7px;
+        width: 18px;
+        height: 18px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: transparent;
+        stroke: !root.active ? #565d62 : root.selected ? #38d9c3 : #d1d8dc;
+        stroke-width: 1.7px;
+        commands:
+            root.glyph == "+" ? "M12 4V20 M4 12H20" :
+            root.glyph == "↶" ? "M9 4L4 9L9 14 M4 9H14C22 9 22 20 14 20H10" :
+            root.glyph == "↷" ? "M15 4L20 9L15 14 M20 9H10C2 9 2 20 10 20H14" :
+            root.glyph == "▱" ? "M3 8V4H9L11 6H21V20H3Z M3 10H21" :
+            root.glyph == "▣" ? "M3 3H18L21 6V21H3Z M7 3V9H16V3 M7 21V14H17V21" :
+            root.glyph == "▣+" ? "M3 3H14 M3 3V21H21V14 M7 3V9H12 M7 21V14H13 M18 2V10 M14 6H22" :
+            root.glyph == "↔" ? "M10 8L13 5A4 4 0 0 1 19 11L16 14 M14 16L11 19A4 4 0 0 1 5 13L8 10 M8 16L16 8" :
+            root.glyph == "↓" ? "M12 3V17 M6 11L12 17L18 11 M4 21H20" :
+            root.glyph == "⚙" ? "M9 3H15L16 6L19 7L22 10V14L19 17L16 18L15 21H9L8 18L5 17L2 14V10L5 7L8 6Z M16 12A4 4 0 1 1 8 12A4 4 0 1 1 16 12Z" :
+            root.glyph == "|◀" ? "M4 4V20 M19 4L8 12L19 20Z" :
+            root.glyph == "▶" ? "M7 4L20 12L7 20Z" :
+            root.glyph == "Ⅱ" ? "M7 4H9V20H7Z M15 4H17V20H15Z" :
+            root.glyph == "▶|" ? "M20 4V20 M5 4L16 12L5 20Z" :
+            root.glyph == "✂" ? "M9 16L20 3 M9 8L20 21 M10 6A3 3 0 1 1 4 6A3 3 0 1 1 10 6Z M10 18A3 3 0 1 1 4 18A3 3 0 1 1 10 18Z" :
+            root.glyph == "⌫" ? "M4 6H20 M9 6V3H15V6 M6 6L7 21H17L18 6 M10 10V17 M14 10V17" :
+            root.glyph == "−" ? "M4 12H20" :
+            root.glyph == "fit" ? "M3 4V20 M21 4V20 M7 12H17 M10 8L6 12L10 16 M14 8L18 12L14 16" :
+            "";
+    }
+
+    touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? pointer : default;
+        clicked => { if root.active { root.clicked(); } }
+    }
+
+    Tooltip {
+        text: @markdown("\{root.tooltip-text}");
+    }
+}

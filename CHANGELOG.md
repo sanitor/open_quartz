@@ -23,6 +23,12 @@
 - Reproduce the asset-card plus crash with a 30-second clip: rendering its rounded timeline clip made Slint FemtoVG allocate a full-clip offscreen texture 28,792 pixels wide, beyond the GPU limit of 8,192.
 - Preserve the rounded clip shell but render its contents with a square inset scissor, avoiding a full-duration offscreen layer. Real-window regression verifies a 900-frame clip at default and maximum timeline zoom, undo/redo, project save/reopen and visible GPU preview.
 
+### Editor UI alignment and timeline overview
+
+- Align title-bar controls, brand and project name; use consistent 12px business text and 11px supporting text, with an 18px app title. Replace captioned toolbar glyphs with vector icon buttons, hover tooltips and accessible names.
+- Center preview transport controls independently of right-aligned timecodes, and vertically align timeline toolbar actions.
+- Extend timeline zoom to fractional pixels per frame with a fit-entire-sequence action and time-based overview ruler. Preserve exact frame mapping for seeking and trim/move gestures; native-window regression covers fractional-scale trim, undo and persistence.
+
 ### Native timeline editing workflow (Phase 6)
 
 - Add the independent `open_quartz_video_editor` Slint application with a dark media-library / program-monitor / timing-inspector / timeline workspace, own OpenQuartz branding and real hardware GPU previews.

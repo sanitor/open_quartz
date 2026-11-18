@@ -1,25 +1,10 @@
 import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
+import { ToolButton } from "icon_button.slint";
 
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct ClipRow { id: string, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
 
-component ToolButton inherits Rectangle {
-    in property <string> label;
-    in property <string> glyph;
-    in property <bool> active: true;
-    in property <bool> selected: false;
-    callback clicked();
-    width: max(40px, caption.preferred-width + 14px); height: 38px;
-    background: root.selected ? #293d3d : hover.has-hover && root.active ? #303438 : transparent;
-    border-radius: 5px;
-    accessible-role: button;
-    accessible-label: root.label;
-    accessible-action-default => { if root.active { root.clicked(); } }
-    Text { y: 1px; width: parent.width; height: 22px; text: root.glyph; color: root.active ? #d1d8dc : #565d62; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
-    caption := Text { y: 23px; width: parent.width; height: 12px; text: root.label; color: root.active ? #aab3ba : #565d62; font-size: 8px; font-weight: 700; horizontal-alignment: center; }
-    hover := TouchArea { enabled: root.active; clicked => { root.clicked(); } }
-}
 
 component AssetCard inherits Rectangle {
     in property <AssetRow> asset;
@@ -34,9 +19,9 @@ component AssetCard inherits Rectangle {
         if root.asset.has_thumbnail: Image { width: parent.width; height: parent.height; source: root.asset.thumbnail; image-fit: cover; }
         if !root.asset.has_thumbnail: Text { text: root.asset.online ? "▶" : "!"; color: root.asset.online ? #5bdcc9 : #ff7373; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
     }
-    Text { x: 102px; y: 9px; width: parent.width - 136px; height: 18px; text: root.asset.name; color: root.asset.online ? #e4e8eb : #ff7373; font-size: 10px; font-weight: 650; overflow: elide; }
-    Text { x: 102px; y: 30px; width: parent.width - 136px; height: 24px; text: root.asset.details; color: #8e979d; font-size: 8px; wrap: word-wrap; }
-    Text { x: 102px; y: 55px; width: 90px; height: 12px; text: root.asset.online ? "● READY" : "● OFFLINE"; color: root.asset.online ? #49cba9 : #fa7373; font-size: 7px; }
+    Text { x: 102px; y: 7px; width: parent.width - 136px; height: 18px; text: root.asset.name; color: root.asset.online ? #e4e8eb : #ff7373; font-size: 12px; font-weight: 600; overflow: elide; }
+    Text { x: 102px; y: 27px; width: parent.width - 136px; height: 30px; text: root.asset.details; color: #8e979d; font-size: 11px; wrap: word-wrap; overflow: elide; }
+    Text { x: 102px; y: 58px; width: 100px; height: 16px; text: root.asset.online ? "● Ready" : "● Offline"; color: root.asset.online ? #49cba9 : #fa7373; font-size: 11px; }
     TouchArea { width: parent.width - 30px; height: parent.height; clicked => { root.clicked(); } }
     Text { x: parent.width - 28px; y: 25px; width: 24px; height: 24px; text: "+"; color: #38d9c3; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
     TouchArea { x: parent.width - 30px; width: 30px; height: parent.height; accessible-role: button; accessible-label: "Add " + root.asset.name + " to timeline"; clicked => { root.add_clicked(root.asset.id); } }
@@ -45,7 +30,7 @@ component AssetCard inherits Rectangle {
 // Capture absolute pointer coordinates so moving the preview under the pointer
 // cannot feed its own displacement back into the gesture. Only release commits.
 component ClipGestureArea inherits TouchArea {
-    in property <int> zoom: 16;
+    in property <float> zoom: 16;
     in property <int> cancel_token;
     callback began();
     callback preview(int);
@@ -65,20 +50,20 @@ component ClipGestureArea inherits TouchArea {
                 root.began();
             } else if event.kind == PointerEventKind.up && self.armed {
                 self.armed = false;
-                root.finished(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(1, root.zoom)));
+                root.finished(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(0.0001, root.zoom)));
             }
         }
     }
     moved => {
         if self.pressed && self.armed {
-            root.preview(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(1, root.zoom)));
+            root.preview(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x) / 1px / max(0.0001, root.zoom)));
         }
     }
 }
 
 component TimelineClip inherits Rectangle {
     in property <ClipRow> item;
-    in property <int> zoom: 16;
+    in property <float> zoom: 16;
     in property <int> cancel_token;
     callback clicked();
     callback focused();
@@ -114,8 +99,8 @@ component TimelineClip inherits Rectangle {
         x: 2px; y: 2px; width: max(0px, parent.width - 4px); height: parent.height - 4px;
         clip: true;
         if root.item.has_thumbnail: Image { x: 5px; y: 21px; width: min(78px, max(0px, parent.width - 10px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
-        Text { x: 7px; y: 3px; width: max(0px, parent.width - 14px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 9px; font-weight: 700; overflow: elide; }
-        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + "f source clip"; color: #c0dbd6; font-size: 8px; }
+        Text { x: 7px; y: 3px; width: max(0px, parent.width - 14px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 12px; font-weight: 600; overflow: elide; }
+        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + "f source clip"; color: #c0dbd6; font-size: 11px; }
     }
     ClipGestureArea {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
@@ -154,7 +139,7 @@ component TimingField inherits VerticalLayout {
     in property <bool> enabled: true;
     callback committed(string);
     spacing: 4px;
-    Text { text: root.label; color: #939ba2; font-size: 10px; }
+    Text { text: root.label; color: #939ba2; font-size: 12px; }
     LineEdit { accessible-label: root.label; enabled: root.enabled; text: root.value; placeholder-text: "Enter value"; accepted(value) => { root.committed(value); } }
 }
 
@@ -196,7 +181,7 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_source_in: "0";
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
-    in-out property <int> timeline_zoom: 16;
+    in-out property <float> timeline_zoom: 16;
     in-out property <string> search_query;
     in-out property <string> file_path;
     in-out property <string> file_dialog_kind;
@@ -214,7 +199,7 @@ export component EditorWindow inherits Window {
     callback import_media(); callback asset_select(string); callback add_to_timeline();
     callback clip_select(string); callback split_clip(); callback lift_clip();
     callback trim_clip(string, int); callback undo(); callback redo();
-    callback playback(string); callback step_frame(int); callback zoom_changed(int);
+    callback playback(string); callback step_frame(int); callback zoom_changed(float);
     callback seek_frame(int);
     callback clip_gesture(id: string, kind: string, delta: int);
     callback add_asset_to_timeline(string);
@@ -246,7 +231,26 @@ export component EditorWindow inherits Window {
         root.project_action("settings");
     }
     private property <int> cancel_token: 0;
-    private property <int> ruler_step: max(1, Math.round(100 / max(1, root.timeline_zoom)));
+    private property <int> ruler_step: max(1, Math.ceil(100 / max(0.0001, root.timeline_zoom)));
+    function set_zoom(value: float) {
+        let anchor = -timeline_scroll.content-x / 1px / max(0.0001, root.timeline_zoom);
+        root.cancel_token += 1;
+        root.timeline_zoom = clamp(value, 0.0001, 48);
+        root.zoom_changed(root.timeline_zoom);
+        timeline_scroll.content-x = min(0px, -anchor * root.timeline_zoom * 1px);
+    }
+    function fit_timeline() {
+        root.set_zoom((timeline_scroll.visible-width / 1px - 32) / max(1, root.sequence_duration));
+        timeline_scroll.content-x = 0px;
+    }
+    function ruler_label(frame: int) -> string {
+        if root.timeline_zoom >= 4 { return frame + "f"; }
+        let seconds = Math.round(frame * root.sequence_fps_denominator.to-float() / max(1, root.sequence_fps_numerator.to-float()));
+        if seconds < 60 { return seconds + "s"; }
+        let minutes = Math.floor(seconds / 60);
+        let remainder = Math.mod(seconds, 60);
+        return minutes + ":" + (remainder < 10 ? "0" : "") + remainder;
+    }
     private property <color> panel: #1b1e21;
     private property <color> border: #30363b;
     private property <color> text: #e7eaed;
@@ -286,28 +290,29 @@ export component EditorWindow inherits Window {
         VerticalLayout {
             spacing: 0px;
             Rectangle {
-                height: 54px; background: #181a1c;
+                height: 56px; background: #181a1c;
                 WindowMoveArea {
                     HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px; spacing: 12px;
+                        padding-left: 16px; padding-right: 16px; spacing: 16px;
+                        cross-axis-alignment: center;
                         if root.window-controls-on-left: WindowControls {
-                            y: (parent.height - self.height) / 2;
                             mac-style: root.mac-style-controls; maximized: root.maximized;
                             foreground: root.text; hover-background: #303438;
                             minimize-window => { root.minimized = true; }
                             toggle-maximize-window => { root.maximized = !root.maximized; }
                             close-window => { root.close(); }
                         }
-                        Rectangle { width: 27px; height: 27px; border-radius: 8px; background: root.accent; Text { text: "Q"; color: #111719; font-size: 17px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; } }
-                        Text { text: "OPENQUARTZ"; color: root.text; font-size: 14px; font-weight: 800; vertical-alignment: center; }
+                        Rectangle {
+                            width: 28px; height: 28px; border-radius: 7px; background: root.accent;
+                            Text { width: parent.width; height: parent.height; text: "Q"; color: #111719; font-size: 18px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Text { text: "OPENQUARTZ STUDIO"; color: root.text; font-size: 18px; font-weight: 700; vertical-alignment: center; }
                         Rectangle { width: 1px; height: 24px; background: root.border; }
-                        VerticalLayout { spacing: 1px; LineEdit { text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } } Text { text: root.project_path; color: root.secondary; font-size: 9px; overflow: elide; } }
+                        LineEdit { height: 32px; width: 240px; accessible-label: "Project name"; text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } }
                         Rectangle { horizontal-stretch: 1; }
-                        Text { text: root.io_status; color: root.secondary; font-size: 10px; vertical-alignment: center; }
                         ToolButton { label: "UNDO"; glyph: "↶"; active: root.can_undo; clicked => { editor_focus.focus(); root.undo(); } }
                         ToolButton { label: "REDO"; glyph: "↷"; active: root.can_redo; clicked => { editor_focus.focus(); root.redo(); } }
                         if !root.window-controls-on-left: WindowControls {
-                            y: (parent.height - self.height) / 2;
                             mac-style: root.mac-style-controls; maximized: root.maximized;
                             foreground: root.text; hover-background: #303438;
                             minimize-window => { root.minimized = true; }
@@ -320,7 +325,7 @@ export component EditorWindow inherits Window {
             Rectangle {
                 height: 44px; background: #202326;
                 HorizontalLayout {
-                    padding-left: 12px; padding-right: 12px; spacing: 6px;
+                    padding-left: 12px; padding-right: 16px; spacing: 8px; cross-axis-alignment: center;
                     ToolButton { label: "NEW"; glyph: "+"; clicked => { root.project_action("new"); } }
                     ToolButton { label: "OPEN"; glyph: "▱"; clicked => { root.project_action("open"); } }
                     ToolButton { label: "SAVE"; glyph: "▣"; clicked => { root.project_action("save"); } }
@@ -328,8 +333,8 @@ export component EditorWindow inherits Window {
                     ToolButton { label: "RELINK"; glyph: "↔"; clicked => { root.project_action("relink"); } }
                     ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
                     ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.project_status; color: root.secondary; vertical-alignment: center; font-size: 10px; overflow: elide; }
+                    Text { text: root.project_path; color: root.secondary; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
+                    Text { text: root.io_status; color: root.secondary; font-size: 11px; overflow: elide; max-width: 420px; }
                 }
             }
             HorizontalLayout {
@@ -338,9 +343,9 @@ export component EditorWindow inherits Window {
                     width: 260px; background: root.panel;
                     VerticalLayout {
                         spacing: 0px;
-                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 12px; Text { text: "Media library"; color: root.text; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "+"; clicked => { root.project_action("import"); } } }
+                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 12px; cross-axis-alignment: center; Text { text: "Media library"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } } }
                         LineEdit { text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
-                        HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "PROJECT MEDIA"; color: root.accent; font-size: 9px; font-weight: 700; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 9px; vertical-alignment: center; } }
+                        HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "Project media"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                         ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
                             VerticalLayout {
@@ -350,7 +355,7 @@ export component EditorWindow inherits Window {
                                     VerticalLayout {
                                         alignment: LayoutAlignment.center; padding: 12px; spacing: 8px;
                                         Text { text: root.search_query == "" ? "Your media library" : "No matching media"; color: root.text; font-size: 12px; font-weight: 650; horizontal-alignment: center; }
-                                        Text { text: root.search_query == "" ? "Import local H.264 / HEVC clips" : "Try another search"; color: root.secondary; font-size: 10px; horizontal-alignment: center; }
+                                        Text { text: root.search_query == "" ? "Import local H.264 / HEVC clips" : "Try another search"; color: root.secondary; font-size: 11px; horizontal-alignment: center; }
                                         Button { text: "Import media"; primary: true; clicked => { root.project_action("import"); } }
                                     }
                                 }
@@ -358,14 +363,14 @@ export component EditorWindow inherits Window {
                                 Rectangle { vertical-stretch: 1; }
                             }
                         }
-                        Rectangle { height: 80px; background: #151719; VerticalLayout { padding: 12px; spacing: 5px; Text { text: root.selected_asset_name; color: root.text; font-size: 10px; font-weight: 700; overflow: elide; } Text { text: root.selected_asset_details; color: root.secondary; font-size: 9px; wrap: word-wrap; } } }
+                        Rectangle { height: 80px; background: #151719; VerticalLayout { padding: 12px; spacing: 5px; Text { text: root.selected_asset_name; color: root.text; font-size: 12px; font-weight: 600; overflow: elide; } Text { text: root.selected_asset_details; color: root.secondary; font-size: 11px; wrap: word-wrap; } } }
                     }
                 }
                 Rectangle {
                     horizontal-stretch: 1; background: #101213;
                     VerticalLayout {
                         spacing: 0px;
-                        HorizontalLayout { height: 38px; padding-left: 14px; padding-right: 14px; Text { text: "Preview"; color: root.text; font-size: 11px; font-weight: 650; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 9px; vertical-alignment: center; } }
+                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                         Rectangle {
                             horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
                             accessible-role: image;
@@ -374,16 +379,19 @@ export component EditorWindow inherits Window {
                             if !root.has_monitor_image: VerticalLayout { alignment: LayoutAlignment.center; spacing: 8px; Text { text: "◩"; color: #444b50; font-size: 36px; horizontal-alignment: center; } Text { text: "Add media to the timeline"; color: #7c848a; font-size: 12px; horizontal-alignment: center; } }
                         }
                         Rectangle {
-                            height: 64px; background: #191c1e;
+                            height: 52px; background: #191c1e;
                             HorizontalLayout {
-                                padding-left: 12px; padding-right: 12px; spacing: 8px;
-                                Rectangle { horizontal-stretch: 1; }
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                width: 112px; height: 32px; spacing: 8px; cross-axis-alignment: center;
                                 ToolButton { label: "PREVIOUS"; glyph: "|◀"; clicked => { editor_focus.focus(); root.step_frame(-1); } }
                                 ToolButton { label: root.playing ? "PAUSE" : "PLAY"; glyph: root.playing ? "Ⅱ" : "▶"; selected: root.playing; clicked => { editor_focus.focus(); root.playback(root.playing ? "pause" : "play"); } }
                                 ToolButton { label: "NEXT"; glyph: "▶|"; clicked => { editor_focus.focus(); root.step_frame(1); } }
-                                Text { text: root.timecode; color: root.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; }
-                                Text { text: "/ " + root.sequence_timecode; color: root.secondary; font-size: 10px; vertical-alignment: center; }
-                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            HorizontalLayout {
+                                x: parent.width - self.width - 12px; y: (parent.height - self.height) / 2;
+                                width: 194px; height: 32px; spacing: 6px;
+                                Text { text: root.timecode; accessible-label: "Current timecode"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                                Text { text: "/ " + root.sequence_timecode; accessible-label: "Sequence timecode"; color: root.secondary; font-size: 12px; vertical-alignment: center; }
                             }
                         }
                     }
@@ -392,19 +400,19 @@ export component EditorWindow inherits Window {
                     width: 250px; background: root.panel;
                     VerticalLayout {
                         spacing: 0px;
-                        HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip timing"; color: root.accent; font-size: 12px; font-weight: 700; vertical-alignment: center; } }
+                        HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip timing"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
                         ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
                             VerticalLayout {
                                 padding: 14px; spacing: 12px;
-                                Text { text: root.selected_clip_name; color: root.text; font-size: 13px; font-weight: 700; wrap: word-wrap; }
-                                Text { text: "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 9px; wrap: word-wrap; }
+                                Text { text: root.selected_clip_name; color: root.text; font-size: 12px; font-weight: 600; wrap: word-wrap; }
+                                Text { text: "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 TimingField { label: "Timeline start"; value: root.selected_clip_start; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("start", value); } }
                                 TimingField { label: "Timeline end"; value: root.selected_clip_end; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("end", value); } }
                                 TimingField { label: "Source in"; value: root.selected_clip_source_in; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("source_in", value); } }
                                 TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_id != ""; committed(value) => { root.clip_timing_changed("source_out", value); } }
-                                Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 10px; }
-                                Text { text: "Press Enter to apply a frame value. Drag a clip to move it; drag an edge to trim. Esc cancels a drag."; color: root.secondary; font-size: 10px; wrap: word-wrap; }
+                                Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 12px; }
+                                Text { text: "Press Enter to apply a frame value. Drag a clip to move it; drag an edge to trim. Esc cancels a drag."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 Rectangle { vertical-stretch: 1; }
                             }
                         }
@@ -416,21 +424,23 @@ export component EditorWindow inherits Window {
                 VerticalLayout {
                     spacing: 0px;
                     HorizontalLayout {
-                        height: 44px; padding-left: 15px; padding-right: 12px; spacing: 5px;
-                        Text { text: "Timeline"; color: root.text; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        height: 44px; padding-left: 16px; padding-right: 16px; spacing: 8px; cross-axis-alignment: center;
+                        Text { text: "Timeline"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; }
                         Rectangle { width: 1px; height: 20px; background: root.border; }
-                        Text { text: "Main track"; color: root.secondary; font-size: 10px; vertical-alignment: center; }
+                        Text { text: "Main track"; color: root.secondary; font-size: 12px; vertical-alignment: center; }
                         Rectangle { horizontal-stretch: 1; }
                         ToolButton { label: "ADD CLIP"; glyph: "+"; active: root.assets.length > 0; clicked => { editor_focus.focus(); root.add_to_timeline(); } }
                         ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.split_clip(); } }
                         ToolButton { label: "DELETE"; glyph: "⌫"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.lift_clip(); } }
-                        ToolButton { label: "ZOOM OUT"; glyph: "−"; clicked => { root.cancel_token += 1; root.timeline_zoom = max(4, root.timeline_zoom - 2); root.zoom_changed(root.timeline_zoom); } }
-                        Text { text: root.timeline_zoom + " px/f"; width: 52px; color: root.secondary; font-size: 9px; vertical-alignment: center; horizontal-alignment: center; }
-                        ToolButton { label: "ZOOM IN"; glyph: "+"; clicked => { root.cancel_token += 1; root.timeline_zoom = min(48, root.timeline_zoom + 2); root.zoom_changed(root.timeline_zoom); } }
+                        Rectangle { width: 1px; height: 20px; background: root.border; }
+                        ToolButton { label: "FIT TIMELINE"; glyph: "fit"; tooltip-text: "Fit entire sequence"; active: root.sequence_duration > 0; clicked => { root.fit_timeline(); } }
+                        ToolButton { label: "ZOOM OUT"; glyph: "−"; active: root.timeline_zoom > 0.0001; clicked => { root.set_zoom(root.timeline_zoom > 4 ? root.timeline_zoom - 2 : root.timeline_zoom / 2); } }
+                        Text { text: root.timeline_zoom >= 1 ? Math.round(root.timeline_zoom * 100) / 100 + " px/f" : Math.round(100 / root.timeline_zoom) / 100 + " f/px"; width: 88px; color: root.secondary; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        ToolButton { label: "ZOOM IN"; glyph: "+"; active: root.timeline_zoom < 48; clicked => { root.set_zoom(root.timeline_zoom >= 4 ? root.timeline_zoom + 2 : root.timeline_zoom * 2); } }
                     }
                     HorizontalLayout {
                         spacing: 0px; vertical-stretch: 1;
-                        Rectangle { width: 84px; background: #1b1e21; Text { y: 52px; width: parent.width; height: 72px; text: "VIDEO 1\nV1"; color: root.accent; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                        Rectangle { width: 84px; background: #1b1e21; Text { y: 52px; width: parent.width; height: 72px; text: "Video 1\nV1"; color: root.accent; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
                         timeline_scroll := ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
                             content-width: max(self.visible-width, root.timeline_content_width * 1px);
@@ -439,14 +449,14 @@ export component EditorWindow inherits Window {
                                 width: timeline_scroll.content-width; height: timeline_scroll.content-height; background: #17191b;
                                 Rectangle { width: parent.width; height: 32px; background: #131517; }
                                 Rectangle { y: 46px; width: parent.width; height: 84px; background: #1e2527; }
-                                for tick in Math.ceil(timeline_scroll.visible-width / 1px / max(1, root.timeline_zoom) / root.ruler_step) + 2: Rectangle {
-                                    private property <int> frame: (tick + Math.floor(-timeline_scroll.content-x / 1px / max(1, root.timeline_zoom) / root.ruler_step)) * root.ruler_step;
+                                for tick in Math.ceil(timeline_scroll.visible-width / 1px / max(0.0001, root.timeline_zoom) / root.ruler_step) + 2: Rectangle {
+                                    private property <int> frame: (tick + Math.floor(-timeline_scroll.content-x / 1px / max(0.0001, root.timeline_zoom) / root.ruler_step)) * root.ruler_step;
                                     x: 10px + self.frame * root.timeline_zoom * 1px; width: 1px; height: parent.height; background: #242a2d;
                                     Rectangle { width: 1px; height: 9px; y: 23px; background: #68737a; }
-                                    Text { x: 5px; y: 4px; width: 80px; height: 20px; text: parent.frame + "f"; color: root.secondary; font-size: 9px; vertical-alignment: center; }
+                                    Text { x: 5px; y: 4px; width: 90px; height: 20px; text: root.ruler_label(parent.frame); color: root.secondary; font-size: 11px; vertical-alignment: center; }
                                 }
                                 TouchArea {
-                                    clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round((self.mouse-x / 1px - 10) / max(1, root.timeline_zoom)))); }
+                                    clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round((self.mouse-x / 1px - 10) / max(0.0001, root.timeline_zoom)))); }
                                 }
                                 for clip in root.clips: TimelineClip {
                                     item: clip; zoom: root.timeline_zoom; cancel_token: root.cancel_token;
@@ -459,10 +469,10 @@ export component EditorWindow inherits Window {
                             }
                         }
                     }
-                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " clips · " + root.sequence_duration + " frames · gaps render black"; color: root.secondary; font-size: 9px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "Space play · ← / → step · ⌘/Ctrl+B split · Esc cancel"; color: root.secondary; font-size: 9px; vertical-alignment: center; } } }
+                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " clips · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "Space play · ← / → step · ⌘/Ctrl+B split · Esc cancel"; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
                 }
             }
-            Rectangle { height: 25px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: "OpenQuartz Studio"; color: #737b81; font-size: 9px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #737b81; font-size: 9px; vertical-alignment: center; } } }
+            Rectangle { height: 26px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.project_status; color: #939ba2; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #939ba2; font-size: 11px; vertical-alignment: center; } } }
         }
         if root.settings_open: Rectangle {
             width: parent.width; height: parent.height; background: #000000b0;
@@ -476,11 +486,11 @@ export component EditorWindow inherits Window {
                     padding: 24px; spacing: 10px;
                     Text { text: "Sequence settings"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
-                    Text { text: "Width (pixels)"; color: root.secondary; font-size: 10px; }
+                    Text { text: "Width (pixels)"; color: root.secondary; font-size: 12px; }
                     LineEdit { accessible-label: "Sequence width"; text <=> root.draft_width; }
-                    Text { text: "Height (pixels)"; color: root.secondary; font-size: 10px; }
+                    Text { text: "Height (pixels)"; color: root.secondary; font-size: 12px; }
                     LineEdit { accessible-label: "Sequence height"; text <=> root.draft_height; }
-                    Text { text: "FPS numerator / denominator (e.g. 30000 / 1001)"; color: root.secondary; font-size: 10px; }
+                    Text { text: "FPS numerator / denominator (e.g. 30000 / 1001)"; color: root.secondary; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 10px;
                         LineEdit { accessible-label: "FPS numerator"; text <=> root.draft_fps_numerator; }
@@ -521,7 +531,7 @@ export component EditorWindow inherits Window {
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
                     }
-                    Text { text: root.io_status; color: root.secondary; font-size: 10px; wrap: word-wrap; }
+                    Text { text: root.io_status; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                     Rectangle { vertical-stretch: 1; }
                     HorizontalLayout {
                         spacing: 10px;
