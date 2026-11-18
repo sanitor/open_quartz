@@ -101,16 +101,22 @@ component TimelineClip inherits Rectangle {
     y: 52px;
     width: max(2px, (root.item.width + (root.gesture_kind == "trim-end" ? root.delta * root.zoom : root.gesture_kind == "trim-start" ? -root.delta * root.zoom : 0)) * 1px);
     height: 72px;
-    clip: true;
     background: root.item.selected || root.gesture_kind != "" ? #265d59 : root.item.online ? #284844 : #633a3b;
     border-color: root.item.selected || root.gesture_kind != "" ? #49d8c6 : #32786f;
     border-width: root.item.selected ? 2px : 1px; border-radius: 5px;
     accessible-role: button;
     accessible-label: root.item.asset_name;
     accessible-description: "Timeline start " + root.item.start + " frames; duration " + root.item.duration + " frames";
-    if root.item.has_thumbnail: Image { x: 7px; y: 23px; width: min(78px, max(0px, parent.width - 14px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
-    Text { x: 9px; y: 5px; width: max(0px, parent.width - 18px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 9px; font-weight: 700; overflow: elide; }
-    Text { x: root.item.has_thumbnail ? 90px : 9px; y: 30px; width: max(0px, parent.width - self.x - 9px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + "f source clip"; color: #c0dbd6; font-size: 8px; }
+    // A rounded clip in FemtoVG allocates an offscreen target for the whole
+    // timeline item, which can exceed the GPU texture limit for ordinary media.
+    // Keep the rounded shell, but scissor its contents with a square inset.
+    Rectangle {
+        x: 2px; y: 2px; width: max(0px, parent.width - 4px); height: parent.height - 4px;
+        clip: true;
+        if root.item.has_thumbnail: Image { x: 5px; y: 21px; width: min(78px, max(0px, parent.width - 10px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
+        Text { x: 7px; y: 3px; width: max(0px, parent.width - 14px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 9px; font-weight: 700; overflow: elide; }
+        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + "f source clip"; color: #c0dbd6; font-size: 8px; }
+    }
     ClipGestureArea {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         zoom: root.zoom; cancel_token: root.cancel_token;

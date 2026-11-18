@@ -18,6 +18,11 @@
 - Defer media-card selection/add and timeline clip selection/gesture commands until the Slint input callback has returned. Those commands refresh or mutate the repeated row models; replacing a row while its child callback is active could invalidate the callback's component tree and abort the editor.
 - Verify the adjacent media-card add flow, selection, real clip move/trim/split, and project reopen/relink in the native-window coverage run.
 
+### Long timeline clip GPU crash fix
+
+- Reproduce the asset-card plus crash with a 30-second clip: rendering its rounded timeline clip made Slint FemtoVG allocate a full-clip offscreen texture 28,792 pixels wide, beyond the GPU limit of 8,192.
+- Preserve the rounded clip shell but render its contents with a square inset scissor, avoiding a full-duration offscreen layer. Real-window regression verifies a 900-frame clip at default and maximum timeline zoom, undo/redo, project save/reopen and visible GPU preview.
+
 ### Native timeline editing workflow (Phase 6)
 
 - Add the independent `open_quartz_video_editor` Slint application with a dark media-library / program-monitor / timing-inspector / timeline workspace, own OpenQuartz branding and real hardware GPU previews.

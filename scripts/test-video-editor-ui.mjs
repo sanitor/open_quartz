@@ -34,7 +34,7 @@ async function waitState(fragment){return client.waitFor(async()=> (await state(
 async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
 async function step(name,run){const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
-function generate(name,color){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=320x180:r=30`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t','3','-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
+function generate(name,color,duration=3){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=320x180:r=30`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
 const red=generate('red.mp4','red'),blue=generate('blue.mp4','blue');
 try{
  await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await snapshot('01-empty');});
@@ -66,6 +66,33 @@ try{
  await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.clips.map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.clips[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();});
  await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));});
  await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();});
+ await step('Long media plus preserves full duration beyond GPU texture limits',async()=>{
+  const longMedia=generate('long.mp4','red',30);
+  const longProject=join(output,'long.oqvideo.json');
+  await launch();
+  await fileAction('IMPORT',longMedia,'Import media');
+  await waitState('source PTS 0 ns · CPU image bytes 0');
+  await click('Add long.mp4 to timeline');
+  await waitState('clips 1');
+  const placed=(await timeline('long.mp4'))[0];
+  assert.equal(placed.accessibleDescription,'Timeline start 0 frames; duration 900 frames');
+  assert.equal(placed.size.width,900*16);
+  await snapshot('10-long-default-zoom','red');
+  for(let n=0;n<16;n++)await click('ZOOM IN');
+  assert.equal((await timeline('long.mp4'))[0].size.width,900*48);
+  await snapshot('11-long-maximum-zoom','red');
+  await click('UNDO');await waitState('clips 0');
+  await click('REDO');await waitState('clips 1');
+  await client.waitFor(async()=>previewHasColor(await client.screenshot(),'red'),{description:'long clip preview after redo'});
+  await snapshot('12-long-redo','red');
+  await fileAction('SAVE AS',longProject,'Save project');await waitState('Project saved');
+  assert.deepEqual(JSON.parse(await readFile(longProject,'utf8')).data.clips.map(clip=>[clip.timeline_start,clip.duration]),[[0,900]]);
+  await close();
+  await launch(longProject);await waitState('clips 1');
+  assert.equal((await timeline('long.mp4'))[0].accessibleDescription,'Timeline start 0 frames; duration 900 frames');
+  await waitState('source PTS 0 ns · CPU image bytes 0');
+  await snapshot('13-long-reopened','red');await close();
+ });
  report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
 }finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.steps.map(step=>({id:step.name,title:step.name,description:'Real native UI interaction and observable project/GPU result',screenshotPrefixes:[]}))});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}

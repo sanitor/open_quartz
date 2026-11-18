@@ -59,10 +59,10 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口14项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。未使用UI回显mock或只测forwarding的占位覆盖。
+最后一条会在同一次插桩下运行Rust行为测试和真实Slint窗口15项，再合并LLVM profile到`test-results/phase6/editor-coverage.json`；CI也执行该命令。包含30秒素材加号、900帧片段在默认/最大缩放下的渲染、撤销重做、保存重开和预览像素验证；未使用UI回显mock或只测forwarding的占位覆盖。
 
 本轮窗口通过真实控件导入两段视频，设置序列，放置/移动/左右trim/split/lift/undo/redo，验证重叠拒绝、空隙像素和Escape取消，实际播放/暂停，再保存、正常退出、重开、错误relink拒绝及匹配指纹relink恢复。独立PNG oracle检查实际预览中心红/蓝/黑像素；保存后独立解析工程核对帧范围及stream PTS，不以控件文本代替结果。
 
-无边框窗口验收还检查控件位置/顺序、最大化后实际窗口尺寸增长、还原原尺寸，并在保存后点击自绘关闭按钮验证正常退出。macOS 默认左侧和强制右侧配置均通过；Windows/Linux 未实测。
+长片段回归确认900帧素材从素材卡加号加入时间轴后，在默认及最大缩放下保持完整片段且不触发超尺寸GPU纹理分配，并验证撤销/重做、保存重开及真实红色视频预览。验证结果：macOS真实硬件UI 15项通过；Windows/Linux未实测。
 
 报告和复查文件位于`test-results/phase6/ui-*/`：`report.html`、`result.json`、截图、工程、生成素材及关闭日志。平台限制与详细coverage数值见[Phase6设计记录](DESIGN.md#144-当前实施记录与后续范围)。原仓库SDK 100% gate保持原阈值和排除规则；不满足时不发布。
