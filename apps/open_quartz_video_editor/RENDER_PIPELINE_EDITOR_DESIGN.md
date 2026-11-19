@@ -2,7 +2,7 @@
 
 ## 1. 决策与状态
 
-**设计提案，尚未实现。** 本文是 [视频编辑器设计](DESIGN.md) 的功能补充，不把现有节点编辑器或核心流水的能力当作本功能已经交付。
+**状态：阶段 A 已实现；阶段 B–D 为待评审方案，尚未实现。** 本文描述当前代码边界及后续提案，不把规划能力写成已交付能力。
 
 用户约束：**复用现有 OpenQuartz 节点编辑器；整体交互全面参考 DaVinci Resolve。** 不另写 Color 页专用画布，不复制原图应用控制器，不把 OpenQuartz 节点强行改成 Resolve 的 RGB/key 节点，也不引入 Qt、MLT 或第二个渲染引擎。
 
@@ -32,10 +32,10 @@ Slint GraphView/Inspector当前引用原app的浅色Theme；复用必须向组�
 
 | Resolve操作心智 | OpenQuartz对应设计 | 实现边界 |
 |---|---|---|
-| Color页工作区切换、可收起面板 | Edit / Nodes；Viewer左、现有节点编辑器右；顶部切换效果库/参考图库，底部参数面板 | 同一窗口；页切换不另起播放器，不改变工程 |
-| 点击片段缩略条进入该镜头 | 按时间轴顺序列出**片段实例**；同素材多次使用显示多个片段 | 点击选择clip并定位到该片段，不编辑asset全局效果 |
-| mini-timeline与片段范围 | Nodes页默认收起完整轨道，显示可scrub的紧凑序列条；可展开原时间轴 | 复用同一播放头/帧映射，无第二套时间坐标 |
-| 点击节点切换底部调色/效果面板 | 单击选择现有GraphNode，底部显示现有Inspector表单；Shader页使用已有编辑器 | 单击节点默认仍看最终片段输出，不自动改节目输出 |
+| Color页工作区切换、可收起面板 | Edit / Nodes；左侧Media / Nodes标签共享素材库与节点目录；Viewer、Graph、统一右侧属性面板 | 同一窗口；页切换不另起播放器，不改变工程 |
+| 点击片段缩略条进入该镜头 | 按时间轴顺序列出**片段实例**；Nodes图上方紧凑条可切clip，同素材多次使用显示多个实例 | 点击选择clip并定位到该片段，不编辑asset全局效果 |
+| mini-timeline与片段范围 | Nodes页显示图上方clip条；完整时间轴持续在下方，同一播放头/帧映射 | 不建立第二套时间坐标 |
+| 点击节点切换参数 | 单击GraphNode，右侧统一属性侧栏显示现有Inspector表单；Edit页同侧栏显示Clip属性 | 单击节点默认仍看最终片段输出，不自动改节目输出 |
 | 输出端拖至输入端 | 保留GraphView现有拖线/点端口连接；增加兼容端口提示 | OpenQuartz类型验证；不能只按连线颜色接受输入 |
 | 节点拖到线中插入 | 合法主图像路径悬停高亮，松手原子插入；Esc取消 | 只支持具备明确主image-in/out的节点；复杂节点打开连接选择，不猜端口 |
 | Add Serial Before/After | 节点右键和工具栏菜单；选中模板后自动接线 | 自定义Shader串行命令默认创建具名image输入的pass-through模板 |
@@ -51,28 +51,29 @@ Slint GraphView/Inspector当前引用原app的浅色Theme；复用必须向组�
 
 ### 3.1 布局
 
-1440×900下的建议初始布局；分隔线可拖动，收起Gallery/效果库或mini-timeline扩大主工作区。保留现有深色主题、统一字号与图标tooltip。
+1440×900建议布局。左侧媒体/节点目录用互斥标签切换；Nodes的效果按类别以双列方形图标卡片呈现。右侧节点Inspector复用Edit页片段属性侧栏，不与节点选择区争夺横向空间。
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580">
   <g fill="none" stroke="var(--border)" stroke-width="1">
     <rect x="1" y="1" width="958" height="578" rx="7"/>
-    <path d="M1 49H959 M1 87H959 M1 355H959 M1 425H959 M1 555H959 M180 87V355 M560 87V355 M560 425V555"/>
-    <rect x="203" y="111" width="333" height="188" rx="3"/>
-    <path d="M610 190H656 M737 190H787 M867 190H918" stroke="var(--accent)" stroke-width="2"/>
-    <rect x="584" y="170" width="26" height="40" rx="3"/><rect x="656" y="156" width="81" height="68" rx="4"/><rect x="787" y="156" width="80" height="68" rx="4"/><rect x="918" y="170" width="26" height="40" rx="3"/>
-    <rect x="17" y="373" width="108" height="36" rx="3"/><rect x="137" y="373" width="108" height="36" rx="3" stroke="var(--accent)"/><rect x="257" y="373" width="108" height="36" rx="3"/>
+    <path d="M1 49H959 M1 87H959 M1 386H959 M1 430H959 M170 87V386 M410 87V386 M740 87V386"/>
+    <rect x="185" y="110" width="210" height="202" rx="3"/>
+    <rect x="425" y="124" width="70" height="48" rx="4"/><rect x="510" y="124" width="70" height="48" rx="4"/>
+    <rect x="430" y="198" width="26" height="36" rx="3"/><rect x="500" y="188" width="72" height="58" rx="4"/><rect x="610" y="188" width="26" height="36" rx="3"/>
+    <rect x="755" y="112" width="190" height="245" rx="4"/>
+    <rect x="16" y="453" width="928" height="104" rx="3"/>
+    <path d="M456 216H500 M572 216H610" stroke="var(--accent)" stroke-width="2"/>
   </g>
-  <g fill="currentColor" font-family="sans-serif" font-size="14">
-    <text x="20" y="31">Q  OPENQUARTZ STUDIO</text><text x="363" y="31">Edit  /  Nodes</text>
-    <text x="18" y="73">Gallery / Effects</text><text x="201" y="73">Viewer · Final ▾</text><text x="581" y="73">Clip 02 · Nodes</text>
-    <text x="20" y="117">搜索现有节点</text><text x="20" y="152">Color / Filter</text><text x="20" y="181">Shader / AI</text>
-    <text x="275" y="216">同一帧的实际GPU输出</text><text x="277" y="329">前一帧　播放　后一帧</text>
-    <text x="672" y="184">01 Balance</text><text x="802" y="184">02 Look</text>
-    <text x="25" y="396">01 · Clip A</text><text x="145" y="396">02 · Clip B</text><text x="265" y="396">03 · Clip A</text>
-    <text x="20" y="451">选中节点：02 Look</text><text x="20" y="485">参数 / Shader　重置　启用</text><text x="20" y="523">复用现有参数表单与代码编辑器</text>
-    <text x="580" y="453">Mini timeline / 完整时间轴切换</text><text x="580" y="489">同一序列播放头、同一撤销历史</text>
-    <text x="18" y="572">工程状态　编译/加载状态　实际帧时间　GPU路径</text>
+  <g fill="currentColor" font-family="sans-serif" font-size="13">
+    <text x="18" y="31">OPENQUARTZ STUDIO</text><text x="370" y="31">Edit  /  Nodes</text>
+    <text x="14" y="73">Media  |  Nodes</text><text x="185" y="73">Viewer</text><text x="425" y="73">Clip strip + Graph</text><text x="755" y="73">Properties</text>
+    <text x="20" y="111">COLOR</text><text x="23" y="144">[◉] Invert</text><text x="93" y="144">[◉] Grade</text>
+    <text x="23" y="184">[▧] Filter</text><text x="93" y="184">[◇] Distort</text>
+    <text x="23" y="224">[ƒx] Custom</text><text x="23" y="270">grouped square tiles</text>
+    <text x="220" y="215">Actual GPU viewer</text><text x="430" y="154">clip A</text><text x="515" y="154">clip B</text>
+    <text x="500" y="221">Nodes graph</text><text x="775" y="116">Node Inspector</text><text x="775" y="143">Same sidebar slot</text>
+    <text x="20" y="477">Full timeline</text><text x="20" y="505">Single project history</text><text x="18" y="572">Status · frame time · GPU path</text>
   </g>
 </svg>
 ```
@@ -222,16 +223,37 @@ flowchart LR
 
 ## 8. 实施顺序与完整交付边界
 
-以下为可验收阶段，不是占位界面。用户要的总体交互均在路线中；未实现的菜单/面板不提前显示可用。
+阶段 A 已于本实现闭环交付；下表 B–D 是**提案**，按依赖拆分，不是已承诺的排期。每个阶段先过用户评审，再实现；未评审能力不加入可见入口。
 
-| 阶段 | 交付 | 验收出口 |
+| 阶段 | 提案交付 | 进入条件 / 验收出口 |
 |---|---|---|
-| A：复用与片段图闭环 | 现有GraphView/Inspector深色嵌入；Edit/Nodes、片段条、mini-timeline；source/output保护；现有静态Shader/Filter图；schema2、全工程历史 | 真实两片段不同图，串行插入/连接/编辑、切镜头、撤销、保存重开、旧工程像素等价 |
-| B：Resolve式高频操作 | 菜单/快捷键、拖线插入、重命名、明确删除桥接、可证明旁路、节点查看、Before/After wipe、原图app回归 | 无效连接/源码不破坏旧图；参数拖动一次历史；输入焦点不误删片段/节点；前后对比同帧 |
-| C：图能力扩展 | 资源/时间身份拆分、允许的Time节点、多输入Blend/Mask、既有AI生产节点、Gallery/本地版本 | 独立像素oracle、多输出类型错误、同帧mask、split时间语义、设备/预算失败、复制不串改 |
-| D：专业颜色与项目级流程 | 浮点工作域及颜色管理、真实调色工具/Scopes、Groups/Timeline作用域、编辑器导出接同一编译器 | 颜色/alpha/精度oracle、跨层顺序、预览/离线同配方、导出整段验证 |
+| A：复用与片段图闭环（已实现） | 现有GraphView/Inspector复用；Edit/Nodes；片段图、schema2、工程历史、GPU预检和真实预览 | 已完成；红/蓝真实解码素材验证编辑、像素、片段隔离、失败保留和保存重开 |
+| B：Resolve式高频操作 | 菜单/快捷键；拖线插入、重命名、删除桥接；持久化节点旁路和整图比较旁路；中间节点查看；Before/After wipe | 维持现有静态单图语义；证明事务一次提交、焦点隔离、同帧比较、原图app回归 |
+| C1：时间与资源契约 | 明确序列时间、源PTS、效果时间、资源身份、图revision的独立键；只在契约稳定后开放适用的Time节点 | 先补时钟/异步竞争测试；跨切点、scrub、relink、undo及迟到GPU结果均不串帧/串片段 |
+| C2：多输入图 | typed Blend/Mask等真实多输入节点、alpha约定及UI连线/预览 | 只做有明确端口/输出的算法；同帧mask像素oracle、错误类型拒绝、资源预算/生命周期通过 |
+| C3：Inference节点接入 | 迁移视频宿主模型发现、设备选择、模型准备/释放、预算与错误呈现；只开放可验证的现有生产节点 | 不因核心库已有模型就假设可用；真实模型资源、失败、取消、设备丢失、切片段和GPU竞争完整闭环 |
+| C4：版本与参考帧 | Clip Local Versions及Gallery still快照；Replace/Append明确操作 | 命名版本/快照持久化；切换是一条可撤销事务；跨片段复制深拷贝资源/图，失败保留目标 |
+| D1：专业颜色基础 | 输入色彩元数据、浮点工作域、显式转换、alpha与输出变换 | 先定义格式/transfer/primaries/range及精度误差预算；提供独立已知色块、HDR/SDR与alpha oracle |
+| D2：专业调色与Scopes | 只有真实算法实现后才开放Qualifier/Power Windows/Tracking/Scopes及参数面板 | 算法精度/交互、颜色管理、视口缩放与性能预算分别验收；不以占位UI或名称映射冒充功能 |
+| D3：Groups与Timeline作用域 | 分层作用域和确定的执行顺序；明确Clip、Group Pre/Post、Timeline应用范围 | 跨层非交换效果验证顺序；工程schema、历史、复制/split与预览保持一致 |
+| D4：视频编辑器导出 | 同一编译图及时间/颜色契约驱动整段硬件导出；保留当前独立Export API边界 | 预览/离线同配方；整段PTS/DTS、尾帧、取消、磁盘错误、资源释放及目标原子提交验收 |
 
-A必须先解决本阶段所需激活原子性与源资源复用；C开放时间/AI之前必须完成对应前提，不以“以后优化”留已知错帧行为。静态参数可不开放动画节点，但不妨碍完整静态片段图首交付。阶段D的导出不能复用屏幕截图，不另建wall-clock录屏路径。
+C1必须先冻结时间/资源身份契约，才开放时间节点、Inference或多输入资源消费；遇到预检失败仍保留稳定旧帧。D4导出不得复用屏幕截图或另建wall-clock录屏路径，必须等待D1颜色/alpha及C1时间语义稳定。静态参数无需开放动画节点。
+
+### 8.1 建议的实施顺序与评审问题
+
+**建议顺序：B → C1 → C2 → C3 → C4 → D1 → D2/D3 → D4。** B只补高频静态编辑与比较；C1是开放时间节点、跨片段复用和异步资源节点的前置契约；C2和C3先后可在C1之后独立评审，但多输入与模型资源不可在契约前进入视频宿主。C4可在C1之后与C2/C3并行实现，但版本/快照的数据格式须先定。D4必须等D1的颜色/alpha语义和C1的时间/资源语义冻结；Scopes依赖真实颜色工作域，不与D1倒置。
+
+阶段C的“AI”范围仅限接入已经存在且可在目标平台运行的生产节点；不包含训练、模型市场或新模型算法。Gallery先定义为本地静态帧+图快照，不承诺Resolve图库兼容。若相应真实资源、GPU能力或可判定的图像oracle尚不可得，则该阶段保持未开放，不以mock替代验收。
+
+请评审时重点确认：
+
+1. B是否先交付节点快捷操作/旁路，再做Viewer比较；还是希望将Before/After留到专业颜色阶段。
+2. C阶段是否接受先冻结统一的时间/资源身份契约，再开放Time、多输入、Inference；这是建议的强依赖，可避免不同节点各自定义时间。
+3. 是否认可Gallery/local version采用OpenQuartz自有、工程内可复制的静态快照，而非追求Resolve兼容。
+4. D阶段是否纳入完整色彩管理与导出；若纳入，需另行确认目标色域/传递函数、输出编码器、硬件覆盖平台和容许误差后再冻结规格。
+
+本文不承诺排期、平台矩阵或Resolve色彩科学等价。评审确认范围后再细化每阶段schema、API及测试夹具；本次不实现B–D能力。
 
 ## 9. 验收清单
 

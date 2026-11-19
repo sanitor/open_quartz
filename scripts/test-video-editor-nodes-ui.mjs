@@ -110,19 +110,25 @@ async function selectNode(id) {
   }, { description: `Inspector selection for ${id}` });
 }
 async function waitNodeCount(count) {
-  return client.waitFor(async () => (await headers()).length === count, { description: `${count} actual shared graph nodes` });
+  return client.waitFor(async () => {
+    try { return (await headers()).length === count; }
+    catch (error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; }
+  }, { description: `${count} actual shared graph nodes` });
 }
 async function oneNewNode(before) {
   return client.waitFor(async () => {
-    const nodes = (await headers()).map(nodeState).filter(node => !before.has(node.id));
-    return nodes.length === 1 && nodes[0];
+    try {
+      const nodes = (await headers()).map(nodeState).filter(node => !before.has(node.id));
+      return nodes.length === 1 && nodes[0];
+    } catch (error) {
+      if (/destroyed|stale/i.test(error.message)) return false;
+      throw error;
+    }
   }, { description: 'new committed pipeline node' });
 }
 async function addEffect(label) {
   const before = new Set((await headers()).map(element => nodeState(element).id));
-  // Catalog rows are real standard buttons; accessibility activation also works
-  // for a row clipped by the short, scrollable effect library.
-  await activateVisible(label);
+  await client.click(await button(`Add ${label} node`));
   return oneNewNode(before);
 }
 async function selectClip(name) {
@@ -281,7 +287,7 @@ try {
   });
   await step('The real catalog Invert transforms red GPU video to cyan', async () => {
     await selectNode('video');
-    const invert = await addEffect('COLOR / Invert'); invertId = invert.id;
+    const invert = await addEffect('Invert'); invertId = invert.id;
     await waitNodeCount(3); await snapshot('03-invert-red-to-cyan', 'cyan');
     const data = await save(); const graph = graphFor(data, 'red.mp4');
     assert(graph.edges.some(edge => edge.source === 'video' && edge.target === invertId));
@@ -320,7 +326,7 @@ try {
   });
   await step('Downstream effect order, real port reconnection and serial removal change GPU pixels', async () => {
     await selectNode(customId);
-    const secondInvert = await addEffect('COLOR / Invert');
+    const secondInvert = await addEffect('Invert');
     await waitNodeCount(5); await snapshot('08-green-then-invert-magenta', 'magenta');
     await click('Fit graph in view');
     const customLabel=nodeState(await header(customId)).label;
@@ -354,7 +360,7 @@ try {
   });
   await step('Uniform edits and label edits use real Inspector commits and one-step history', async () => {
     await setShader(GAIN);
-    await client.waitFor(async()=> (await client.byLabel('Apply shader',{role:'Button'})).every(button=>!button.accessibleEnabled),{description:'shader commit completed'});
+    await client.waitFor(async()=> { try { return (await client.byLabel('Apply shader',{role:'Button'})).every(button=>!button.accessibleEnabled); } catch(error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; } },{description:'shader commit completed'});
     await collapseSection('SHADER EDITOR'); await collapseSection('OUTPUT SIZE');
     let gain = await revealInspector('Uniform gain');
     await client.click(gain); await client.setValue(gain,'1'); await client.key('\n');
@@ -367,7 +373,7 @@ try {
     const originalLabel=nodeState(await header(customId)).label;
     await client.setValue(await client.find({ label: 'Node label', role: 'TextInput' }), RENAMED);
     await client.key('\n');
-    await client.waitFor(async()=> (await client.byLabel('Apply node label',{role:'Button'})).length===1,{description:'node label draft is dirty'});
+    await client.waitFor(async()=> { try { return (await client.byLabel('Apply node label',{role:'Button'})).length===1; } catch(error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; } },{description:'node label draft is dirty'});
     await activate('Apply node label');
     await click('UNDO');
     await client.waitFor(async () => nodeState(await header(customId)).label === originalLabel, { description: 'undo node label' });

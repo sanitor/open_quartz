@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Video editor Nodes workspace layout
+
+- Move the node catalog into the left library sidebar as a dedicated **Nodes** tab beside **Media**. Display effects in category-grouped, two-column square icon tiles with readable labels instead of a cramped horizontal list.
+- Keep the graph and clip selector in the main work area; consolidate node parameters and timeline clip properties into one right-side property sidebar, switching content with Edit / Nodes.
+- Verify both native window suites and real GPU Nodes workflow after the layout change.
+
 ### Native Browse crash fix
 
 - Release the editor controller's `RefCell` borrow before synchronously opening AppKit's nested `NSOpenPanel` / `NSSavePanel` modal loop. Slint callbacks and periodic preview updates can re-enter during the native chooser; retaining the mutable borrow caused the observed abort after video import.

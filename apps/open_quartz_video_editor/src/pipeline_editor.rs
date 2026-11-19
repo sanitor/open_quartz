@@ -101,11 +101,20 @@ impl Controller {
         let mut this=this.borrow_mut();
         this.pipeline_editor.effects=crate::shader_catalog::presets().iter().filter(|preset|matches!(preset.category,"COLOR"|"FILTER"|"DISTORTION"|"BLEND")).collect::<Vec<_>>();
         this.pipeline_editor.effects.sort_by_key(|preset|if preset.category=="COLOR"{0}else{1});
-        let effects=std::iter::once(crate::PipelineEffect { label:"Custom Shader".into(), index:-1 })
-            .chain(this.pipeline_editor.effects.iter().enumerate().map(|(index,preset)| crate::PipelineEffect {
-                label:format!("{} / {}",preset.category,preset.label).into(), index:index as i32,
-            })).collect::<Vec<_>>();
-        window.set_pipeline_effects(ModelRc::new(VecModel::from(effects)));
+        let mut groups=Vec::new();
+        for category in ["CUSTOM","COLOR","FILTER","DISTORTION","BLEND"] {
+            let effects:Vec<crate::PipelineEffect>=if category=="CUSTOM" { vec![crate::PipelineEffect { label:"Custom Shader".into(), index:-1, glyph:"ƒx".into() }] }
+                else { this.pipeline_editor.effects.iter().enumerate().filter(|(_,preset)|preset.category==category).map(|(index,preset)|crate::PipelineEffect {
+                    label:preset.label.to_owned().into(), index:index as i32,
+                    glyph:match category { "COLOR"=>"C", "FILTER"=>"F", "DISTORTION"=>"D", "BLEND"=>"B", _=>"□" }.into(),
+                }).collect() };
+            let rows=effects.chunks(2).map(|pair|crate::PipelineEffectRow {
+                first:pair[0].clone(),
+                second:pair.get(1).cloned().unwrap_or_else(||crate::PipelineEffect { label:"".into(), index:-2, glyph:"".into() }),
+            }).collect::<Vec<_>>();
+            if !rows.is_empty() { groups.push(crate::PipelineGroup { label:category.into(), rows:ModelRc::new(VecModel::from(rows)) }); }
+        }
+        window.set_pipeline_effect_groups(ModelRc::new(VecModel::from(groups)));
     }
 
     fn selected_pipeline_node(&self) -> Option<ProjectNode> {

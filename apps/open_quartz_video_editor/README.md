@@ -43,6 +43,7 @@ Select **Nodes** with an active timeline clip to edit its independent static pip
 
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.
+- The workspace follows a panel layout: **Media / Nodes** tabs share the left library; the Nodes tab shows grouped, two-column square effect tiles; node settings use the same right property sidebar as clip timing. The clip-instance strip stays above the graph, separate from the full timeline.
 - Current support: static single-image Shader, Constant and Math graphs. Inference, arbitrary resource nodes, multi-input compositing, time/feedback nodes, Gallery/versions, scopes, professional color management and video export UI are not implemented.
 
 
