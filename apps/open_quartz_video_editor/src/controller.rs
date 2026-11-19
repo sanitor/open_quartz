@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
+#[path = "pipeline_editor.rs"]
+mod pipeline_editor;
+use pipeline_editor::{PipelineCommand, PipelineEditor};
 
 enum IoResult {
     Import(u64, Result<MediaAsset, String>),
@@ -20,6 +23,7 @@ enum UiCommand {
     AddAsset(String),
     AddSelectedAsset,
     SelectClip(String),
+    Pipeline(PipelineCommand),
     Gesture {
         clip_id: String,
         kind: String,
@@ -56,6 +60,7 @@ pub struct Controller {
     timer: slint::Timer,
     deferred_refresh: bool,
     busy: bool,
+    pipeline_editor: PipelineEditor,
 }
 impl Controller {
     pub fn new(
@@ -96,9 +101,11 @@ impl Controller {
             timer: slint::Timer::default(),
             deferred_refresh: false,
             busy: false,
+            pipeline_editor: PipelineEditor::default(),
         }));
         window.set_project_status(description.into());
         Self::connect(&this, window);
+        Self::connect_pipeline(&this, window);
         let weak = Rc::downgrade(&this);
         this.borrow().timer.start(
             slint::TimerMode::Repeated,
@@ -340,7 +347,7 @@ impl Controller {
         self.path_dialog("import");
     }
     fn confirm_discard(&self) -> bool {
-        !self.document.is_dirty()
+        (!self.document.is_dirty() && !self.pipeline_has_drafts())
             || rfd::MessageDialog::new()
                 .set_title("Unsaved project")
                 .set_description("Discard unsaved changes to this project?")
@@ -349,6 +356,10 @@ impl Controller {
                 == rfd::MessageDialogResult::Yes
     }
     fn action(&mut self, action: &str) {
+        if matches!(action, "save" | "save-as") && self.pipeline_has_drafts() {
+            self.status("Apply or discard the pending node drafts before saving");
+            return;
+        }
         match action {
             "import" | "media" => self.import_dialog(),
             "new" => {
@@ -707,6 +718,11 @@ impl Controller {
                     height: self.document.data.height,
                     asset,
                     transform,
+                    pipeline: if self.asset_preview {
+                        crate::clip_pipeline::ClipPipeline::default()
+                    } else {
+                        self.document.clip_at(self.playhead).map(|clip| clip.pipeline.clone()).unwrap_or_default()
+                    },
                 };
                 if let Err(error) = self.preview.request(request) {
                     self.status(error);
@@ -720,6 +736,7 @@ impl Controller {
     fn tick(&mut self) {
         while let Ok(command) = self.ui_receive.try_recv() {
             match command {
+                UiCommand::Pipeline(command) => self.pipeline_command(command),
                 UiCommand::SelectAsset(id) => {
                     self.selected_asset = Some(id);
                     self.selected_clip = None;
@@ -745,6 +762,7 @@ impl Controller {
                 } => self.gesture(&clip_id, &kind, delta),
             }
         }
+        self.poll_pipeline();
         if self.deferred_refresh {
             self.deferred_refresh = false;
             self.changed();
@@ -864,12 +882,9 @@ impl Controller {
                     }
                     Err(error) => {
                         self.pause();
-                        if let Some(window) = self.window.upgrade() {
-                            window.set_monitor_image(slint::Image::default());
-                            window.set_has_monitor_image(false);
-                        }
-                        self.displayed = None;
-                        self.status(error);
+                        self.pipeline_editor.error = format!("Current pipeline failed; showing previous frame: {error}");
+                        self.publish_pipeline();
+                        self.status(self.pipeline_editor.error.clone());
                     }
                 }
             }
@@ -1103,12 +1118,14 @@ impl Controller {
             window.set_selected_clip_id("".into());
             window.set_selected_clip_name("No clip selected".into());
         }
+        self.publish_pipeline();
         self.refresh_time();
         if self.document.is_dirty() {
             self.status("Unsaved changes");
         }
     }
     fn clear_images(&mut self) {
+        self.pipeline_editor.reset();
         if let Some(window) = self.window.upgrade() {
             window.set_monitor_image(slint::Image::default());
             window.set_has_monitor_image(false);

@@ -2,6 +2,17 @@ mod controller;
 mod document;
 mod media;
 mod preview;
+mod clip_pipeline;
+#[path = "../../open_quartz_slint/src/graph_view_model.rs"]
+mod graph_view_model;
+#[path = "../../open_quartz_slint/src/graph_clipboard.rs"]
+mod graph_clipboard;
+#[path = "../../open_quartz_slint/src/inspector_forms.rs"]
+mod inspector_forms;
+#[path = "../../open_quartz_slint/src/shader_catalog.rs"]
+mod shader_catalog;
+#[path = "../../open_quartz_slint/src/uniform_literals.rs"]
+mod uniform_literals;
 
 use slint::ComponentHandle;
 slint::include_modules!();
@@ -42,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = EditorWindow::new()?;
     window.set_window_controls_on_left(controls_on_left);
     window.set_mac_style_controls(cfg!(target_os = "macos"));
+    slint_code_editor::install_editor!(window, CodeEditorBridge);
     let controller = controller::Controller::new(&window, bridge, backend, description);
     if let Some(path) = project {
         controller.borrow_mut().open_path(path);

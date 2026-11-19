@@ -1,3 +1,4 @@
+use crate::clip_pipeline::ClipPipeline;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
@@ -5,7 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,6 +104,8 @@ pub struct Clip {
     #[serde(default = "one")]
     pub source_subtick_denominator: u64,
     pub transform: ClipTransform,
+    #[serde(default)]
+    pub pipeline: ClipPipeline,
 }
 impl Clip {
     pub fn timeline_end(&self) -> Result<u64, String> {
@@ -221,6 +224,19 @@ impl EditorDocument {
             Ok(())
         })
     }
+    pub fn set_clip_pipeline(
+        &mut self,
+        clip_id: &str,
+        pipeline: ClipPipeline,
+        expected_revision: u64,
+    ) -> Result<(), String> {
+        self.transact_at(expected_revision, |data| {
+            let clip = data.clips.iter_mut().find(|clip| clip.id == clip_id)
+                .ok_or("Selected clip no longer exists")?;
+            clip.pipeline = pipeline;
+            Ok(())
+        })
+    }
     pub fn add_clip(&mut self, asset_id: &str) -> Result<String, String> {
         let asset = self
             .asset(asset_id)
@@ -247,6 +263,7 @@ impl EditorDocument {
             source_subtick_numerator: 0,
             source_subtick_denominator: 1,
             transform: ClipTransform::default(),
+            pipeline: ClipPipeline::default(),
         };
         self.transact(|data| {
             data.clips.push(clip);
@@ -564,18 +581,7 @@ impl EditorDocument {
             .canonicalize()
             .map_err(|error| format!("Cannot access project: {error}"))?;
         let bytes = fs::read(&path).map_err(|error| format!("Cannot read project: {error}"))?;
-        let file: ProjectFile = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Cannot parse project file: {error}"))?;
-        if file.schema_version != SCHEMA_VERSION {
-            return Err(format!(
-                "Unsupported project schema {}",
-                file.schema_version
-            ));
-        }
-        if file.data.schema_version != SCHEMA_VERSION {
-            return Err("Project schema header and data disagree".into());
-        }
-        let mut data = file.data;
+        let mut data = decode_project_file(&bytes)?;
         let parent = path.parent().unwrap_or(Path::new("."));
         for asset in &mut data.assets {
             let asset_path = PathBuf::from(&asset.path);
@@ -597,6 +603,41 @@ impl EditorDocument {
         project.saved_revision = 0;
         Ok(project)
     }
+}
+
+fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope {
+        schema_version: u32,
+        data: serde_json::Value,
+    }
+    let mut file: Envelope = serde_json::from_slice(bytes)
+        .map_err(|error| format!("Cannot parse project file: {error}"))?;
+    if !matches!(file.schema_version, 1 | SCHEMA_VERSION) {
+        return Err(format!("Unsupported project schema {}", file.schema_version));
+    }
+    if file.data.get("schema_version").and_then(serde_json::Value::as_u64)
+        != Some(u64::from(file.schema_version))
+    {
+        return Err("Project schema header and data disagree".into());
+    }
+    if let Some(clips) = file.data.get_mut("clips").and_then(serde_json::Value::as_array_mut) {
+        for clip in clips {
+            let object = clip.as_object_mut().ok_or("Cannot parse project clip")?;
+            match (file.schema_version, object.contains_key("pipeline")) {
+                (1, true) => return Err("Schema 1 clip contains unknown field `pipeline`".into()),
+                (1, false) => {
+                    object.insert("pipeline".into(), serde_json::to_value(ClipPipeline::default())
+                        .map_err(|error| error.to_string())?);
+                }
+                (_, false) => return Err("Schema 2 clip is missing required field `pipeline`".into()),
+                _ => {}
+            }
+        }
+    }
+    file.data["schema_version"] = serde_json::json!(SCHEMA_VERSION);
+    serde_json::from_value(file.data).map_err(|error| format!("Cannot parse project file: {error}"))
 }
 
 fn validate(data: &ProjectData) -> Result<(), String> {
@@ -644,6 +685,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
         if clip.id.is_empty() || !clip_ids.insert(clip.id.as_str()) {
             return Err("Missing or duplicate clip ID".into());
         }
+        clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
         if !asset_ids.contains(clip.asset_id.as_str()) {
             return Err("Clip references a missing media asset".into());
         }
@@ -1360,3 +1402,7 @@ mod tests {
             .ends_with(".tmp")));
     }
 }
+
+#[cfg(test)]
+#[path = "document_pipeline_tests.rs"]
+mod pipeline_tests;

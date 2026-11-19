@@ -83,13 +83,13 @@ component GraphToolButton inherits Rectangle {
     callback clicked();
     width: 32px;
     height: 30px;
-    background: root.active ? #e8f2ff : hit.has-hover && root.enabled ? #f5f5f7 : transparent;
+    background: root.active ? Theme.graph-active : hit.has-hover && root.enabled ? Theme.card : transparent;
     border-radius: 4px;
     opacity: root.enabled ? 1 : 0.35;
     Text {
         width: parent.width; height: parent.height;
         text: root.text;
-        color: root.active ? Theme.accent : #1d1d1f;
+        color: root.active ? Theme.accent : Theme.foreground;
         font-size: root.text == "−" || root.text == "+" ? 20px : 11px;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -97,7 +97,7 @@ component GraphToolButton inherits Rectangle {
     if root.fit-icon: Path {
         x: 9px; y: 8px; width: 14px; height: 14px;
         viewbox-width: 16; viewbox-height: 16;
-        stroke: root.active ? Theme.accent : #1d1d1f;
+        stroke: root.active ? Theme.accent : Theme.foreground;
         stroke-width: 1.4px; fill: transparent;
         commands: "M1 6 L1 1 L6 1 M10 1 L15 1 L15 6 M15 10 L15 15 L10 15 M6 15 L1 15 L1 10";
     }
@@ -120,6 +120,7 @@ export component GraphView inherits Rectangle {
     in property <float> origin-y;
     in property <bool> busy;
     in property <string> render-fps: "0.0";
+    in property <bool> node-previews-enabled: true;
     callback node-selected(string, bool);
     callback node-moved(string, float, float);
     in property <string> selected-edge-id;
@@ -257,7 +258,7 @@ export component GraphView inherits Rectangle {
         scroll.content-y = 0px;
     }
 
-    background: #e0e0e0;
+    background: Theme.graph-background;
 
     forward-focus: graph-focus;
     graph-focus := FocusScope {
@@ -488,8 +489,8 @@ export component GraphView inherits Rectangle {
                         y: root.drag-node-index == index ? root.drag-offset-y * root.zoom : 0px;
                         width: parent.width;
                         height: parent.height;
-                        background: white;
-                        border-color: self.highlighted ? Theme.accent : #d2d2d7;
+                        background: Theme.graph-node;
+                        border-color: self.highlighted ? Theme.accent : Theme.graph-node-border;
                         border-width: 1px * root.zoom;
                         border-radius: 12px * root.zoom;
                         drop-shadow-color: self.highlighted ? #00000024 : #00000012;
@@ -547,7 +548,7 @@ export component GraphView inherits Rectangle {
                             width: 7px * root.zoom; height: 7px * root.zoom; border-radius: self.width / 2;
                             background: node.status == "error" ? #ff3b30 : node.status == "ready" ? #34c759 : #8e8e93;
                         }
-                        if node.preview-height > 0: TouchArea {
+                        if root.node-previews-enabled && node.preview-height > 0: TouchArea {
                             x: parent.width - 34px * root.zoom; y: 0px; width: 16px * root.zoom; height: 28px * root.zoom;
                             enabled: !root.busy;
                             accessible-role: button;
@@ -556,11 +557,11 @@ export component GraphView inherits Rectangle {
                             clicked => { root.toggle-preview(node.node-id); }
                             Text { width: parent.width; height: parent.height; text: node.preview-expanded ? "▴" : "▾"; color: #ffffffcc; font-size: 10px * root.zoom; vertical-alignment: center; horizontal-alignment: center; }
                         }
-                        if node.preview-height > 0 && node.preview-expanded: Rectangle {
+                        if root.node-previews-enabled && node.preview-height > 0 && node.preview-expanded: Rectangle {
                             x: 8px * root.zoom; y: node.preview-top * root.zoom * 1px;
                             width: parent.width - 16px * root.zoom; height: node.preview-height * root.zoom * 1px;
-                            background: #f5f5f7; border-radius: 4px * root.zoom;
-                            border-color: #e8e8ed; border-width: 1px * root.zoom;
+                            background: Theme.card; border-radius: 4px * root.zoom;
+                            border-color: Theme.border; border-width: 1px * root.zoom;
                             Image { width: parent.width; height: parent.height; source: node.preview; image-fit: contain; }
                             if !node.has-preview: Text { width: parent.width; height: parent.height; text: node.status == "error" ? "Output unavailable" : "No output"; font-size: 10px * root.zoom; color: #aeaeb2; horizontal-alignment: center; vertical-alignment: center; }
                             Text { y: parent.height + 3px * root.zoom; width: parent.width; text: node.resolution + (node.kind == "Renderer" ? " · " + (node.has-preview ? root.render-fps : "0.0") + " FPS" : ""); font-size: 9px * root.zoom; color: #aeaeb2; horizontal-alignment: center; }
@@ -615,15 +616,15 @@ export component GraphView inherits Rectangle {
                             if node.kind != "Math" && port.output && port-index > 0 && !node.ports[port-index - 1].output: Rectangle {
                                 x: 18px * root.zoom; y: -3px * root.zoom;
                                 width: parent.width - 36px * root.zoom; height: 1px * root.zoom;
-                                background: #f0f0f0;
+                                background: Theme.dark ? Theme.border : #f0f0f0;
                             }
                             Rectangle {
                                 x: port.output ? parent.width - 12px * root.zoom : 0px;
                                 y: 5px * root.zoom; width: 12px * root.zoom; height: 12px * root.zoom;
                                 border-radius: 6px * root.zoom;
                                 border-width: 2px * root.zoom;
-                                border-color: port.output ? white : root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port-area.port-color;
-                                background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port.output || port.connected ? port-area.port-color : white;
+                                border-color: port.output ? Theme.graph-node : root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port-area.port-color;
+                                background: root.pending-node-id == node.node-id && root.pending-port-id == port.port-id ? Theme.accent : port.output || port.connected ? port-area.port-color : Theme.graph-node;
                             }
                             if root.zoom >= 0.25: Text {
                                 x: port.output && node.kind != "Math" ? parent.width / 2 : 20px * root.zoom;
@@ -659,8 +660,8 @@ export component GraphView inherits Rectangle {
             width: root.minimap-width;
             height: root.minimap-height;
             visible: root.minimap-needed;
-            background: #ffffffed;
-            border-color: #d2d2d7;
+            background: Theme.graph-overlay;
+            border-color: Theme.graph-node-border;
             border-width: 1px;
             border-radius: 8px;
             drop-shadow-color: #00000016;
@@ -673,7 +674,7 @@ export component GraphView inherits Rectangle {
                 y: root.minimap-content-offset-y + (node.y + root.origin-y) * root.minimap-scale * 1px;
                 width: max(2px, node.width * root.minimap-scale * 1px);
                 height: max(2px, node.height * root.minimap-scale * 1px);
-                background: node.selected ? Theme.accent : #d0d0d0;
+                background: node.selected ? Theme.accent : Theme.dark ? #56616b : #d0d0d0;
                 border-radius: 1px;
             }
 
@@ -719,7 +720,7 @@ export component GraphView inherits Rectangle {
         Rectangle {
             x: 15px; y: parent.height - self.height - 15px;
             width: 32px; height: 120px;
-            background: white; border-color: #d2d2d7;
+            background: Theme.graph-node; border-color: Theme.graph-node-border;
             border-width: 1px; border-radius: 8px;
             drop-shadow-color: #00000018; drop-shadow-blur: 4px;
             drop-shadow-offset-y: 1px;
@@ -732,7 +733,7 @@ export component GraphView inherits Rectangle {
                     label: "Reset zoom to 100 percent";
                     enabled: root.drag-node-index < 0;
                     clicked => { root.set-zoom(1); graph-focus.focus(); }
-                    zoom-readout := Text { width: parent.width; height: parent.height; text: "100%"; font-size: 9px; color: #6e6e73; horizontal-alignment: center; vertical-alignment: center; }
+                    zoom-readout := Text { width: parent.width; height: parent.height; text: "100%"; font-size: 9px; color: Theme.dark ? Theme.secondary : #6e6e73; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }
@@ -741,12 +742,12 @@ export component GraphView inherits Rectangle {
             x: (parent.width - self.width) / 2; y: 12px;
             width: root.connection-active ? 166px : root.selected-edge-id != "" ? 136px : 154px;
             height: 36px;
-            background: #ffffffed; border-color: #d2d2d7;
+            background: Theme.graph-overlay; border-color: Theme.graph-node-border;
             border-width: 1px; border-radius: 8px;
             drop-shadow-color: #00000012; drop-shadow-blur: 4px;
             HorizontalLayout {
                 padding: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 2px;
-                if root.connection-active: Text { text: "Choose an input"; color: #6e6e73; font-size: 11px; vertical-alignment: center; }
+                if root.connection-active: Text { text: "Choose an input"; color: Theme.dark ? Theme.secondary : #6e6e73; font-size: 11px; vertical-alignment: center; }
                 if !root.connection-active && root.selected-edge-id != "": GraphToolButton { width: 72px; text: "Reconnect"; label: "Reconnect selected edge"; enabled: !root.busy; clicked => { root.reconnect-edge(); graph-focus.focus(); } }
                 if !root.connection-active: GraphToolButton { width: 48px; text: "Delete"; label: "Delete selection"; enabled: !root.busy; clicked => { if (root.selected-edge-id != "") { root.delete-edge(); } else { root.remove-nodes(); } graph-focus.focus(); } }
                 if root.connection-active: GraphToolButton { width: 48px; text: "Cancel"; label: "Cancel connection"; enabled: !root.busy; clicked => { root.cancel-connection(); graph-focus.focus(); } }

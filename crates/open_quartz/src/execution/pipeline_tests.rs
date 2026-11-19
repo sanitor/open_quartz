@@ -783,6 +783,28 @@ fn rejected_shader_replacement_keeps_deliverable_output_and_source_removal_fails
     });
 }
 
+#[test]
+fn prepared_static_commit_rejects_disposal_before_swapping_staged_resources() {
+    pollster::block_on(async {
+        let graph = image_graph();
+        let mut p = pipeline(device().await, &graph);
+        p.upload_image("image", &[255, 0, 0, 255].repeat(4), 2, 2).unwrap();
+        let mut prepared = p.prepare_graph(&graph).unwrap();
+        prepared.stage_image("image", &[0, 0, 255, 255].repeat(4), 2, 2).unwrap();
+        let revision = p.revision();
+        p.dispose().unwrap();
+        let events = p.drain_events();
+        assert!(!events.is_empty());
+        let error = p.commit_graph(prepared).unwrap_err();
+        assert!(error.contains("disposed"));
+        assert_eq!(p.revision(), revision);
+        assert_eq!(p.frame_state(), EngineState::Disposed);
+        assert!(p.drain_events().is_empty());
+        assert!(!p.has_output_texture("image"));
+        assert!(!p.has_in_flight());
+    });
+}
+
 #[cfg(all(feature = "native-video", target_os = "macos"))]
 #[test]
 fn staged_hardware_video_replacement_and_detach_preserve_snapshot_content() {

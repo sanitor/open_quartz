@@ -2,11 +2,11 @@
 
 ## 1. 状态与决策
 
-本目录现在是独立 **Rust + Slint 视频编辑应用 OpenQuartz Studio**，和原节点图应用并列。Phase6已实现素材库、真实GPU监视器、单轨剪辑事务、撤销/重做、工程保存恢复与匹配素材重定位；启动与当前边界见[README](README.md)。未在Phase记录中验收的音频、多轨、完整效果/预览优化和编辑器导出UI仍是后续设计，不把界面参考等同全部剪映功能对等。
+本目录现在是独立 **Rust + Slint 视频编辑应用 OpenQuartz Studio**，和原节点图应用并列。Phase6编辑基线含素材库、真实GPU监视器、单轨剪辑事务、撤销/重做、工程保存恢复与匹配素材重定位。阶段A的Clip-scoped静态Nodes工作区也已落地；各能力和未交付边界见[README](README.md)与[渲染管线编辑器](RENDER_PIPELINE_EDITOR_DESIGN.md)。Resolve交互参考不表示完整色彩管理/剪辑功能对等。
 
 核心决策：
 
-1. 新应用以**素材库、时间线、节目监视器、属性面板**为主要交互，不把节点图画布当作主剪辑界面。
+1. 视频剪辑页仍以**素材库、时间线、节目监视器、属性面板**为主要交互；片段Nodes是第二个DaVinci Resolve Color式工作区，复用共享OpenQuartz节点画布，不把节点图替代剪辑时间线。
 2. 剪辑工程保存编辑意图；时间线编译器把指定时间的编辑意图转换为 GPU 帧工作。素材定位、时间线和渲染图各有唯一所有者。
 3. 复用 `oq-media` 的解码与帧 lease、`open_quartz` 的图渲染及 `oq-inference` 的 GPU 推理；**复用现有实现，不复制图编辑 app 的控制器**。
 4. 首个实现目标为 macOS Apple Silicon 上可用的单视频轨、1×速度、8-bit SDR、无音轨编辑与 H.264/MP4 导出闭环。它不是完整 NLE；音频、多轨等后续能力明确分阶段交付。
@@ -18,17 +18,26 @@
 
 本设计只约定该新应用，不迁移、重命名或删除现有图编辑 app，也不恢复 Web/Tauri 产品。
 
+
+### Phase 7：片段渲染管线闭环（已实现）
+
+- 复用现有节点应用的GraphView、Inspector、WGSL CodeEditor、OpenQuartz Graph模型、工厂目录与GraphClipboard；视频应用通过宿主适配器持有clip目标与EditorDocument，不复制节点画布/执行器。每个Clip独立持有静态pipeline；Schema 1打开迁移成受保护`video → output`直通图，保存为Schema 2。
+- Nodes工作区复用现有类型端口并插入Color/Filter/Distortion/Blend单image Shader、Custom Shader、Constant和Math；Source/Output受保护。候选图在共享GPU worker预检后才作为单个项目历史事务提交，Shader/uniform Inspector与布局编辑复用主工程撤销/重做。
+- **验证（macOS原生窗口）：47个Rust测试通过；视频时间线窗口15项通过；Nodes窗口11项通过。** Nodes用实际红/蓝H.264解码源及截图像素oracle验证Invert颜色结果、custom Shader输出、端口重连/顺序变化、shader编译失败保留最后有效帧、uniform值、两片段隔离和保存重开。完整证据在`test-results/clip-pipeline/nodes-ui-2026-11-18T14-21-48-990Z/`及`test-results/phase6/ui-2026-11-18T14-21-23-512Z/`。
+- 未交付：Inference/外部资源节点、time/frame/feedback、多源合成、node thumbnail、Before/After、Gallery/versions、Groups/scopes、专业颜色/HDR、音频/多轨和视频编辑器导出UI。现有核心仍用一个`timeline_ns`驱动源选择和System时间；视频宿主尚未集成模型目录/资源生命周期。
+- 硬件预检执行在现有GPU worker；提交接口先拒绝disposed session，候选图和静态WGSL经GPU计划预检；现有核心Inference订阅同步的全局事务化尚未改造，故clip图禁止Inference，且不承诺在未来支持Inference图时保持同样全局原子性。时间契约首发排除Time/Frame：现有核心单一timeline_ns同时驱动VideoToolbox源选择与内建shader时间，跨源/效果时间拆分尚待设计阶段C。
+
 ## 2. 现有基础与缺口
 
-| 能力 | 已有依据 | 新应用仍需完成 |
+| 能力 | 已有依据 | 当前边界或后续仍需完成 |
 |---|---|---|
-| Slint 原生预览 | 现有 app 使用 Slint 1.18.1、wgpu 30，共享 Device/Queue | 新时间线 UI、缩略图虚拟化、编辑控制器与独立入口 |
-| 硬件视频解码 | `oq-media::Session` 在 macOS 提供 VideoToolbox 顺序解码、PTS、reset、取消、drain、FrameLease | 任意精确 seek、时长/流探测、按目标时间取帧、缓存和编辑时钟模式 |
-| 图渲染 | `NativePlayer`、`RenderDevice`、图编译与资源生命周期 | 可显式注入时间/外部源帧的适配；离线不能调用 wall-clock 播放循环录屏 |
-| 推理 | 七模型生产链路及图像/视频回归 | 剪辑帧身份、确定性导出、推理缓存和尺寸适配；首个闭环不依赖 AI |
-| 输出与 lease | 当前 GPU 输出持有、背压和三槽资源约束 | 预览、后台任务、编码消费者的独立预算与释放协议 |
-| 项目编辑 | 图项目已有命令、撤销与持久化模式 | 时间线自己的模型、事务、格式版本与迁移；不是图 JSON 的别名 |
-| 声音与视频导出 | 仓库媒体文档记录设计要求 | 音频解码/播放/混音与 A/V 同步、编码、封装、可靠任务终态均需实施 |
+| Slint原生预览/UI | 现有Edit时间线 + Phase7复用GraphView/Inspector/CodeEditor的Nodes工作区；共用Device/Queue | 图布局/缩略图仍为GraphView基础展示，无Resolve图库、Scopes或Before/After |
+| 硬件视频解码 | `oq-media::Session`提供精确源PTS、顺序解码、取消/drain/FrameLease | 单cursor前向取帧；多源取帧、随机seek窗口、跨源同步仍不完整 |
+| 图渲染 | 现有typed Graph、执行计划、FramePipeline候选预检及每clip静态图 | FrameStamp的单`timeline_ns`仍同时承载源选择/Shader系统时间；Inference型clip图及未来效果时钟需核心改造 |
+| GPU输出/lease | 现有stable frame、预算和GPU texture直接交给Slint | Before/After和大量节点thumbnail尚未实现；专业颜色/alpha元数据有限 |
+| 项目与历史 | `.oqvideo.json` schema2、schema1直通图迁移、per-clip Graph、clone/validate/commit共用撤销 | 只有一个活动Graph版本；Gallery/Local Versions/Groups和外部资源表未实现 |
+| Inference/合成/色彩 | 其他OpenQuartz宿主具备部分推理与Shader目录 | 视频编辑器Cargo未集成推理资源；多输入Matte/Layer/Resolve式ParallelMixer、色彩管理/HDR、Scope未交付 |
+| 声音/导出 | 核心单独具备部分无音轨H.264基础 | 视频编辑器没有音频或导出UI；时间线全段确定性渲染/编码闭环仍需实施 |
 
 源码核对入口：
 

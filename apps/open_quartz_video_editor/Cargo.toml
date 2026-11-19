@@ -14,8 +14,10 @@ ui-automation = ["slint/mcp"]
 
 [dependencies]
 open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video"] }
+slint_code_editor = { path = "../../crates/slint_code_editor" }
 slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = "0.4"
 rfd = "0.16"
 serde = { version = "1.0", features = ["derive"] }

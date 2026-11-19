@@ -1,6 +1,13 @@
 import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 import { ToolButton } from "icon_button.slint";
+import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
+import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup } from "../../open_quartz_slint/ui/components/inspector.slint";
+import { Theme } from "../../open_quartz_slint/ui/theme.slint";
+import { CodeEditorBridge } from "code_editor.slint";
+export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup }
+
+export struct PipelineEffect { label: string, index: int }
 
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct ClipRow { id: string, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
@@ -155,7 +162,7 @@ export component EditorWindow inherits Window {
     accessible-label: "OpenQuartz video editor";
     accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status;
     forward-focus: editor_focus;
-    init => { Palette.color-scheme = ColorScheme.dark; }
+    init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
     in-out property <string> project_path: "Not saved";
     in-out property <string> project_status: "Hardware GPU initializing";
@@ -195,6 +202,61 @@ export component EditorWindow inherits Window {
     in property <string> sequence_fps_numerator: "30";
     in property <string> sequence_fps_denominator: "1";
     in property <float> timeline_content_width: 900;
+    in-out property <bool> nodes_open: false;
+    callback nodes_workspace_changed(bool);
+    in property <[GraphNode]> pipeline_nodes;
+    in property <[GraphEdge]> pipeline_edges;
+    in property <float> pipeline_content_width;
+    in property <float> pipeline_content_height;
+    in property <float> pipeline_origin_x;
+    in property <float> pipeline_origin_y;
+    in property <bool> pipeline_busy;
+    in property <string> pipeline_selected_edge_id;
+    in property <string> pipeline_pending_node_id;
+    in property <string> pipeline_pending_port_id;
+    in property <bool> pipeline_connection_active;
+    in property <bool> pipeline_can_copy;
+    in property <bool> pipeline_can_paste;
+    in property <int> pipeline_selection_count;
+    in property <[PipelineEffect]> pipeline_effects;
+    in property <string> pipeline_error;
+    in property <string> pipeline_node_id;
+    in property <string> pipeline_node_type;
+    in property <string> pipeline_selection_message;
+    in property <bool> pipeline_has_selection;
+    in property <bool> pipeline_is_shader;
+    in property <bool> pipeline_supports_output_size;
+    in property <bool> pipeline_label_read_only;
+    in property <bool> pipeline_shader_read_only;
+    in property <bool> pipeline_can_delete;
+    in property <bool> pipeline_label_dirty;
+    in property <bool> pipeline_shader_dirty;
+    in property <bool> pipeline_output_size_dirty;
+    in property <bool> pipeline_uniform_dirty;
+    in property <bool> pipeline_inspector_dirty;
+    in property <string> pipeline_validation_message;
+    in property <bool> pipeline_uniforms_valid: true;
+    in property <[InspectorPort]> pipeline_ports;
+    in property <[InspectorUniform]> pipeline_uniforms;
+    in property <[InspectorFormGroup]> pipeline_forms;
+    in-out property <string> pipeline_node_label;
+    in-out property <string> pipeline_shader_code;
+    in-out property <bool> pipeline_auto_size;
+    in-out property <int> pipeline_output_width;
+    in-out property <int> pipeline_output_height;
+    callback pipeline_node_selected(string, bool);
+    callback pipeline_node_moved(string, float, float);
+    callback pipeline_port_selected(string, string, bool);
+    callback pipeline_port_dropped(string, string, bool, float, float, float);
+    callback pipeline_edge_selected(string);
+    callback pipeline_add_effect(int);
+    callback pipeline_action(string);
+    callback pipeline_label_draft_changed(string);
+    callback pipeline_shader_draft_changed(string);
+    callback pipeline_output_size_draft_changed(int, int, bool);
+    callback pipeline_uniform_draft_changed(string, string);
+    callback pipeline_form_draft_changed(string, string);
+    callback pipeline_apply_form(string);
     callback project_action(string);
     callback import_media(); callback asset_select(string); callback add_to_timeline();
     callback clip_select(string); callback split_clip(); callback lift_clip();
@@ -264,12 +326,18 @@ export component EditorWindow inherits Window {
                 root.settings_open = false;
                 root.file_dialog_open = false;
                 root.cancel_token += 1;
+                if root.nodes_open { root.pipeline_action("cancel-connection"); }
                 root.shortcut("cancel");
                 return accept;
             }
             if root.settings_open || root.file_dialog_open { return reject; }
             // Command is represented as control by Slint on macOS.
             if event.modifiers.control && !event.modifiers.alt {
+                if root.nodes_open && !event.modifiers.shift {
+                    if event.text == "c" || event.text == "C" { if root.pipeline_can_copy { root.pipeline_action("copy"); } return accept; }
+                    if event.text == "v" || event.text == "V" { if root.pipeline_can_paste { root.pipeline_action("paste"); } return accept; }
+                    if event.text == "a" || event.text == "A" { root.pipeline_action("select-all"); return accept; }
+                }
                 if event.text == "n" || event.text == "N" { root.shortcut("new"); return accept; }
                 if event.text == "o" || event.text == "O" { root.shortcut("open"); return accept; }
                 if event.text == "s" || event.text == "S" { root.shortcut(event.modifiers.shift ? "save-as" : "save"); return accept; }
@@ -283,7 +351,11 @@ export component EditorWindow inherits Window {
                 if event.text == " " { root.shortcut("play"); return accept; }
                 if event.text == Key.LeftArrow { root.shortcut("step-back"); return accept; }
                 if event.text == Key.RightArrow { root.shortcut("step-forward"); return accept; }
-                if event.text == Key.Delete || event.text == Key.Backspace { root.shortcut("delete"); return accept; }
+                if event.text == Key.Delete || event.text == Key.Backspace {
+                    if root.nodes_open { root.pipeline_action(root.pipeline_selected_edge_id != "" ? "delete-edge" : "remove-nodes"); }
+                    else { root.shortcut("delete"); }
+                    return accept;
+                }
             }
             reject
         }
@@ -309,6 +381,26 @@ export component EditorWindow inherits Window {
                         Text { text: "OPENQUARTZ STUDIO"; color: root.text; font-size: 18px; font-weight: 700; vertical-alignment: center; }
                         Rectangle { width: 1px; height: 24px; background: root.border; }
                         LineEdit { height: 32px; width: 240px; accessible-label: "Project name"; text: root.project_name; placeholder-text: "Project name"; accepted(value) => { root.rename_project(value); } }
+                        Rectangle {
+                            width: 62px; height: 30px; border-radius: 5px;
+                            background: !root.nodes_open ? #265d59 : edit_tab.has-hover ? #303438 : transparent;
+                            border-width: 1px; border-color: !root.nodes_open ? root.accent : root.border;
+                            Text { width: parent.width; height: parent.height; text: "Edit"; color: !root.nodes_open ? root.accent : root.text; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            edit_tab := TouchArea {
+                                accessible-role: button; accessible-label: "Edit workspace";
+                                clicked => { editor_focus.focus(); root.nodes_open = false; root.nodes_workspace_changed(false); }
+                            }
+                        }
+                        Rectangle {
+                            width: 70px; height: 30px; border-radius: 5px;
+                            background: root.nodes_open ? #265d59 : nodes_tab.has-hover ? #303438 : transparent;
+                            border-width: 1px; border-color: root.nodes_open ? root.accent : root.border;
+                            Text { width: parent.width; height: parent.height; text: "Nodes"; color: root.nodes_open ? root.accent : root.text; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            nodes_tab := TouchArea {
+                                accessible-role: button; accessible-label: "Nodes workspace";
+                                clicked => { editor_focus.focus(); root.nodes_open = true; root.nodes_workspace_changed(true); }
+                            }
+                        }
                         Rectangle { horizontal-stretch: 1; }
                         ToolButton { label: "UNDO"; glyph: "↶"; active: root.can_undo; clicked => { editor_focus.focus(); root.undo(); } }
                         ToolButton { label: "REDO"; glyph: "↷"; active: root.can_redo; clicked => { editor_focus.focus(); root.redo(); } }
@@ -339,7 +431,7 @@ export component EditorWindow inherits Window {
             }
             HorizontalLayout {
                 spacing: 1px; vertical-stretch: 1;
-                Rectangle {
+                if !root.nodes_open: Rectangle {
                     width: 260px; background: root.panel;
                     VerticalLayout {
                         spacing: 0px;
@@ -370,7 +462,7 @@ export component EditorWindow inherits Window {
                     horizontal-stretch: 1; background: #101213;
                     VerticalLayout {
                         spacing: 0px;
-                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
+                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: root.nodes_open ? "Final · " + root.selected_clip_name : "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                         Rectangle {
                             horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
                             accessible-role: image;
@@ -396,7 +488,51 @@ export component EditorWindow inherits Window {
                         }
                     }
                 }
-                Rectangle {
+                if root.nodes_open: Rectangle {
+                    horizontal-stretch: 1; min-width: 420px; background: root.panel;
+                    VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                            height: 44px; padding-left: 14px; padding-right: 14px; spacing: 10px;
+                            Text { text: "Clip pipeline"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                            Text { text: root.selected_clip_id == "" ? "Select a timeline clip" : root.selected_clip_name; color: root.secondary; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        }
+                        GraphView {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            nodes: root.pipeline_nodes; edges: root.pipeline_edges;
+                            content-width: root.pipeline_content_width; content-height: root.pipeline_content_height;
+                            origin-x: root.pipeline_origin_x; origin-y: root.pipeline_origin_y;
+                            busy: root.pipeline_busy || root.selected_clip_id == "";
+                            node-previews-enabled: false;
+                            selected-edge-id: root.pipeline_selected_edge_id;
+                            pending-node-id: root.pipeline_pending_node_id;
+                            pending-port-id: root.pipeline_pending_port_id;
+                            connection-active: root.pipeline_connection_active;
+                            can-undo: root.can_undo; can-redo: root.can_redo;
+                            can-copy: root.pipeline_can_copy; can-paste: root.pipeline_can_paste;
+                            selection-count: root.pipeline_selection_count;
+                            node-selected(id, additive) => { root.pipeline_node_selected(id, additive); }
+                            node-moved(id, x, y) => { root.pipeline_node_moved(id, x, y); }
+                            port-selected(node, port, output) => { root.pipeline_port_selected(node, port, output); }
+                            port-dropped(node, port, output, x, y, scale) => { root.pipeline_port_dropped(node, port, output, x, y, scale); }
+                            edge-selected(id) => { root.pipeline_edge_selected(id); }
+                            reconnect-edge => { root.pipeline_action("reconnect-edge"); }
+                            delete-edge => { root.pipeline_action("delete-edge"); }
+                            cancel-connection => { root.pipeline_action("cancel-connection"); }
+                            undo => { root.undo(); } redo => { root.redo(); }
+                            copy => { root.pipeline_action("copy"); }
+                            paste => { root.pipeline_action("paste"); }
+                            select-all => { root.pipeline_action("select-all"); }
+                            remove-nodes => { root.pipeline_action("remove-nodes"); }
+                            toggle-preview(id) => { root.pipeline_action("toggle-preview:" + id); }
+                        }
+                        if root.pipeline_error != "": Rectangle {
+                            height: 44px; background: #43272b;
+                            Text { x: 12px; width: parent.width - 24px; height: parent.height; text: root.pipeline_error; accessible-label: "Pipeline error"; color: #ffaaaa; font-size: 11px; wrap: word-wrap; overflow: elide; vertical-alignment: center; }
+                        }
+                    }
+                }
+                if !root.nodes_open: Rectangle {
                     width: 250px; background: root.panel;
                     VerticalLayout {
                         spacing: 0px;
@@ -419,8 +555,96 @@ export component EditorWindow inherits Window {
                     }
                 }
             }
+            if root.nodes_open: Rectangle {
+                height: 260px; background: root.panel;
+                VerticalLayout {
+                    spacing: 1px;
+                    Rectangle {
+                        height: 52px; background: #15181b;
+                        HorizontalLayout {
+                            spacing: 8px; padding-left: 14px; padding-right: 10px;
+                            Text { text: "CLIPS"; width: 46px; color: root.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+                            ScrollView {
+                                vertical-scrollbar-policy: always-off;
+                                HorizontalLayout {
+                                    padding-top: 6px; padding-bottom: 6px; spacing: 6px;
+                                    for clip in root.clips: Rectangle {
+                                        width: 150px; height: 38px; border-radius: 4px;
+                                        background: clip.selected ? #265d59 : #252a2f;
+                                        border-width: 1px; border-color: clip.selected ? root.accent : root.border;
+                                        if clip.has_thumbnail: Image { x: 3px; y: 3px; width: 46px; height: 32px; source: clip.thumbnail; image-fit: cover; }
+                                        Text { x: clip.has_thumbnail ? 55px : 8px; width: parent.width - self.x - 6px; height: parent.height; text: clip.asset_name; color: clip.online ? root.text : #ffaaaa; font-size: 11px; overflow: elide; vertical-alignment: center; }
+                                        TouchArea { accessible-role: button; accessible-label: "Pipeline for " + clip.asset_name; clicked => { editor_focus.focus(); root.clip_select(clip.id); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 1px;
+                        Rectangle {
+                            width: 220px; background: #191c1f;
+                            VerticalLayout {
+                                padding: 10px; spacing: 6px;
+                                Text { text: "Color tools"; color: root.accent; font-size: 12px; font-weight: 600; }
+                                Text { text: "Add effect"; color: root.text; font-size: 12px; font-weight: 600; }
+                                Text { text: "Insert after the selected node"; color: root.secondary; font-size: 11px; wrap: word-wrap; }
+                                ScrollView {
+                                    horizontal-scrollbar-policy: always-off;
+                                    VerticalLayout {
+                                        spacing: 5px;
+                                        for effect in root.pipeline_effects: Button {
+                                            text: effect.label;
+                                            enabled: root.selected_clip_id != "" && !root.pipeline_busy && !root.pipeline_inspector_dirty;
+                                            clicked => { root.pipeline_add_effect(effect.index); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Inspector {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            node-id: root.pipeline_node_id;
+                            has-selection: root.pipeline_has_selection;
+                            node-type: root.pipeline_node_type;
+                            selection-message: root.pipeline_selection_message;
+                            project-busy: root.pipeline_busy;
+                            is-shader: root.pipeline_is_shader;
+                            supports-output-size: root.pipeline_supports_output_size;
+                            label-dirty: root.pipeline_label_dirty;
+                            shader-dirty: root.pipeline_shader_dirty;
+                            output-size-dirty: root.pipeline_output_size_dirty;
+                            uniform-dirty: root.pipeline_uniform_dirty;
+                            inspector-dirty: root.pipeline_inspector_dirty;
+                            validation-message: root.pipeline_validation_message;
+                            uniforms-valid: root.pipeline_uniforms_valid;
+                            ports: root.pipeline_ports; uniforms: root.pipeline_uniforms; forms: root.pipeline_forms;
+                            node-label <=> root.pipeline_node_label;
+                            shader-code <=> root.pipeline_shader_code;
+                            label-read-only: root.pipeline_label_read_only;
+                            shader-read-only: root.pipeline_shader_read_only;
+                            can-delete: root.pipeline_can_delete;
+                            auto-size <=> root.pipeline_auto_size;
+                            output-width <=> root.pipeline_output_width;
+                            output-height <=> root.pipeline_output_height;
+                            label-draft-changed(value) => { root.pipeline_label_draft_changed(value); }
+                            shader-draft-changed(value) => { root.pipeline_shader_draft_changed(value); }
+                            output-size-draft-changed(w, h, auto) => { root.pipeline_output_size_draft_changed(w, h, auto); }
+                            uniform-draft-changed(name, value) => { root.pipeline_uniform_draft_changed(name, value); }
+                            form-draft-changed(key, value) => { root.pipeline_form_draft_changed(key, value); }
+                            apply-form(key) => { root.pipeline_apply_form(key); }
+                            apply-label => { root.pipeline_action("apply-label"); }
+                            apply-shader => { root.pipeline_action("apply-shader"); }
+                            apply-output-size => { root.pipeline_action("apply-output-size"); }
+                            apply-uniforms => { root.pipeline_action("apply-uniforms"); }
+                            discard-drafts => { root.pipeline_action("discard-drafts"); }
+                            delete-node => { root.pipeline_action("remove-nodes"); }
+                        }
+                    }
+                }
+            }
             Rectangle {
-                height: 280px; background: #191c1e;
+                height: root.nodes_open ? 220px : 280px; background: #191c1e;
                 VerticalLayout {
                     spacing: 0px;
                     HorizontalLayout {

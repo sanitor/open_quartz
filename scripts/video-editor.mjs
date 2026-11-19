@@ -27,11 +27,15 @@ if(mode==='build')await run('cargo',['build','--locked','--release','--manifest-
 if(mode==='test-ui'){
   await run('cargo',['build','--locked','--manifest-path',manifest,'--features','ui-automation'],env);
   await run(process.execPath,['scripts/test-video-editor-ui.mjs',join(root,'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor')],env);
+  await run(process.execPath,['scripts/test-video-editor-nodes-ui.mjs',join(root,'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor')],env);
 }
 if(mode==='test-coverage'){
   await run('cargo',['llvm-cov','--manifest-path',manifest,'--locked','--no-report','--','--test-threads=1'],env);
   await run('cargo',['llvm-cov','run','--manifest-path',manifest,'--locked','--features','ui-automation','--no-report','--','--help'],env);
   const target=join(root,'apps/open_quartz_video_editor/target/llvm-cov-target');
-  await run(process.execPath,['scripts/test-video-editor-ui.mjs',join(target,'debug/open_quartz_video_editor')],{...env,LLVM_PROFILE_FILE:join(target,'open_quartz_video_editor-%p-%m.profraw')});
+  const uiEnv={...env,LLVM_PROFILE_FILE:join(target,'open_quartz_video_editor-%p-%m.profraw')};
+  const binary=join(target,'debug/open_quartz_video_editor');
+  await run(process.execPath,['scripts/test-video-editor-ui.mjs',binary],uiEnv);
+  await run(process.execPath,['scripts/test-video-editor-nodes-ui.mjs',binary],uiEnv);
   await run('cargo',['llvm-cov','report','--manifest-path',manifest,'--json','--output-path',join(root,'test-results/phase6/editor-coverage.json')],env);
 }

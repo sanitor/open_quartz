@@ -23,6 +23,12 @@
 - Reproduce the asset-card plus crash with a 30-second clip: rendering its rounded timeline clip made Slint FemtoVG allocate a full-clip offscreen texture 28,792 pixels wide, beyond the GPU limit of 8,192.
 - Preserve the rounded clip shell but render its contents with a square inset scissor, avoiding a full-duration offscreen layer. Real-window regression verifies a 900-frame clip at default and maximum timeline zoom, undo/redo, project save/reopen and visible GPU preview.
 
+### Clip-scoped node render pipelines
+
+- Add Resolve-inspired Edit/Nodes workspace while reusing the shared GraphView, typed OpenQuartz graph, Inspector, WGSL editor and GPU pipeline. Each timeline clip has an independent schema-2 graph; schema-1 projects migrate to a source→output pass-through graph.
+- Add GPU-preflighted graph edits, serial insertion/removal, typed port reconnection, per-clip isolation, Shader/uniform/label edits, shared project undo/redo and protected timeline-managed source/output nodes.
+- Verify native red/blue hardware video against decoded GPU pixels through catalog Invert, custom Shader, port reconnection, undo/redo, invalid Shader retention, per-clip isolation and save/reopen. Multi-input/Inference nodes, temporal effects, Gallery/versions, scopes, professional color management and editor export remain outside this delivery.
+
 ### Editor UI alignment and timeline overview
 
 - Align title-bar controls, brand and project name; use consistent 12px business text and 11px supporting text, with an 18px app title. Replace captioned toolbar glyphs with vector icon buttons, hover tooltips and accessible names.

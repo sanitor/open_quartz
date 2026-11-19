@@ -713,6 +713,15 @@ impl FramePipeline {
         if !Arc::ptr_eq(&prepared.backend, &self.render_device.backend()) {
             return Err("Native graph was prepared on a different render device".to_owned());
         }
+        // set_graph's active-state check must happen before cancellation or any
+        // resource swaps. The prepared static graph and retained video node IDs
+        // have already been validated, so no static-path failure remains after it.
+        if self.session.state() == EngineState::Disposed {
+            return Err(runtime_error(SdkError::new(
+                crate::project::model::SdkErrorCode::Disposed,
+                "GraphInstance has been disposed",
+            )));
+        }
         self.cancel_pending();
         self.latest = None;
         self.inference_ready.clear();

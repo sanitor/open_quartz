@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use open_quartz::{DataType, InputMode, NodeType, Port, Project, ProjectNode};
+use open_quartz::{DataType, Graph, InputMode, NodeType, Port, Project, ProjectNode};
 use slint::{ModelRc, VecModel};
 
 use crate::{GraphEdge, GraphNode, GraphPort};
@@ -25,8 +25,11 @@ pub struct GraphViewModel {
 
 impl GraphViewModel {
     pub fn from_project(project: &Project, selected_node_ids: &BTreeSet<String>) -> Self {
+        Self::from_graph(project.graph(), selected_node_ids)
+    }
+
+    pub fn from_graph(graph: &Graph, selected_node_ids: &BTreeSet<String>) -> Self {
         let started = Instant::now();
-        let graph = project.graph();
         let node_indices = graph
             .nodes()
             .iter()

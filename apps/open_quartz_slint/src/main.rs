@@ -6,6 +6,7 @@ mod inspector_forms;
 mod inspector_inference;
 mod render_bridge;
 mod shader_catalog;
+mod uniform_literals;
 mod services {
     pub mod desktop_export;
     pub mod file_service;

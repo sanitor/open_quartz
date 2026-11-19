@@ -30,6 +30,7 @@ mod tests {
             height: 64,
             asset: Some(asset),
             transform: ClipTransform::default(),
+            pipeline: ClipPipeline::default(),
         };
         bridge.request(request.clone()).unwrap();
         let first = wait(&bridge, 1);
@@ -92,6 +93,7 @@ mod tests {
             height: 64,
             asset: Some(asset.clone()),
             transform: ClipTransform::default(),
+            pipeline: ClipPipeline::default(),
         };
         bridge.request(request.clone()).unwrap();
         request.ticket = 2;
@@ -108,6 +110,233 @@ mod tests {
         request.asset = Some(asset);
         bridge.request(request).unwrap();
         assert!(wait(&bridge, 3).image.err().unwrap().contains("offline"));
+        bridge.shutdown();
+    }
+    fn render_request(pipeline: &mut FramePipeline, request: &PreviewRequest) -> StableFrame {
+        let demand = FrameDemand {
+            request_id: request.ticket,
+            graph_revision: pipeline.revision(),
+            output_node_id: OUTPUT_ID.into(),
+            sources: Vec::new(),
+            input: FrameEvaluationInput {
+                stamp: FrameStamp {
+                    epoch: 1,
+                    frame: request.ticket,
+                    timeline_ns: request.source_ns,
+                    deadline_ns: 0,
+                },
+                previous_timeline_ns: request.source_ns,
+                date: [0.0; 4],
+                mouse: [0.0; 4],
+                resolution: [request.width as f32, request.height as f32, 1.0],
+            },
+        };
+        match pipeline.submit(demand) {
+            FrameAdmission::Accepted => {}
+            FrameAdmission::Rejected { error, .. } => panic!("{error}"),
+            FrameAdmission::WouldBlock(_) => panic!("unexpected preview backpressure"),
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            pipeline.progress();
+            if let Some(completion) = pipeline.poll_completion() {
+                return match completion.outcome {
+                    FrameOutcome::Submitted(frame) => {
+                        frame.ready.wait(Duration::from_secs(5)).unwrap();
+                        frame
+                    }
+                    FrameOutcome::Failed(error) => panic!("{error}"),
+                    FrameOutcome::Cancelled => panic!("preview was cancelled"),
+                };
+            }
+            assert!(Instant::now() < deadline, "hardware preview did not complete");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn pixels(pipeline: &FramePipeline, frame: &StableFrame) -> Vec<u8> {
+        pollster::block_on(pipeline.backend().read_texture_rgba(
+            &frame.output().texture, frame.image.width, frame.image.height,
+        )).unwrap()
+    }
+
+    #[test]
+    fn clip_effect_pixels_are_isolated_and_graph_edits_reuse_the_hardware_source() {
+        crate::media::configure_runtime().unwrap();
+        let render = pollster::block_on(RenderDevice::new()).unwrap().0;
+        let mut pipeline = FramePipeline::from_render_device(
+            render, PlaybackCapabilities { data_paths: vec![] },
+        );
+        let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let mut request = PreviewRequest {
+            ticket: 1, revision: 1, frame: 0, source_ns: 0,
+            width: 128, height: 64, asset: Some(asset),
+            transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
+        };
+        let mut configured = None;
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        let original = render_request(&mut pipeline, &request);
+        let original_pixels = pixels(&pipeline, &original);
+        let original_metrics = pipeline.video_metrics(SOURCE_ID).unwrap();
+        assert!(original_metrics.hardware_decode);
+        assert!(original_metrics.uploaded_frames > 0);
+        assert_eq!(original_metrics.cpu_copy_bytes, 0);
+
+        let id = request.pipeline.add_serial(SOURCE_ID,
+            "@group(0) @binding(2) var<uniform> strength:f32; @fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { let c=textureSample(image,imageSampler,uv); return vec4f(c.rgb*strength,1.0); }",
+            "Exposure stage").unwrap();
+        let mut edited = request.pipeline.graph().clone();
+        edited.nodes.iter_mut().find(|node| node.id == id).unwrap()
+            .data.uniforms.insert("strength".into(), serde_json::json!(0.25));
+        request.pipeline.replace_graph(edited).unwrap();
+        request.ticket += 1;
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        // Restaging VideoToolbox resets these counters; committing a new graph
+        // must leave the exact live source in place before the next demand.
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames,
+            original_metrics.uploaded_frames);
+        let quarter = render_request(&mut pipeline, &request);
+        assert_eq!(quarter.identity.content_stamp.as_ref().unwrap().media_pts_ns, Some(0));
+        assert!(pixels(&pipeline, &quarter).chunks_exact(4).enumerate().all(|(index, p)| {
+            if index % 128 < 32 || index % 128 >= 96 { p == [0, 0, 0, 255] }
+            else { (61..=66).contains(&p[0]) && p[0] == p[1] && p[1] == p[2] && p[3] == 255 }
+        }));
+        drop(quarter);
+
+        let mut edited = request.pipeline.graph().clone();
+        let stage = edited.nodes.iter_mut().find(|node| node.id == id).unwrap();
+        stage.position.x += 120.0;
+        stage.data.label = "Renamed stage".into();
+        request.pipeline.replace_graph(edited).unwrap();
+        let revision = pipeline.revision();
+        assert!(!configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.revision(), revision);
+
+        let mut edited = request.pipeline.graph().clone();
+        edited.nodes.iter_mut().find(|node| node.id == id).unwrap()
+            .data.uniforms.insert("strength".into(), serde_json::json!(0.5));
+        request.pipeline.replace_graph(edited).unwrap();
+        let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
+        request.ticket += 1;
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
+        let half = render_request(&mut pipeline, &request);
+        assert!(pixels(&pipeline, &half).chunks_exact(4).enumerate().all(|(index, p)| {
+            if index % 128 < 32 || index % 128 >= 96 { p == [0, 0, 0, 255] }
+            else { (125..=130).contains(&p[0]) && p[0] == p[1] && p[1] == p[2] }
+        }));
+
+        // A different clip with the same asset and a default pipeline must not
+        // inherit its neighbour's effect, nor mutate an already leased frame.
+        request.pipeline = ClipPipeline::default();
+        request.ticket += 1;
+        let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
+        let clean = render_request(&mut pipeline, &request);
+        assert_eq!(pixels(&pipeline, &clean), original_pixels);
+        assert_eq!(pixels(&pipeline, &original), original_pixels);
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().cpu_copy_bytes, 0);
+        drop((half, clean));
+
+        let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
+        request.transform.exposure = -1.0;
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
+
+        // Both a fingerprint change at the same path and a different file path
+        // are source changes, unlike any of the graph-only edits above.
+        request.asset.as_mut().unwrap().fingerprint.push_str("-changed");
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, 0);
+        request.ticket += 1;
+        drop(render_request(&mut pipeline, &request));
+        request.asset = Some(crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gray_64x64.mp4")).unwrap());
+        request.transform = ClipTransform::default();
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, 0);
+        request.ticket += 1;
+        let gray = render_request(&mut pipeline, &request);
+        assert!(pixels(&pipeline, &gray).chunks_exact(4).enumerate().all(|(index, p)| {
+            if index % 128 < 32 || index % 128 >= 96 { p == [0, 0, 0, 255] }
+            else { (80..180).contains(&p[0]) && p[0].abs_diff(p[1]) <= 4 && p[0].abs_diff(p[2]) <= 4 }
+        }));
+    }
+
+    #[test]
+    fn effects_follow_native_size_and_contain_the_actual_upstream_aspect() {
+        crate::media::configure_runtime().unwrap();
+        let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
+        let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let mut clip_pipeline = ClipPipeline::default();
+        let id = clip_pipeline.add_serial(SOURCE_ID,
+            "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { return textureSample(image,imageSampler,uv)*vec4f(0.0,1.0,0.0,1.0); }",
+            "Green").unwrap();
+        let mut request = PreviewRequest {
+            ticket: 1, revision: 1, frame: 0, source_ns: 0,
+            width: 128, height: 64, asset: Some(asset),
+            transform: ClipTransform::default(), pipeline: clip_pipeline,
+        };
+        bridge.request(request.clone()).unwrap();
+        let native = wait(&bridge, 1).image.unwrap();
+        let native_pixels = pollster::block_on(bridge.backend.read_texture_rgba(
+            &native.output().texture, 128, 64,
+        )).unwrap();
+        assert!(native_pixels.chunks_exact(4).enumerate().all(|(index, p)| {
+            if index % 128 < 32 || index % 128 >= 96 { p == [0, 0, 0, 255] }
+            else { p[0] == 0 && p[1] > 240 && p[2] == 0 && p[3] == 255 }
+        }));
+        let mut sized = request.pipeline.graph().clone();
+        let effect = sized.nodes.iter_mut().find(|node| node.id == id).unwrap();
+        effect.data.auto_size = Some(false);
+        effect.data.width = Some(128);
+        effect.data.height = Some(32);
+        request.pipeline.replace_graph(sized).unwrap();
+        request.ticket = 2;
+        bridge.request(request).unwrap();
+        let resized = wait(&bridge, 2).image.unwrap();
+        let resized_pixels = pollster::block_on(bridge.backend.read_texture_rgba(
+            &resized.output().texture, 128, 64,
+        )).unwrap();
+        assert!(resized_pixels.chunks_exact(4).enumerate().all(|(index, p)| {
+            if index / 128 < 16 || index / 128 >= 48 { p == [0, 0, 0, 255] }
+            else { p[0] == 0 && p[1] > 240 && p[2] == 0 && p[3] == 255 }
+        }));
+        bridge.shutdown();
+    }
+
+    #[test]
+    fn gpu_candidate_preflight_reports_errors_without_replacing_the_live_preview() {
+        let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
+        let mut request = PreviewRequest {
+            ticket: 1, revision: 1, frame: 0, source_ns: 0,
+            width: 128, height: 64, asset: None,
+            transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
+        };
+        bridge.request(request.clone()).unwrap();
+        let previous = wait(&bridge, 1).image.unwrap();
+        // This pipeline is model-valid; only the GPU owner's device limit
+        // rejects its requested output dimensions during asynchronous preflight.
+        let candidate = ClipPipeline::default();
+        let oversized = bridge.backend.device.limits().max_texture_dimension_2d + 1;
+        let failed = bridge.validate_pipeline(candidate, oversized, 64).unwrap();
+        assert!(failed.recv_timeout(Duration::from_secs(15)).unwrap().is_err());
+        let valid = bridge.validate_pipeline(ClipPipeline::default(), 128, 64).unwrap();
+        assert!(valid.recv_timeout(Duration::from_secs(15)).unwrap().is_ok());
+        request.ticket = 2;
+        bridge.request(request).unwrap();
+        let next = wait(&bridge, 2).image.unwrap();
+        assert_eq!(next.identity.graph_revision, previous.identity.graph_revision);
+        let previous_pixels = pollster::block_on(bridge.backend.read_texture_rgba(
+            &previous.output().texture, 128, 64,
+        )).unwrap();
+        let next_pixels = pollster::block_on(bridge.backend.read_texture_rgba(
+            &next.output().texture, 128, 64,
+        )).unwrap();
+        assert_eq!(next_pixels, previous_pixels);
         bridge.shutdown();
     }
 }

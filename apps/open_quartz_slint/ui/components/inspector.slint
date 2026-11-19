@@ -156,6 +156,8 @@ export component Inspector inherits Rectangle {
     in-out property <string> node-label;
     in-out property <string> shader-code;
     in property <bool> shader-read-only: false;
+    in property <bool> label-read-only: false;
+    in property <bool> can-delete: true;
     in-out property <bool> auto-size;
     in-out property <int> output-width;
     in-out property <int> output-height;
@@ -198,12 +200,12 @@ export component Inspector inherits Rectangle {
                     text <=> root.node-label;
                     accessible-label: "Node label";
                     horizontal-stretch: 1;
-                    enabled: !root.project-busy;
+                    enabled: !root.project-busy && !root.label-read-only;
                     edited => { root.label-draft-changed(self.text); }
-                    accepted => { if root.label-dirty { root.apply-label(); } }
+                    accepted => { root.label-draft-changed(self.text); root.apply-label(); }
                 }
-                if root.label-dirty: Button { text: "Apply"; accessible-label: "Apply node label"; enabled: !root.project-busy; clicked => { root.apply-label(); } }
-                Rectangle {
+                if root.label-dirty && !root.label-read-only: Button { text: "Apply"; accessible-label: "Apply node label"; enabled: !root.project-busy; clicked => { root.apply-label(); } }
+                if root.can-delete: Rectangle {
                     width: 20px; height: 22px;
                     Path { x: 3px; y: 4px; width: 14px; height: 14px; viewbox-width: 16; viewbox-height: 16; stroke: hit.has-hover ? #ff3b30 : #aeaeb2; stroke-width: 1.3px; commands: "M3 5V14H13V5 M1 5H15 M6 2H10 M6 7.5V11.5 M10 7.5V11.5"; }
                     hit := TouchArea { enabled: !root.project-busy && !root.inspector-dirty; accessible-role: button; accessible-label: "Delete node"; clicked => { root.delete-node(); } accessible-action-default => { root.delete-node(); } }
@@ -297,6 +299,7 @@ export component Inspector inherits Rectangle {
                     CodeEditor {
                         text <=> root.shader-code;
                         language: "wgsl";
+                        dark: Theme.dark;
                         label: "Shader source";
                         read-only: root.shader-read-only;
                         enabled: !root.project-busy;
@@ -397,6 +400,7 @@ export component Inspector inherits Rectangle {
                             text: uniform.value;
                             enabled: !uniform.connected && !root.project-busy;
                             edited => { root.uniform-draft-changed(uniform.name, self.text); }
+                            accepted => { root.uniform-draft-changed(uniform.name, self.text); root.apply-uniforms(); }
                         }
                         if uniform.connected: Text { text: "Connected · upstream value"; color: Theme.accent; font-size: 11px; wrap: word-wrap; }
                         if !uniform.connected && !uniform.valid: Text { text: uniform.error; color: #ff3b30; font-size: 11px; wrap: word-wrap; }

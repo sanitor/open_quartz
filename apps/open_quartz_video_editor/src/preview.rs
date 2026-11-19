@@ -1,3 +1,4 @@
+use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
 use crate::document::{ClipTransform, MediaAsset};
 use open_quartz::execution::{
     FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline,
@@ -21,6 +22,7 @@ pub struct PreviewRequest {
     pub height: u32,
     pub asset: Option<MediaAsset>,
     pub transform: ClipTransform,
+    pub pipeline: ClipPipeline,
 }
 pub struct PreviewUpdate {
     pub ticket: u64,
@@ -30,8 +32,15 @@ pub struct PreviewUpdate {
     pub actual_pts_ns: Option<i64>,
     pub cpu_copy_bytes: u64,
 }
+struct PipelineValidation {
+    pipeline: ClipPipeline,
+    width: u32,
+    height: u32,
+    result: mpsc::Sender<Result<(), String>>,
+}
 pub struct PreviewBridge {
     sender: mpsc::SyncSender<()>,
+    validation_sender: mpsc::Sender<PipelineValidation>,
     latest: Arc<Mutex<Option<PreviewRequest>>>,
     closed: Arc<AtomicBool>,
     updates: Arc<Mutex<Option<PreviewUpdate>>>,
@@ -71,6 +80,7 @@ impl PreviewBridge {
             queue,
         };
         let (sender, receiver) = mpsc::sync_channel(1);
+        let (validation_sender, validation_receiver) = mpsc::channel();
         let latest = Arc::new(Mutex::new(None));
         let worker_latest = latest.clone();
         let closed = Arc::new(AtomicBool::new(false));
@@ -79,11 +89,12 @@ impl PreviewBridge {
         let publish = updates.clone();
         let worker = thread::Builder::new()
             .name("oq-editor-preview".into())
-            .spawn(move || run(render, receiver, publish, worker_latest, worker_closed))
+            .spawn(move || run(render, receiver, validation_receiver, publish, worker_latest, worker_closed))
             .map_err(|e| e.to_string())?;
         Ok((
             Self {
                 sender,
+                validation_sender,
                 latest,
                 closed,
                 updates,
@@ -112,6 +123,27 @@ impl PreviewBridge {
             }
         }
     }
+    /// Preflight on the shared GPU owner without replacing the active graph or source.
+    pub fn validate_pipeline(
+        &self,
+        pipeline: ClipPipeline,
+        width: u32,
+        height: u32,
+    ) -> Result<mpsc::Receiver<Result<(), String>>, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("Preview worker is closed".into());
+        }
+        let (result, receiver) = mpsc::channel();
+        self.validation_sender
+            .send(PipelineValidation { pipeline, width, height, result })
+            .map_err(|_| "Preview worker is unavailable")?;
+        match self.sender.try_send(()) {
+            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(receiver),
+            Err(mpsc::TrySendError::Disconnected(())) => {
+                Err("Preview worker is unavailable".into())
+            }
+        }
+    }
     pub fn take_update(&self) -> Option<PreviewUpdate> {
         self.updates.lock().ok()?.take()
     }
@@ -129,38 +161,109 @@ impl Drop for PreviewBridge {
     }
 }
 
+fn pipeline_graph(
+    pipeline: &ClipPipeline,
+    width: u32,
+    height: u32,
+) -> Result<open_quartz::Graph, String> {
+    let mut graph = pipeline.graph().clone();
+    let output = graph.nodes.iter_mut().find(|node| node.id == OUTPUT_ID)
+        .ok_or("Clip pipeline has no output node")?;
+    output.data.auto_size = Some(false);
+    output.data.width = Some(width);
+    output.data.height = Some(height);
+    Ok(graph)
+}
+
 fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
-    let (nodes, edges) = if let Some(asset) = &request.asset {
+    let mut graph = pipeline_graph(&request.pipeline, request.width, request.height)?;
+    let code = if let Some(asset) = &request.asset {
         let t = request.transform;
-        let fit = ((request.width as f64 / asset.width as f64)
-            .min(request.height as f64 / asset.height as f64))
-            * f64::from(t.scale);
-        let fit_x = asset.width as f64 * fit / request.width as f64;
-        let fit_y = asset.height as f64 * fit / request.height as f64;
-        let code=format!("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {{ let p=(uv-vec2f(0.5)-vec2f({:.8},{:.8}))/vec2f({:.8},{:.8})+vec2f(0.5); if(any(p<vec2f(0.0))||any(p>vec2f(1.0))){{return vec4f(0.0,0.0,0.0,1.0);}} let c=textureSample(image,imageSampler,p);return vec4f(clamp(c.rgb*{:.8},vec3f(0.0),vec3f(1.0)),1.0);}}",t.x,t.y,fit_x,fit_y,2.0f64.powf(f64::from(t.exposure)));
-        (
-            vec![
-                serde_json::json!({"id":"video","type":"input","position":{"x":0,"y":0},"data":{"type":"input","label":"Media","shaderCode":"","inputMode":"video","inputDataType":"sampler2D","inputs":[],"outputs":[{"id":"out","label":"image","dataType":"sampler2D","direction":"output"}],"uniforms":{}}}),
-                serde_json::json!({"id":"output","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Program","shaderCode":code,"inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":request.width,"height":request.height}}),
-            ],
-            vec![
-                serde_json::json!({"id":"media-program","source":"video","sourceHandle":"out","target":"output","targetHandle":"in"}),
-            ],
-        )
+        if graph.edges.iter().any(|edge| edge.target == OUTPUT_ID && edge.source == SOURCE_ID) {
+            // Keep the original transform's f64 constants and WGSL byte-for-byte for
+            // the default source -> output graph, including contain and exposure.
+            let fit = ((request.width as f64 / asset.width as f64)
+                .min(request.height as f64 / asset.height as f64))
+                * f64::from(t.scale);
+            let fit_x = asset.width as f64 * fit / request.width as f64;
+            let fit_y = asset.height as f64 * fit / request.height as f64;
+            format!("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {{ let p=(uv-vec2f(0.5)-vec2f({:.8},{:.8}))/vec2f({:.8},{:.8})+vec2f(0.5); if(any(p<vec2f(0.0))||any(p>vec2f(1.0))){{return vec4f(0.0,0.0,0.0,1.0);}} let c=textureSample(image,imageSampler,p);return vec4f(clamp(c.rgb*{:.8},vec3f(0.0),vec3f(1.0)),1.0);}}",t.x,t.y,fit_x,fit_y,2.0f64.powf(f64::from(t.exposure)))
+        } else {
+            // Auto-size propagates actual source dimensions through the core's
+            // size_source targets; explicitly sized effects may change the aspect.
+            format!("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {{ let size=vec2f(textureDimensions(image)); let canvas=vec2f({}.0,{}.0); let fit=min(canvas.x/size.x,canvas.y/size.y)*{:.8}; let p=(uv-vec2f(0.5)-vec2f({:.8},{:.8}))/(size*fit/canvas)+vec2f(0.5); if(any(p<vec2f(0.0))||any(p>vec2f(1.0))){{return vec4f(0.0,0.0,0.0,1.0);}} let c=textureSample(image,imageSampler,p);return vec4f(clamp(c.rgb*{:.8},vec3f(0.0),vec3f(1.0)),1.0);}}",request.width,request.height,t.scale,t.x,t.y,2.0f64.powf(f64::from(t.exposure)))
+        }
     } else {
-        (
-            vec![
-                serde_json::json!({"id":"output","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Gap","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(0.0,0.0,0.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":request.width,"height":request.height}}),
-            ],
-            vec![],
-        )
+        graph.nodes.retain(|node| node.id == OUTPUT_ID);
+        graph.edges.clear();
+        graph.nodes[0].data.inputs.clear();
+        "@fragment fn main()->@location(0) vec4f{return vec4f(0.0,0.0,0.0,1.0);}".into()
     };
-    serde_json::from_value(serde_json::json!({"nodes":nodes,"edges":edges}))
-        .map_err(|e| e.to_string())
+    graph.nodes.iter_mut().find(|node| node.id == OUTPUT_ID).unwrap().data.shader_code = code;
+    // Presentation metadata is not executable state and must not recompile a
+    // running graph or reopen its source when the user moves or renames a node.
+    for node in &mut graph.nodes {
+        node.position.x = 0.0;
+        node.position.y = 0.0;
+        node.data.label.clear();
+    }
+    Ok(graph)
+}
+
+#[derive(PartialEq)]
+struct PreviewConfiguration {
+    source: Option<(String, String)>,
+    graph: open_quartz::Graph,
+}
+
+fn validate_dimensions(pipeline: &FramePipeline, width: u32, height: u32) -> Result<(), String> {
+    let limit = pipeline.backend().device.limits().max_texture_dimension_2d;
+    if width == 0 || height == 0 || width > limit || height > limit {
+        return Err("Sequence dimensions exceed this GPU's texture limits".into());
+    }
+    Ok(())
+}
+
+fn configure(
+    pipeline: &mut FramePipeline,
+    configured: &mut Option<PreviewConfiguration>,
+    request: &PreviewRequest,
+) -> Result<bool, String> {
+    validate_dimensions(pipeline, request.width, request.height)?;
+    if request.asset.as_ref().is_some_and(|asset| !asset.online) {
+        return Err("Media offline — use Relink to restore the original file".into());
+    }
+    let key = PreviewConfiguration {
+        source: request.asset.as_ref().map(|asset| (asset.path.clone(), asset.fingerprint.clone())),
+        graph: graph(request)?,
+    };
+    if configured.as_ref() == Some(&key) {
+        return Ok(false);
+    }
+    let mut prepared = pipeline.prepare_graph(&key.graph)?;
+    let source_changed = configured.as_ref().is_none_or(|previous| previous.source != key.source);
+    if source_changed {
+        if let Some(asset) = &request.asset {
+            prepared.stage_video(
+                SOURCE_ID,
+                NativeVideoConfig {
+                    kind: NativeVideoSourceKind::File,
+                    source: asset.path.clone(),
+                    looping: false,
+                    playback_rate: 1.0,
+                },
+                false,
+            )?;
+        }
+    }
+    pipeline.commit_graph(prepared)?;
+    *configured = Some(key);
+    Ok(true)
 }
 fn run(
     render: RenderDevice,
     receiver: mpsc::Receiver<()>,
+    validation_receiver: mpsc::Receiver<PipelineValidation>,
     updates: Arc<Mutex<Option<PreviewUpdate>>>,
     latest: Arc<Mutex<Option<PreviewRequest>>>,
     closed: Arc<AtomicBool>,
@@ -171,7 +274,7 @@ fn run(
     let _ = pipeline.set_waker(Arc::new(move || owner.unpark()));
     let mut current: Option<PreviewRequest> = None;
     let mut pending_image: Option<StableFrame> = None;
-    let mut configured: Option<(Option<String>, u32, u32, ClipTransform)> = None;
+    let mut configured: Option<PreviewConfiguration> = None;
     let mut epoch = 1u64;
     let mut sequence = 0u64;
     let mut last_source = 0u64;
@@ -186,56 +289,27 @@ fn run(
         ) {
             break;
         }
+        for validation in validation_receiver.try_iter() {
+            let result = (|| {
+                validate_dimensions(&pipeline, validation.width, validation.height)?;
+                let candidate = pipeline_graph(&validation.pipeline, validation.width, validation.height)?;
+                pipeline.prepare_graph(&candidate)?;
+                Ok(())
+            })();
+            let _ = validation.result.send(result);
+        }
         let next = latest.lock().ok().and_then(|mut request| request.take());
         if let Some(request) = next {
             pipeline.cancel_pending();
             while pipeline.poll_completion().is_some() {}
             pending_image = None;
             admitted = false;
-            let key = (
-                request
-                    .asset
-                    .as_ref()
-                    .map(|asset| format!("{}:{}", asset.path, asset.fingerprint)),
-                request.width,
-                request.height,
-                request.transform,
-            );
-            let prepare = (|| {
-                let limit = pipeline.backend().device.limits().max_texture_dimension_2d;
-                if request.width == 0
-                    || request.height == 0
-                    || request.width > limit
-                    || request.height > limit
-                {
-                    return Err("Sequence dimensions exceed this GPU's texture limits".into());
-                }
-                if request.asset.as_ref().is_some_and(|asset| !asset.online) {
-                    return Err("Media offline — use Relink to restore the original file".into());
-                }
-                if configured.as_ref() != Some(&key) {
-                    let graph = graph(&request)?;
-                    let mut prepared = pipeline.prepare_graph(&graph)?;
-                    if let Some(asset) = &request.asset {
-                        prepared.stage_video(
-                            "video",
-                            NativeVideoConfig {
-                                kind: NativeVideoSourceKind::File,
-                                source: asset.path.clone(),
-                                looping: false,
-                                playback_rate: 1.0,
-                            },
-                            false,
-                        )?;
-                    }
-                    pipeline.commit_graph(prepared)?;
-                    configured = Some(key);
-                    epoch = epoch.saturating_add(1);
-                } else if request.source_ns < last_source {
+            let prepare = configure(&mut pipeline, &mut configured, &request);
+            let prepare = prepare.map(|changed| {
+                if changed || request.source_ns < last_source {
                     epoch = epoch.saturating_add(1);
                 }
-                Ok::<_, String>(())
-            })();
+            });
             if let Err(error) = prepare {
                 publish(&updates, request, Err(error), 0);
                 current = None;
