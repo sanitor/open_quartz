@@ -29,6 +29,8 @@ struct State {
     allocations: HashMap<AllocationKey, Allocation>,
     surfaces: usize,
     bytes: u64,
+    peak_surfaces: usize,
+    peak_bytes: u64,
     waker: Option<Waker>,
     registered_wakers: Wakers,
     next_waker: usize,
@@ -91,6 +93,8 @@ impl FrameBudget {
                 allocations: HashMap::new(),
                 surfaces: 0,
                 bytes: 0,
+                peak_surfaces: 0,
+                peak_bytes: 0,
                 waker: None,
                 registered_wakers: Arc::new(Vec::new()),
                 next_waker: 0,
@@ -221,6 +225,8 @@ impl FrameBudget {
             );
             state.surfaces += surfaces;
             state.bytes += bytes;
+            state.peak_surfaces = state.peak_surfaces.max(state.surfaces);
+            state.peak_bytes = state.peak_bytes.max(state.bytes);
         }
         Ok(Some(FrameCredit {
             budget: Arc::clone(self),
@@ -231,6 +237,14 @@ impl FrameBudget {
     pub fn usage(&self) -> (usize, u64) {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         (state.surfaces, state.bytes)
+    }
+
+    /// Lifetime high-water marks of charged unique allocations/reservations.
+    /// Returning to zero current usage does not reset these device-budget peaks.
+    /// Independent surface/byte maxima need not occur at the same instant.
+    pub fn peak_usage(&self) -> (usize, u64) {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        (state.peak_surfaces, state.peak_bytes)
     }
 }
 
@@ -336,6 +350,8 @@ impl FrameCredit {
             }
             state.surfaces = remaining_surfaces + new_surfaces;
             state.bytes = remaining_bytes + new_bytes;
+            state.peak_surfaces = state.peak_surfaces.max(state.surfaces);
+            state.peak_bytes = state.peak_bytes.max(state.bytes);
             self.key = key;
             if released_surfaces > new_surfaces || released_bytes > new_bytes {
                 Some((state.waker.clone(), Arc::clone(&state.registered_wakers)))
@@ -381,6 +397,30 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn lifetime_peaks_ignore_duplicate_references_and_failed_admission() {
+        let budget = FrameBudget::new(3, 100).unwrap();
+        assert_eq!(budget.peak_usage(), (0, 0));
+        let first = budget.try_acquire((0, 1), 1, 40).unwrap().unwrap();
+        let duplicate = budget.try_acquire((0, 1), 1, 40).unwrap().unwrap();
+        let cloned = first.clone();
+        assert_eq!(budget.peak_usage(), (1, 40));
+        let second = budget.try_acquire((0, 2), 1, 60).unwrap().unwrap();
+        assert_eq!(budget.peak_usage(), (2, 100));
+        assert!(budget.try_acquire((0, 3), 1, 1).unwrap().is_none());
+        assert_eq!(budget.peak_usage(), (2, 100));
+        drop((first, duplicate, cloned, second));
+        assert_eq!(budget.usage(), (0, 0));
+        assert_eq!(budget.peak_usage(), (2, 100));
+        let mut reservation = budget.try_acquire((2, 4), 1, 10).unwrap().unwrap();
+        assert!(reservation.reassign((0, 5), 3, 90).unwrap());
+        assert_eq!(budget.usage(), (3, 90));
+        assert_eq!(budget.peak_usage(), (3, 100));
+        drop(reservation);
+        assert_eq!(budget.usage(), (0, 0));
+        assert_eq!(budget.peak_usage(), (3, 100));
+    }
+
+    #[test]
     fn shared_identities_clones_domains_and_last_drop() {
         let budget = FrameBudget::new(2, 100).unwrap();
         let first = budget.try_acquire((0, 42), 1, 40).unwrap().unwrap();
@@ -396,6 +436,7 @@ mod tests {
         assert_eq!(budget.usage(), (1, 60));
         drop(other);
         assert_eq!(budget.usage(), (0, 0));
+        assert_eq!(budget.peak_usage(), (2, 100));
     }
 
     #[test]
@@ -429,6 +470,7 @@ mod tests {
         assert_eq!(budget.usage(), (2, 100));
         drop((reserved, second));
         assert_eq!(budget.usage(), (0, 0));
+        assert_eq!(budget.peak_usage(), (2, 100));
     }
 
     #[test]

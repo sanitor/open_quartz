@@ -132,6 +132,9 @@ fn collect_export_project(
 }
 
 fn validate_windows_capabilities(graph: &Graph) -> Result<(), String> {
+    if graph.nodes.iter().any(|node| node.node_type == NodeType::ColorCorrector) {
+        return Err("Windows screen saver Color Corrector execution is not validated; export refused".to_owned());
+    }
     if graph.nodes.iter().any(|node| node.node_type == NodeType::Inference) {
         return Err(
             "Windows resident inference backend unavailable; CPU fallback forbidden".to_owned(),
@@ -356,6 +359,17 @@ pub fn read_manifest(package_path: &Path) -> Result<ScreenSaverManifest, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unvalidated_corrector_cannot_be_packaged_for_windows() {
+        let sdk = open_quartz::OpenQuartz::new(open_quartz::Environment::headless());
+        let mut project = sdk.create_project("Unsupported Windows operator");
+        project.create_graph_node(open_quartz::NodeFactoryRequest::ColorCorrector { position: None }, 0).unwrap();
+        let error = validate_windows_capabilities(project.graph()).unwrap_err();
+        assert!(error.contains("Color Corrector"));
+        assert!(error.contains("export refused"));
+        assert!(validate_windows_capabilities(&Graph::default()).is_ok());
+    }
 
     #[test]
     fn export_project_uses_rust_upstream_graph_contract() {

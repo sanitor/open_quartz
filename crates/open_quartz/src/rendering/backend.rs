@@ -29,6 +29,8 @@ pub struct GpuBackend {
     pub queue: Arc<Queue>,
     pub(crate) readback_ring: Arc<ReadbackStagingRing>,
     frame_budget: OnceLock<Arc<FrameBudget>>,
+    pub(crate) pipeline_cache: super::pipeline_cache::DevicePipelineCache,
+    pub(crate) runtime_counters: super::pipeline_cache::RuntimeCounters,
     #[cfg(test)]
     pub(crate) readback_fault: AtomicU8,
     #[cfg(windows)]
@@ -44,6 +46,8 @@ impl GpuBackend {
             queue: Arc::new(queue),
             readback_ring: Arc::new(ReadbackStagingRing::new()),
             frame_budget: OnceLock::new(),
+            pipeline_cache: Default::default(),
+            runtime_counters: Default::default(),
             #[cfg(test)]
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
@@ -59,6 +63,8 @@ impl GpuBackend {
             queue,
             readback_ring: Arc::new(ReadbackStagingRing::new()),
             frame_budget: OnceLock::new(),
+            pipeline_cache: Default::default(),
+            runtime_counters: Default::default(),
             #[cfg(test)]
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
@@ -66,6 +72,10 @@ impl GpuBackend {
             #[cfg(all(target_os = "macos", feature = "native-video"))]
             videotoolbox_importer: OnceLock::new(),
         }
+    }
+
+    pub fn runtime_stats(&self) -> super::GpuRuntimeStats {
+        self.pipeline_cache.lock().stats(&self.runtime_counters)
     }
 
     /// All pipelines on this backend share one immutable physical coordinator.
@@ -136,6 +146,7 @@ impl GpuBackend {
         format: TextureFormat,
         credit: FrameCredit,
     ) -> Result<RenderTarget, String> {
+        self.runtime_counters.target_allocations.fetch_add(1, Ordering::Relaxed);
         let mut target = self.create_target(width, height, format);
         let lease: Arc<dyn std::any::Any + Send + Sync> = Arc::new(credit);
         #[cfg(target_os = "macos")]

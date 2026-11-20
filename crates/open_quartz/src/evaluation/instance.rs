@@ -73,7 +73,18 @@ impl GraphInstance {
         mouse: &[f32],
         resolution: &[f32],
     ) -> Result<(), String> {
-        self.ensure_can_run().map_err(|error| error.to_json())?;
+        self.run_frame_context(time, delta, frame, date, mouse, resolution, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_preview(&mut self, time: f64, delta: f64, frame: u64, date: &[f32], mouse: &[f32], resolution: &[f32]) -> Result<(), String> {
+        self.run_frame_context(time, delta, frame, date, mouse, resolution, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_frame_context(&mut self, time: f64, delta: f64, frame: u64, date: &[f32], mouse: &[f32], resolution: &[f32], preview: bool) -> Result<(), String> {
+        if preview { self.ensure_active().map_err(|error| error.to_json())?; }
+        else { self.ensure_can_run().map_err(|error| error.to_json())?; }
         let frame_inputs = FrameInputs {
             time,
             delta,
@@ -91,15 +102,21 @@ impl GraphInstance {
             )
             .to_json()
         })?;
-        for node_id in video_nodes {
-            engine.mark_dirty(node_id);
+        if !preview {
+            for node_id in video_nodes {
+                engine.mark_dirty(node_id);
+            }
         }
-        let result = engine.run_frame(&frame_inputs);
+        let result = if preview {
+            engine.run_preview(&frame_inputs)
+        } else {
+            engine.run_frame(&frame_inputs)
+        };
         let command_count = result.commands.len() as u32;
         let dirty_node_count = result.dirty_nodes.len() as u32;
         self.pending_commands = result.commands;
         self.last_frame = Some(frame);
-        self.transition(EngineState::Running);
+        if !preview { self.transition(EngineState::Running); }
         self.push_frame_planned(frame, command_count, dirty_node_count);
         Ok(())
     }
@@ -384,6 +401,11 @@ impl GraphInstance {
     /// Native adapters consume the plan without serializing it across FFI.
     pub fn execution_plan(&self) -> Option<&ExecutionPlan> {
         self.inner.as_ref().map(GraphEvaluator::plan)
+    }
+
+    pub(crate) fn parameter_plan_for(&self, graph: &Graph) -> Option<ExecutionPlan> {
+        let previous = self.graph.as_ref()?;
+        crate::compiler::update_parameter_plan(self.execution_plan()?, &previous.nodes, &previous.edges, &graph.nodes, &graph.edges)
     }
 
     /// GPU commands stay inside Rust; native adapters borrow the current frame batch.

@@ -368,6 +368,16 @@ checksum-verified FFmpeg headers but lacks Windows SDK `errno.h`. An earlier
 LaunchServices launch aborted inside winit; a later logged launch rendered normally.
 Its intermittent cause is unconfirmed, not covered by the modal-loop fix.
 
+## Planned structured operators and Color Corrector
+
+**Design only; not implemented.** The native graph application is a required consumer of the same proposed `ColorCorrector` node as the video editor, not merely a viewer for its project data. It must support core-factory creation, typed connections, shared dedicated Palette controls, real GPU execution, stage/node bypass, copy/paste, project undo/redo and save/open. Existing Shader nodes keep their current WGSL/Uniform editor and results.
+
+The core proposal is a general structured-operator contract: typed/versioned configuration, operator-specific lowering to common execution plans, parameter/resource/structure update classification, bounded device-local pipeline variants, and validated zero-operator-pass output aliases. Corrector is its first consumer; it is not a collection of private Shader nodes or a video-app-only compiler.
+
+Both Slint applications share one Corrector editor and gesture/draft adapter. Palette switching is UI state; stage bypass retains parameters, Reset restores defaults, and a drag commits one host-history action. Managed AP1 inputs and SDR/HDR display transforms must be explicit; HDR monitor/platform support remains separately gated. No currently shipped Corrector or HDR behavior is implied here.
+
+See [core structured operators](../../docs/DESIGN.md#structured-operators), [shared Slint editor design](../../docs/SLINT_UI_REFACTOR.md#structured-operator-ui), and [grading/HDR domain proposal](../open_quartz_video_editor/RENDER_PIPELINE_EDITOR_DESIGN.md).
+
 ## Inspector and WGSL editing
 
 - Select exactly one node to inspect its kind, name, and typed input/output ports.

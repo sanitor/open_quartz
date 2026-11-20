@@ -12,6 +12,10 @@ pub mod rendering;
 pub mod inference;
 pub mod media;
 pub mod resources;
+pub mod operators;
+
+pub use operators::{ColorCorrectorConfig, ColorCorrectorStage, ColorCorrectorField,
+    PrimariesConfig, HdrZone, HdrZonesConfig, ColorDomain, COLOR_CORRECTOR_FIELDS};
 
 pub use project::{
     DataType, Edge, FramebufferFormat, Graph, GraphChange, GraphCommand, GraphEdit, GraphLayout,

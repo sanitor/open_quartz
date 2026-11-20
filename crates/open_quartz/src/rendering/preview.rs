@@ -22,6 +22,7 @@ pub struct GpuPreviewReader {
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     target: Option<RenderTarget>,
+    managed_pipeline: Option<super::pipeline_cache::SharedPipeline>,
 }
 
 impl GpuPreviewReader {
@@ -102,6 +103,7 @@ impl GpuPreviewReader {
             bind_group_layout,
             pipeline,
             target: None,
+            managed_pipeline: None,
         }
     }
 
@@ -115,15 +117,37 @@ impl GpuPreviewReader {
         source: &GpuOutputHandle,
         max_dimension: u32,
     ) -> Result<GpuOutputHandle, String> {
+        self.scale_in_domain(source, max_dimension, false)
+    }
+
+    /// Explicit AP1 scene-linear -> clipped SDR sRGB preview. This is not an HDR
+    /// desktop surface or a tone mapper; managed source pixels remain untouched.
+    pub fn scale_managed(&mut self, source: &GpuOutputHandle, max_dimension: u32) -> Result<GpuOutputHandle, String> {
+        self.scale_in_domain(source, max_dimension, true)
+    }
+
+    fn scale_in_domain(&mut self, source: &GpuOutputHandle, max_dimension: u32, managed: bool) -> Result<GpuOutputHandle, String> {
         if max_dimension == 0 {
             return Err("GPU preview max dimension must be greater than zero".to_owned());
         }
-        if source.format != TextureFormat::Rgba8Unorm {
+        if !managed && source.format != TextureFormat::Rgba8Unorm {
             return Err(format!(
                 "GPU preview requires rgba8unorm, got {:?}",
                 source.format
             ));
         }
+        if managed && source.format != TextureFormat::Rgba16Float {
+            return Err("Managed preview requires rgba16float AP1 input".into());
+        }
+        if managed && self.managed_pipeline.is_none() {
+            let program = crate::compiler::color_boundary::display_program("source", "source");
+            self.managed_pipeline = Some(super::pipeline_cache::prepare_pipeline(&self.backend, &program,
+                TextureFormat::Rgba8Unorm, crate::operators::ColorDomain::LegacySrgb).map_err(|error| error.to_string())?);
+        }
+        let (pipeline, layout) = if managed {
+            let pipeline = self.managed_pipeline.as_ref().expect("managed pipeline prepared");
+            (&pipeline.pipeline, &pipeline.layout)
+        } else { (&self.pipeline, &self.bind_group_layout) };
         let largest = source.width.max(source.height);
         let scale_dimension = largest.min(max_dimension);
         let width = ((u64::from(source.width) * u64::from(scale_dimension)) / u64::from(largest))
@@ -150,7 +174,7 @@ impl GpuPreviewReader {
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("open-quartz-preview-bind-group"),
-                layout: &self.bind_group_layout,
+                layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -185,11 +209,13 @@ impl GpuPreviewReader {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.backend.queue.submit([encoder.finish()]);
+        #[cfg(not(target_os = "macos"))]
+        if let Some(lease) = source.lease.clone() { self.backend.queue.on_submitted_work_done(move || drop(lease)); }
         Ok(GpuOutputHandle {
             texture: target.texture.clone(),
             view: target.view.clone(),

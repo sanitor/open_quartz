@@ -23,6 +23,7 @@ fn node(id: &str, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
             label: id.to_owned(),
             template_name: None,
             shader_template_id: None,
+            color_corrector: None,
             shader_code: String::new(),
             inputs,
             outputs,

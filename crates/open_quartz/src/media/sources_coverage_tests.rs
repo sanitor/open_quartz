@@ -164,6 +164,22 @@ fn fixture_source() -> PreparedVideoSource {
 }
 
 #[cfg(target_os = "macos")]
+#[test]
+fn prepared_prefetch_rejects_impossible_cursor_and_demand_limits() {
+    let mut prepared = fixture_source();
+    let allocation = 64 * 64 * 4;
+    assert!(prepared.set_prefetch_limits(1, allocation * 2).is_err());
+    assert!(prepared.set_prefetch_limits(2, allocation * 2 - 1).is_err());
+    prepared.set_prefetch_limits(2, allocation * 2).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !prepared.prefetch_at(0, 1).unwrap() {
+        assert!(Instant::now() < deadline, "bounded prepared source stalled");
+        std::thread::yield_now();
+    }
+    assert!(prepared.set_prefetch_limits(2, allocation * 2).is_err());
+}
+
+#[cfg(target_os = "macos")]
 fn poll_until_ready(
     sources: &mut VideoSources,
     request: u64,

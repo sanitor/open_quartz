@@ -75,8 +75,9 @@ fn gpu_error_binding_layout_uniform_size_and_packing_cover_variants() {
     }
     assert!(binding_layout_entry(&binding("externalTexture", "e", None)).is_err());
     assert!(binding_layout_entry(&binding("unknown", "x", None)).is_err());
-    assert_eq!(target_format(true), TextureFormat::Rgba32Float);
-    assert_eq!(target_format(false), TextureFormat::Rgba8Unorm);
+    assert_eq!(target_format(crate::compiler::TargetFormat::Rgba32Float), TextureFormat::Rgba32Float);
+    assert_eq!(target_format(crate::compiler::TargetFormat::Rgba8Unorm), TextureFormat::Rgba8Unorm);
+    assert_eq!(target_format(crate::compiler::TargetFormat::Rgba16Float), TextureFormat::Rgba16Float);
 
     for (ty, size) in [
         ("vec2f", 8),
@@ -176,7 +177,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
         let resources = executor.nodes.get("shader").unwrap();
         assert!(executor.output_handle("shader").is_some());
         let mut float_plan = plan.nodes[0].clone();
-        float_plan.target.as_mut().unwrap().float = true;
+        float_plan.target.as_mut().unwrap().format = crate::compiler::TargetFormat::Rgba32Float;
         if !backend
             .supported_features()
             .contains(wgpu::Features::FLOAT32_FILTERABLE)
@@ -193,10 +194,7 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
         assert!(executor.create_node_resources_with_targets(&no_target, 1, 1, vec![]).is_err());
 
         let mut external = plan.nodes[0].clone();
-        external
-            .shader
-            .as_mut()
-            .unwrap()
+        Arc::make_mut(external.shader.as_mut().unwrap())
             .external_texture_bindings
             .insert("video".to_owned(), 0);
         assert!(executor.create_node_resources_with_targets(&external, 1, 1, vec![]).is_err());
@@ -237,18 +235,14 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
             &BTreeMap::new()
         )
         .is_err());
-        executor
-            .nodes
-            .get_mut("shader")
-            .unwrap()
-            .bindings
+        Arc::make_mut(&mut executor.nodes.get_mut("shader").unwrap().bindings)
             .push(binding("unknown", "x", None));
         let mut invalid_binding_command = command("shader");
         invalid_binding_command.node_id = "shader".to_owned();
         assert!(executor
             .execute_commands(&plan, &[invalid_binding_command])
             .is_err());
-        executor.nodes.get_mut("shader").unwrap().bindings.pop();
+        Arc::make_mut(&mut executor.nodes.get_mut("shader").unwrap().bindings).pop();
 
         let mut missing_source = command("shader");
         missing_source.node_id = "shader".to_owned();
@@ -276,16 +270,10 @@ fn executor_resource_matching_bind_group_and_shader_error_paths() {
                 .unwrap_err();
         assert_eq!(trait_error.code, SdkErrorCode::InvalidResource);
         let mut none_error_plan = plan.clone();
-        none_error_plan.nodes[0]
-            .shader
-            .as_mut()
-            .unwrap()
+        Arc::make_mut(none_error_plan.nodes[0].shader.as_mut().unwrap())
             .bindings
             .push(binding("unknown", "x", None));
-        none_error_plan.nodes[0]
-            .shader
-            .as_mut()
-            .unwrap()
+        Arc::make_mut(none_error_plan.nodes[0].shader.as_mut().unwrap())
             .full_fragment_code
             .push(' ');
         for _ in 0..3 {
@@ -421,7 +409,7 @@ fn graph_reuses_compatible_targets_and_shares_capacity_with_other_sessions() {
         target.height = 2;
         assert!(executor.try_prepare_targets(&plan, &HashMap::new()).unwrap());
         let output = executor.output_handle("shader").unwrap();
-        plan.nodes[0].shader.as_mut().unwrap().full_fragment_code.push('\n');
+        Arc::make_mut(plan.nodes[0].shader.as_mut().unwrap()).full_fragment_code.push('\n');
         assert!(executor.try_prepare_targets(&plan, &HashMap::new()).unwrap());
         assert!(Arc::ptr_eq(&output.texture, &executor.output_handle("shader").unwrap().texture));
         assert_eq!(budget.usage(), (1, 16), "shader replacement reuses compatible physical targets");

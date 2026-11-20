@@ -22,7 +22,7 @@ async function availablePort() {
 }
 
 export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTPUT_DIR, suite = 'interaction' } = {}) {
-  if (!['interaction', 'shaders', 'inference'].includes(suite)) throw new Error(`Unknown UI suite: ${suite}`);
+  if (!['interaction', 'shaders', 'inference', 'corrector'].includes(suite)) throw new Error(`Unknown UI suite: ${suite}`);
   const directory = resolve(outputDir || (suite === 'inference'
     ? join(process.env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || 'test-results/inference-e2e', `ui-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)
     : join('test-results', 'slint-ui', `${suite}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)));
@@ -145,7 +145,8 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
       ], steps: [], screenshots: [] };
     }
     const execute = suite === 'shaders' ? (await import('./slint-shader-scenarios.mjs')).runShaderScenarios
-      : suite === 'inference' ? (await import('./slint-inference-scenarios.mjs')).runInferenceScenarios : runScenarios;
+      : suite === 'inference' ? (await import('./slint-inference-scenarios.mjs')).runInferenceScenarios
+      : suite === 'corrector' ? (await import('./slint-corrector-scenarios.mjs')).runCorrectorScenarios : runScenarios;
     await Promise.race([restart(), lifecycleFailure]);
     const scenarios = await Promise.race([
       execute({ endpoint, outputDir: directory, projectPath, requireGpu: true, restart, signal,
@@ -186,10 +187,10 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [binary, ...args] = process.argv.slice(2);
-  if (args.includes('--shaders') && args.includes('--inference')) throw new Error('Select only one UI suite');
-  const suite = args.includes('--inference') ? 'inference' : args.includes('--shaders') ? 'shaders' : 'interaction';
-  const remaining = args.filter((arg) => !['--shaders', '--inference'].includes(arg));
-  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders | --inference]');
+  if (args.filter(arg => ['--shaders', '--inference', '--corrector'].includes(arg)).length > 1) throw new Error('Select only one UI suite');
+  const suite = args.includes('--inference') ? 'inference' : args.includes('--shaders') ? 'shaders' : args.includes('--corrector') ? 'corrector' : 'interaction';
+  const remaining = args.filter((arg) => !['--shaders', '--inference', '--corrector'].includes(arg));
+  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders | --inference | --corrector]');
   try { await runUiTests(binary, { outputDir: remaining[0], suite }); }
   catch (error) { console.error(error.stack || String(error)); process.exitCode ||= 1; }
 }

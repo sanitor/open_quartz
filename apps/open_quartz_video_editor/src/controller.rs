@@ -1,5 +1,5 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Rational};
-use crate::preview::{PreviewBridge, PreviewRequest};
+use crate::preview::{PlaybackRequest, PreviewBridge, PreviewRequest};
 use crate::{AssetRow, ClipRow, EditorWindow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 #[path = "pipeline_editor.rs"]
 mod pipeline_editor;
 use pipeline_editor::{PipelineCommand, PipelineEditor};
@@ -50,9 +50,9 @@ pub struct Controller {
     asset_preview: bool,
     playhead: u64,
     playing: bool,
-    clock: Option<(Instant, u64)>,
     requested: Option<(u64, u64, bool)>,
     displayed: Option<StableFrame>,
+    displayed_frame: Option<u64>,
     thumbnail_order: VecDeque<String>,
     thumbnails: HashMap<String, Thumbnail>,
     asset_model: Rc<VecModel<AssetRow>>,
@@ -91,9 +91,9 @@ impl Controller {
             asset_preview: false,
             playhead: 0,
             playing: false,
-            clock: None,
             requested: None,
             displayed: None,
+            displayed_frame: None,
             thumbnail_order: VecDeque::new(),
             thumbnails: HashMap::new(),
             asset_model,
@@ -655,8 +655,16 @@ impl Controller {
         self.finish_edit(result);
     }
     fn pause(&mut self) {
+        let was_playing = self.playing;
         self.playing = false;
-        self.clock = None;
+        if was_playing {
+            let progress = self.preview.progress();
+            if progress.ticket == self.ticket && progress.revision == self.document.revision {
+                self.playhead = progress.frame;
+            }
+            self.requested = None;
+            self.request_preview();
+        }
     }
     fn seek(&mut self, frame: u64) {
         self.pause();
@@ -673,12 +681,22 @@ impl Controller {
         }
         self.asset_preview = false;
         self.playing = true;
-        self.clock = Some((Instant::now(), self.playhead));
         self.requested = None;
         self.refresh();
         self.request_preview();
     }
     fn request_preview(&mut self) {
+        if self.playing {
+            if self.requested.is_some_and(|(revision, _, asset)| revision == self.document.revision && !asset) { return; }
+            self.ticket += 1;
+            let request = PlaybackRequest { ticket: self.ticket, revision: self.document.revision,
+                start_frame: self.playhead, project: self.document.data.clone() };
+            match self.preview.play(request) {
+                Ok(()) => self.requested = Some((self.document.revision, self.playhead, false)),
+                Err(error) => { self.playing = false; self.status(error); }
+            }
+            return;
+        }
         let identity = (self.document.revision, self.playhead, self.asset_preview);
         if self.requested == Some(identity) {
             return;
@@ -721,7 +739,9 @@ impl Controller {
                     pipeline: if self.asset_preview {
                         crate::clip_pipeline::ClipPipeline::default()
                     } else {
-                        self.document.clip_at(self.playhead).map(|clip| clip.pipeline.clone()).unwrap_or_default()
+                        self.document.clip_at(self.playhead).map(|clip| {
+                            self.pipeline_preview_for(&clip.id).unwrap_or_else(|| clip.pipeline.clone())
+                        }).unwrap_or_default()
                     },
                 };
                 if let Err(error) = self.preview.request(request) {
@@ -803,6 +823,7 @@ impl Controller {
                             self.requested = None;
                             self.refresh();
                             self.request_preview();
+                            self.status("Project opened");
                         }
                         Err(error) => self.status(error),
                     }
@@ -830,8 +851,35 @@ impl Controller {
                 _ => {}
             }
         }
+        let mut progress = self.preview.progress();
+        if progress.ticket == self.ticket && progress.revision == self.document.revision {
+            if self.playing {
+                self.playhead = progress.frame;
+                self.playing = progress.playing;
+                self.refresh_time();
+                if let Some(window) = self.window.upgrade() { window.set_playing(self.playing); }
+            }
+            progress.displayed_frame = self.displayed_frame;
+            if let Some(frame) = &self.displayed {
+                progress.displayed_width = frame.image.width;
+                progress.displayed_height = frame.image.height;
+                progress.actual_pts_ns = frame.identity.content_stamp.as_ref().and_then(|stamp| stamp.media_pts_ns);
+            }
+            if let Some(window) = self.window.upgrade() {
+                window.set_playback_summary(format!("{} · queue {}/{} · displayed {} · late {} · skipped {} · {:.0} MiB",
+                    if progress.preparing { "Preparing" } else if progress.playing { "Playing" } else { "Paused" },
+                    progress.queue, progress.window_current_capacity, progress.displayed, progress.late,
+                    progress.dropped + progress.coalesced, progress.bytes as f64 / (1024.0 * 1024.0)).into());
+                if let Ok(json) = serde_json::to_string(&progress) {
+                    window.set_playback_metrics(format!("Playback metrics {json}").into());
+                }
+            }
+        }
         if let Some(update) = self.preview.take_update() {
-            if update.ticket == self.ticket && update.revision == self.document.revision {
+            let current_clip = !self.playing || self.document.clip_at(update.frame).map(|clip| &clip.id)
+                == self.document.clip_at(self.playhead).map(|clip| &clip.id);
+            if update.ticket == self.ticket && update.revision == self.document.revision
+                && update.epoch >= progress.epoch && (current_clip || update.image.is_err()) {
                 match update.image {
                     Ok(frame) => {
                         if let Some(window) = self.window.upgrade() {
@@ -840,9 +888,12 @@ impl Controller {
                                     window.set_monitor_image(image);
                                     window.set_has_monitor_image(true);
                                     window.window().request_redraw();
+                                    self.preview.acknowledge_presented();
                                 }
                                 Err(e) => {
+                                    self.pause();
                                     self.status(format!("Cannot present GPU frame: {e:?}"));
+                                    return;
                                 }
                             }
                         }
@@ -870,44 +921,23 @@ impl Controller {
                             }
                         }
                         self.displayed = Some(frame);
-                        self.status(format!(
-                            "Frame {} · source PTS {} ns · CPU image bytes {}",
-                            update.frame,
-                            update
-                                .actual_pts_ns
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| "gap".into()),
-                            update.cpu_copy_bytes
-                        ));
+                        self.displayed_frame = Some(update.frame);
+                        if let Some(window) = self.window.upgrade() {
+                            window.set_monitor_status(format!(
+                                "Frame {} · source PTS {} ns · CPU image bytes {}",
+                                update.frame,
+                                update.actual_pts_ns.map(|v| v.to_string()).unwrap_or_else(|| "gap".into()),
+                                update.cpu_copy_bytes
+                            ).into());
+                        }
                     }
                     Err(error) => {
-                        self.pause();
+                        self.playing = false;
                         self.pipeline_editor.error = format!("Current pipeline failed; showing previous frame: {error}");
                         self.publish_pipeline();
                         self.status(self.pipeline_editor.error.clone());
                     }
                 }
-            }
-        }
-        if self.playing {
-            if let Some((start, frame)) = self.clock {
-                let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-                let advance = self
-                    .document
-                    .data
-                    .fps
-                    .ns_to_frames_floor(elapsed)
-                    .unwrap_or(0);
-                let next = frame.saturating_add(advance);
-                let duration = self.document.duration_frames();
-                if next >= duration {
-                    self.pause();
-                    self.playhead = duration.saturating_sub(1);
-                } else {
-                    self.playhead = next;
-                }
-                self.refresh_time();
-                self.request_preview();
             }
         }
     }
@@ -1129,10 +1159,12 @@ impl Controller {
         if let Some(window) = self.window.upgrade() {
             window.set_monitor_image(slint::Image::default());
             window.set_has_monitor_image(false);
+            window.set_monitor_status("".into());
         }
         self.asset_model.set_vec(Vec::new());
         self.clip_model.set_vec(Vec::new());
         self.displayed = None;
+        self.displayed_frame = None;
         self.thumbnails.clear();
         self.thumbnail_order.clear();
     }
@@ -1245,5 +1277,65 @@ mod native_dialog_tests {
         });
         assert_eq!(result, None);
         assert_eq!(*state.borrow(), (true, true));
+    }
+
+    #[test]
+    fn worker_owns_playback_clock_and_clip_cuts_but_exact_seek_supersedes() {
+        crate::media::configure_runtime().unwrap();
+        let (preview, _configuration, _) = PreviewBridge::new().unwrap();
+        let backend = preview.backend.clone();
+        let asset = crate::media::probe(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let mut document = EditorDocument::default();
+        document.data.width = 64;
+        document.data.height = 64;
+        let asset_id = asset.id.clone();
+        document.add_asset(asset).unwrap();
+        let first = document.add_clip(&asset_id).unwrap();
+        let second = document.add_clip(&asset_id).unwrap();
+        let cut = document.clip(&second).unwrap().timeline_start;
+        let mut grade = document.clip(&first).unwrap().pipeline.clone();
+        let id = grade.add_corrector_serial(crate::clip_pipeline::SOURCE_ID).unwrap();
+        let mut graph = grade.graph().clone();
+        graph.nodes.iter_mut().find(|node| node.id == id).unwrap().data.color_corrector.as_mut().unwrap().primaries.exposure = -1.0;
+        grade.replace_graph(graph).unwrap();
+        document.set_clip_pipeline(&first, grade, document.revision).unwrap();
+        let (io_send, io_receive) = mpsc::channel();
+        let (ui_send, ui_receive) = mpsc::channel();
+        let mut controller = Controller {
+            window: slint::Weak::default(), document, preview, backend,
+            io_send, io_receive, ui_send, ui_receive, generation: 0, ticket: 0,
+            selected_asset: None, selected_clip: Some(first), asset_preview: false,
+            playhead: 0, playing: false, requested: None,
+            displayed: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
+            asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
+            timer: slint::Timer::default(), deferred_refresh: false, busy: false,
+            pipeline_editor: PipelineEditor::default(),
+        };
+        controller.play();
+        let admitted = controller.ticket;
+        // UI polls progress, but never submits a new recipe for clock ticks.
+        for frame in 1..=3 {
+            controller.playhead = frame;
+            controller.request_preview();
+            assert_eq!(controller.ticket, admitted);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while controller.displayed.is_none() {
+            controller.tick();
+            assert!(std::time::Instant::now() < deadline, "bounded grade was starved");
+            std::thread::yield_now();
+        }
+        let frame = controller.displayed.as_ref().unwrap();
+        let pixels = pollster::block_on(controller.backend.read_texture_rgba(
+            &frame.output().texture, 64, 64)).unwrap();
+        assert!(pixels.chunks_exact(4).all(|pixel| (180..=190).contains(&pixel[0]) && pixel[3] == 255));
+        controller.playhead = cut;
+        controller.request_preview();
+        assert_eq!(controller.ticket, admitted, "worker owns cuts within one immutable play recipe");
+        controller.seek(0);
+        assert!(controller.ticket > admitted, "explicit seek supersedes playback");
+        assert!(!controller.playing);
+        controller.preview.shutdown();
     }
 }

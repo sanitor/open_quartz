@@ -42,11 +42,14 @@ pub struct PreparedNativeGraph {
     plan: crate::compiler::ExecutionPlan,
     pub(crate) rendering: crate::rendering::PreparedRenderPlan,
     pub(crate) backend: Arc<GpuBackend>,
+    expected_revision: u32,
     pub(crate) dirty_images: Vec<String>,
     #[cfg(feature = "native-video")]
     pub(crate) videos: Vec<(String, crate::media::sources::PreparedVideoSource)>,
     #[cfg(feature = "native-video")]
     pub(crate) detached_videos: Vec<String>,
+    #[cfg(feature = "native-video")]
+    video_prefetch_limits: Option<(usize, u64)>,
 }
 
 impl PreparedNativeGraph {
@@ -84,6 +87,19 @@ impl PreparedNativeGraph {
         }
     }
 
+    /// Override inherited source/import working-set bounds before staging videos.
+    #[cfg(feature = "native-video")]
+    pub fn configure_video_prefetch_limits(&mut self, max_surfaces: usize, max_bytes: u64) -> Result<(), String> {
+        if max_surfaces == 0 || max_bytes == 0 {
+            return Err("Prepared video prefetch limits must be nonzero".into());
+        }
+        if !self.videos.is_empty() {
+            return Err("Configure prepared video limits before staging sources".into());
+        }
+        self.video_prefetch_limits = Some((max_surfaces, max_bytes));
+        Ok(())
+    }
+
     #[cfg(feature = "native-video")]
     pub fn stage_video(
         &mut self,
@@ -103,6 +119,9 @@ impl PreparedNativeGraph {
         let mut source =
             crate::media::sources::PreparedVideoSource::open_precise(config, preview_only)?;
         source.set_frame_budget(self.backend.frame_budget())?;
+        if let Some((surfaces, bytes)) = self.video_prefetch_limits {
+            source.set_prefetch_limits(surfaces, bytes)?;
+        }
         let info = source.info().clone();
         self.stage_remove_texture(node_id);
         self.videos.retain(|(id, _)| id != node_id);
@@ -129,6 +148,8 @@ impl PreparedNativeGraph {
 
 /// A source snapshot is immutable and belongs to the same shared GPU owner.
 /// A rejected demand returns all of these leases unchanged to the caller.
+/// Active ColorCorrectors require proven straight or opaque external inputs;
+/// resource-only bypass chains preserve all source alpha modes unchanged.
 pub struct ExternalFrameInput {
     pub node_id: String,
     pub version: u64,
@@ -185,6 +206,9 @@ pub struct FramePipeline {
     inference_sampler: Arc<wgpu::Sampler>,
     inference_available: bool,
     pub(crate) stable_previews: StableFramePool,
+    /// Selected-node snapshots are isolated from the continuously refreshed
+    /// latest-frame pool; both charge the same device FrameBudget.
+    pub(crate) selected_previews: StableFramePool,
     pending: Option<PendingFrame>,
     completion: Option<FrameCompletion>,
     latest: Option<StableFrame>,
@@ -209,6 +233,9 @@ impl FramePipeline {
         let stable_previews = StableFramePool::with_frame_budget(
             render_device.backend(), StableFrameBudget::default(), frame_budget.clone())
             .expect("default stable preview budget is nonzero");
+        let selected_previews = StableFramePool::with_frame_budget(
+            render_device.backend(), StableFrameBudget::default(), frame_budget.clone())
+            .expect("default selected preview budget is nonzero");
         #[cfg(feature = "native-video")]
         let mut videos = VideoSources::new();
         #[cfg(feature = "native-video")]
@@ -224,6 +251,7 @@ impl FramePipeline {
             inference_sampler,
             inference_available,
             stable_previews,
+            selected_previews,
             pending: None,
             completion: None,
             latest: None,
@@ -251,6 +279,7 @@ impl FramePipeline {
         #[cfg(feature = "native-video")]
         self.videos.set_waker(waker.clone());
         self.stable_previews.set_waker(waker.clone());
+        self.selected_previews.set_waker(waker.clone());
         self.budget_wake = Some(self.frame_budget.register_waker(waker.clone()));
         #[cfg(all(target_os = "macos", feature = "native-video"))]
         self.render_device.set_videotoolbox_waker(waker)?;
@@ -258,6 +287,23 @@ impl FramePipeline {
     }
 
     pub fn frame_budget_usage(&self) -> (usize, u64) { self.frame_budget.usage() }
+
+    /// Reconfigure final-output storage only while admission and terminals are
+    /// empty. Retained display/consumer leases remain valid and keep charging
+    /// the same shared physical FrameBudget; selected-node previews are unchanged.
+    pub fn configure_stable_output_budget(&mut self, budget: StableFrameBudget) -> Result<(), String> {
+        if self.has_in_flight() {
+            return Err("cannot reconfigure stable outputs while frames are in flight".into());
+        }
+        if budget.max_frames <= self.window.config.prefill {
+            return Err("frame prefill must leave one stable slot for the retained display".into());
+        }
+        self.stable_previews.configure_budget(budget).map_err(|error| error.to_string())
+    }
+
+    pub fn stable_output_budget(&self) -> StableFrameBudget { self.stable_previews.budget() }
+
+    pub fn stable_output_usage(&self) -> (usize, u64) { self.stable_previews.usage() }
 
 
     #[cfg(feature = "native-video")]
@@ -318,8 +364,8 @@ impl FramePipeline {
             );
         }
         graph.validate().map_err(runtime_error)?;
-        let plan =
-            crate::compiler::build_execution_plan_with_options(&graph.nodes, &graph.edges, false);
+        let plan = self.session.graph.parameter_plan_for(graph).unwrap_or_else(||
+            crate::compiler::build_execution_plan_with_options(&graph.nodes, &graph.edges, false));
         if let Some((node, error)) = plan
             .nodes
             .iter()
@@ -363,9 +409,12 @@ impl FramePipeline {
             plan,
             rendering: prepared,
             backend: self.render_device.backend(),
+            expected_revision: self.session.revision(),
             dirty_images: Vec::new(),
             #[cfg(feature = "native-video")]
             videos: Vec::new(),
+            #[cfg(feature = "native-video")]
+            video_prefetch_limits: self.window.enabled.then_some((self.window.config.max_surfaces, self.window.config.max_bytes / 2)),
             #[cfg(feature = "native-video")]
             detached_videos: Vec::new(),
         })
@@ -421,18 +470,14 @@ impl FramePipeline {
         if let Some(frame) = self.latest.as_ref().filter(|frame| {
             frame.identity.output_node_id == node_id
                 && frame.identity.graph_revision == self.session.revision()
+                && frame.output().format == crate::rendering::TextureFormat::Rgba8Unorm
         }) {
             return Ok(Some(frame.clone()));
         }
-        let source = self.render_device.output_texture(node_id).ok_or_else(|| {
-            FrameCaptureError::InvalidSource(format!("output {node_id} has no texture"))
-        })?;
-        if source.format != crate::rendering::TextureFormat::Rgba8Unorm {
-            return Err(FrameCaptureError::InvalidSource(
-                "native preview requires rgba8unorm".into(),
-            ));
-        }
-        let budget = self.stable_previews.budget();
+        let source = self.render_device.display_output_handle(node_id)
+            .map_err(FrameCaptureError::InvalidSource)?;
+        let pool = &self.selected_previews;
+        let budget = pool.budget();
         let pair_bytes = u64::from(source.width)
             .checked_mul(u64::from(source.height))
             .and_then(|pixels| pixels.checked_mul(8));
@@ -444,13 +489,10 @@ impl FramePipeline {
             graph_revision: self.session.revision(),
             evaluation_stamp: None,
             content_stamp: None,
-            color_space: FrameColorSpace::Unknown,
+            color_space: FrameColorSpace::Srgb,
             alpha_mode: FrameAlphaMode::Unknown,
         };
-        match self
-            .stable_previews
-            .try_capture(&self.render_device, node_id, identity)
-        {
+        match pool.capture(source, identity) {
             Ok(frame) => Ok(Some(frame)),
             Err(FrameCaptureError::WouldBlock) => Ok(None),
             Err(error) => Err(error),
@@ -713,6 +755,9 @@ impl FramePipeline {
         if !Arc::ptr_eq(&prepared.backend, &self.render_device.backend()) {
             return Err("Native graph was prepared on a different render device".to_owned());
         }
+        if prepared.expected_revision != self.session.revision() {
+            return Err("Prepared graph revision is stale".into());
+        }
         // set_graph's active-state check must happen before cancellation or any
         // resource swaps. The prepared static graph and retained video node IDs
         // have already been validated, so no static-path failure remains after it.
@@ -801,10 +846,30 @@ impl FramePipeline {
     }
 
     pub fn submit(&mut self, demand: FrameDemand) -> FrameAdmission {
+        self.submit_context(demand, false)
+    }
+
+    /// Evaluate a frozen-frame draft without starting/resuming playback. Source,
+    /// inference and GPU admission still use the normal transactional pipeline.
+    pub fn submit_preview(&mut self, demand: FrameDemand) -> FrameAdmission {
+        self.submit_context(demand, true)
+    }
+
+    fn submit_context(&mut self, demand: FrameDemand, preview: bool) -> FrameAdmission {
         if self.has_in_flight() {
             return FrameAdmission::WouldBlock(demand);
         }
         if let Err(error) = self.validate_demand(&demand) {
+            return FrameAdmission::Rejected { demand, error };
+        }
+        let (width, height, format) = self.window_output_extent(&demand.output_node_id, 0);
+        let output_bytes = u64::from(width).saturating_mul(u64::from(height)).saturating_mul(format.bytes_per_pixel());
+        let stable_frames = 1 + usize::from(self.latest.is_some());
+        let stable_budget = self.stable_previews.budget();
+        if stable_frames > stable_budget.max_frames || output_bytes.saturating_mul(stable_frames as u64) > stable_budget.max_bytes {
+            return FrameAdmission::Rejected { demand, error: "stable output budget cannot fit the next frame and retained display".into() };
+        }
+        if let Err(error) = self.validate_frame_working_set(&demand, output_bytes, stable_frames) {
             return FrameAdmission::Rejected { demand, error };
         }
         let targets = match self.prepare_demand_targets(&demand) {
@@ -812,10 +877,10 @@ impl FramePipeline {
             Ok(None) => return FrameAdmission::WouldBlock(demand),
             Err(error) => return FrameAdmission::Rejected { demand, error },
         };
-        self.submit_prepared(demand, targets)
+        self.submit_prepared(demand, targets, preview)
     }
 
-    fn submit_prepared(&mut self, demand: FrameDemand, targets: crate::rendering::PreparedFrameTargets) -> FrameAdmission {
+    fn submit_prepared(&mut self, demand: FrameDemand, targets: crate::rendering::PreparedFrameTargets, preview: bool) -> FrameAdmission {
         if self.pending.is_some() || self.completion.is_some() {
             return FrameAdmission::WouldBlock(demand);
         }
@@ -849,7 +914,9 @@ impl FramePipeline {
             })
             .map(|source| source.node_id.as_str())
             .collect();
-        if let Err(error) = self.session.evaluate_with_dirty(&demand.input, &changed) {
+        let evaluation = if preview { self.session.evaluate_preview_with_dirty(&demand.input, &changed) }
+            else { self.session.evaluate_with_dirty(&demand.input, &changed) };
+        if let Err(error) = evaluation {
             self.restore_inputs(original);
             return FrameAdmission::Rejected {
                 demand,
@@ -928,6 +995,23 @@ impl FramePipeline {
             }
             if !source.frame.belongs_to(&self.render_device.backend()) {
                 return Err("External source frame belongs to another GPU owner".into());
+            }
+            if !matches!(source.frame.image.color_space, FrameColorSpace::Unknown | FrameColorSpace::Srgb) {
+                return Err("External Input nodes use the legacy sRGB compatibility contract; linear frames require an explicit managed source declaration".into());
+            }
+            if !matches!(source.frame.image.alpha_mode, FrameAlphaMode::Straight | FrameAlphaMode::Opaque) {
+                if let Some(corrector) = plan.nodes.iter().find(|node| {
+                    node.node_type == NodeType::ColorCorrector
+                        && node.gpu_program().is_some()
+                        && node.upstream.values().any(|upstream| {
+                            plan.resolve_alias_source(upstream) == Some(source.node_id.as_str())
+                        })
+                }) {
+                    return Err(format!(
+                        "Active ColorCorrector {} requires straight or opaque alpha from external source {}; received {:?}",
+                        corrector.id, source.node_id, source.frame.image.alpha_mode
+                    ));
+                }
             }
             if let Some(previous) = self.input_versions.get(&source.node_id) {
                 if source.version < *previous {
@@ -1113,17 +1197,26 @@ impl FramePipeline {
             return Err("Requested output has no GPU texture".into());
         }
         let stamp = pending.demand.input.stamp.clone();
+        let source_identity = self.session.execution_plan()
+            .and_then(|plan| plan.resolve_alias_source(&pending.demand.output_node_id))
+            .and_then(|id| pending.demand.sources.iter().find(|source| source.node_id == id))
+            .map(|source| &source.frame.identity);
         let identity = FrameSnapshotIdentity {
             output_node_id: pending.demand.output_node_id.clone(),
             graph_revision: pending.demand.graph_revision,
             evaluation_stamp: Some(stamp.clone()),
-            content_stamp: Some(ContentStamp {
-                epoch: stamp.epoch,
-                timeline_ns: stamp.timeline_ns,
-                media_pts_ns: pending.media_pts_ns,
+            content_stamp: source_identity.map(|identity| identity.content_stamp.clone()).unwrap_or_else(|| Some(ContentStamp {
+                epoch: stamp.epoch, timeline_ns: stamp.timeline_ns, media_pts_ns: pending.media_pts_ns,
+            })),
+            color_space: source_identity.map(|identity| identity.color_space).unwrap_or_else(|| match self.render_device.output_domain(&pending.demand.output_node_id) {
+                crate::operators::ColorDomain::LegacySrgb => FrameColorSpace::Srgb,
+                crate::operators::ColorDomain::AcesCgLinear => FrameColorSpace::AcesCgLinear,
             }),
-            color_space: FrameColorSpace::Unknown,
-            alpha_mode: FrameAlphaMode::Unknown,
+            alpha_mode: source_identity.map(|identity| identity.alpha_mode).unwrap_or_else(|| {
+                if self.session.execution_plan().is_some_and(|plan| plan.output_is_straight_alpha(&pending.demand.output_node_id)) {
+                    FrameAlphaMode::Straight
+                } else { FrameAlphaMode::Unknown }
+            }),
         };
         match self.stable_previews.try_capture(
             &self.render_device,
@@ -1230,6 +1323,7 @@ impl FramePipeline {
         self.latest = None;
         self.window.queued.clear();
         self.stable_previews.clear_allocations();
+        self.selected_previews.clear_allocations();
         self.budget_wake = None;
         self.render_device.reset()
     }

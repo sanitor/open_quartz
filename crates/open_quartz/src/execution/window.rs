@@ -42,6 +42,23 @@ impl FrameWindowConfig {
         }
         Ok(self)
     }
+
+    pub(super) fn validate_output_capacity(
+        self,
+        bytes: u64,
+        stable: crate::rendering::StableFrameBudget,
+    ) -> Result<(), String> {
+        let slots = self.prefill.checked_add(1).ok_or("stable output slot count overflow")?;
+        let retained_bytes = bytes.checked_mul(slots as u64).ok_or("stable output byte count overflow")?;
+        let queued_bytes = bytes.checked_mul(self.prefill as u64).ok_or("frame prefill byte count overflow")?;
+        if slots > stable.max_frames || retained_bytes > stable.max_bytes {
+            return Err("stable output budget cannot fit prefill plus the retained display".into());
+        }
+        if queued_bytes > self.max_bytes / 2 {
+            return Err("frame window byte capacity cannot fit its output prefill".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -170,11 +187,7 @@ impl super::FramePipeline {
             };
         }
         let (width, height, format) = self.window_output_extent(&demand.output_node_id, 0);
-        let pixel_bytes = if format == crate::rendering::TextureFormat::Rgba32Float {
-            16
-        } else {
-            4
-        };
+        let pixel_bytes = format.bytes_per_pixel();
         let bytes = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(pixel_bytes));
@@ -184,6 +197,12 @@ impl super::FramePipeline {
                 error: "frame window minimum output working set exceeds byte capacity".into(),
             };
         };
+        if let Err(error) = self.window.config.validate_output_capacity(bytes, self.stable_previews.budget()) {
+            return super::FrameAdmission::Rejected { demand, error };
+        }
+        if let Err(error) = self.validate_frame_working_set(&demand, bytes, self.window.config.prefill.saturating_add(1)) {
+            return super::FrameAdmission::Rejected { demand, error };
+        }
         let first = self
             .window
             .completed
@@ -297,6 +316,7 @@ impl super::FramePipeline {
     pub fn enable_stage_trace(&mut self, enabled: bool) {
         self.window.trace_enabled = enabled;
         self.stable_previews.set_trace_enabled(enabled);
+        self.selected_previews.set_trace_enabled(enabled);
         #[cfg(feature = "native-video")]
         self.videos.set_trace_enabled(enabled);
         if !enabled {
@@ -449,7 +469,7 @@ impl super::FramePipeline {
                 }
             },
         };
-        match self.submit_prepared(queued.demand, targets) {
+        match self.submit_prepared(queued.demand, targets, false) {
             super::FrameAdmission::Accepted => {}
             super::FrameAdmission::Rejected { demand, error } => {
                 self.finish(demand, super::FrameOutcome::Failed(error))
@@ -539,11 +559,7 @@ impl super::FramePipeline {
         }
         let node = plan.nodes.iter().find(|node| node.id == node_id);
         if let Some(target) = node.and_then(|node| node.target.as_ref()) {
-            let format = if target.float {
-                TextureFormat::Rgba32Float
-            } else {
-                TextureFormat::Rgba8Unorm
-            };
+            let format = crate::rendering::executor::target_format(target.format);
             if let Some(source) = &target.size_source {
                 let (width, height, _) = self.window_output_extent(source, depth + 1);
                 return (width, height, format);
@@ -573,6 +589,35 @@ impl super::FramePipeline {
             ),
             |texture| (texture.width, texture.height, texture.format),
         )
+    }
+
+    /// Reject impossible simultaneous minima before reserving any part of them.
+    pub(super) fn validate_frame_working_set(&self, demand: &FrameDemand, output_bytes: u64, stable_frames: usize) -> Result<(), String> {
+        let mut surfaces = stable_frames;
+        let mut bytes = output_bytes.saturating_mul(surfaces as u64);
+        if let Some(plan) = self.session.execution_plan() {
+            for node in plan.nodes.iter().filter(|node| node.gpu_program().is_some()) {
+                let (width, height, format) = self.window_output_extent(&node.id, 0);
+                let count = if node.feedback { 2 } else { 1 };
+                surfaces = surfaces.saturating_add(count);
+                bytes = bytes.saturating_add(u64::from(width).saturating_mul(u64::from(height))
+                    .saturating_mul(format.bytes_per_pixel()).saturating_mul(count as u64));
+            }
+        }
+        #[cfg(all(target_os = "macos", feature = "native-video"))]
+        for node in self.videos.node_ids() {
+            if demand.sources.iter().any(|source| source.node_id == node) { continue; }
+            if let Some((width, height)) = self.videos.dimensions(&node) {
+                // Converted RGBA input plus cursor-cache and demanded native
+                // storage. Decoder-private pools are not invented here.
+                surfaces = surfaces.saturating_add(3);
+                bytes = bytes.saturating_add(u64::from(width).saturating_mul(u64::from(height)).saturating_mul(4))
+                    .saturating_add(crate::media::sources::source_reservation_bytes(width, height).saturating_mul(2));
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "native-video")))]
+        let _ = demand;
+        self.frame_budget.validate_working_set(surfaces, bytes)
     }
 
     pub(super) fn prepare_demand_targets(

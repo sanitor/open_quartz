@@ -26,6 +26,7 @@ impl Project {
                 (NodeType::Input, position, system_label(*source))
             }
             NodeFactoryRequest::Constant { position } => (NodeType::Constant, position, "constant"),
+            NodeFactoryRequest::ColorCorrector { position } => (NodeType::ColorCorrector, position, "color_corrector"),
             NodeFactoryRequest::Math { position, op } => {
                 (NodeType::Math, position, math_label(op).unwrap_or("math"))
             }
@@ -117,6 +118,17 @@ impl Project {
                 data.inputs = remap_ports(&id, parsed.inputs);
                 data.outputs = remap_ports(&id, parsed.outputs);
             }
+            NodeFactoryRequest::ColorCorrector { .. } => {
+                data.color_corrector = Some(crate::operators::ColorCorrectorConfig::default());
+                data.inputs = vec![Port {
+                    id: format!("{id}_source"), label: "source".to_owned(), data_type: DataType::Sampler2d,
+                    direction: PortDirection::Input, default_value: None, description: Some("Explicit legacy sRGB or managed linear AP1 input".to_owned()),
+                }];
+                data.outputs = vec![Port {
+                    id: format!("{id}_result"), label: "result".to_owned(), data_type: DataType::Sampler2d,
+                    direction: PortDirection::Output, default_value: None, description: Some("Straight-alpha managed AP1, or unchanged source on bypass".to_owned()),
+                }];
+            }
             NodeFactoryRequest::Math { op, .. } => {
                 let input_count = math_input_count(&op).ok_or_else(|| {
                     SdkError::new(SdkErrorCode::InvalidGraph, "Unknown math operation")
@@ -199,6 +211,7 @@ fn next_node_id(graph: &Graph, node_type: NodeType) -> String {
         NodeType::Inference => "inference",
         NodeType::Renderer => "renderer",
         NodeType::Math => "math",
+        NodeType::ColorCorrector => "color_corrector",
     };
     let mut next = 1u32;
     for node in graph.nodes() {

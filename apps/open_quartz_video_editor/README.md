@@ -18,6 +18,16 @@ npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
+播放性能对比建议使用优化构建；Debug中的Rust宿主代码未做完整优化（依赖已配置`opt-level=2`），不代表GPU shader以Debug精度运行：
+
+```sh
+cargo run --release --manifest-path apps/open_quartz_video_editor/Cargo.toml -- --project /absolute/path/edit.oqvideo.json
+```
+
+**当前已实现单轨有界流水**：Play把工程snapshot交给preview worker；worker拥有唯一视频时钟，使用核心前瞻窗口、prefill、按PTS映射的序列deadline呈现和切点/gap预热。UI不再每tick提交帧，正常时钟推进不取消合法在途工作；seek/改图仍撤销旧发布资格。8K全尺寸图有显式2 GiB应用可观测共享预算和局部池上限，不能满足最小工作集时明确失败，不暗中降分辨率或改FP16算法。实现与验收见[有界流水播放](DESIGN.md#bounded-playback-proposal)。
+
+缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织，不给每个node机械设置queue；[多轨同帧join](DESIGN.md#same-frame-track-join)仍为未来设计，当前产品保持单视频轨。Release降低CPU开销，不代表已实现音频、代理、任意时域效果或所有8K素材的实时保证。
+
 窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭；视频硬件运行路径的平台限制不变。关闭按钮仍走未保存工程确认。
 
 沿用同一位置配置，默认 `platform`，也可强制指定：
@@ -67,7 +77,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择沿用已交付 Phase 3 的 `frame_at_ns` 契约：目标之后第一张实际 presentation frame；状态显示真实 source PTS，不以平均帧率猜 PTS。序列自身始终用有理数 CFR 帧位置。固定画布采用 contain-fit / 黑边。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前提供基础播放/暂停与逐帧定位，不宣称已完成 Phase 7 的跨切点预热、吸附、完整变换/颜色效果、代理或性能保证。**本应用没有视频导出 UI、音频播放/剪辑、文本、转场或多轨**；核心 Phase 5 headless H.264/MP4 能力仍独立可用，编辑器导出和分发闭环属于 Phase 8。没有伪装可用的空导出按钮。
+当前支持单轨有界播放/暂停、精确定位、clip/gap预热与原生Corrector；完整吸附/空间颜色工具、代理和普遍性能保证未交付。**本应用没有视频导出UI、音频播放/剪辑、文本、转场或多轨**；核心Phase5 headless H.264/MP4能力独立可用，编辑器导出和分发闭环仍属后续范围。
 
 ## 验证
 
@@ -79,8 +89,10 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-`npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. Coverage runs 47 Rust behavior tests plus both real-window suites in one instrumentation run and merges their LLVM profile; a coverage report does not replace hardware-window acceptance.
+`npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. The current Rust behavior suite has 55 tests, including worker clock/prefill, exact seek supersession, gap/cut final-frame retirement, hysteresis and full-extent budget arithmetic. This change did not run the coverage gate; historical coverage results are not a new pass claim.
 
 Timeline-window acceptance includes 30-second media plus, 900-frame clips at default/maximum zoom, fit-to-sequence, fractional-scale trims, undo and persistence. Nodes-window acceptance uses actual red/blue H.264 fixtures and checks final monitor pixels; graph callback forwarding alone is not treated as success.
+
+原生播放测量：`node scripts/measure-video-editor-playback.mjs <ui-automation-binary> <project.oqvideo.json> <output-dir> [seconds]`。实际8K素材/完整质量/单与双Corrector测量、预算与计数解释见[8K实测记录](DESIGN.md#eight-k-playback-evidence)；原始数据在`test-results/window-playback/`。不把viewport尺寸、时钟推进或worker提交当真实图像交付。
 
 报告和复查文件位于`test-results/phase6/ui-*/`及`test-results/clip-pipeline/nodes-ui-*/`：HTML/JSON报告、截图、工程、生成素材和关闭日志。Windows/Linux尚未完成原生硬件窗口验收；原仓库SDK 100% gate保持原阈值和排除规则。

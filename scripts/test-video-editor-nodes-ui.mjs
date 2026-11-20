@@ -81,7 +81,15 @@ async function save(first = false) {
   await waitState('Project saved');
   return JSON.parse(await readFile(project, 'utf8')).data;
 }
-async function headers() { return client.byLabel(/^Select node /, { role: 'Button', visible: false }); }
+async function headers() {
+  return client.waitFor(async () => {
+    try { return await client.byLabel(/^Select node /, { role: 'Button', visible: false }); }
+    catch (error) {
+      if (/destroyed|stale/i.test(error.message)) return false;
+      throw error;
+    }
+  }, { description: 'coherent shared graph header snapshot' });
+}
 function nodeState(element) {
   const description = element.accessibleDescription || '';
   const id = /Node id: ([^;]+)/.exec(description)?.[1];
@@ -104,9 +112,14 @@ async function header(id) {
 async function selectNode(id) {
   await client.activate(await header(id));
   await client.waitFor(async () => {
-    const inputs = await client.byLabel('Node label', { role: 'TextInput', visible: false });
-    if (!inputs.length) return true;
-    return inputs[0].accessibleValue === nodeState(await header(id)).label;
+    try {
+      const inputs = await client.byLabel('Node label', { role: 'TextInput', visible: false });
+      if (!inputs.length) return false;
+      return inputs[0].accessibleValue === nodeState(await header(id)).label;
+    } catch (error) {
+      if (/destroyed|stale/i.test(error.message)) return false;
+      throw error;
+    }
   }, { description: `Inspector selection for ${id}` });
 }
 async function waitNodeCount(count) {
@@ -129,11 +142,13 @@ async function oneNewNode(before) {
 async function addEffect(label) {
   const before = new Set((await headers()).map(element => nodeState(element).id));
   await client.click(await button(`Add ${label} node`));
+  await click('Fit graph in view');
   return oneNewNode(before);
 }
 async function selectClip(name) {
   await click(`Pipeline for ${name}`);
   await client.waitFor(async()=>{try{return (await headers()).some(element=>nodeState(element).id==='video');}catch{return false;}},{description:`${name} graph published`});
+  await click('Fit graph in view');
 }
 async function port(elementLabel, outputPort) {
   for(let retry=0;retry<6;retry++){
@@ -258,6 +273,26 @@ function clipFor(data, name) {
   return clips[0];
 }
 function graphFor(data, name) { return clipFor(data, name).pipeline.graph; }
+const CORRECTOR_EXPOSURE = 'Corrector Exposure (stops)';
+const correctorNode = (data, id) => graphFor(data, 'red.mp4').nodes.find(node => node.id === id);
+async function correctorValue(value) {
+  await client.waitFor(async () => {
+    try {
+      return (await client.find({ label: CORRECTOR_EXPOSURE, role: 'TextInput', visible: false })).accessibleValue === Number(value).toFixed(4);
+    } catch (error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; }
+  }, { description: `committed native Corrector exposure ${value}` });
+}
+async function editCorrector(value) {
+  const input = await revealInspector(CORRECTOR_EXPOSURE);
+  await client.click(input); await client.setValue(input, String(value)); await client.key('\n');
+  await correctorValue(value);
+}
+async function primaryKey(text) {
+  // Slint's event layer maps native Command to logical Control on macOS.
+  const primary = '\u0011';
+  await client.key(primary, 'Press');
+  try { await client.key(text); } finally { await client.key(primary, 'Release'); }
+}
 
 try {
   const red = generate('red.mp4', 'red'), blue = generate('blue.mp4', 'blue');
@@ -280,7 +315,15 @@ try {
       await selectNode(id);
       const label = await client.query({ label: 'Node label', role: 'TextInput', visible: false });
       if (label.length) assert.equal(Boolean(label[0].accessibleEnabled), false, `${id} label must be protected`);
-      assert.equal((await client.byLabel('Delete node', { role: 'Button' })).length, 0);
+      await client.waitFor(async () => {
+        try {
+          assert.equal((await client.byLabel('Delete node', { role: 'Button' })).length, 0);
+          return true;
+        } catch (error) {
+          if (/destroyed|stale/i.test(error.message)) return false;
+          throw error;
+        }
+      }, { description: `${id} protected inspector settles without Delete` });
       await waitNodeCount(2); await snapshot(`02-protected-${id}`, 'red');
     }
     assert.deepEqual(graphFor(await save(), 'red.mp4'), graphFor(originalData, 'red.mp4'));
@@ -332,6 +375,10 @@ try {
     const customLabel=nodeState(await header(customId)).label;
     const outputLabel=nodeState(await header('output')).label;
     await client.activate(await port(customLabel, true));
+    await client.waitFor(async () => {
+      try { return (await client.byLabel('Cancel connection', { role: 'Button' })).length === 1; }
+      catch (error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; }
+    }, { description: 'source port activates the native connection transaction' });
     await client.activate(await port(outputLabel, false));
     await snapshot('09-port-bypass-green', 'green');
     let graph = graphFor(await save(), 'red.mp4');
@@ -405,6 +452,107 @@ try {
     await selectClip('blue.mp4'); await waitNodeCount(2); await snapshot('18-reopened-isolated-blue', 'blue');
     await selectClip('red.mp4'); await waitNodeCount(4); await snapshot('19-reopened-red-grade', 'dim-green');
     assert.deepEqual(await save(), savedData, 'Save/reopen must preserve the complete document');
+    await close();
+  });
+  let correctorId, correctorSaved;
+  await step('Native Color Corrector creates a typed serial node and previews without saving transient values', async () => {
+    await launch(project); await waitState('clips 2');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode(customId); await setShader(GREEN); await waitColor('green');
+    const corrector = await addEffect('Color Corrector'); correctorId = corrector.id;
+    await waitNodeCount(5); await selectNode(correctorId); await snapshot('20-native-corrector-identity', 'green');
+    const baseline = await save(), node = correctorNode(baseline, correctorId);
+    assert.equal(node.type, 'colorcorrector'); assert.equal(node.data.type, 'colorcorrector');
+    assert.equal(node.data.shaderCode, ''); assert.equal(node.data.colorCorrector.primaries.exposure, 0);
+    assert(graphFor(baseline, 'red.mp4').edges.some(edge => edge.source === customId && edge.target === correctorId));
+    assert(graphFor(baseline, 'red.mp4').edges.some(edge => edge.source === correctorId && edge.target === 'output'));
+    const exposure = await revealInspector(CORRECTOR_EXPOSURE);
+    await client.click(exposure); await client.setValue(exposure, '-2');
+    await snapshot('21-native-corrector-transient-gpu', 'dim-green');
+    assert.deepEqual(JSON.parse(await readFile(project, 'utf8')).data, baseline, 'GPU preview must not serialize its draft');
+    await client.key('\n'); await correctorValue(-2);
+    const graded = await save(); assert.equal(correctorNode(graded, correctorId).data.colorCorrector.primaries.exposure, -2);
+    await click('UNDO'); await correctorValue(0); await snapshot('22-native-corrector-one-step-undo', 'green');
+    await click('REDO'); await correctorValue(-2); await snapshot('23-native-corrector-redo', 'dim-green');
+    assert.deepEqual(graphFor(graded, 'blue.mp4'), graphFor(originalData, 'blue.mp4'));
+  });
+  await step('Native bypass, stage reset, cancellation and wheel drag retain one-gesture history', async () => {
+    await client.click(await revealInspector('Corrector enabled', 'Checkbox')); await snapshot('24-native-corrector-bypass', 'green');
+    assert.equal(correctorNode(await save(), correctorId).data.colorCorrector.enabled, false);
+    await client.click(await revealInspector('Corrector enabled', 'Checkbox')); await waitColor('dim-green');
+    await client.click(await revealInspector('Primaries enabled', 'Checkbox')); await waitColor('green');
+    await client.click(await revealInspector('Primaries enabled', 'Checkbox')); await waitColor('dim-green');
+    await client.activate(await revealInspector('Reset Primaries', 'Button')); await correctorValue(0); await waitColor('green');
+    await click('UNDO'); await correctorValue(-2); await waitColor('dim-green');
+    const beforeCancel = await save();
+    const input = await revealInspector(CORRECTOR_EXPOSURE);
+    await client.click(input); await client.setValue(input, '-1');
+    await client.activate(await revealInspector('Cancel Corrector gesture', 'Button'));
+    await correctorValue(-2); await waitColor('dim-green');
+    assert.deepEqual(await save(), beforeCancel, 'Cancelled native edit must not create document state');
+    const switching = await revealInspector(CORRECTOR_EXPOSURE);
+    await client.click(switching); await client.setValue(switching, '-1');
+    await selectClip('blue.mp4'); await waitColor('blue');
+    await selectClip('red.mp4'); await selectNode(correctorId); await correctorValue(-2); await waitColor('dim-green');
+    assert.deepEqual(await save(), beforeCancel, 'Selection changes must discard a transient Corrector gesture');
+    await client.activate(await revealInspector('Corrector primaries Offset', 'Button'));
+    const wheel = await revealInspector('Offset color wheel; arrow keys adjust, Escape cancels', 'Button');
+    await client.drag(wheel, { x: wheel.absolutePosition.x + wheel.size.width / 2 + 20, y: wheel.absolutePosition.y + wheel.size.height / 2 + 8 });
+    await revealInspector('Corrector Offset R');
+    await client.waitFor(async () => {
+      const offset = await client.find({ label: 'Corrector Offset R', role: 'TextInput', visible: false });
+      return Math.abs(Number(offset.accessibleValue)) > 0.001 && !(await client.byLabel('Discard changes', { role: 'Button', visible: false })).length;
+    }, { description: 'wheel release committed through document history' });
+    const afterWheel = await save();
+    assert.notDeepEqual(correctorNode(afterWheel, correctorId).data.colorCorrector, correctorNode(beforeCancel, correctorId).data.colorCorrector);
+    await click('UNDO'); await waitColor('dim-green');
+    assert.deepEqual(await save(), beforeCancel, 'One undo must remove every native wheel preview sample');
+    await click('REDO');
+    assert.deepEqual(await save(), afterWheel, 'One redo must restore the whole wheel gesture');
+    await click('UNDO'); await waitColor('dim-green');
+  });
+  await step('Native Corrector clipboard and split clones own independent typed configurations', async () => {
+    await selectNode(correctorId); await client.click(await header(correctorId)); await primaryKey('c');
+    await selectNode('output');
+    const beforePaste = new Set((await headers()).map(element => nodeState(element).id));
+    await primaryKey('v'); await click('Fit graph in view'); const pasted = await oneNewNode(beforePaste); await waitNodeCount(6);
+    await selectNode(pasted.id); await editCorrector(-1);
+    let data = await save();
+    assert.equal(correctorNode(data, correctorId).data.colorCorrector.primaries.exposure, -2);
+    assert.equal(correctorNode(data, pasted.id).data.colorCorrector.primaries.exposure, -1);
+    await activate('Delete node'); await waitNodeCount(5); await waitColor('dim-green');
+    await click('UNDO'); await waitNodeCount(6);
+    assert.equal(correctorNode(await save(), pasted.id).data.colorCorrector.primaries.exposure, -1);
+    await click('REDO'); await waitNodeCount(5); await waitColor('dim-green');
+    const beforeSplit = await save();
+    await click('NEXT'); await waitState('playhead 1 frames'); await click('SPLIT'); await waitState('clips 3');
+    await selectNode(correctorId); await editCorrector(-1);
+    data = await save();
+    const asset = data.assets.find(asset => asset.name === 'red.mp4');
+    const halves = data.clips.filter(clip => clip.asset_id === asset.id).sort((a, b) => a.timeline_start - b.timeline_start);
+    assert.equal(halves.length, 2);
+    assert.deepEqual(halves.map(clip => clip.pipeline.graph.nodes.find(node => node.id === correctorId).data.colorCorrector.primaries.exposure), [-2, -1]);
+    await click('UNDO'); await correctorValue(-2); await click('UNDO'); await waitState('clips 2');
+    assert.deepEqual(await save(), beforeSplit, 'Undo split must restore the exact independent pipeline snapshot');
+    await selectClip('blue.mp4'); await snapshot('25-corrector-clip-isolation', 'blue');
+    await selectClip('red.mp4'); await selectNode(correctorId); await snapshot('26-corrector-isolated-return', 'dim-green');
+    correctorSaved = await save(); await close();
+  });
+  await step('Save and reopen restore the actual native Corrector and managed GPU result', async () => {
+    await launch(project); await waitState('clips 2'); await click('Nodes workspace'); await selectClip('red.mp4');
+    await click('Fit graph in view');
+    await waitNodeCount(5); await selectNode(correctorId); await correctorValue(-2);
+    await snapshot('27-reopened-native-corrector', 'dim-green');
+    assert.equal((await client.byLabel('Shader source', { role: 'TextInput', visible: false })).length, 0, 'Native Corrector must not expose a shader disguise');
+    assert.deepEqual(await save(), correctorSaved);
+    await click('PLAY');
+    await client.waitFor(async () => (await client.byLabel('PAUSE', { role: 'Button' })).length === 1, { description: 'playing transport before Corrector gesture' });
+    const playingInput = await revealInspector(CORRECTOR_EXPOSURE);
+    await client.click(playingInput); await client.setValue(playingInput, '-1');
+    await client.waitFor(async () => (await client.byLabel('PLAY', { role: 'Button' })).length === 1, { description: 'Corrector gesture publishes paused transport' });
+    await client.activate(await revealInspector('Cancel Corrector gesture', 'Button'));
+    await correctorValue(-2);
+    assert.deepEqual(await save(), correctorSaved, 'Pausing and cancelling must not change accepted clip parameters');
     await close();
   });
   report.passed = true;

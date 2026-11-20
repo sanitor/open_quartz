@@ -10,15 +10,23 @@ use crate::project::model::{DataType, Edge, NodeType, ProjectNode, SystemSource}
 use super::frame::{ExecutionCommand, FrameInputs, FrameResult};
 use crate::compiler::{build_execution_plan_with_options, ExecutionPlan, NodeExecutionPlan};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EvaluationContext {
+    Playback,
+    FrozenPreview,
+}
+
 #[derive(Clone)]
 pub struct GraphEvaluator {
     nodes: Arc<Vec<ProjectNode>>,
+    edges: Arc<Vec<Edge>>,
     plan: Arc<ExecutionPlan>,
     dirty: DirtySet,
     feedback_read_index: HashMap<String, u8>,
     feedback_first_frame: HashSet<String>,
     math_values: HashMap<String, f64>,
     external_video_textures: bool,
+    last_context: EvaluationContext,
 }
 
 impl GraphEvaluator {
@@ -49,12 +57,14 @@ impl GraphEvaluator {
             .collect();
         Self {
             nodes: Arc::new(nodes),
+            edges: Arc::new(edges),
             plan: Arc::new(plan),
             dirty,
             feedback_read_index: HashMap::new(),
             feedback_first_frame,
             math_values: HashMap::new(),
             external_video_textures,
+            last_context: EvaluationContext::Playback,
         }
     }
 
@@ -80,6 +90,13 @@ impl GraphEvaluator {
         edges: Vec<Edge>,
         changed_nodes: &HashSet<String>,
     ) {
+        if let Some(plan) = crate::compiler::update_parameter_plan(&self.plan, &self.nodes, &self.edges, &nodes, &edges) {
+            self.plan = Arc::new(plan);
+            self.nodes = Arc::new(nodes);
+            self.edges = Arc::new(edges);
+            for id in changed_nodes { self.dirty.mark_dirty(id); }
+            return;
+        }
         let mut next = Self::prepare_with_options(nodes, edges, self.external_video_textures);
         next.dirty.take_in_order(&next.plan.sorted_ids);
         // Unchanged nodes may still have work queued before the graph replacement.
@@ -109,22 +126,33 @@ impl GraphEvaluator {
         *self = next;
     }
 
+
     pub fn run_frame(&mut self, inputs: &FrameInputs) -> FrameResult {
-        self.mark_dynamic_nodes(inputs);
+        self.run_context(inputs, EvaluationContext::Playback)
+    }
+
+    /// Re-evaluate explicit edits against the accepted frame without ticking dynamic nodes.
+    /// Feedback redraws replace that frame using its original history; they never rotate it.
+    pub(crate) fn run_preview(&mut self, inputs: &FrameInputs) -> FrameResult {
+        self.run_context(inputs, EvaluationContext::FrozenPreview)
+    }
+
+    fn run_context(&mut self, inputs: &FrameInputs, context: EvaluationContext) -> FrameResult {
+        self.last_context = context;
+        if context == EvaluationContext::Playback {
+            self.mark_dynamic_nodes(inputs);
+        }
         let dirty_nodes = self.dirty.take_in_order(&self.plan.sorted_ids);
         let mut commands = Vec::new();
+        let plan_snapshot = Arc::clone(&self.plan);
+        let node_snapshot = Arc::clone(&self.nodes);
 
         for node_id in &dirty_nodes {
-            let Some(node_plan) = self
-                .plan
-                .nodes
-                .iter()
-                .find(|plan| plan.id == *node_id)
-                .cloned()
+            let Some(node_plan) = plan_snapshot.nodes.iter().find(|plan| plan.id == *node_id)
             else {
                 continue;
             };
-            let Some(node) = self.nodes.iter().find(|node| node.id == *node_id).cloned() else {
+            let Some(node) = node_snapshot.iter().find(|node| node.id == *node_id) else {
                 continue;
             };
             match node_plan.node_type {
@@ -149,11 +177,18 @@ impl GraphEvaluator {
                 NodeType::Shader | NodeType::Constant => {
                     let uniforms = self.resolve_uniforms(&node_plan, &node, inputs);
                     let (read_index, write_index, clear_feedback) = if node_plan.feedback {
-                        let read = self.feedback_read_index.get(node_id).copied().unwrap_or(0);
-                        let write = 1 - read;
-                        let clear = self.feedback_first_frame.remove(node_id);
-                        self.feedback_read_index.insert(node_id.clone(), write);
-                        (Some(read), Some(write), clear)
+                        let accepted = self.feedback_read_index.get(node_id).copied().unwrap_or(0);
+                        let first = self.feedback_first_frame.contains(node_id);
+                        let (read, write) = if context == EvaluationContext::FrozenPreview && !first {
+                            (1 - accepted, accepted)
+                        } else {
+                            (accepted, 1 - accepted)
+                        };
+                        if context == EvaluationContext::Playback {
+                            self.feedback_first_frame.remove(node_id);
+                            self.feedback_read_index.insert(node_id.clone(), write);
+                        }
+                        (Some(read), Some(write), first)
                     } else {
                         (None, None, false)
                     };
@@ -171,6 +206,13 @@ impl GraphEvaluator {
                         None,
                     ));
                 }
+                NodeType::ColorCorrector => commands.push(command_for(
+                    node_plan,
+                    if node_plan.alias_source().is_some() { "alias" } else { "operator" },
+                    None,
+                    BTreeMap::new(),
+                    None, false, None,
+                )),
                 NodeType::Inference => commands.push(command_for(
                     &node_plan,
                     "inference",
@@ -182,7 +224,7 @@ impl GraphEvaluator {
                 )),
                 NodeType::Renderer => commands.push(command_for(
                     &node_plan,
-                    "renderer",
+                    if node_plan.gpu_program().is_some() { "display" } else { "renderer" },
                     None,
                     BTreeMap::new(),
                     None,
@@ -208,10 +250,12 @@ impl GraphEvaluator {
             let Some(read_index) = command.feedback_read_index else {
                 continue;
             };
-            self.feedback_read_index
-                .insert(command.node_id.clone(), read_index);
-            if command.clear_feedback {
-                self.feedback_first_frame.insert(command.node_id.clone());
+            if self.last_context == EvaluationContext::Playback {
+                self.feedback_read_index
+                    .insert(command.node_id.clone(), read_index);
+                if command.clear_feedback {
+                    self.feedback_first_frame.insert(command.node_id.clone());
+                }
             }
             self.dirty.mark_dirty(&command.node_id);
         }
@@ -323,9 +367,7 @@ fn command_for(
     clear_feedback: bool,
     scalar_output: Option<f64>,
 ) -> ExecutionCommand {
-    let texture_inputs = plan
-        .shader
-        .as_ref()
+    let texture_inputs = plan.gpu_program()
         .map(|shader| {
             plan.upstream
                 .iter()

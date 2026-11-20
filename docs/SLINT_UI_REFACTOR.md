@@ -6,7 +6,7 @@
 >
 > 最终证据见 [DESIGN 验证基线](./DESIGN.md#validation)：workspace 234、full-native 315、Slint 73、UI 18/18、Shader 34/34、editor 10、boundary、独立 ONNX/runtime 与 macOS release 包通过。两项整体 100% coverage gate 均失败；历史结果继续归档。
 >
-> 本文基线为 v0.20.0b（2026-10-25）。第 0 节与 §13.1–13.2 是当前摘要和索引；第 1–12、14–15 节保留历史方案和验证，不是当前产品承诺。
+> 本文基线为 v0.20.0b（2026-10-25）。第0节与§13.1–13.2为摘要/索引；[§0.1共享结构化算子编辑器](#structured-operator-ui)已落地首批Corrector，未来工具仍逐项标为提案。第1–12、14–15节保留历史方案和验证，不是当前产品承诺。
 > 当前源码落点也见 [DESIGN 源码索引](./DESIGN.md#source-map)。
 
 ## 0. 结论摘要
@@ -33,6 +33,43 @@ oq-media、slint_code_editor、屏保 exporter、独立 stub 和应用各自独�
 `apps/open_quartz_slint/runtime/`；Windows stub 由 `target/screensaver-stub/`
 构建并暂存到 app runtime。macOS bundle 数字版本由根 `package.json` 派生。
 shader catalog 的唯一源文件是 `crates/open_quartz/src/project/shader_catalog.json`。
+
+<a id="structured-operator-ui"></a>
+### 0.1 共享结构化算子编辑器（Corrector 首批实现）
+
+核心协议归[核心设计：结构化算子节点](DESIGN.md#structured-operators)。UI采用**共享参数编辑生命周期 + 按算子类型提供专用编辑器**，不做“所有算子都用Uniform文本框”，也不构建动态表单/插件语言。首个共享组件为`apps/open_quartz_slint/ui/components/corrector_editor.slint`，Rust草稿为`src/corrector_editor.rs`；`apps/open_quartz_slint`与`apps/open_quartz_video_editor`直接复用，无第二控制器/算法/GPU设备。当前只开放Primaries与HDR Zones。
+
+#### 分层与共享组件
+
+- 核心拥有typed配置/验证/算法、工厂、资源意图、update分类及lowering；Slint不生成WGSL、不自行决定哪个变更可走参数快路，不向核心传Slint模型/控件句柄。
+- 通用Rust draft adapter管理`target node + host context + baseline revision + draft generation`、校验错误与候选状态、Begin/Preview/Commit/Cancel；领域view-model只将typed配置投影为该编辑器的控件数据。核心校验是最终准入规则，UI输入约束不能代替它。
+- 通用Inspector外壳复用节点名称、类型、ports和状态。按真实node kind选择专用编辑器；Shader仍用WGSL/Uniform表单，Corrector使用共享`CorrectorEditor`，不按label或Shader模板识别。
+- 共享组件包含Primaries数值/拖动及RGB色轮、六分区HDR参数、enable/reset、Apply/Cancel和field错误；核心`COLOR_CORRECTOR_FIELDS`定义单位、范围和默认值。曲线、LUT资源、mask和Viewer工具仍未实现，没有虚假入口。稳定行模型避免手势过程中替换整个控件树。
+- 两应用host adapter只负责绑定document、history、worker及预览目标：原图app指向其`Project`和选中node；视频app指向`EditorDocument`、clip/version/node。共享editor不拥有第二Project/undo栈、decoder或GPU Device。
+
+#### Corrector界面与局部旁路
+
+Graph上是一个Color Corrector节点。右侧Inspector提供整个node enable/bypass/reset、颜色域说明，Palette tabs仅为Primaries与HDR Zones。Primaries内Basic/Lift/Gamma/Gain/Offset切换专用工具；HDR Zones内六个区域及range/softness工具。切tab不改处理顺序/配置或历史，不为每工具默认打开浮窗；视频app保留Media/Nodes左栏、Viewer/Graph中区及统一右侧属性栏。
+
+Palette enable保留参数；Reset恢复中性值且不改变enable，折叠/换tab不旁路。整体bypass与stage enable独立；临时A/B比较仍是后续能力。disabled Palette的参数保留并可查看。
+
+Primaries提供功能RGB色轮、拖动和数值等价入口，曝光单位为stops；HDR Zones提供六区曝光/饱和度与range/pivots/falloff。非有限/越界值由核心拒绝并显示错误；全部字段有accessibility label，色轮可用方向键。Curves/RGB Mixer/Look/Secondary及资源选择尚未交付，不在UI显示可用控件。
+
+Qualifier/Window未来需要共享Viewer交互协议：开始工具时锁目标node/clip，明确cursor/overlay/selected shape，吸管与控制柄在同一帧/同domain下作用；Esc取消当前工具/gesture并恢复原draft或退出overlay。切node、删node、undo、切clip的冲突按同一draft政策处理；文字焦点不触发图Delete/Space播放。Tracker/Magic Mask未交付时不以普通窗口几何遮罩冒充。
+
+#### 事务与实时预览
+
+一次按下/拖动/松开对应Begin/多次Preview/一次Commit；键入值按Enter提交，Esc取消。Draft是session态，save只写已提交配置，重开不恢复未提交手势。Preview只带当前draft generation，无内容history；松手若与baseline相同则无历史。切tab可保留同node draft，不允许在目标改变后把迟到编辑提交给新目标；切node/clip前需按已定义Apply/Discard/Cancel策略结束编辑。独立控件不创建私有undo栈，使用宿主唯一历史。
+
+参数preview使用核心update分类：布局不变复用program，只打包参数；切enable改变结构时由worker预检。原图app在明确Corrector请求的接受回执后才提交Project历史；视频app通过既有candidate预检后提交EditorDocument。失败保留草稿和最后有效帧，目标token/revision/generation防止迟到编辑误投新node/clip。暂停/停止时显式调用`NativePlayer::render_preview`，不启动播放或推进clock；播放中原图app的Corrector快照保留clock。视频app按片段编辑政策暂停并锁定目标，源PTS不因参数编辑重开。
+
+#### 两应用端到端验收
+
+`open_quartz_slint`必须提供Add Corrector目录/菜单、核心工厂创建、typed image连接、全部已交付Palette、局部/全旁路、剪贴板深拷贝、undo/redo、save/open以及真正GPU执行。原app媒体/图片资源必须显式标识managed AP1输入或经过转换，不允许把Unknown/sRGB直接解释成AP1；其SDR桌面viewer使用同一共享view transform，HDR监视仍按平台能力独立验收。
+
+视频app复用同一节点/组件，补clip isolation、split后的独立配置与指纹资源、项目历史、源PTS不变和clip目标筛选；普通Shader源码编辑仍保留。两应用不得各有一套Corrector序列化、算法参数或变体生成逻辑。默认核心保持device-free编辑/纯lowering，运行按capabilities探测；缺少HDR格式/功能时显示明确不支持，不只显示节点框或mock画面。
+
+验收必须覆盖两真实窗口的色轮/数值/曲线等已交付控件：一次gesture一条历史、Esc、tabs/选择不改变像素、文字focus、Apply/Discard、旁路保参、Reset、复制隔离、save/reopen、快速切目标的迟到结果、无效资源保留旧帧。独立色块/灰阶/HDR oracle验证实际GPU画面；检查参数拖动pipeline创建数为0、源重开为0、targets不按palette数增长；全node Alias bypass无算子draw/专属surface，但允许有稳定输出池detach copy。布局在正常/最小窗口实测，吞吐/延时不以回调转发测试或截图中“有控件”代替。
 
 以下历史方案按原文保留，其中 Web/Tauri、旧 crate、路径、目标、命令
 和通过结果均只反映当时状态。

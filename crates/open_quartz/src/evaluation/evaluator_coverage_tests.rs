@@ -90,6 +90,8 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
         builtin_ports: vec![],
         target: None,
         shader: None,
+        structured: None,
+        output_domain: crate::operators::ColorDomain::LegacySrgb,
         validation_errors: vec![],
         feedback: false,
     };
@@ -118,7 +120,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
         target: Some(TargetSpec {
             width: 20,
             height: 30,
-            float: false,
+            format: crate::compiler::TargetFormat::Rgba8Unorm,
             size_source: None,
         }),
         ..bare_plan.clone()
@@ -152,4 +154,42 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
 
     let command = command_for(&bare_plan, "math", None, BTreeMap::new(), None, false, None);
     assert!(command.texture_inputs.is_empty());
+}
+
+#[cfg(all(feature = "native-runtime", not(target_arch = "wasm32")))]
+#[test]
+fn frozen_feedback_rollback_keeps_the_accepted_temporal_state() {
+    let mut feedback = node("feedback", "shader");
+    feedback.data.shader_code = "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f{return textureSample(previousFrame,previousFrameSampler,uv);}".into();
+    let mut engine = GraphEvaluator::prepare(vec![feedback], vec![]);
+
+    // An initial frozen draw does not accept its first iteration, even on rollback.
+    let initial = engine.run_preview(&inputs());
+    assert!(initial.commands[0].clear_feedback);
+    engine.rollback_feedback(&initial.commands);
+    assert!(engine.feedback_first_frame.contains("feedback"));
+    assert!(!engine.feedback_read_index.contains_key("feedback"));
+    let first = engine.run_frame(&inputs());
+    assert_eq!(first.commands[0].feedback_read_index, Some(0));
+    assert_eq!(first.commands[0].feedback_write_index, Some(1));
+    assert!(first.commands[0].clear_feedback);
+
+    engine.mark_dirty("feedback");
+    let preview = engine.run_preview(&inputs());
+    assert_eq!(preview.commands[0].feedback_read_index, Some(0));
+    assert_eq!(preview.commands[0].feedback_write_index, Some(1));
+    assert!(!preview.commands[0].clear_feedback);
+    engine.rollback_feedback(&preview.commands);
+    assert_eq!(engine.feedback_read_index["feedback"], 1);
+    assert!(!engine.feedback_first_frame.contains("feedback"));
+
+    let next = engine.run_frame(&inputs());
+    assert_eq!(next.commands[0].feedback_read_index, Some(1));
+    assert_eq!(next.commands[0].feedback_write_index, Some(0));
+    // Ordinary playback failure still restores the pre-frame history for retry.
+    engine.rollback_feedback(&next.commands);
+    assert_eq!(engine.feedback_read_index["feedback"], 1);
+    let retry = engine.run_frame(&inputs());
+    assert_eq!(retry.commands[0].feedback_read_index, Some(1));
+    assert_eq!(retry.commands[0].feedback_write_index, Some(0));
 }

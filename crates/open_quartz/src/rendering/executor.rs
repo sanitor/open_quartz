@@ -58,14 +58,15 @@ pub struct GpuOutputHandle {
 
 #[derive(Clone)]
 struct NodeGpuResources {
-    fragment_code: String,
+    fragment_code: Arc<str>,
     width: u32,
     height: u32,
     format: TextureFormat,
-    bindings: Vec<BindingDescriptor>,
+    bindings: Arc<Vec<BindingDescriptor>>,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     uniform_buffers: HashMap<String, wgpu::Buffer>,
+    uniform_values: HashMap<String, Arc<[f32]>>,
     builtin_resolution: bool,
     targets: Vec<RenderTarget>,
     sampler: Arc<wgpu::Sampler>,
@@ -74,14 +75,14 @@ struct NodeGpuResources {
 
 impl NodeGpuResources {
     fn matches(&self, plan: &NodeExecutionPlan) -> bool {
-        let Some(shader) = &plan.shader else {
+        let Some(shader) = plan.gpu_program() else {
             return false;
         };
         let Some(target) = &plan.target else {
             return false;
         };
-        self.fragment_code == shader.full_fragment_code
-            && self.format == target_format(target.float)
+        self.fragment_code.as_ref() == shader.full_fragment_code
+            && self.format == target_format(target.format)
     }
 
     fn output(&self) -> &RenderTarget {
@@ -99,6 +100,7 @@ pub struct GpuExecutor {
     renderer_sources: HashMap<String, String>,
     textures: HashMap<String, TextureHandle>,
     sampling: HashMap<String, (TextureFilter, TextureWrap, Arc<wgpu::Sampler>)>,
+    output_domains: HashMap<String, crate::operators::ColorDomain>,
 }
 
 impl GpuExecutor {
@@ -109,11 +111,24 @@ impl GpuExecutor {
             renderer_sources: HashMap::new(),
             textures: HashMap::new(),
             sampling: HashMap::new(),
+            output_domains: HashMap::new(),
         }
     }
+    fn resolve_source<'a>(&'a self, mut node_id: &'a str) -> Option<&'a str> {
+        for _ in 0..=self.renderer_sources.len() {
+            let Some(source) = self.renderer_sources.get(node_id) else { return Some(node_id); };
+            node_id = source;
+        }
+        None
+    }
+
 
     pub fn backend(&self) -> &Arc<GpuBackend> {
         &self.backend
+    }
+
+    pub fn output_domain(&self, node_id: &str) -> crate::operators::ColorDomain {
+        self.output_domains.get(node_id).copied().unwrap_or(crate::operators::ColorDomain::LegacySrgb)
     }
 
     /// Apply output sampling policy from source nodes, including externally uploaded textures.
@@ -312,11 +327,7 @@ impl GpuExecutor {
     }
 
     pub fn output_texture(&self, node_id: &str) -> Option<GpuOutput<'_>> {
-        let resolved = self
-            .renderer_sources
-            .get(node_id)
-            .map(String::as_str)
-            .unwrap_or(node_id);
+        let resolved = self.resolve_source(node_id)?;
         if let Some(resources) = self.nodes.get(resolved) {
             let target = resources.output();
             return Some(GpuOutput {
@@ -347,11 +358,7 @@ impl GpuExecutor {
     }
 
     pub fn output_handle(&self, node_id: &str) -> Option<GpuOutputHandle> {
-        let resolved = self
-            .renderer_sources
-            .get(node_id)
-            .map(String::as_str)
-            .unwrap_or(node_id);
+        let resolved = self.resolve_source(node_id)?;
         if let Some(resources) = self.nodes.get(resolved) {
             let target = resources.output();
             return Some(GpuOutputHandle {
@@ -484,6 +491,7 @@ impl GpuExecutor {
             renderer_sources: self.renderer_sources.clone(),
             textures: self.textures.clone(),
             sampling: self.sampling.clone(),
+            output_domains: self.output_domains.clone(),
         };
         if !staged.sync_plan_in_place(plan, source_sizes)? { return Ok(None); }
         Ok(Some(staged))
@@ -494,11 +502,17 @@ impl GpuExecutor {
         plan: &ExecutionPlan,
         source_sizes: &HashMap<String, (u32, u32)>,
     ) -> Result<bool, GpuExecutionError> {
+        self.output_domains = plan.nodes.iter().map(|node| (node.id.clone(), node.output_domain)).collect();
         let mut sizes = source_sizes.clone();
         let mut descriptors = HashMap::new();
         let (mut total_surfaces, mut total_bytes) = (0usize, 0u64);
         for node in &plan.nodes {
-            if node.shader.is_none() {
+            if let Some(error) = node.validation_errors.first() {
+                return Err(GpuExecutionError::for_node(&node.id, error.message.clone()));
+            }
+        }
+        for node in &plan.nodes {
+            if node.gpu_program().is_none() {
                 if !sizes.contains_key(&node.id) {
                     let size = node.upstream.values().find_map(|source| sizes.get(source).copied())
                         .or_else(|| self.output_texture(&node.id).map(|output| (output.width, output.height)));
@@ -521,10 +535,9 @@ impl GpuExecutor {
                 return Err(GpuExecutionError::for_node(&node.id,
                     format!("invalid render target dimensions {width}x{height}; maximum dimension is {limit}")));
             }
-            let format = target_format(target.float);
+            let format = target_format(target.format);
             let count = if node.feedback { 2 } else { 1 };
-            let bytes = u64::from(width) * u64::from(height)
-                * if format == TextureFormat::Rgba32Float { 16 } else { 4 };
+            let bytes = u64::from(width) * u64::from(height) * format.bytes_per_pixel();
             total_surfaces = total_surfaces.checked_add(count).ok_or_else(||
                 GpuExecutionError::for_node(&node.id, "graph surface count overflow"))?;
             total_bytes = bytes.checked_mul(count as u64).and_then(|bytes| total_bytes.checked_add(bytes))
@@ -539,7 +552,7 @@ impl GpuExecutor {
         // Reserve every missing allocation before creating even the first GPU
         // target. Failed reservations drop together without changing the graph.
         let mut reserved = HashMap::new();
-        for node in plan.nodes.iter().filter(|node| node.shader.is_some()) {
+        for node in plan.nodes.iter().filter(|node| node.gpu_program().is_some()) {
             let &(width, height, format, count, bytes) = &descriptors[node.id.as_str()];
             let reusable = self.nodes.get(&node.id).is_some_and(|resources| {
                 resources.width == width && resources.height == height
@@ -558,20 +571,24 @@ impl GpuExecutor {
         let shader_ids = plan
             .nodes
             .iter()
-            .filter(|node| node.shader.is_some())
+            .filter(|node| node.gpu_program().is_some())
             .map(|node| node.id.as_str())
             .collect::<HashSet<_>>();
         self.nodes
             .retain(|node_id, _| shader_ids.contains(node_id.as_str()));
-        self.renderer_sources.retain(|node_id, source| {
-            plan.nodes.iter().any(|node| {
-                node.id == *node_id
-                    && node.node_type == crate::project::model::NodeType::Renderer
-                    && node.upstream.values().next() == Some(source)
-            })
-        });
+        self.renderer_sources.clear();
+        for node in &plan.nodes {
+            let source = node.alias_source().or_else(|| {
+                (node.node_type == crate::project::NodeType::Renderer && node.gpu_program().is_none())
+                    .then(|| node.upstream.values().next().map(String::as_str)).flatten()
+            });
+            if let Some(source) = source { self.renderer_sources.insert(node.id.clone(), source.into()); }
+        }
+        if self.renderer_sources.keys().any(|id| self.resolve_source(id).is_none()) {
+            return Err(GpuExecutionError { node_id: None, message: "GPU output alias cycle".into() });
+        }
 
-        for node in plan.nodes.iter().filter(|node| node.shader.is_some()) {
+        for node in plan.nodes.iter().filter(|node| node.gpu_program().is_some()) {
             let &(width, height, format, _, _) = &descriptors[node.id.as_str()];
             if !reserved.contains_key(node.id.as_str()) {
                 if let Some(resources) = self.nodes.get_mut(&node.id).filter(|resources| resources.matches(node)) {
@@ -628,8 +645,12 @@ impl GpuExecutor {
 
         for command in commands {
             match command.kind.as_str() {
-                "shader" | "constant" => {
-                    self.encode_shader(&mut encoder, command)?;
+                "shader" | "constant" | "operator" | "display" => {
+                    let parameters = if command.kind == "operator" {
+                        Some(&plan.nodes.iter().find(|node| node.id == command.node_id)
+                            .and_then(|node| node.structured.as_ref()).ok_or_else(|| GpuExecutionError::for_node(&command.node_id,"operator parameter snapshot is missing"))?.parameters)
+                    } else { None };
+                    self.encode_shader(&mut encoder, command, parameters)?;
                     encoded_gpu_work = true;
                 }
                 "renderer" => {
@@ -648,7 +669,7 @@ impl GpuExecutor {
                     self.renderer_sources
                         .insert(command.node_id.clone(), source.clone());
                 }
-                "math" => {}
+                "math" | "alias" => {}
                 "inference" => {
                     return Err(GpuExecutionError::for_node(
                         &command.node_id,
@@ -681,11 +702,7 @@ impl GpuExecutor {
     }
 
     pub fn output_target(&self, node_id: &str) -> Option<&RenderTarget> {
-        let resolved = self
-            .renderer_sources
-            .get(node_id)
-            .map(String::as_str)
-            .unwrap_or(node_id);
+        let resolved = self.resolve_source(node_id)?;
         self.nodes.get(resolved).map(NodeGpuResources::output)
     }
 
@@ -693,11 +710,7 @@ impl GpuExecutor {
         &self,
         node_id: &str,
     ) -> Option<(Arc<wgpu::TextureView>, Arc<wgpu::Sampler>)> {
-        let resolved = self
-            .renderer_sources
-            .get(node_id)
-            .map(String::as_str)
-            .unwrap_or(node_id);
+        let resolved = self.resolve_source(node_id)?;
         if let Some(resources) = self.nodes.get(resolved) {
             return Some((
                 resources.output().view.clone(),
@@ -727,7 +740,7 @@ impl GpuExecutor {
         height: u32,
         targets: Vec<RenderTarget>,
     ) -> Result<NodeGpuResources, GpuExecutionError> {
-        let shader = plan.shader.as_ref().expect("filtered shader plan");
+        let shader = plan.gpu_program().expect("filtered GPU program plan");
         let target = plan.target.as_ref().ok_or_else(|| {
             GpuExecutionError::for_node(&plan.id, "shader execution plan has no target")
         })?;
@@ -737,7 +750,7 @@ impl GpuExecutor {
                 "native external video textures are not available before the media adapter stage",
             ));
         }
-        let format = target_format(target.float);
+        let format = target_format(target.format);
         if format == TextureFormat::Rgba32Float
             && !self
                 .backend
@@ -750,68 +763,7 @@ impl GpuExecutor {
             ));
         }
 
-        let layout_entries = shader
-            .bindings
-            .iter()
-            .map(binding_layout_entry)
-            .collect::<Result<Vec<_>, _>>()?;
-        let bind_group_layout =
-            self.backend
-                .device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("open-quartz-node-bindings"),
-                    entries: &layout_entries,
-                });
-        let pipeline_layout =
-            self.backend
-                .device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("open-quartz-node-pipeline-layout"),
-                    bind_group_layouts: &[Some(&bind_group_layout)],
-                    immediate_size: 0,
-                });
-        let vertex_module =
-            self.backend
-                .device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("open-quartz-fullscreen-vertex"),
-                    source: wgpu::ShaderSource::Wgsl(shader.vertex_shader.clone().into()),
-                });
-        let fragment_module =
-            self.backend
-                .device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("open-quartz-node-fragment"),
-                    source: wgpu::ShaderSource::Wgsl(shader.full_fragment_code.clone().into()),
-                });
-        let pipeline =
-            self.backend
-                .device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("open-quartz-node-pipeline"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &vertex_module,
-                        entry_point: Some("main"),
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &fragment_module,
-                        entry_point: Some("main"),
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: format.into(),
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                });
+        let shared = super::pipeline_cache::prepare_pipeline(&self.backend, shader, format, plan.output_domain)?;
 
         let uniform_buffers = shader
             .bindings
@@ -844,14 +796,15 @@ impl GpuExecutor {
         );
 
         Ok(NodeGpuResources {
-            fragment_code: shader.full_fragment_code.clone(),
+            fragment_code: Arc::from(shader.full_fragment_code.as_str()),
             width,
             height,
             format,
-            bindings: shader.bindings.clone(),
-            bind_group_layout,
-            pipeline,
+            bindings: Arc::new(shader.bindings.clone()),
+            bind_group_layout: shared.layout,
+            pipeline: shared.pipeline,
             uniform_buffers,
+            uniform_values: HashMap::new(),
             builtin_resolution: plan.builtin_ports.iter().any(|name| name == "iResolution"),
             targets,
             sampler,
@@ -863,6 +816,7 @@ impl GpuExecutor {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         command: &ExecutionCommand,
+        parameters: Option<&BTreeMap<String, Vec<f32>>>,
     ) -> Result<(), GpuExecutionError> {
         let mut sampled = BTreeMap::<String, (Arc<wgpu::TextureView>, Arc<wgpu::Sampler>)>::new();
         for (name, source_id) in &command.texture_inputs {
@@ -893,7 +847,7 @@ impl GpuExecutor {
             }
         }
 
-        for (name, values) in &command.uniforms {
+        for (name, values) in parameters.unwrap_or(&command.uniforms) {
             let Some(buffer) = resources.uniform_buffers.get(name) else {
                 continue;
             };
@@ -909,8 +863,11 @@ impl GpuExecutor {
             } else {
                 values.as_slice()
             };
+            if command.kind == "operator" && resources.uniform_values.get(name).is_some_and(|previous| previous.as_ref() == values) { continue; }
             let bytes = pack_uniform(wgsl_type, values);
             self.backend.queue.write_buffer(buffer, 0, &bytes);
+            if command.kind == "operator" { resources.uniform_values.insert(name.clone(), Arc::from(values)); }
+            self.backend.runtime_counters.uniform_writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         let entries = resources
@@ -951,6 +908,10 @@ impl GpuExecutor {
             pass.draw(0..3, 0..1);
         }
         resources.output_index = write_index;
+        self.backend.runtime_counters.draws.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if command.kind == "operator" {
+            self.backend.runtime_counters.operator_draws.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 }
@@ -971,15 +932,15 @@ impl crate::evaluation::GpuFacade for GpuExecutor {
     }
 }
 
-fn target_format(float: bool) -> TextureFormat {
-    if float {
-        TextureFormat::Rgba32Float
-    } else {
-        TextureFormat::Rgba8Unorm
+pub(crate) fn target_format(format: crate::compiler::TargetFormat) -> TextureFormat {
+    match format {
+        crate::compiler::TargetFormat::Rgba8Unorm => TextureFormat::Rgba8Unorm,
+        crate::compiler::TargetFormat::Rgba16Float => TextureFormat::Rgba16Float,
+        crate::compiler::TargetFormat::Rgba32Float => TextureFormat::Rgba32Float,
     }
 }
 
-fn binding_layout_entry(
+pub(crate) fn binding_layout_entry(
     binding: &BindingDescriptor,
 ) -> Result<wgpu::BindGroupLayoutEntry, GpuExecutionError> {
     let ty = match binding.kind.as_str() {
@@ -1123,3 +1084,7 @@ fn pack_uniform(wgsl_type: &str, values: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 #[path = "executor_coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "structured_operator_tests.rs"]
+mod structured_operator_tests;

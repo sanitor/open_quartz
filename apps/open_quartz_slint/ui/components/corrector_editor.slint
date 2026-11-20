@@ -1,0 +1,184 @@
+import { CheckBox } from "std-widgets.slint";
+import { Button, LineEdit } from "compact_widgets.slint";
+import { Theme } from "../theme.slint";
+
+export struct CorrectorField { key: string, label: string, stage: string, tool: string, value: float, text: string, minimum: float, maximum: float, wheel-x: float, wheel-y: float }
+export struct CorrectorStage { key: string, label: string, active: bool }
+
+// Pointer and keyboard share exactly the same transaction intents. RGB entries
+// remain available below the wheel for precision, accessibility and neutral reset.
+component ColorWheel inherits Rectangle {
+    in property <string> label;
+    in property <string> target;
+    in property <string> field-prefix;
+    in property <bool> enabled: true;
+    callback edit(string, string, string, string);
+    width: 152px; height: 174px;
+    in-out property <float> position-x;
+    in-out property <float> position-y;
+    Text { height: 20px; width: parent.width; text: root.label; horizontal-alignment: center; color: Theme.foreground; font-size: 11px; }
+    Image { y: 22px; width: 152px; height: 152px; source: @image-url("../assets/corrector-wheel.svg"); }
+    Rectangle {
+        x: 73px + root.position-x * 67px; y: 95px + root.position-y * 67px;
+        width: 7px; height: 7px; border-radius: 4px; border-width: 1px; border-color: #ffffff; background: #24242a;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if !root.enabled { return reject; }
+            if event.text == Key.Escape { root.edit(root.target, "cancel", "", ""); return accept; }
+            if event.text == Key.Return { root.edit(root.target, "commit", "", ""); return accept; }
+            if event.text == Key.LeftArrow || event.text == Key.RightArrow || event.text == Key.UpArrow || event.text == Key.DownArrow {
+                root.edit(root.target, "begin", "", "");
+                root.position-x = clamp(root.position-x + (event.text == Key.LeftArrow ? -0.02 : event.text == Key.RightArrow ? 0.02 : 0), -1, 1);
+                root.position-y = clamp(root.position-y + (event.text == Key.UpArrow ? -0.02 : event.text == Key.DownArrow ? 0.02 : 0), -1, 1);
+                root.edit(root.target, "wheel", root.field-prefix, root.position-x + "," + root.position-y);
+                root.edit(root.target, "commit", "", ""); return accept;
+            }
+            return reject;
+        }
+        hit := TouchArea {
+            enabled: root.enabled;
+            y: 22px; width: 152px; height: 152px;
+            accessible-role: button; accessible-label: root.label + " color wheel; arrow keys adjust, Escape cancels";
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    focus.focus(); root.edit(root.target, "begin", "", "");
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                    root.edit(root.target, "commit", "", "");
+                } else if event.kind == PointerEventKind.cancel { root.edit(root.target, "cancel", "", ""); }
+            }
+            moved => {
+                if root.enabled && self.pressed {
+                    root.position-x = clamp((self.mouse-x / 1px - 76) / 67, -1, 1);
+                    root.position-y = clamp((self.mouse-y / 1px - 76) / 67, -1, 1);
+                    root.edit(root.target, "wheel", root.field-prefix, root.position-x + "," + root.position-y);
+                }
+            }
+        }
+    }
+}
+
+export component CorrectorEditor inherits Rectangle {
+    in property <string> target;
+    in property <[CorrectorField]> fields;
+    in property <[CorrectorStage]> stages;
+    in property <bool> active;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> domain;
+    callback edit(string, string, string, string);
+    private property <string> palette: "primaries";
+    private property <string> primary-tool: "basic";
+    private property <string> hdr-tool: "shadows";
+    background: Theme.panel;
+    vertical-stretch: 0;
+    height: content.preferred-height;
+    content := VerticalLayout {
+        padding: 12px; spacing: 8px;
+        HorizontalLayout {
+            CheckBox { text: "Corrector enabled"; checked: root.active; enabled: !root.busy; toggled => { root.edit(root.target, "enable", "", self.checked ? "true" : "false"); } }
+            Button { text: "Reset"; accessible-label: "Reset Color Corrector"; enabled: !root.busy; clicked => { root.edit(root.target, "reset", "all", ""); } }
+        }
+        Text { text: root.domain; color: Theme.secondary; font-size: 10px; wrap: word-wrap; }
+        HorizontalLayout {
+            for stage in root.stages: Button {
+                text: stage.label; accessible-label: "Corrector palette " + stage.label;
+                clicked => { root.palette = stage.key; }
+            }
+        }
+        VerticalLayout {
+            spacing: 0px;
+            for stage in root.stages: Rectangle {
+                height: stage.key == root.palette ? 22px : 0px;
+                visible: stage.key == root.palette;
+                if stage.key == root.palette: HorizontalLayout {
+                    CheckBox { text: stage.label + " enabled"; checked: stage.active; enabled: !root.busy;
+                        toggled => { root.edit(root.target, "stage-enable", stage.key, self.checked ? "true" : "false"); } }
+                    Button { text: "Reset"; accessible-label: "Reset " + stage.label; enabled: !root.busy;
+                        clicked => { root.edit(root.target, "reset", stage.key, ""); } }
+                }
+            }
+        }
+        if root.palette == "primaries": VerticalLayout {
+            spacing: 3px;
+            HorizontalLayout {
+                Button { text: "Basic"; accessible-label: "Corrector primaries Basic"; clicked => { root.primary-tool = "basic"; } }
+                Button { text: "Lift"; accessible-label: "Corrector primaries Lift"; clicked => { root.primary-tool = "lift"; } }
+                Button { text: "Gamma"; accessible-label: "Corrector primaries Gamma"; clicked => { root.primary-tool = "gamma"; } }
+            }
+            HorizontalLayout {
+                Button { text: "Gain"; accessible-label: "Corrector primaries Gain"; clicked => { root.primary-tool = "gain"; } }
+                Button { text: "Offset"; accessible-label: "Corrector primaries Offset"; clicked => { root.primary-tool = "offset"; } }
+            }
+        }
+        if root.palette == "hdr_zones": VerticalLayout {
+            spacing: 3px;
+            HorizontalLayout {
+                Button { text: "Black"; accessible-label: "Corrector zone Black"; clicked => { root.hdr-tool = "blacks"; } }
+                Button { text: "Shadow"; accessible-label: "Corrector zone Shadow"; clicked => { root.hdr-tool = "shadows"; } }
+                Button { text: "Dark"; accessible-label: "Corrector zone Dark"; clicked => { root.hdr-tool = "darks"; } }
+            }
+            HorizontalLayout {
+                Button { text: "Light"; accessible-label: "Corrector zone Light"; clicked => { root.hdr-tool = "lights"; } }
+                Button { text: "Highlight"; accessible-label: "Corrector zone Highlight"; clicked => { root.hdr-tool = "highlights"; } }
+                Button { text: "Specular"; accessible-label: "Corrector zone Specular"; clicked => { root.hdr-tool = "specular"; } }
+            }
+            Button { text: "Range / softness"; accessible-label: "Corrector zone ranges"; clicked => { root.hdr-tool = "ranges"; } }
+        }
+        VerticalLayout {
+            spacing: 0px;
+            for field in root.fields: Rectangle {
+                height: root.palette == "primaries" && field.key == root.primary-tool + "_r" ? 174px : 0px;
+                visible: self.height > 0px;
+                if root.palette == "primaries" && field.key == root.primary-tool + "_r": HorizontalLayout {
+                    alignment: center;
+                    ColorWheel { label: root.primary-tool == "lift" ? "Lift" : root.primary-tool == "gamma" ? "Gamma" : root.primary-tool == "gain" ? "Gain" : "Offset"; field-prefix: root.primary-tool; target: root.target;
+                        position-x: field.wheel-x; position-y: field.wheel-y;
+                        enabled: !root.busy; edit(t,a,k,v) => { root.edit(t,a,k,v); } }
+                }
+            }
+        }
+        if root.palette == "hdr_zones": Text { text: "Scene-linear luminance zones · ranges and softness in stops. Overlapping zones combine in fixed order."; wrap: word-wrap; font-size: 10px; color: Theme.secondary; }
+        VerticalLayout {
+            spacing: 0px;
+            for field in root.fields: Rectangle {
+                height: field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.hdr-tool) ? 46px : 0px;
+                visible: self.height > 0px;
+                if field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.hdr-tool): VerticalLayout {
+                    spacing: 2px;
+                Text { text: field.label; color: Theme.secondary; font-size: 10px; overflow: elide; }
+                HorizontalLayout {
+                    value-focus := FocusScope {
+                        horizontal-stretch: 1; height: 22px;
+                        key-pressed(event) => { if event.text == Key.Escape { root.edit(root.target, "cancel", "", ""); return accept; } return reject; }
+                        LineEdit { width: parent.width; text <=> field.text; accessible-label: "Corrector " + field.label; enabled: !root.busy;
+                            edited => { root.edit(root.target, "preview", field.key, self.text); }
+                            accepted => { root.edit(root.target, "commit", field.key, self.text); } }
+                    }
+                    Rectangle {
+                        width: 64px; height: 22px; background: Theme.card; border-radius: 3px;
+                        Text { text: "↔"; color: Theme.secondary; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+                        drag := TouchArea {
+                            private property <float> baseline;
+                            private property <length> start;
+                            accessible-role: button; accessible-label: "Drag Corrector " + field.label;
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                    self.baseline = field.value; self.start = self.mouse-x; root.edit(root.target, "begin", "", "");
+                                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left { root.edit(root.target, "commit", "", ""); }
+                                else if event.kind == PointerEventKind.cancel { root.edit(root.target, "cancel", "", ""); }
+                            }
+                            moved => { if self.pressed { root.edit(root.target, "preview", field.key, clamp(self.baseline + (self.mouse-x - self.start) / 1px * (field.maximum - field.minimum) / 400, field.minimum, field.maximum) + ""); } }
+                        }
+                    }
+                }
+            }
+        }
+        }
+        Button { text: "Apply grade"; accessible-label: "Apply Color Corrector"; enabled: !root.busy; clicked => { root.edit(root.target, "commit", "", ""); } }
+        if root.error != "": Text { text: root.error; color: #d44747; wrap: word-wrap; font-size: 11px; }
+        Button { text: "Cancel gesture"; accessible-label: "Cancel Corrector gesture"; enabled: !root.busy; clicked => { root.edit(root.target, "cancel", "", ""); } }
+    }
+}

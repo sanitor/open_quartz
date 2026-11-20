@@ -13,6 +13,8 @@ mod inspector_forms;
 mod shader_catalog;
 #[path = "../../open_quartz_slint/src/uniform_literals.rs"]
 mod uniform_literals;
+#[path = "../../open_quartz_slint/src/corrector_editor.rs"]
+mod corrector_editor;
 
 use slint::ComponentHandle;
 slint::include_modules!();

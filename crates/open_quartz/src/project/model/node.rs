@@ -15,6 +15,7 @@ pub enum NodeType {
     Inference,
     Renderer,
     Math,
+    ColorCorrector,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +99,8 @@ pub struct NodeData {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub uniforms: Map<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_data_type: Option<super::DataType>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +196,7 @@ struct NodeDataWire {
     inputs: Vec<Port>,
     outputs: Vec<Port>,
     uniforms: Map<String, Value>,
+    color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     input_data_type: Option<super::DataType>,
     input_mode: Option<InputMode>,
     image_data_url: Option<String>,
@@ -305,8 +309,12 @@ impl<'de> Deserialize<'de> for NodeData {
         if let Some(params) = params {
             data.insert("inferenceParams".to_owned(), params);
         }
-        NodeDataWire::deserialize(Value::Object(canonical_inference_extras(data)))
-            .map_err(serde::de::Error::custom)
+        let node = NodeDataWire::deserialize(Value::Object(canonical_inference_extras(data)))
+            .map_err(serde::de::Error::custom)?;
+        if (node.node_type == NodeType::ColorCorrector) != node.color_corrector.is_some() {
+            return Err(serde::de::Error::custom("ColorCorrector type and typed payload must match"));
+        }
+        Ok(node)
     }
 }
 
@@ -321,6 +329,7 @@ impl Default for NodeData {
             inputs: Vec::new(),
             outputs: Vec::new(),
             uniforms: Map::new(),
+            color_corrector: None,
             input_data_type: None,
             input_mode: None,
             image_data_url: None,

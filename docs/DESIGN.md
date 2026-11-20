@@ -7,6 +7,7 @@
 - [系统总览](#architecture-overview)：产品、crate 与依赖方向。
 - [模块与所有权](#module-ownership)：状态和资源由谁持有。
 - [项目编辑与控制流](#control-flow)：界面操作如何成为已应用的图。
+- [结构化算子节点](#structured-operators)：类型化参数、lowering、更新分类、GPU变体缓存与旁路；Corrector为首个消费者，两款Slint应用共享支持。
 - [逐帧数据流](#frame-dataflow)：视频、求值、GPU 与推理的执行顺序。
 - [输出与资源传递](#outputs)：订阅、共享纹理和显式读回。
 - [图替换与生命周期](#graph-lifecycle)：准备、提交、播放控制和关闭。
@@ -155,6 +156,89 @@ sequenceDiagram
 
 默认启动、New 和 Open 都处于停止状态。编辑节点不隐式 Play；用户显式 Play 后才消耗图的首帧工作。停止或暂停时选择视频可以单独解码并上传一个源预览，不推进 composition time，也不消耗 Shader/Renderer 首帧工作。
 
+<a id="structured-operators"></a>
+## 结构化算子节点（Corrector 首批实现与扩展契约）
+
+本节定义**通用的结构化算子机制**，不是Corrector专用执行框架。适用于有稳定语义、复杂参数或内部固定stage的原生节点；Corrector是第一个消费者。未来算子按需使用同一契约，不预建未有消费者的插件系统/动态注册服务，也不对任意Shader做通用跨节点融合。
+
+### 当前基线与增量边界
+
+当前已增加原生`NodeType::ColorCorrector`、版本化`operators::ColorCorrectorConfig`、纯lowering及`compiler::StructuredOperatorPlan`。执行产物明确区分pointwise GPU program和Alias，不冒充用户Shader。`TargetFormat`贯通RGBA8、RGBA16Float和RGBA32Float；活动Corrector使用scene-linear AP1 FP16，精确中性/整体旁路保留来源格式和颜色域。参数更新复用不可变`Arc<CompiledShader>`，GPU owner共享有界pipeline缓存；下文资源表、多pass与未来Palette仍是扩展契约，不代表已经交付。
+
+边界不变：`project`拥有编辑数据/命令/history；`compiler`拥有纯验证与lowering；`resources`准备外部资源；`evaluation`产生带身份的帧参数快照和工作；`rendering`拥有设备资源/pass编码；`execution::FramePipeline`在现有worker协调准备、提交与帧生命周期。核心不得依赖Slint、clipId或任何Inspector组件，不另建渲染crate/设备/执行循环。
+
+### 通用模型与验证
+
+- 原生算子以明确语义类型进入Graph。首个类型为`NodeType::ColorCorrector`，其参数为`ColorCorrectorConfig`，schema/algorithm均为1。**通用的是协议与执行产物，不是把所有节点配置塞进一个字符串/JSON bag。** 领域配置保持Rust类型及受控序列化，类型与payload必须匹配；不把Corrector伪装为带特殊label/template的Shader。
+- 配置至少有配置schema版本、算法版本、启用状态和领域参数。节点端口、默认值、中性值、合法参数、资源引用、工作域/alpha与支持的设备能力由核心工厂/验证器定义。复杂列表如曲线点、色轮和LUT引用持久化为领域数据，不把生成WGSL、bindings、纹理handle或pipeline写入工程。
+- 节点内部stage顺序由具体算子及算法版本定义；内部stage不是子Graph节点，没有独立NodeId/历史/纹理输出。不同算子可以是单pass或多pass，无须都有stage链。Shader仍保留现有用户源码语义，不强制迁移为结构化算子。
+- typed编辑命令提交完整合法候选配置/差量；core基于已接受配置判定更新类别，**不信任UI声称“只是改参数”**。未知算法/schema、非法数值、超预算或不支持的能力明确失败；未实现palette的非中性配置不能被忽略。旧工程缺少新节点时保持像素，旧宿主/屏保遇未知算子必须在读取/导出预检报不支持，不能删节点或跳过计算。
+
+### 通用lowering与执行产物
+
+```mermaid
+flowchart LR
+    C[类型化算子配置 + 端口/颜色契约] --> V[核心验证与资源意图]
+    V --> L[算子专用 lowering]
+    L --> P[统一节点执行产物]
+    P --> R[复用现有 GPU / 帧执行链]
+    U[Shader 源码] --> S[现有 Shader 编译器]
+    S --> P
+```
+
+当前lowering输出结构key、参数及布局、可选pointwise program或可验证Alias，接入`NodeExecutionPlan.structured`；输入输出颜色域、尺寸来源和明确目标格式随plan传播，FP16预算按8 bytes/pixel计算。`NodeExecutionPlan::gpu_program/alias_source`与`ExecutionPlan::resolve_alias_source`统一处理普通Shader和结构化算子。首个消费者不需要内部临时图；资源槽、多pass依赖与临时surface描述仅在未来真实消费者需要时扩展，不为未交付工具预建执行框架。
+
+首个Corrector lowering直接按固定stage模板生成一份裁剪后的WGSL：只包含启用环节所需函数/调用和资源binding，不先生成多个Shader Graph节点，也不依赖任意Shader的自动融合。pointwise stages可在寄存器中顺序处理一次读取/写回；曲线表、1D/3D LUT是参数/采样资源，不自动产生全分辨率中间图。普通3D LUT texture查表本身不要求多pass。空间/邻域操作或真实模型依赖才显式lower为多pass；未来算子同样使用统一pass依赖与surface描述。
+
+### 更新分类与一致性
+
+| 核心判定的变化 | 准备/提交行为 | 禁止发生的代价或错误 |
+|---|---|---|
+| UI选择、palette切换、折叠、布局、纯标签 | 仅投影/显示元数据更新 | 不编译、不重解码、不改内容求值 |
+| 参数值变化，代码/布局不变 | 校验并打包候选参数；在安全帧边界更新GPU参数并标脏本节点/下游 | 不生成WGSL、不建pipeline、不重开decoder、不重新分配全分辨率target |
+| 数据资源内容变，布局/尺寸规格不变 | 准备曲线/LUT等小资源新版本；安全提交后旧资源按真实GPU完成释放 | 不覆盖仍被in-flight帧读取的资源，不把资源句柄写入文档 |
+| enable/mode/算法版本、资源布局、目标格式改变 | 生成结构key，命中缓存或准备新变体与必要资源；全部预检后原子接受 | 不先更新UI为“已生效”却仍运行旧变体；失败保留旧有效配置/资源 |
+| Graph连线/端口/输入颜色或输出尺寸契约改变 | 使用现有图准备/提交路径，重算影响的plan及资源预算 | 不伪装为uniform更新或只检查局部节点 |
+
+“数值变化”并非永远是参数快路：若影响循环展开/资源尺寸，lowering须判为结构变化；无布局变化的数值不应烘焙进shader常量。Project/history仍记录所有已提交编辑；runtime参数快路不绕过revision。连续拖动用preview/draft generation发布瞬时配置，一次手势只产生一条内容历史；取消恢复当前accepted参数。帧只看到一个完整参数/资源版本，不可混合新uniform和旧LUT。
+
+通用运行身份包含document/graph revision、node generation、结构key、参数/资源generation与frame stamp；clip身份只由视频宿主附加。提交前检查expected revision与宿主目标，过期结果仅释放。准备失败或取消不改active state；不承诺现有全图Inference事务已全面原子化。CPU打包可复用已验证布局/内存，不能每帧克隆全部Graph/WGSL或反序列化参数。改变参数不编译不等于整个UI事务已免费，需端到端验证worker消息和资源路径。
+
+### 通用pipeline变体缓存与GPU资源生命周期
+
+缓存归GPU device generation，结构key含算子kind/算法版本、活动stage集合/编译模式、代码或模块digest、参数/绑定布局、输入输出domain/alpha、精度/格式及实际需要的设备特性。**不含普通参数值、NodeId、clipId、图revision、面板状态；只在代码依赖实际尺寸时纳入尺寸。** 因此多个实例可共享不可变pipeline；每实例参数/资源bindings和输出surface仍隔离。
+
+缓存仅按需编译，不枚举所有enable组合；限制条目数与可计量资源预算，用有界LRU等策略淘汰未活跃引用。GPU pipeline缓存、LUT/曲线资源缓存、全分辨率surface池分开记账；驱动pipeline内存不可精确测量时明确记录限制，不能给出虚假的显存数字。设备丢失清除device-local缓存；不能跨Device复用handle。缓存淘汰只移除cache引用，in-flight任务保留自己的pipeline/lease直到真实完成；编译失败不会污染active/cache有效项。
+
+shader准备可从UI线程移出，在既有GPU owner/受控准备任务执行；“异步准备”不保证驱动编译零卡顿，需真实测量。如果准备会影响播放，界面显示Preparing，保持最后有效图并限制/合并重复结构请求，不无限开编译任务。
+
+### 通用节点旁路、恒等与输出别名
+
+局部stage bypass是领域配置：参数保留、顺序不变，被禁用stage不生成运算/无必要binding。Reset恢复中性值且独立于bypass；palette隐藏不等于bypass。全节点bypass只有在**端口类型、尺寸、颜色域、alpha、采样语义与输出契约均可原样转发**时lower为Alias；不是任何多输入/改域算子都能自动旁路。
+
+Alias描述明确`逻辑输出端口 → 实际输入资源`，由compiler/evaluator解析别名链并检查环；Graph节点和端口ID/边均保持，输出订阅、Renderer、内部预览及resource plan通过统一资源解析获取正确GPU handle。逻辑输出的revision/frame identity属于当前图节点，底层资源保留来源的像素/色彩描述与ready fence/lease，不能篡改源帧元数据来假装新像素。下游/订阅消费者持有输入lease直到用完。
+
+Alias本身零算子draw/零专属输出surface；稳定交付池、平台显示或消费者需要的detach copy可仍存在，不能宣传整个帧“零拷贝”。若有强制变换/尺寸改变则不能Alias，需明确操作或拒绝该bypass模式。不使用恒等Shader替代已证明合法的Alias。全部stage为中性时，仅在算子可证明恒等才同样优化，不能用浮点近似判断偷偷删掉用户grade。
+
+### Corrector首个消费者与双应用落地
+
+Corrector算法版本1固定为White Balance → Exposure → Lift/Gamma/Gain/Offset → Contrast/Pivot → 六分区HDR Zones → Saturation/Color Boost，不声称等同Resolve内部算法。Primaries与HDR Zones独立enable/reset；六区为Black/Shadow/Dark/Light/Highlight/Specular，range/pivot/falloff以stops描述。活动处理使用signed、unclipped、straight-alpha AP1，最多10个vec4参数bindings；独立f64 CPU oracle验证GPU像素。Curves/RGB Mixer/Look、Secondary和空间工具尚未实现，没有可用入口或可接受的active配置。
+
+Legacy输入按显式sRGB兼容策略转换，Corrector链保持AP1；Renderer、legacy Shader取样和预览在明示边界编码回sRGB，8-bit显示target截断到SDR范围，不把该截断塞进Corrector。注入的转换函数使用避开全部用户源码标识符的命名空间；混合domain的同一取样helper和managed textureGather明确拒绝。外部帧经资源Alias链进入活动Corrector时，必须证明alpha为Straight/Opaque，Premultiplied/Unknown在纹理变更前拒绝；纯bypass保留原alpha/provenance。
+
+冻结预览不自动标脏time/previousFrame源，不轮转已接受feedback历史；显式参数/源变化仍按dirty传播。暂停中提交图后仍可resume原clock。HDR解码、EDR监视、HDR编码/导出未交付。领域路线见[视频色彩提案§7](../apps/open_quartz_video_editor/RENDER_PIPELINE_EDITOR_DESIGN.md)，共享UI见[结构化算子编辑器](SLINT_UI_REFACTOR.md#structured-operator-ui)。
+
+`apps/open_quartz_slint`和`apps/open_quartz_video_editor`**都是正式消费者**：共享core factory/commands、序列化、lowering、运行和Palette组件。原节点应用能创建、连线、编辑、复制/粘贴、undo/redo、save/open并真正GPU执行Corrector；视频应用复用上述能力，另处理clip边界与EditorDocument历史。不能只在视频app把Corrector展开成私有Shader，也不能只让原Slint显示节点却不执行。两端原有Legacy Shader保持结果；managed输入必须有明确domain，未知图像不默认为AP1。屏保包兼容性独立明确拒绝/验收，不因桌面节点可运行自动承诺导出可用。
+
+### 已验证边界与后续验收
+
+1. 核心device-free编辑/工厂/验证、native-runtime/native-video全套SDK契约，以及硬件GPU独立数值oracle覆盖负值、超白、alpha、AP1链与SDR边界。
+2. 参数更新不新建pipeline/target、实例uniform隔离、旁路Alias无算子draw/专属target、外部lease及逻辑身份、warm stage切换和LRU淘汰由真实GPU回归验证。
+3. GPU cache归Device：最多64项及8 MiB可计量CPU源码/key；驱动显存不伪报。cache淘汰不撤销in-flight pipeline引用；设备重建使用新cache。
+4. `NativePlayer::render_preview`/`FramePipeline::submit_preview`在暂停/停止时运行显式预览，不启动或推进CompositionClock；活跃播放参数更新不重置clock，不重开视频源。Windows屏保Corrector打包/加载仍明确拒绝，不能据macOS桌面验证宣称可导出。
+
+验收包括：参数拖动不创建pipeline/不重开decoder/不逐帧新建全分辨率target；局部bypass跳过真实计算与资源；合法全bypass无算子draw/无专属输出surface且下游/订阅像素正确；多实例共享pipeline但参数/输出不串；变体cache容量/淘汰/设备丢失/in-flight lease；资源与uniform一致版本、过期revision拒绝；失败prepare保留旧图及显示正确状态；FP16/FP32、负值/超白/alpha独立数值与像素oracle；单/多pass实际GPU耗时与峰值surface数。分辨率、活跃stages和设备矩阵分别测P50/P95/最慢帧、cold-compile与warm-update时延；测量后才定FPS预算，不预先承诺全工具实时。测试只验证契约/消费者行为，不能靠WGSL文本快照或“回调被调用”证明。
+
 <a id="frame-dataflow"></a>
 ## 逐帧数据流
 
@@ -191,6 +275,10 @@ flowchart TD
 
 图计划优先采用显式 Renderer 输出，也支持没有 Renderer 的末端纹理输入节点。资源尚在解码或推理时，可以暂时没有可呈现纹理；不能用空输出累计有效 Render FPS。
 
+**视频编辑器接入边界**：`apps/open_quartz_video_editor`已接入同一核心`submit_window`/源预取/稳定completion。preview worker持有单轨序列时钟与clip映射，按prefill/水位规划、deadline呈现、预热clip/gap；Controller只传Play snapshot或Exact意图并消费进度/图像，不再逐UI tick提交帧。宿主显式注入64 surfaces/2 GiB统一FrameBudget，局部窗口/稳定池按extent有界配置；核心默认512 MiB保持。详见[单轨有界流水及8K实测](../apps/open_quartz_video_editor/DESIGN.md#bounded-playback-proposal)，不另建app执行器或第二套预算/解码循环。
+
+缓冲粒度遵循[异步阶段边界](../apps/open_quartz_video_editor/DESIGN.md#stage-queues-resource-lifetimes)，图内node使用资源依赖和正确读写生命周期，不默认逐node queue/CPU wait。未来多轨按[同序列帧join契约](../apps/open_quartz_video_editor/DESIGN.md#same-frame-track-join)规划内容，核心只认识显式需求/依赖/资源身份与预算，不认识track/clip业务；本次不新增多轨或空join服务。
+
 标量预检的事务范围不覆盖已经提交的 GPU work 或外部呈现。OutputHub backend dispatch 在候选状态提交后执行；GPU 执行、读回或 present 失败不意味着整帧设备状态自动回滚。
 
 <a id="outputs"></a>
@@ -199,14 +287,14 @@ flowchart TD
 输出包含两个相关但不同的路径：
 
 - `OutputHub` 处理 typed 输出契约、订阅、值/资源句柄、交付政策及可选 backend presentation。
-- Slint 生产路径由 NativePlayer 驱动 FramePipeline；完成的目标输出已是稳定帧，RenderBridge 的 try_stable_preview 可复用该帧，其他选中大图/暂停预览仍按需 GPU detach 到有界 StableFramePool。节点卡仍共享 live texture，不将它作为异步编码/缓存帧。
+- Slint生产路径由NativePlayer驱动FramePipeline；目标输出保存在`stable_previews`，兼容的最终RGBA8预览直接复用latest帧。其他选中大图与managed AP1显示转换后快照使用独立有界`selected_previews`，不与持续更新的Renderer latest争用局部slot。两池同Device/Queue且共享同一物理FrameBudget；节点卡仍共享live texture，不能当异步编码/缓存帧。
 
 Slint 的图输出由 NativePlayer 交给 RenderDevice 呈现，当前生产路径没有向 OutputHub 挂载 HostBackend。OutputHub 保留独立的 backend presentation 接口及测试覆盖，不能把接口存在等同于已接管 Slint 显示。
 
 | 路径 | 数据传递 | 当前实现边界 |
 |---|---|---|
 | CPU Math / 标量输出 | 值 → OutputHub → 订阅交付 | 契约与整批容量预检；支持 OnChange、Latest、Every 政策 |
-| Shader / 主预览 | GPU work → 稳定快照池 → Slint texture Image | 同一 wgpu Device/Queue；三槽/256 MiB；无 CPU 图像往返；macOS 原生纹理 drop guard 保 slot |
+| Shader / 主预览 | GPU work → 稳定快照池 → Slint texture Image | final与selected池各三槽/256 MiB，共享物理FrameBudget（默认64 surfaces / 512 MiB）；无CPU图像往返；macOS native drop guard保slot |
 | 视频输入 | hardware decoder frame/lease → GPU import/转换 → texture | 无 FFmpeg RGBA 软件 fallback；不支持的相机/Linux/无 D3D12 Windows 拒绝 |
 | Slint 推理图像任务 | texture → GPU BT.601/resize224 → 四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA | 同 Slint wgpu30 Metal Device/Queue；无逐帧 CPU preprocessing/Tensor/readback/upload |
 | PNG capture | 显式 GPU readback → 编码 → 文件 | 用户操作或验证使用；不作为普通预览通道 |
@@ -270,7 +358,7 @@ sequenceDiagram
 | close / dispose | 将 session 置为 disposed，清除图源与推理 owner 的配置，重置渲染输出 |
 | owner Drop | 释放资源；GPU lease 必须持续到提交与消费者使用完成 |
 
-停止/暂停的单帧视频预览是独立上传路径。它不调用 `render_next` 或 `start_playback`，也不推进 composition clock。
+停止/暂停的单帧源上传仍可独立进行；参数草稿需要运行图时显式调用`render_preview`/`submit_preview`，复用精确源选择与原GPU队列。两者均不调用`render_next`或`start_playback`，也不推进composition clock。
 
 关闭使旧结果无法发布，不代表可以提前释放 GPU 或消费者仍使用的 lease。ORT worker 生命周期仅属于显式 reference/诊断，不是生产图路径。
 
@@ -452,6 +540,26 @@ Phase2切换到共享执行、Phase3引入精确PTS cursor；Phase4再把cursor�
 
 <a id="validation"></a>
 ## 验证基线
+
+### 2026-11-20 视频宿主有界窗口与8K
+
+单轨视频宿主已切换worker clock/snapshot/window/deadline呈现，核心增加安全stable budget配置、聚合最小工作集拒绝与准确FrameBudget生命周期峰值。核心native SDK完整452项通过（库330），图宿主82项通过/2项既有ignored，视频宿主55项通过。实际7680×4320 HEVC30全尺寸旁路/一/两Corrector在Release原生窗口运行，源预取/稳定输出与graph依赖复用同Device/Queue，未新增逐node queue；证据、测量口径和局限统一见[编辑器8K实测](../apps/open_quartz_video_editor/DESIGN.md#eight-k-playback-evidence)。不推断多轨/音频、其他平台或未运行的coverage gate已通过。
+
+原生[Nodes/Corrector15/15](../test-results/clip-pipeline/nodes-ui-2026-11-20T09-20-46-290Z/report.html)、[时间线15/15](../test-results/phase6/ui-2026-11-20T09-21-24-613Z/report.html)通过。保留的8K工程另跑至EOF，实际交付全部0–239序列位置，最终sourcePTS及queue/ready清空正确；帧/IO状态分离，不以更快frame回执覆盖Save/Open成功。
+
+
+### 2026-11-20 原生结构化算子 / Corrector
+
+macOS Apple M4 Pro / Metal实测：核心native-runtime/native-video完整SDK consumer suite 446项通过（库324项，含FP16独立CPU oracle、alpha admission、Alias provenance、pipeline/target复用、stage cache、selected-preview背压、scratch释放与冻结feedback）；原图宿主82项通过、2项既有opt-in ignored，视频宿主47项通过，屏保导出库8项通过。暂停图提交/resume回归另行通过；不据此推断其他平台。
+
+两款真实Slint窗口均运行共享Corrector与原Device/Queue：原图[3/3报告](../test-results/corrector-native-final/report.html)验证实际factory/端口连接、独立sRGB→linear曝光oracle、undo/redo、stage bypass保参、Cancel、色轮手势及save/reopen；视频[15/15报告](../test-results/clip-pipeline/nodes-ui-2026-11-20T02-51-08-639Z/report.html)包含原有Nodes流程与Corrector瞬时GPU预览不落盘、局部/整体旁路、Reset、单条手势历史、复制/分割配置隔离、跨clip取消、重开像素与播放中编辑后的transport状态。
+
+原有原图窗口交互[20/20报告](../test-results/corrector-legacy-native/report.html)及视频时间线窗口[15/15报告](../test-results/phase6/ui-2026-11-20T02-38-39-543Z/report.html)通过；`node scripts/check-rust-boundaries.mjs`的独立core API、feature依赖闭包与推理契约/backend检查通过。
+
+额外一次性硬件smoke实际运行feedback Shader→Corrector→Renderer：暂停后连续改曝光，source/history红通道一直为26，三次grade输出为57/16/48；resume后history只前进一次至52。该smoke还发现并修复了暂停图提交后session误回Ready导致resume失败的问题；一次性example已移除，永久回归保留在native/session/evaluator测试。
+
+显式环境：SDK视频验证使用`OPEN_QUARTZ_FFMPEG_PATH`指向应用runtime/ffmpeg；直接启动视频debug binary需`DYLD_LIBRARY_PATH=apps/open_quartz_slint/runtime/ffmpeg-media/lib`的绝对路径。该轮没有运行覆盖率gate，也没有HDR媒体/EDR监视/HDR导出或Windows/Linux实机证据；不新增吞吐/延迟承诺。
+
 
 ### 2026-11-12 Phase 6 原生视频编辑器
 

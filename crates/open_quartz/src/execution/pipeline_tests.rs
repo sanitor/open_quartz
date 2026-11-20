@@ -1116,3 +1116,182 @@ fn exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch() {
 
 #[path = "window_tests.rs"]
 mod window_tests;
+
+#[test]
+fn corrector_alias_preview_preserves_source_provenance_and_rejects_stale_preparation() {
+    pollster::block_on(async {
+        let corrector = |id: &str| json!({"id":id,"type":"colorcorrector","position":{"x":0,"y":0},"data":{
+            "type":"colorcorrector","label":"Corrector","shaderCode":"","uniforms":{},"colorCorrector":crate::ColorCorrectorConfig::default(),
+            "inputs":[{"id":"in","label":"source","dataType":"sampler2D","direction":"input"}],
+            "outputs":[{"id":"out","label":"result","dataType":"sampler2D","direction":"output"}]}});
+        let graph: Graph=serde_json::from_value(json!({"nodes":[input_node("image"),corrector("first"),corrector("output")],"edges":[
+            {"id":"a","source":"image","sourceHandle":"out","target":"first","targetHandle":"in"},
+            {"id":"b","source":"first","sourceHandle":"out","target":"output","targetHandle":"in"}]})).unwrap();
+        let mut p=pipeline(device().await,&graph);
+        let pool=StableFramePool::new(p.backend(),StableFrameBudget::default()).unwrap();
+        p.render_device.upload_rgba("image",&[12,24,32,37].repeat(4),2,2).unwrap();
+        let mut source_identity=identity();
+        source_identity.content_stamp=Some(ContentStamp {epoch:44,timeline_ns:123,media_pts_ns:Some(-17)});
+        source_identity.alpha_mode=FrameAlphaMode::Premultiplied;
+        let source=pool.try_capture(&p.render_device,"image",source_identity.clone()).unwrap();
+        source.ready.wait(Duration::from_secs(5)).unwrap();
+        p.session.stop().unwrap();
+        let request=demand(&p,1,1,0,vec![ExternalFrameInput{node_id:"image".into(),version:1,frame:source.clone()}]);
+        assert!(matches!(p.submit_preview(request),FrameAdmission::Accepted));
+        let output=rendered(complete(&mut p));
+        assert_eq!(p.session.state(),EngineState::Stopped,"draft preview cannot start playback");
+        assert_eq!(output.identity.output_node_id,"output");
+        assert_eq!(output.identity.content_stamp,source_identity.content_stamp);
+        assert_eq!(output.identity.alpha_mode,FrameAlphaMode::Premultiplied);
+        assert_eq!(output.identity.color_space,FrameColorSpace::Srgb);
+        assert_eq!(pixels(&p,&output),[12,24,32,37].repeat(4));
+        let stats=p.render_device.runtime_stats();
+        assert_eq!((stats.draws,stats.target_allocations,stats.pipeline_creations),(0,0,0));
+        let stale=p.prepare_graph(&graph).unwrap();
+        let revision=p.set_graph_snapshot(&graph).unwrap();
+        assert!(p.commit_graph(stale).is_err());
+        assert_eq!(p.revision(),revision);
+        let mut invalid_identity=source_identity;
+        invalid_identity.color_space=FrameColorSpace::AcesCgLinear;
+        let mislabeled=pool.try_capture(&p.render_device,"image",invalid_identity).unwrap();
+        let request=demand(&p,2,1,0,vec![ExternalFrameInput{node_id:"image".into(),version:2,frame:mislabeled}]);
+        assert!(matches!(p.submit_preview(request),FrameAdmission::Rejected{..}),"legacy input contract must reject managed external frames");
+    });
+}
+
+#[test]
+fn active_corrector_rejects_unproven_external_alpha_before_texture_mutation_and_disposes_scratch() {
+    pollster::block_on(async {
+        let mut active=crate::ColorCorrectorConfig::default();
+        active.primaries.exposure=1.0;
+        let corrector=|id: &str, config: crate::ColorCorrectorConfig| json!({"id":id,"type":"colorcorrector","position":{"x":0,"y":0},"data":{
+            "type":"colorcorrector","label":"Corrector","shaderCode":"","uniforms":{},"colorCorrector":config,
+            "inputs":[{"id":"in","label":"source","dataType":"sampler2D","direction":"input"}],
+            "outputs":[{"id":"out","label":"result","dataType":"sampler2D","direction":"output"}]}});
+        let graph: Graph=serde_json::from_value(json!({"nodes":[input_node("image"),
+            corrector("bypass",crate::ColorCorrectorConfig::default()),corrector("grade",active),
+            {"id":"output","type":"renderer","position":{"x":0,"y":0},"data":{
+                "type":"renderer","label":"Renderer","shaderCode":"","uniforms":{},
+                "inputs":[{"id":"in","label":"inputTexture","dataType":"sampler2D","direction":"input"}],"outputs":[]}}
+        ],"edges":[
+            {"id":"a","source":"image","sourceHandle":"out","target":"bypass","targetHandle":"in"},
+            {"id":"b","source":"bypass","sourceHandle":"out","target":"grade","targetHandle":"in"},
+            {"id":"c","source":"grade","sourceHandle":"out","target":"output","targetHandle":"in"}
+        ]})).unwrap();
+        let mut p=pipeline(device().await,&graph);
+        let pool=StableFramePool::new(p.backend(),StableFrameBudget::default()).unwrap();
+        let premultiplied=[16,32,48,64].repeat(4);
+        p.render_device.upload_rgba("image",&premultiplied,2,2).unwrap();
+        let mut source_identity=identity();
+        source_identity.alpha_mode=FrameAlphaMode::Premultiplied;
+        let source=pool.try_capture(&p.render_device,"image",source_identity).unwrap();
+        source.ready.wait(Duration::from_secs(5)).unwrap();
+        p.render_device.upload_rgba("image",&[64,96,128,255].repeat(4),2,2).unwrap();
+        let request=demand(&p,1,1,0,vec![]);
+        accepted(&mut p,request);
+        let baseline=rendered(complete(&mut p));
+        let baseline_pixels=pixels(&p,&baseline);
+        let original_input=p.render_device.output_handle("image").unwrap();
+        let original_output=p.render_device.output_handle("output").unwrap();
+        let stats=p.render_device.runtime_stats();
+        let budget=p.backend().frame_budget();
+        for mode in [FrameAlphaMode::Premultiplied,FrameAlphaMode::Unknown] {
+            let mut source_identity=source.identity.clone();
+            source_identity.alpha_mode=mode;
+            let external=pool.capture(source.output().clone(),source_identity).unwrap();
+            external.ready.wait(Duration::from_secs(5)).unwrap();
+            let request=demand(&p,2,1,1,vec![ExternalFrameInput{node_id:"image".into(),version:1,frame:external.clone()}]);
+            let before_admission=budget.usage();
+            let returned=match p.submit(request) {
+                FrameAdmission::Rejected{demand,error} => {
+                    assert!(error.contains("Active ColorCorrector grade requires straight or opaque alpha"),"{error}");
+                    demand
+                }
+                _ => panic!("active grading must reject {mode:?} input alpha"),
+            };
+            assert!(Arc::ptr_eq(&returned.sources[0].frame.output().texture,&external.output().texture));
+            assert_eq!(pixels(&p,&returned.sources[0].frame),premultiplied);
+            assert_eq!(budget.usage(),before_admission,"rejection cannot reserve graph outputs");
+            assert!(Arc::ptr_eq(&original_input.texture,&p.render_device.output_handle("image").unwrap().texture));
+            assert!(Arc::ptr_eq(&original_output.texture,&p.render_device.output_handle("output").unwrap().texture));
+            assert_eq!(p.render_device.read_output_rgba("output").unwrap().0,baseline_pixels);
+            assert_eq!(p.render_device.runtime_stats().draws,stats.draws);
+            assert_eq!(p.render_device.runtime_stats().target_allocations,stats.target_allocations);
+            assert!(!p.has_in_flight());
+            assert!(p.input_versions.is_empty());
+        }
+        for (index,mode) in [FrameAlphaMode::Straight,FrameAlphaMode::Opaque].into_iter().enumerate() {
+            let mut source_identity=identity();
+            source_identity.alpha_mode=mode;
+            let external=pool.capture(original_input.clone(),source_identity).unwrap();
+            external.ready.wait(Duration::from_secs(5)).unwrap();
+            let request=demand(&p,index as u64+2,1,index as u64+1,vec![ExternalFrameInput{
+                node_id:"image".into(),version:index as u64+1,frame:external,
+            }]);
+            accepted(&mut p,request);
+            let output=rendered(complete(&mut p));
+            assert_eq!(output.identity.alpha_mode,FrameAlphaMode::Straight);
+            assert_eq!(pixels(&p,&output),baseline_pixels);
+        }
+        let display=p.render_device.display_output_handle("grade").unwrap();
+        let scratch_texture=Arc::downgrade(&display.texture);
+        let scratch_view=Arc::downgrade(&display.view);
+        drop(display);
+        assert!(scratch_texture.upgrade().is_some(),"display conversion retains reusable scratch");
+        drop((baseline,original_input,original_output));
+        p.dispose().unwrap();
+        assert!(scratch_texture.upgrade().is_none(),"dispose must release display scratch ownership");
+        assert!(scratch_view.upgrade().is_none(),"dispose must also release the scratch view");
+        for _ in 0..3 {
+            p.render_device.device().poll(wgpu::PollType::Wait {
+                submission_index:None,timeout:Some(Duration::from_secs(5)),
+            }).unwrap();
+        }
+        assert_eq!(budget.usage(),(0,0),"dispose releases graph and stable preview allocations");
+    });
+}
+
+#[test]
+fn selected_preview_pool_isolated_from_latest_renderer_and_recovers_after_release() {
+    pollster::block_on(async {
+        let config=crate::ColorCorrectorConfig::default();
+        let graph: Graph=serde_json::from_value(json!({"nodes":[
+            input_node("image"),
+            {"id":"corrector","type":"colorcorrector","position":{"x":0,"y":0},"data":{
+                "type":"colorcorrector","label":"Corrector","shaderCode":"","uniforms":{},"colorCorrector":config,
+                "inputs":[{"id":"source","label":"source","dataType":"sampler2D","direction":"input"}],
+                "outputs":[{"id":"result","label":"result","dataType":"sampler2D","direction":"output"}]}},
+            {"id":"output","type":"renderer","position":{"x":0,"y":0},"data":{
+                "type":"renderer","label":"Renderer","shaderCode":"","uniforms":{},
+                "inputs":[{"id":"renderer_input","label":"inputTexture","dataType":"sampler2D","direction":"input"}],"outputs":[]}}
+        ],"edges":[
+            {"id":"e1","source":"image","sourceHandle":"out","target":"corrector","targetHandle":"source"},
+            {"id":"e2","source":"corrector","sourceHandle":"result","target":"output","targetHandle":"renderer_input"}
+        ]})).unwrap();
+        let mut p=pipeline(device().await,&graph);
+        p.render_device.upload_rgba("image",&[64,64,64,255].repeat(4),2,2).unwrap();
+        let request=demand(&p,1,1,0,vec![]);
+        assert!(matches!(p.submit_preview(request),FrameAdmission::Accepted));
+        let _renderer=rendered(complete(&mut p));
+        assert!(p.latest.as_ref().is_some_and(|frame|frame.identity.output_node_id=="output"));
+        let first=p.try_stable_preview("corrector").unwrap().unwrap();
+        first.ready.wait(Duration::from_secs(5)).unwrap();
+        let second=p.try_stable_preview("corrector").unwrap().unwrap();
+        second.ready.wait(Duration::from_secs(5)).unwrap();
+        let third=p.try_stable_preview("corrector").unwrap().unwrap();
+        third.ready.wait(Duration::from_secs(5)).unwrap();
+        assert!(p.try_stable_preview("corrector").unwrap().is_none(),"selected pool remains bounded");
+        drop(first);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        let recovered=loop {
+            if let Some(frame)=p.try_stable_preview("corrector").unwrap() { break frame; }
+            assert!(Instant::now()<deadline,"released selected preview lease was not reclaimed");
+            let _=p.render_device.device().poll(wgpu::PollType::Poll);
+            std::thread::yield_now();
+        };
+        recovered.ready.wait(Duration::from_secs(5)).unwrap();
+        assert_eq!(recovered.identity.output_node_id,"corrector","selected output is never substituted by Renderer");
+        assert_eq!(p.latest.as_ref().unwrap().identity.output_node_id,"output");
+        drop((second,third,recovered));
+    });
+}

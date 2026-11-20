@@ -1,3 +1,5 @@
+#[path = "corrector_host.rs"]
+mod corrector_host;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -22,6 +24,7 @@ use crate::render_bridge::RenderBridge;
 use crate::services::file_service;
 use crate::uniform_literals::{effective_uniform_value, format_uniform_literal, parse_uniform_literal, uniform_shape};
 use crate::AppWindow;
+use crate::corrector_editor::{CorrectorAction, CorrectorDraft};
 
 #[derive(Clone, Debug)]
 struct UniformDraft {
@@ -120,6 +123,11 @@ fn node_factory_options() -> Vec<NodeFactoryOption> {
         request: NodeFactoryRequest::Constant { position: None },
         inference_params: None,
     }];
+    options.push(NodeFactoryOption {
+        label: "Color · Color Corrector".into(),
+        request: NodeFactoryRequest::ColorCorrector { position: None },
+        inference_params: None,
+    });
     for (label, data_type) in [
         ("Float", DataType::Float),
         ("Int", DataType::Int),
@@ -302,6 +310,10 @@ pub struct AppController {
     inference_states: BTreeMap<String, crate::inference_runtime::LiveInferenceState>,
     selected_node_ids: BTreeSet<String>,
     inspector_draft: Option<InspectorDraft>,
+    corrector_draft: Option<CorrectorDraft>,
+    corrector_revision: Option<u32>,
+    corrector_commit: Option<(String, u32, open_quartz::operators::ColorCorrectorConfig)>,
+    corrector_request: Option<u64>,
     inspector_uniforms: Rc<slint::VecModel<crate::InspectorUniform>>,
     inspector_forms: Rc<slint::VecModel<crate::InspectorFormGroup>>,
     graph_nodes: Rc<slint::VecModel<crate::GraphNode>>,
@@ -362,7 +374,7 @@ enum EditKind {
 }
 
 fn node_has_texture_preview(node: &open_quartz::ProjectNode) -> bool {
-    matches!(node.node_type, NodeType::Shader | NodeType::Renderer)
+    matches!(node.node_type, NodeType::Shader | NodeType::ColorCorrector | NodeType::Renderer)
         || (node.node_type == NodeType::Input
             && matches!(
                 node.data.input_mode,
@@ -405,6 +417,10 @@ impl AppController {
             inference_states: BTreeMap::new(),
             selected_node_ids: BTreeSet::new(),
             inspector_draft: None,
+            corrector_draft: None,
+            corrector_revision: None,
+            corrector_commit: None,
+            corrector_request: None,
             inspector_uniforms: Rc::new(slint::VecModel::from(
                 Vec::<crate::InspectorUniform>::new(),
             )),
@@ -516,6 +532,7 @@ impl AppController {
                             .to_owned(),
                     )
                 }
+                NodeFactoryRequest::ColorCorrector { .. } => ("SHADER", "COLOR".to_owned(), "Color Corrector".to_owned()),
                 NodeFactoryRequest::Shader { label, .. } => {
                     ("SHADER", crate::shader_catalog::find(label).expect("shader factory preset").category.to_owned(), label.clone())
                 }
@@ -639,6 +656,16 @@ impl AppController {
             }
         });
         let weak = Rc::downgrade(&controller);
+        window.on_inspector_corrector_event(move |target, action, key, value| {
+            let weak = weak.clone();
+            // Repeater model notifications must not run inside its Slint callback.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(controller) = weak.upgrade() {
+                    controller.borrow_mut().corrector_event(target.as_str(), action.as_str(), key.as_str(), value.as_str());
+                }
+            });
+        });
+        let weak = Rc::downgrade(&controller);
         window.on_inspector_label_draft_changed(move |text| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -740,6 +767,7 @@ impl AppController {
                 let mut controller = controller.borrow_mut();
                 if !controller.busy {
                     controller.inspector_draft = None;
+                    controller.discard_corrector();
                     controller.publish_inspector();
                     controller.set_edit_status("Inspector drafts discarded; project unchanged.");
                 }
@@ -862,10 +890,11 @@ impl AppController {
         });
         let weak = Rc::downgrade(&controller);
         window.on_graph_add_node(move |index| {
-            if let (Some(controller), Some(option)) =
-                (weak.upgrade(), node_factories.get(index.max(0) as usize))
-            {
-                controller.borrow_mut().add_node(option.clone());
+            if let Some(option) = node_factories.get(index.max(0) as usize).cloned() {
+                let weak = weak.clone();
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(controller) = weak.upgrade() { controller.borrow_mut().add_node(option); }
+                });
             }
         });
         let weak = Rc::downgrade(&controller);
@@ -2054,6 +2083,8 @@ impl AppController {
     fn inspector_is_dirty(&self) -> bool {
         let (label, shader, output, uniform) = self.inspector_dirty_fields();
         label || shader || output || uniform || self.forms_dirty()
+            || self.corrector_commit.is_some()
+            || self.corrector_draft.as_ref().is_some_and(CorrectorDraft::dirty)
     }
 
     fn publish_inspector_dirty(&self) {
@@ -2063,7 +2094,7 @@ impl AppController {
             window.set_inspector_shader_dirty(shader);
             window.set_inspector_output_size_dirty(output);
             window.set_inspector_uniform_dirty(uniform);
-            window.set_inspector_dirty(label || shader || output || uniform || self.forms_dirty());
+            window.set_inspector_dirty(self.inspector_is_dirty());
         }
     }
 
@@ -2071,6 +2102,7 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        self.publish_corrector();
         let node = if self.selected_node_ids.len() == 1 {
             self.project
                 .graph()
@@ -3239,6 +3271,9 @@ impl AppController {
         }
         let update = self.renderer.as_ref().and_then(RenderBridge::take_update);
         if let Some(update) = update {
+            if let Some(result) = update.graph_result {
+                self.corrector_graph_result(update.generation, result);
+            }
             if let Some(metrics) = update.metrics {
                 window.set_playback_time(format_playback_time(metrics.timeline_ns).into());
                 window.set_render_fps(format!("{:.1}", metrics.fps).into());
@@ -4547,6 +4582,10 @@ mod tests {
             inference_states: std::collections::BTreeMap::new(),
             selected_node_ids: [node_id].into_iter().collect(),
             inspector_draft: Some(draft),
+            corrector_draft: None,
+            corrector_revision: None,
+            corrector_commit: None,
+            corrector_request: None,
             inspector_uniforms: std::rc::Rc::new(slint::VecModel::from(Vec::<
                 crate::InspectorUniform,
             >::new())),
@@ -5443,6 +5482,68 @@ mod tests {
         controller.node_previews.insert("gpu".into(), replacement);
         assert_eq!(controller.publish_node_previews(), 1);
         assert_eq!(controller.publish_node_previews(), 0);
+    }
+
+    fn pending_corrector_controller() -> super::AppController {
+        let sdk = OpenQuartz::new(Environment::headless());
+        let mut project = sdk.create_project("Corrector acceptance races");
+        let (node, _) = project.create_graph_node(
+            NodeFactoryRequest::ColorCorrector { position: None }, project.graph_revision(),
+        ).unwrap();
+        let baseline = node.data.color_corrector.as_ref().unwrap().clone();
+        let revision = project.graph_revision();
+        let mut controller = controller_for_uniforms(project);
+        let mut draft = crate::corrector_editor::CorrectorDraft::new("graph".into(), node.id.clone(), revision.into(), baseline);
+        draft.event("preview", "exposure", "1").unwrap();
+        let config = draft.config().clone();
+        controller.corrector_draft = Some(draft);
+        controller.corrector_revision = Some(revision);
+        controller.corrector_commit = Some((node.id, revision, config));
+        controller.corrector_request = Some(42);
+        controller
+    }
+
+    #[test]
+    fn corrector_final_commit_requires_its_exact_worker_acceptance() {
+        for stale_result in [Ok(()), Err("older preview rejected".into())] {
+            let mut controller = pending_corrector_controller();
+            let before = controller.project.graph_snapshot();
+            let revision = controller.project.graph_revision();
+            controller.corrector_graph_result(41, stale_result);
+            assert_eq!(controller.project.graph_snapshot(), before);
+            assert_eq!(controller.corrector_request, Some(42));
+            assert!(controller.corrector_commit.is_some());
+            assert!(controller.undo_edits.is_empty());
+            controller.corrector_graph_result(42, Ok(()));
+            assert_eq!(controller.project.graph_revision(), revision + 1);
+            assert_eq!(controller.project.graph().nodes()[0].data.color_corrector.as_ref().unwrap().primaries.exposure, 1.0);
+            assert_eq!(controller.undo_edits.len(), 1);
+            controller.corrector_graph_result(42, Ok(()));
+            assert_eq!(controller.project.graph_revision(), revision + 1);
+            assert_eq!(controller.undo_edits.len(), 1);
+        }
+        let mut controller = pending_corrector_controller();
+        let before = controller.project.graph_snapshot();
+        controller.corrector_graph_result(42, Err("final variant rejected".into()));
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert!(controller.corrector_commit.is_none());
+        assert!(controller.undo_edits.is_empty());
+        assert_eq!(controller.corrector_draft.as_ref().unwrap().error, "final variant rejected");
+    }
+
+    #[test]
+    fn corrector_discard_retires_pending_commit_before_late_acceptance() {
+        let mut controller = pending_corrector_controller();
+        let before = controller.project.graph_snapshot();
+        let revision = controller.project.graph_revision();
+        controller.discard_corrector();
+        assert!(controller.corrector_commit.is_none());
+        assert!(controller.corrector_draft.is_none());
+        controller.corrector_graph_result(42, Ok(()));
+        assert_eq!(controller.project.graph_snapshot(), before);
+        assert_eq!(controller.project.graph_revision(), revision);
+        assert!(controller.undo_edits.is_empty());
+        assert!(controller.redo_edits.is_empty());
     }
 
     #[test]

@@ -42,6 +42,12 @@ export struct GraphEdge {
 
 component NodeTypeIcon inherits Rectangle {
     in property <string> kind;
+    if root.kind == "ColorCorrector": Rectangle {
+        width: parent.width; height: parent.height; border-radius: 8px;
+        border-width: 1.3px; border-color: #ffffff99;
+        Path { width: parent.width; height: parent.height; viewbox-width: 16; viewbox-height: 16;
+            stroke: #ffffff99; stroke-width: 1px; commands: "M8 1V15 M1 8H15 M3 3L13 13 M13 3L3 13"; }
+    }
     if root.kind == "Renderer": Path {
         width: parent.width; height: parent.height;
         viewbox-width: 16; viewbox-height: 16;

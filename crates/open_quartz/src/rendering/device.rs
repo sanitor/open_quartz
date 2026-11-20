@@ -76,6 +76,7 @@ impl PreparedRenderPlan {
 pub struct RenderDevice {
     executor: GpuExecutor,
     info: RenderDeviceInfo,
+    display_converter: parking_lot::Mutex<Option<super::GpuPreviewReader>>,
     #[cfg(windows)]
     shared_presenter: Option<SharedTexturePresenter<DxgiSharedTextureExporter>>,
     #[cfg(windows)]
@@ -164,6 +165,7 @@ impl RenderDevice {
             Self {
                 executor,
                 info: info.clone(),
+                display_converter: parking_lot::Mutex::new(None),
                 #[cfg(windows)]
                 shared_presenter,
                 #[cfg(windows)]
@@ -191,6 +193,29 @@ impl RenderDevice {
 
     pub fn sync_plan(&mut self, plan: &ExecutionPlan) -> Result<(), GpuExecutionError> {
         self.executor.sync_plan(plan)
+    }
+
+    pub fn output_domain(&self, node_id: &str) -> crate::operators::ColorDomain {
+        self.executor.output_domain(node_id)
+    }
+
+    pub fn runtime_stats(&self) -> super::GpuRuntimeStats {
+        self.executor.backend().runtime_stats()
+    }
+
+    /// GPU-only AP1 -> SDR conversion for legacy RGBA8 viewers. The returned
+    /// scratch surface is borrowed until the next call; stable consumers must
+    /// detach it with StableFramePool before another preview is encoded.
+    pub fn display_output_handle(&self, node_id: &str) -> Result<GpuOutputHandle, String> {
+        let source = self.output_handle(node_id).ok_or_else(|| format!("Output node {node_id} has no native GPU texture"))?;
+        if self.output_domain(node_id) == crate::operators::ColorDomain::LegacySrgb {
+            if source.format != TextureFormat::Rgba8Unorm { return Err("Legacy float outputs require an explicit display interpretation".into()); }
+            return Ok(source);
+        }
+        let backend = self.backend();
+        let mut converter = self.display_converter.lock();
+        let converter = converter.get_or_insert_with(|| super::GpuPreviewReader::new(backend));
+        converter.scale_managed(&source, source.width.max(source.height))
     }
 
     /// Reserve graph intermediates using source metadata before source admission.
@@ -246,7 +271,7 @@ impl RenderDevice {
         Ok(())
     }
 
-    /// Clear retained outputs while preserving the device and consumer-held export leases.
+    /// Clear retained outputs and display scratch while preserving the device and consumer-held export leases.
     pub fn reset(&mut self) -> Result<(), String> {
         #[cfg(windows)]
         {
@@ -256,6 +281,7 @@ impl RenderDevice {
             self.shared_texture_enabled = false;
             self.presentation_scaler.clear();
         }
+        *self.display_converter.get_mut() = None;
         self.executor = GpuExecutor::new(self.backend());
         Ok(())
     }
@@ -472,8 +498,11 @@ impl RenderDevice {
     ) -> Result<(), String> {
         #[cfg(windows)]
         if self.shared_texture_enabled {
-            let output = if _output.width.max(_output.height) > PRESENTATION_MAX_DIMENSION {
-                let mut scaled = self.presentation_scaler.scale(_output, PRESENTATION_MAX_DIMENSION)?;
+            let managed = self.output_domain(_output_node_id) == crate::operators::ColorDomain::AcesCgLinear;
+            let output = if managed || _output.width.max(_output.height) > PRESENTATION_MAX_DIMENSION {
+                let mut scaled = if managed {
+                    self.presentation_scaler.scale_managed(_output, PRESENTATION_MAX_DIMENSION)?
+                } else { self.presentation_scaler.scale(_output, PRESENTATION_MAX_DIMENSION)? };
                 let retained = _output.clone();
                 self.executor.backend().queue.on_submitted_work_done(move || drop(retained));
                 scaled.lease = _output.lease.clone();

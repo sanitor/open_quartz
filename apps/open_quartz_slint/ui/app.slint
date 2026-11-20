@@ -5,6 +5,8 @@ import { TopBar, FactoryEntry, FactoryGroup } from "components/top_bar.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "components/graph_view.slint";
 import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorInferenceRow } from "components/inspector.slint";
 import { CodeEditorBridge } from "code_editor.slint";
+import { CorrectorField, CorrectorStage } from "components/corrector_editor.slint";
+export { CorrectorField, CorrectorStage }
 export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, InspectorInferenceRow, FactoryEntry, FactoryGroup }
 
 export component AppWindow inherits Window {
@@ -62,6 +64,14 @@ export component AppWindow inherits Window {
     in property <string> inspector-node-type;
     in property <string> inspector-selection-message;
     in property <bool> inspector-is-shader;
+    in property <bool> inspector-is-corrector;
+    in property <string> inspector-corrector-target;
+    in property <[CorrectorField]> inspector-corrector-fields;
+    in property <[CorrectorStage]> inspector-corrector-stages;
+    in property <bool> inspector-corrector-enabled;
+    in property <string> inspector-corrector-error;
+    in property <string> inspector-corrector-domain;
+    callback inspector-corrector-event(string, string, string, string);
     in property <bool> inspector-supports-output-size;
     in property <bool> inspector-label-dirty;
     in property <bool> inspector-shader-dirty;
@@ -256,6 +266,14 @@ export component AppWindow inherits Window {
                     selection-message: root.inspector-selection-message;
                     project-busy: root.busy;
                     is-shader: root.inspector-is-shader;
+                    is-corrector: root.inspector-is-corrector;
+                    corrector-target: root.inspector-corrector-target;
+                    corrector-fields: root.inspector-corrector-fields;
+                    corrector-stages: root.inspector-corrector-stages;
+                    corrector-enabled: root.inspector-corrector-enabled;
+                    corrector-error: root.inspector-corrector-error;
+                    corrector-domain: root.inspector-corrector-domain;
+                    corrector-event(t,a,k,v) => { root.inspector-corrector-event(t,a,k,v); }
                     supports-output-size: root.inspector-supports-output-size;
                     label-dirty: root.inspector-label-dirty;
                     shader-dirty: root.inspector-shader-dirty;
@@ -319,15 +337,16 @@ export component AppWindow inherits Window {
                     delete-node => { root.graph-remove-nodes(); }
                     apply-form(key) => { root.inspector-apply-form(key); }
                     horizontal-stretch: 1;
-                    preferred-height: root.inspector-node-type == "Shader" ? 400px : root.inspector-node-type == "Renderer" ? 116px : 0px;
+                    preferred-height: root.inspector-is-corrector ? 500px : root.inspector-node-type == "Shader" ? 400px : root.inspector-node-type == "Renderer" ? 116px : 0px;
                     vertical-stretch: root.inspector-node-type == "Renderer" ? 0 : 1;
-                    min-height: root.inspector-node-type == "Shader" ? 280px : 0px;
+                    min-height: root.inspector-is-corrector ? 280px : root.inspector-node-type == "Shader" ? 280px : 0px;
                 }
                 if root.inspector-has-selection && root.inspector-has-preview: Rectangle {
                     background: Theme.card;
                     min-height: root.preview-expanded ? 180px : 30px;
                     preferred-height: 0px;
-                    vertical-stretch: root.preview-expanded ? 2 : 0;
+                    vertical-stretch: root.preview-expanded && !root.inspector-is-corrector ? 2 : 0;
+                    max-height: root.inspector-is-corrector ? (root.preview-expanded ? 200px : 30px) : 10000px;
                     VerticalLayout {
                         spacing: 0px;
                         Rectangle {

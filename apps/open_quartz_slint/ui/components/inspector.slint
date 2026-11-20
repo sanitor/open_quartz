@@ -2,6 +2,7 @@ import { CheckBox, ScrollView } from "std-widgets.slint";
 import { CodeEditor } from "code_editor.slint";
 import { Button, ComboBox, LineEdit, SpinBox } from "compact_widgets.slint";
 import { Theme } from "../theme.slint";
+import { CorrectorEditor, CorrectorField, CorrectorStage } from "corrector_editor.slint";
 
 export struct InspectorPort {
     label: string,
@@ -108,6 +109,14 @@ export component Inspector inherits Rectangle {
     in property <string> selection-message;
     in property <bool> project-busy;
     in property <bool> is-shader;
+    in property <bool> is-corrector;
+    in property <string> corrector-target;
+    in property <[CorrectorField]> corrector-fields;
+    in property <[CorrectorStage]> corrector-stages;
+    in property <bool> corrector-enabled;
+    in property <string> corrector-error;
+    in property <string> corrector-domain;
+    callback corrector-event(string, string, string, string);
     in property <bool> supports-output-size;
     in property <bool> label-dirty;
     in property <bool> shader-dirty;
@@ -246,6 +255,12 @@ export component Inspector inherits Rectangle {
                 alignment: start;
                 spacing: 0px;
 
+                if root.is-corrector: CorrectorEditor {
+                    target: root.corrector-target; fields: root.corrector-fields; stages: root.corrector-stages;
+                    active: root.corrector-enabled; busy: root.project-busy;
+                    error: root.corrector-error; domain: root.corrector-domain;
+                    edit(t,a,k,v) => { root.corrector-event(t,a,k,v); }
+                }
 
                 if root.image-input: InspectorSection {
                     title: "IMAGE";

@@ -128,6 +128,10 @@ pub enum NodeFactoryRequest {
         #[serde(default)]
         position: Option<Position>,
     },
+    ColorCorrector {
+        #[serde(default)]
+        position: Option<Position>,
+    },
     Math {
         #[serde(default)]
         position: Option<Position>,
@@ -178,6 +182,25 @@ impl Graph {
                     "Graph contains duplicate node IDs",
                 )
                 .for_node(&node.id));
+            }
+            if node.node_type == NodeType::ColorCorrector || node.data.node_type == NodeType::ColorCorrector || node.data.color_corrector.is_some() {
+                if node.node_type != NodeType::ColorCorrector || node.data.node_type != NodeType::ColorCorrector {
+                    return Err(SdkError::new(SdkErrorCode::InvalidGraph, "ColorCorrector type and payload must match").for_node(&node.id));
+                }
+                let config = node.data.color_corrector.as_ref().ok_or_else(||
+                    SdkError::new(SdkErrorCode::InvalidGraph, "ColorCorrector requires typed config").for_node(&node.id))?;
+                config.validate().map_err(|error| SdkError::new(SdkErrorCode::InvalidGraph, error.to_string()).for_node(&node.id))?;
+                let valid_port = |ports: &[Port], label: &str, direction: PortDirection| {
+                    ports.len() == 1 && ports[0].label == label && ports[0].data_type == DataType::Sampler2d && ports[0].direction == direction
+                };
+                if !valid_port(&node.data.inputs, "source", PortDirection::Input) || !valid_port(&node.data.outputs, "result", PortDirection::Output)
+                    || !node.data.shader_code.is_empty() || !node.data.uniforms.is_empty() {
+                    return Err(SdkError::new(SdkErrorCode::InvalidGraph, "ColorCorrector requires native source/result ports and typed parameters, not shader code/uniforms").for_node(&node.id));
+                }
+                if node.data.width.is_some() || node.data.height.is_some() || node.data.auto_size.is_some()
+                    || node.data.out_format.is_some() || node.data.feedback_enabled.unwrap_or(false) {
+                    return Err(SdkError::new(SdkErrorCode::InvalidGraph, "ColorCorrector preserves source dimensions and has a fixed managed output contract; target overrides and feedback are unsupported").for_node(&node.id));
+                }
             }
         }
 
@@ -608,7 +631,7 @@ fn compatible_types(source: DataType, target: DataType, source_node_type: NodeTy
         return matches!(source, DataType::Sampler2d | DataType::SamplerCube)
             || matches!(
                 source_node_type,
-                NodeType::Shader | NodeType::Constant | NodeType::Inference
+                NodeType::Shader | NodeType::Constant | NodeType::Inference | NodeType::ColorCorrector
             );
     }
     false

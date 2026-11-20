@@ -339,4 +339,102 @@ mod tests {
         assert_eq!(next_pixels, previous_pixels);
         bridge.shutdown();
     }
+    #[test]
+    fn worker_play_snapshot_reports_progress_and_exact_seek_cancels_its_window() {
+        crate::media::configure_runtime().unwrap();
+        let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
+        let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let mut document = crate::document::EditorDocument::default();
+        document.data.width = 64; document.data.height = 64;
+        let id = asset.id.clone();
+        document.add_asset(asset.clone()).unwrap();
+        document.add_clip(&id).unwrap();
+        bridge.play(PlaybackRequest { ticket: 10, revision: document.revision,
+            start_frame: 0, project: document.data.clone() }).unwrap();
+        let first = wait(&bridge, 10);
+        assert_eq!(first.frame, 0);
+        assert_eq!(first.actual_pts_ns, Some(0));
+        drop(first);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let initial = loop {
+            let progress = bridge.progress();
+            if progress.ticket == 10 && progress.presented > 0 { break progress; }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        };
+        assert!(initial.submitted >= 2, "playback must prefill before its first presentation");
+        assert!(initial.queue_peak <= initial.window_high_water);
+        bridge.request(PreviewRequest { ticket: 11, revision: document.revision,
+            frame: 3, source_ns: 100_000_000, width: 64, height: 64, asset: Some(asset),
+            transform: ClipTransform::default(), pipeline: ClipPipeline::default() }).unwrap();
+        let exact = wait(&bridge, 11);
+        assert_eq!((exact.frame, exact.actual_pts_ns), (3, Some(100_000_000)));
+        assert!(exact.epoch > initial.epoch);
+        assert_eq!(exact.cpu_copy_bytes, 0);
+        drop(exact);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let progress = bridge.progress();
+            if progress.ticket == 11 && !progress.preparing {
+                assert!(!progress.playing);
+                assert_eq!(progress.frame, 3);
+                assert!(progress.queue_peak <= 3);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert!(bridge.take_update().is_none(), "cancelled play cannot republish after exact completion");
+        bridge.shutdown();
+    }
+    #[test]
+    fn playback_crosses_gap_and_cut_epochs_and_retires_the_exact_last_frame() {
+        crate::media::configure_runtime().unwrap();
+        let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
+        let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let mut document = crate::document::EditorDocument::default();
+        document.data.width = 64; document.data.height = 64;
+        let id = asset.id.clone();
+        document.add_asset(asset).unwrap(); document.add_clip(&id).unwrap();
+        document.data.fps = Rational::new(10, 1).unwrap();
+        document.data.clips[0].duration = 2;
+        let mut next = document.data.clips[0].clone();
+        next.id = "next-clip".into(); next.timeline_start = 4;
+        next.transform.exposure = -1.0;
+        document.data.clips.push(next);
+        bridge.play(PlaybackRequest { ticket: 1, revision: document.revision,
+            start_frame: 0, project: document.data }).unwrap();
+        let first = wait(&bridge, 1);
+        let first_epoch = first.epoch;
+        assert!(first.image.is_ok(), "{}", first.image.err().unwrap());
+        drop(first);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut saw_gap = false;
+        loop {
+            if let Some(update) = bridge.take_update() {
+                let frame = update.image.unwrap();
+                assert_eq!((frame.image.width, frame.image.height), (64, 64));
+                if (2..4).contains(&update.frame) {
+                    assert_eq!(update.actual_pts_ns, None);
+                    assert!(update.epoch > first_epoch);
+                    assert!(pollster::block_on(bridge.backend.read_texture_rgba(
+                        &frame.output().texture, 64, 64)).unwrap().chunks_exact(4).all(|pixel| pixel == [0, 0, 0, 255]));
+                    saw_gap = true;
+                }
+                if update.frame == 5 {
+                    assert_eq!(update.actual_pts_ns, Some(100_000_000));
+                    assert!(update.epoch >= first_epoch + 2);
+                    assert!(pollster::block_on(bridge.backend.read_texture_rgba(
+                        &frame.output().texture, 64, 64)).unwrap().chunks_exact(4).all(|pixel| (125..=130).contains(&pixel[0]) && pixel[3] == 255));
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "worker did not retire the exact final cut frame: {}", serde_json::to_string(&bridge.progress()).unwrap());
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(saw_gap);
+        bridge.shutdown();
+    }
 }

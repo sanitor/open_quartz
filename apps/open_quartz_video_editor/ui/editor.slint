@@ -3,9 +3,10 @@ import { WindowControls } from "../../open_quartz_slint/ui/components/window_con
 import { ToolButton } from "icon_button.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
 import { Inspector, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup } from "../../open_quartz_slint/ui/components/inspector.slint";
+import { CorrectorField, CorrectorStage } from "../../open_quartz_slint/ui/components/corrector_editor.slint";
 import { Theme } from "../../open_quartz_slint/ui/theme.slint";
 import { CodeEditorBridge } from "code_editor.slint";
-export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup }
+export { CodeEditorBridge, GraphNode, GraphEdge, GraphPort, InspectorPort, InspectorUniform, InspectorFormField, InspectorFormGroup, CorrectorField, CorrectorStage }
 
 export struct PipelineEffect { label: string, index: int, glyph: string }
 export struct PipelineEffectRow { first: PipelineEffect, second: PipelineEffect }
@@ -171,13 +172,14 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status;
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status;
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
     in-out property <string> project_path: "Not saved";
     in-out property <string> project_status: "Hardware GPU initializing";
     in-out property <string> io_status: "All changes saved";
+    in property <string> monitor_status;
     in property <[AssetRow]> assets;
     in property <[ClipRow]> clips;
     in property <int> selected_frame: 0;
@@ -188,6 +190,8 @@ export component EditorWindow inherits Window {
     in property <image> monitor_image;
     in property <bool> has_monitor_image: false;
     in property <bool> playing: false;
+    in property <string> playback_metrics: "Playback metrics {}";
+    in property <string> playback_summary;
     in property <bool> can_undo: false;
     in property <bool> can_redo: false;
     in property <string> selected_asset_name: "No media selected";
@@ -237,6 +241,13 @@ export component EditorWindow inherits Window {
     in property <string> pipeline_selection_message;
     in property <bool> pipeline_has_selection;
     in property <bool> pipeline_is_shader;
+    in property <bool> pipeline_is_corrector;
+    in property <string> pipeline_corrector_target;
+    in property <[CorrectorField]> pipeline_corrector_fields;
+    in property <[CorrectorStage]> pipeline_corrector_stages;
+    in property <bool> pipeline_corrector_enabled;
+    in property <string> pipeline_corrector_error;
+    in property <string> pipeline_corrector_domain;
     in property <bool> pipeline_supports_output_size;
     in property <bool> pipeline_label_read_only;
     in property <bool> pipeline_shader_read_only;
@@ -269,6 +280,7 @@ export component EditorWindow inherits Window {
     callback pipeline_uniform_draft_changed(string, string);
     callback pipeline_form_draft_changed(string, string);
     callback pipeline_apply_form(string);
+    callback pipeline_corrector_event(string, string, string, string);
     callback project_action(string);
     callback import_media(); callback asset_select(string); callback add_to_timeline();
     callback clip_select(string); callback split_clip(); callback lift_clip();
@@ -438,7 +450,7 @@ export component EditorWindow inherits Window {
                     ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
                     ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
                     Text { text: root.project_path; color: root.secondary; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
-                    Text { text: root.io_status; color: root.secondary; font-size: 11px; overflow: elide; max-width: 420px; }
+                    Text { text: root.monitor_status == "" ? root.io_status : root.io_status + " · " + root.monitor_status; color: root.secondary; font-size: 11px; overflow: elide; max-width: 420px; }
                 }
             }
             HorizontalLayout {
@@ -501,6 +513,7 @@ export component EditorWindow inherits Window {
                             if root.has_monitor_image: Image { width: parent.width; height: parent.height; source: root.monitor_image; image-fit: contain; }
                             if !root.has_monitor_image: VerticalLayout { alignment: LayoutAlignment.center; spacing: 8px; Text { text: "◩"; color: #444b50; font-size: 36px; horizontal-alignment: center; } Text { text: "Add media to the timeline"; color: #7c848a; font-size: 12px; horizontal-alignment: center; } }
                         }
+                        Text { text: root.playback_summary; accessible-role: AccessibleRole.text; accessible-label: root.playback_metrics; height: 18px; color: root.secondary; font-size: 10px; overflow: elide; }
                         Rectangle {
                             height: 52px; background: #191c1e;
                             HorizontalLayout {
@@ -576,6 +589,11 @@ export component EditorWindow inherits Window {
                                 horizontal-stretch: 1; vertical-stretch: 1;
                                 node-id: root.pipeline_node_id; has-selection: root.pipeline_has_selection; node-type: root.pipeline_node_type; selection-message: root.pipeline_selection_message;
                                 project-busy: root.pipeline_busy; is-shader: root.pipeline_is_shader; supports-output-size: root.pipeline_supports_output_size;
+                                is-corrector: root.pipeline_is_corrector; corrector-target: root.pipeline_corrector_target;
+                                corrector-fields: root.pipeline_corrector_fields; corrector-stages: root.pipeline_corrector_stages;
+                                corrector-enabled: root.pipeline_corrector_enabled; corrector-error: root.pipeline_corrector_error;
+                                corrector-domain: root.pipeline_corrector_domain;
+                                corrector-event(target, action, key, value) => { root.pipeline_corrector_event(target, action, key, value); }
                                 label-dirty: root.pipeline_label_dirty; shader-dirty: root.pipeline_shader_dirty; output-size-dirty: root.pipeline_output_size_dirty;
                                 uniform-dirty: root.pipeline_uniform_dirty; inspector-dirty: root.pipeline_inspector_dirty; validation-message: root.pipeline_validation_message;
                                 uniforms-valid: root.pipeline_uniforms_valid; ports: root.pipeline_ports; uniforms: root.pipeline_uniforms; forms: root.pipeline_forms;

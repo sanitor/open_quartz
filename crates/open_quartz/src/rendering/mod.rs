@@ -9,6 +9,8 @@ pub mod presenter;
 pub mod preview;
 pub mod readback;
 pub mod target;
+mod pipeline_cache;
+pub use pipeline_cache::GpuRuntimeStats;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stable_frame;
 #[cfg(all(target_os = "macos", feature = "native-video"))]

@@ -403,6 +403,9 @@ pub(crate) fn validate_project(project_json: &str) -> Result<(), String> {
 }
 
 fn validate_graph(graph: &Graph) -> Result<(), String> {
+    if graph.nodes.iter().any(|node| node.node_type == NodeType::ColorCorrector) {
+        return Err("Windows screen saver Color Corrector execution is not validated; package refused".to_owned());
+    }
     if graph.nodes.iter().any(|node| node.node_type == NodeType::Inference) {
         return Err(
             "Windows resident inference backend unavailable; CPU fallback forbidden".to_owned(),

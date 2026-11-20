@@ -62,11 +62,11 @@ fn plan_helpers_cover_defaults_targets_all_types_and_public_builder() {
     shader.data.height = Some(8);
     shader.data.out_format = Some(crate::project::model::FramebufferFormat::Rgba32f);
     let target = target_for(&shader, 1, 1).unwrap();
-    assert_eq!((target.width, target.height, target.float), (7, 8, true));
+    assert_eq!((target.width, target.height, target.format), (7, 8, TargetFormat::Rgba32Float));
     shader.data.out_format = Some(crate::project::model::FramebufferFormat::Rg32f);
-    assert!(target_for(&shader, 1, 1).unwrap().float);
+    assert_eq!(target_for(&shader, 1, 1).unwrap().format, TargetFormat::Rgba32Float);
     shader.data.out_format = Some(crate::project::model::FramebufferFormat::R32f);
-    assert!(target_for(&shader, 1, 1).unwrap().float);
+    assert_eq!(target_for(&shader, 1, 1).unwrap().format, TargetFormat::Rgba32Float);
     assert!(target_for(&node("math", "math"), 1, 1).is_none());
 
     let plan = build_execution_plan(&[shader], &[]);

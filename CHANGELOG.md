@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Bounded video playback and full-resolution 8K validation
+
+- Replace the editor's UI-tick/single-flight playback scheduler with a worker-owned monotonic sequence clock, immutable Play snapshots, bounded core frame window/prefill, deadline presentation and next clip/gap prewarming. Exact seek, pause, edits and revision changes retire old publication safely; source PTS remains separate from sequence deadlines.
+- Reuse the same Device/Queue, core decoder/source owners and graph dependency execution; no per-node queues or CPU image path. Expose worker publication vs actual UI delivery, late/drop/coalescing, queue/ready occupancy, source opens, pipeline/target counters and exact shared frame-credit lifetime peaks.
+- Add idle-only stable-output budget configuration and reject impossible combined graph/source/output minima before partial admission. The video host explicitly caps observable frame resources at 2 GiB, retains bounded extent-aware local pools and preserves live consumer leases; core default budgets and codec-private accounting limits remain unchanged.
+- Exercise native 7680×4320 HEVC30 with one/two active FP16 Correctors and bypass without lowering sequence/output dimensions. Reproducible native measurement runner: `scripts/measure-video-editor-playback.mjs`; evidence and limits: `test-results/window-playback/`. Future multi-track joins, audio and editor export remain outside this change.
+- Keep frame progress separate from file-operation acknowledgments so fast Exact completions cannot overwrite Save/Open success status; native acceptance waits for committed inspector/connection state rather than transient accessibility handles.
+
+### Video Corrector playback starvation
+
+- Keep one admitted playback preview until its completion is consumed. Previously every clock frame replaced the request ticket and cancelled in-flight work; a slightly slower Corrector could repeatedly lose its completed frames while the playhead continued advancing. Seeks, revisions and clip cuts still supersede immediately.
+- Reproduce with an actual 1080p30 hardware video in the native debug window and compare the same active grade after repair. Preserve full resolution, FP16 grading and zero CPU image copies; add a real-controller/GPU regression for delayed completion, subsequent clock admission, clip cut and explicit seek. Debug/Release native display-status samples are recorded under `test-results/corrector-playback/measurement.json`; these are not GPU timing or a general FPS guarantee.
+
+### Native Color Corrector and shared palettes
+
+- Add a typed, versioned `ColorCorrector` node to the core factory and both native Slint applications. Share Primaries RGB wheels/numeric controls, six HDR Zones, independent stage/node bypass and reset, and transient Preview/Commit/Cancel transactions; generated WGSL is never saved as user Shader code.
+- Lower active grading to one signed, unclipped AP1 `Rgba16Float` pass with preserved alpha. Reuse unchanged programs, parameter buffers and output targets; share a device-owned bounded pipeline LRU across instances. Proven neutral/bypass nodes resolve to source aliases rather than identity draws or dedicated targets.
+- Keep legacy sRGB inputs and Shader semantics explicit. Convert managed results at SDR viewer/Renderer boundaries, preserve raw FP16 output for managed chaining, and reject unsupported mixed-domain sampling instead of silently reinterpreting pixels. HDR media decoding, EDR monitoring, HDR export, Curves/Mixer/LUT and Secondary tools are not included; Windows screen saver packages explicitly refuse Corrector graphs pending platform validation.
+- Add hardware GPU/independent CPU-oracle regressions for negative/superwhite values, alpha, AP1 chains, alias leases, parameter isolation and warm-cache behavior, plus frozen-clock native preview coverage and real-window Corrector workflow scenarios.
+- Preserve feedback history and the paused clock across parameter-preview graph commits. Correlate final worker acceptance with its exact request and retire discarded commits; restore numeric text on Cancel, isolate bounded selected previews from latest Renderer snapshots, reject unproven external alpha before grading, namespace injected helpers, and release display scratch on reset.
+
 ### Video editor Nodes workspace layout
 
 - Move the node catalog into the left library sidebar as a dedicated **Nodes** tab beside **Media**. Display effects in category-grouped, two-column square icon tiles with readable labels instead of a cramped horizontal list.

@@ -173,6 +173,109 @@ fn new_epoch_resets_feedback_but_same_epoch_preserves_history() {
     assert!(session.drain_commands()[0].clear_feedback);
 }
 
+fn frozen_feedback_graph() -> Graph {
+    let mut grade = crate::ColorCorrectorConfig::default();
+    grade.primaries.exposure = 1.0;
+    serde_json::from_value(json!({"nodes":[
+        {"id":"source","type":"input","position":{"x":0,"y":0},"data":{
+            "type":"input","label":"source","shaderCode":"","inputs":[],"uniforms":{},
+            "outputs":[{"id":"out","label":"out","dataType":"sampler2D","direction":"output"}]}},
+        {"id":"feedback","type":"shader","position":{"x":0,"y":0},"data":{
+            "type":"shader","label":"history","shaderCode":"@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f{return textureSample(previousFrame,previousFrameSampler,uv) * 0.5 + textureSample(source,sourceSampler,uv) * 0.5;}",
+            "inputs":[{"id":"in","label":"source","dataType":"sampler2D","direction":"input"}],
+            "outputs":[{"id":"out","label":"out","dataType":"sampler2D","direction":"output"}],
+            "uniforms":{},"autoSize":false,"width":2,"height":2}},
+        {"id":"grade","type":"colorcorrector","position":{"x":0,"y":0},"data":{
+            "type":"colorcorrector","label":"grade","shaderCode":"","colorCorrector":grade,
+            "inputs":[{"id":"in","label":"source","dataType":"sampler2D","direction":"input"}],
+            "outputs":[{"id":"out","label":"result","dataType":"sampler2D","direction":"output"}],"uniforms":{}}},
+        {"id":"output","type":"renderer","position":{"x":0,"y":0},"data":{
+            "type":"renderer","label":"output","shaderCode":"","uniforms":{},
+            "inputs":[{"id":"in","label":"inputTexture","dataType":"sampler2D","direction":"input"}],"outputs":[]}}
+    ],"edges":[
+        {"id":"a","source":"source","sourceHandle":"out","target":"feedback","targetHandle":"in"},
+        {"id":"b","source":"feedback","sourceHandle":"out","target":"grade","targetHandle":"in"},
+        {"id":"c","source":"grade","sourceHandle":"out","target":"output","targetHandle":"in"}
+    ]})).unwrap()
+}
+
+fn feedback_transition(commands: &[ExecutionCommand]) -> (u8, u8, bool) {
+    let feedback = commands.iter().find(|command| command.node_id == "feedback").unwrap();
+    (feedback.feedback_read_index.unwrap(), feedback.feedback_write_index.unwrap(), feedback.clear_feedback)
+}
+
+#[test]
+fn paused_previews_update_downstream_grade_and_sources_without_consuming_feedback() {
+    let mut graph = frozen_feedback_graph();
+    let mut session = FrameExecutionSession::new_native(PlaybackCapabilities { data_paths: vec![] });
+    session.set_graph(&graph).unwrap();
+    session.set_video_nodes(&["source".into()]).unwrap();
+    session.evaluate(&frame(1, 1)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (0, 1, true));
+    session.evaluate(&frame(1, 2)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (1, 0, false));
+    session.pause().unwrap();
+
+    // Neither previousFrame nor a configured video source makes a frozen frame dynamic.
+    for _ in 0..3 {
+        session.evaluate_preview_with_dirty(&frame(1, 2), &[]).unwrap();
+        assert!(session.drain_commands().is_empty());
+        assert_eq!(session.state(), EngineState::Paused);
+    }
+
+    for exposure in [2.0, 3.0] {
+        let config = graph.nodes.iter_mut().find(|node| node.id == "grade").unwrap()
+            .data.color_corrector.as_mut().unwrap();
+        config.primaries.exposure = exposure;
+        let expected_parameters = config.parameter_values().unwrap();
+        session.set_graph(&graph).unwrap();
+        session.pause().unwrap();
+        session.evaluate_preview_with_dirty(&frame(1, 2), &[]).unwrap();
+        let commands = session.drain_commands();
+        assert_eq!(commands.iter().map(|command| command.node_id.as_str()).collect::<Vec<_>>(), ["grade", "output"]);
+        assert_eq!(commands[0].kind, "operator");
+        let grade = session.execution_plan().unwrap().nodes.iter().find(|node| node.id == "grade").unwrap();
+        assert_eq!(grade.structured.as_ref().unwrap().parameters, expected_parameters);
+        session.evaluate_preview_with_dirty(&frame(1, 2), &[]).unwrap();
+        assert!(session.drain_commands().is_empty());
+    }
+
+    // A genuinely changed source redraws the accepted frame against the same older
+    // history, rather than feeding the accepted output back into itself on each draft.
+    for _ in 0..3 {
+        session.evaluate_preview_with_dirty(&frame(1, 2), &["source"]).unwrap();
+        let commands = session.drain_commands();
+        assert_eq!(feedback_transition(&commands), (1, 0, false));
+        assert_eq!(commands.iter().map(|command| command.node_id.as_str()).collect::<Vec<_>>(), ["feedback", "grade", "output"]);
+    }
+    session.resume().unwrap();
+    session.evaluate(&frame(1, 3)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (0, 1, false));
+    session.evaluate(&frame(1, 4)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (1, 0, false));
+}
+
+#[test]
+fn stopped_previews_do_not_accept_a_first_feedback_iteration() {
+    let mut session = FrameExecutionSession::new_native(PlaybackCapabilities { data_paths: vec![] });
+    session.set_graph(&frozen_feedback_graph()).unwrap();
+    session.evaluate(&frame(1, 1)).unwrap();
+    session.drain_commands();
+    session.stop().unwrap();
+    session.evaluate_preview_with_dirty(&frame(2, 1), &[]).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (0, 1, true));
+    assert_eq!(session.state(), EngineState::Stopped);
+    session.evaluate_preview_with_dirty(&frame(2, 1), &[]).unwrap();
+    assert!(session.drain_commands().is_empty());
+    session.evaluate_preview_with_dirty(&frame(2, 1), &["source"]).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (0, 1, true));
+    session.set_graph(&frozen_feedback_graph()).unwrap();
+    session.evaluate(&frame(2, 1)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (0, 1, true));
+    session.evaluate(&frame(2, 2)).unwrap();
+    assert_eq!(feedback_transition(&session.drain_commands()), (1, 0, false));
+}
+
 #[test]
 fn rejected_completions_preserve_values_generations_and_every_capacity_until_valid_retry() {
     let mut session =

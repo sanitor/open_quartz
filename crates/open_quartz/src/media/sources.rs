@@ -22,6 +22,13 @@ pub struct SourceStageEvent {
     pub sequence: Option<u64>,
 }
 
+/// Aligned BGRA reservation used before a native allocation is observable.
+pub(crate) fn source_reservation_bytes(width: u32, height: u32) -> u64 {
+    let row = u64::from(width).saturating_add(63) / 64 * 64 * 4;
+    let height = u64::from(height).saturating_add(15) / 16 * 16;
+    row.saturating_mul(height).saturating_add(16_383) / 16_384 * 16_384
+}
+
 
 /// Native cursors are selected on a dedicated worker. Upload callbacks never run
 /// under its lock, and a request retains its upload position when a callback fails.
@@ -74,6 +81,7 @@ pub struct PreparedVideoSource {
     info: NativeVideoInfo,
     frame_budget: Option<Arc<FrameBudget>>,
     file_identity: Option<crate::resources::source_identity::SourceFileIdentity>,
+    prefetch_limits: (usize, u64),
     #[cfg(target_os = "macos")]
     preparation: Option<precise::Preparation>,
 }
@@ -93,6 +101,7 @@ impl PreparedVideoSource {
         let info = source.info().clone();
         if let Some(identity) = &file_identity { identity.validate()?; }
         Ok(Self { source: Some(source), info, frame_budget: None, file_identity,
+            prefetch_limits: (usize::MAX, u64::MAX),
             #[cfg(target_os = "macos")]
             preparation: None,
         })
@@ -112,6 +121,19 @@ impl PreparedVideoSource {
         Ok(())
     }
 
+    pub fn set_prefetch_limits(&mut self, max_surfaces: usize, max_bytes: u64) -> Result<(), String> {
+        let minimum_bytes = source_reservation_bytes(self.info.width, self.info.height).saturating_mul(2);
+        if max_surfaces < 2 || max_bytes < minimum_bytes {
+            return Err("Prepared video prefetch limits cannot fit the source cursor and one demand".into());
+        }
+        #[cfg(target_os = "macos")]
+        if self.preparation.is_some() {
+            return Err("Configure prepared source limits before prewarming".into());
+        }
+        self.prefetch_limits = (max_surfaces, max_bytes);
+        Ok(())
+    }
+
     /// Starts/polls preparation without selecting on the calling thread. True
     /// means the exact selected surface is cached and ready to transfer at attach.
     pub fn prefetch_at(&mut self, timeline_ns: u64, epoch: u64) -> Result<bool, String> {
@@ -121,7 +143,7 @@ impl PreparedVideoSource {
                 let Some(worker) = precise::Preparation::pooled_worker(self.frame_budget.clone()) else { return Ok(false); };
                 self.preparation = Some(precise::Preparation::new(worker, self.source.take().ok_or("Prepared source was already transferred")?));
             }
-            return self.preparation.as_mut().expect("preparation exists").poll(timeline_ns, epoch);
+            return self.preparation.as_mut().expect("preparation exists").poll(timeline_ns, epoch, self.prefetch_limits);
         }
         #[cfg(not(target_os = "macos"))]
         { let _ = (timeline_ns, epoch); Ok(true) }
@@ -516,7 +538,7 @@ mod precise {
             worker.attach(&node, source);
             Self { worker, node, request_id, target: None, ready: false }
         }
-        pub fn poll(&mut self, timeline_ns: u64, epoch: u64) -> Result<bool, String> {
+        pub fn poll(&mut self, timeline_ns: u64, epoch: u64, limits: (usize, u64)) -> Result<bool, String> {
             if self.target != Some((timeline_ns, epoch)) {
                 self.worker.cancel_request(self.request_id);
                 if self.target.is_some() {
@@ -526,7 +548,7 @@ mod precise {
                 }
                 self.request_id = NEXT_PREPARATION.fetch_add(1, Ordering::AcqRel);
                 self.ready = false;
-                if !self.worker.enqueue(self.request_id, timeline_ns, epoch, std::slice::from_ref(&self.node), 3, usize::MAX, u64::MAX)? { return Ok(false); }
+                if !self.worker.enqueue(self.request_id, timeline_ns, epoch, std::slice::from_ref(&self.node), 3, limits.0, limits.1)? { return Ok(false); }
                 self.target = Some((timeline_ns, epoch));
             }
             if self.ready { return Ok(true); }
@@ -791,10 +813,7 @@ mod precise {
     }
     fn source_bytes(source: &Source) -> u64 {
         // Reserve aligned BGRA storage, never less than an observed allocation.
-        let row = u64::from(source.info.width).saturating_add(63) / 64 * 64 * 4;
-        let height = u64::from(source.info.height).saturating_add(15) / 16 * 16;
-        let estimate = row.saturating_mul(height).saturating_add(16_383) / 16_384 * 16_384;
-        estimate.max(source.surface.map_or(0, |(_, bytes)| bytes))
+        source_reservation_bytes(source.info.width, source.info.height).max(source.surface.map_or(0, |(_, bytes)| bytes))
     }
     fn cached_usage(state: &State) -> (usize, u64) {
         state.sources.values().filter_map(|source| source.surface).fold((0_usize, 0_u64), |(count, bytes), (_, allocation)| (count.saturating_add(1), bytes.saturating_add(allocation)))

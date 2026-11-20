@@ -276,7 +276,16 @@ impl FrameExecutionSession {
         input: &FrameEvaluationInput,
         dirty: &[&str],
     ) -> Result<(), SdkError> {
-        if !matches!(self.state(), EngineState::Ready | EngineState::Running) {
+        self.evaluate_context(input, dirty, false)
+    }
+
+    pub(crate) fn evaluate_preview_with_dirty(&mut self, input: &FrameEvaluationInput, dirty: &[&str]) -> Result<(), SdkError> {
+        self.evaluate_context(input, dirty, true)
+    }
+
+    fn evaluate_context(&mut self, input: &FrameEvaluationInput, dirty: &[&str], preview: bool) -> Result<(), SdkError> {
+        if !matches!(self.state(), EngineState::Ready | EngineState::Running)
+            && !(preview && matches!(self.state(), EngineState::Paused | EngineState::Stopped)) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidState,
                 "Frame execution requires a ready or running graph",
@@ -322,8 +331,8 @@ impl FrameExecutionSession {
                 .mark_dirty(node)
                 .map_err(decode_engine_error)?;
         }
-        candidate_graph
-            .run_frame(
+        let run = if preview { GraphInstance::run_preview } else { GraphInstance::run_frame };
+        run(&mut candidate_graph,
                 input.stamp.timeline_ns as f64 / 1_000_000_000.0,
                 (input.stamp.timeline_ns - input.previous_timeline_ns) as f64 / 1_000_000_000.0,
                 input.stamp.frame,

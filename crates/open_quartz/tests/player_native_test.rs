@@ -97,6 +97,7 @@ fn output_creates_an_owned_subscription_that_can_close_independently() {
             label: "Source".into(),
             template_name: None,
             shader_template_id: None,
+            color_corrector: None,
             shader_code: String::new(),
             inputs: vec![],
             outputs: vec![Port {

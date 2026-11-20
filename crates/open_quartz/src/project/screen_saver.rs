@@ -107,6 +107,7 @@ fn screen_saver_resample_node(position: Position, width: u32, height: u32) -> Pr
         position,
         data: NodeData {
             node_type: NodeType::Shader,
+            color_corrector: None,
             label: "Screen Resolution".to_owned(),
             template_name: Some("Resample".to_owned()),
             shader_template_id: Some("Resample".to_owned()),

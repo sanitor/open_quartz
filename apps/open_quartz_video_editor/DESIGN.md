@@ -24,8 +24,9 @@
 - 复用现有节点应用的GraphView、Inspector、WGSL CodeEditor、OpenQuartz Graph模型、工厂目录与GraphClipboard；视频应用通过宿主适配器持有clip目标与EditorDocument，不复制节点画布/执行器。每个Clip独立持有静态pipeline；Schema 1打开迁移成受保护`video → output`直通图，保存为Schema 2。
 - Nodes工作区复用现有类型端口并插入Color/Filter/Distortion/Blend单image Shader、Custom Shader、Constant和Math；Source/Output受保护。候选图在共享GPU worker预检后才作为单个项目历史事务提交，Shader/uniform Inspector与布局编辑复用主工程撤销/重做。
 - **验证（macOS原生窗口）：47个Rust测试通过；视频时间线窗口15项通过；Nodes窗口11项通过。** Nodes用实际红/蓝H.264解码源及截图像素oracle验证Invert颜色结果、custom Shader输出、端口重连/顺序变化、shader编译失败保留最后有效帧、uniform值、两片段隔离和保存重开。完整证据在`test-results/clip-pipeline/nodes-ui-2026-11-18T14-21-48-990Z/`及`test-results/phase6/ui-2026-11-18T14-21-23-512Z/`。
-- 未交付：Inference/外部资源节点、time/frame/feedback、多源合成、node thumbnail、Before/After、Gallery/versions、Groups/scopes、专业颜色/HDR、音频/多轨和视频编辑器导出UI。现有核心仍用一个`timeline_ns`驱动源选择和System时间；视频宿主尚未集成模型目录/资源生命周期。
+- 未交付：Inference/外部资源节点、time/frame/feedback、多源合成、node thumbnail、Before/After、Gallery/versions、Groups/scopes、专业颜色与HDR、音频/多轨和视频编辑器导出UI。现有核心仍用一个`timeline_ns`驱动源选择和System时间；视频宿主尚未集成模型目录/资源生命周期。**HDR色彩科学、输入控件、浮点工作域、HDR显示/编码已有分阶段评审提案，非运行时能力**，见[渲染管线设计](RENDER_PIPELINE_EDITOR_DESIGN.md)。
 - 硬件预检执行在现有GPU worker；提交接口先拒绝disposed session，候选图和静态WGSL经GPU计划预检；现有核心Inference订阅同步的全局事务化尚未改造，故clip图禁止Inference，且不承诺在未来支持Inference图时保持同样全局原子性。时间契约首发排除Time/Frame：现有核心单一timeline_ns同时驱动VideoToolbox源选择与内建shader时间，跨源/效果时间拆分尚待设计阶段C。
+- **共享Corrector设计（未实现）**：模型、lowering、参数更新、变体缓存和旁路是[OpenQuartz通用结构化算子协议](../../docs/DESIGN.md#structured-operators)，Corrector是首个消费者，不是视频app私有Shader方案。两款应用共享[Slint专用Palette/draft组件](../../docs/SLINT_UI_REFACTOR.md#structured-operator-ui)；`apps/open_quartz_slint`也必须支持创建/连线/编辑/GPU运行/旁路/复制/历史与持久化，视频app只增加clip隔离和EditorDocument宿主事务。
 
 ## 2. 现有基础与缺口
 
@@ -36,7 +37,7 @@
 | 图渲染 | 现有typed Graph、执行计划、FramePipeline候选预检及每clip静态图 | FrameStamp的单`timeline_ns`仍同时承载源选择/Shader系统时间；Inference型clip图及未来效果时钟需核心改造 |
 | GPU输出/lease | 现有stable frame、预算和GPU texture直接交给Slint | Before/After和大量节点thumbnail尚未实现；专业颜色/alpha元数据有限 |
 | 项目与历史 | `.oqvideo.json` schema2、schema1直通图迁移、per-clip Graph、clone/validate/commit共用撤销 | 只有一个活动Graph版本；Gallery/Local Versions/Groups和外部资源表未实现 |
-| Inference/合成/色彩 | 其他OpenQuartz宿主具备部分推理与Shader目录 | 视频编辑器Cargo未集成推理资源；多输入Matte/Layer/Resolve式ParallelMixer、色彩管理/HDR、Scope未交付 |
+| Inference/合成/色彩 | 其他OpenQuartz宿主具备部分推理与Shader目录 | 视频编辑器Cargo未集成推理资源；多输入Matte/Layer/Resolve式ParallelMixer、managed color/HDR input+float working+HDR display/encode、Scope均未交付；HDR路线已在[渲染管线提案](RENDER_PIPELINE_EDITOR_DESIGN.md)中分阶段定义 |
 | 声音/导出 | 核心单独具备部分无音轨H.264基础 | 视频编辑器没有音频或导出UI；时间线全段确定性渲染/编码闭环仍需实施 |
 
 源码核对入口：
@@ -226,7 +227,9 @@ flowchart TD
 
 ### 9.1 语义与执行策略分开
 
-预览由唯一序列时钟驱动：首阶段单调视频时钟产生目标序列帧；UI timer 只刷新状态。指定时间求值是内容契约，不是逐帧 seek→等待解码→等待 GPU→显示。app PreviewScheduler 根据时钟和 TimelinePlanner 提出前瞻需求，核心 execution::FramePipeline 执行有界窗口、处理水位/完成并驱动后续阶段；NativePlayer 也复用此循环，UI 刷新暂停不使运行时停工。
+**当前单轨实现**：视频编辑器已删除Controller播放clock/single-flight逐tick请求路径。Play提交不可变工程snapshot与起始序列帧，既有preview worker持有唯一单调播放时钟，复用`FramePipeline::submit_window/progress/poll_completion`执行源预取、按序图求值和有界稳定输出；UI的16ms timer只消费worker进度/图像并投影状态，不决定下一帧admission。
+
+单轨播放已接入prefill、低/高水位、deadline呈现、未准入过期静态帧跳过、seek取消/精确最终目标、Pause/Resume及clip/gap预热切换。同一个worker处理Exact与Play，不另建decoder/GPU执行器或逐node队列。多轨join、音频、代理/磁盘渲染缓存及任意时域效果仍是后续能力；下表中的离线编辑器导出也未接入UI。本轮实测范围与限制见§9.1.2。
 
 | 工作模式 | 需求与调度 | 不可破坏的条件 |
 |---|---|---|
@@ -237,6 +240,75 @@ flowchart TD
 | 缩略图 / 后台缓存 | 使用剩余预算，当前交互/播放低水位时退让 | 不抢占前台最小工作集，不为每张缩略图永久开 decoder |
 
 请求与完成至少关联工程/序列 revision、seek epoch、源内容身份/原始 PTS、效果 recipe hash、输出尺寸与颜色域；核心另校验图/node/session generation。AI 必须等待本次源帧的结果，不能用上一帧蒙版换取更高 FPS。播放时已完成的合法缓存帧不因“不是最新请求 ID”自动失效；按其内容 key、执行 epoch 和呈现时刻判断，scrub 最新目标策略不得套给整个缓存窗口。
+
+<a id="bounded-playback-proposal"></a>
+#### 9.1.1 已实现的单轨有界流水播放与扩展契约
+
+**状态：单轨worker窗口已实现；多轨/音频/编辑器导出不在本次实现内，不承诺任意素材固定帧率。** 正常clock tick不建立新ticket或取消合法在途帧。ticket/revision标识一次Play snapshot或Exact意图，epoch区分失效/片段切换；窗口内每个需求另有单调request ID和序列帧metadata。展示按内容身份、GpuReady及序列deadline判断，不以“最后发出的逐帧请求号”淘汰整个窗口。原single-flight方案仅作为历史修复记录，不保留第二套正常播放调度器。
+
+**时钟与线程所有权**
+
+- 序列播放宿主拥有唯一单调视频主时钟；frame/deadline按序列有理数fps映射，source target/实际PTS保持独立，不能把素材PTS当效果时间。未来音频时钟另行接入，本方案不引入音频能力。
+- 在既有preview worker运行规划、补水、`submit_window/progress/poll_completion`与截止时间调度。媒体ready、GPU completion、consumer释放和下一个deadline驱动唤醒；不靠UI每16ms轮询决定是否执行下一帧，不逐帧CPU等待GPU。
+- UI只发送播放/暂停/seek/编辑意图、消费可呈现StableFrame并更新播放头/实际显示帧状态。UI刷新变慢时受预算反压；不得无限积累UI回执或提前回收仍被Slint持有的texture。
+
+**窗口与交付**
+
+- 复用§9.2–9.3的帧数、时间跨度、bytes和surface/slot联合限额，以及核心共享FrameBudget；输出未消费、GPU未完成、消费者仍持有的资源都占用相应额度。低水位补充、高水位停发；容量满返回WouldBlock，不忙等、不新增无界任务或私有预算。
+- 启动/seek先以可见Preparing准备小窗口，达到prefill后建立播放时钟；每个静态帧仍在确定序列位置求值，decode(n+2)、GPU(n+1)、present(n)可以重叠，实际是否并行由设备决定。窗口深度按测量和预算配置，不能把“固定三帧”当所有素材/设备的答案。
+- 执行completion与可显示时间分开：Submitted不等于GpuReady；就绪帧持有原始身份和lease，早到帧按deadline等待。不能把多帧completion塞进当前单个latest update槽后无声覆盖；有界终态在核心排队，由worker逐个消费，最终UI呈现通知可合并，但被替代项必须计入丢弃并安全释放。
+- 迟到时不减慢主时钟、不重置clock origin，也不按新请求取消所有有效在途帧。呈现端可跳过过时的**显示**，使用当前epoch/clip内已就绪且到期的最新有效帧追赶，并记录late/drop；静态图可在admission前跳过已无显示价值的未执行计划。未来时域依赖不能据此跳过必要计算，未知时域能力继续拒绝。
+- 持续吞吐不足时明确报告未实时、显示帧与播放头差距；保持最后有效画面须标为等待/旧帧，不能以A片段冒充B、用错误源PTS标新帧或自动降低精度/分辨率。降低质量/代理若未来提供，必须是显式模式。本次单帧修复不能代替该过载政策。
+
+**失效、暂停与跨切点**
+
+- 正常顺播不变更seek epoch；显式seek、工程/recipe变更或源身份替换建立新的发布资格，淘汰失效未提交计划，已提交GPU工作只撤销发布并等真实完成。每个已接受请求都有Submitted/Cancelled/Failed终态，旧completion不得覆盖新目标或解除新目标的pending。
+- 切点前按§9.2预热下一clip资源与首个源帧，不提前切换active图使旧clip失效；按序列帧半开区间选择正确的clip/recipe，必要时复用受统一预算约束的准备会话。不能把每个clip永久绑定decoder或新建第二套执行链。预热准备失败有明确late/error状态，不能错放上个clip。
+- Pause冻结唯一时钟并停止投机补水，明确结束或撤销未呈现的未来计划；完成精确暂停位置需要的图后保留稳定图像。单步/最终seek仍要求精确目标完成或失败；resume从暂停位置建立连续deadline映射，不按停顿墙钟补跑。编辑草稿沿现有暂停锁定目标/冻结预览政策，不投机推进feedback。
+- 离线导出仍按完整帧序反压执行，绝不继承实时呈现丢帧策略；本方案不改变图像算法、颜色域或导出内容契约。
+
+**迁移与验收门**
+
+1. 已接入worker时钟/有界需求、终态窗口、clip/gap预热和过载追赶；源时间仍经既有`source_time_ns`映射，序列deadline保存在独立metadata，不更改全局FrameStamp的source取样含义。按§9.3.1只在异步阶段边界缓冲，同图node按依赖执行。删除旧controller clock/preview_pending路径；Exact仍采用最新意图取消语义。§9.3.2的多轨join不在本次单轨实现中，不预建空track服务。
+2. 使用同素材/同图/同分辨率的旁路、活动Corrector与较重静态效果测冷启动、稳态和人为慢consumer；分别记录Debug/Release、设备、分辨率/fps与活动stages。测实际显示PTS间隔P50/P95/最长停顿、late/drop、显示落后量、启动/seek延迟、源打开/seek次数、pipeline创建与target分配计数、峰值应用surface/bytes；UI回调次数和播放头推进不能证明流畅度，窗口缓存也不能掩盖长期吞吐不足。
+3. 确定回归覆盖正常tick不取消合法在途帧、超过一个帧周期的处理仍持续交付、UI消费延迟与释放后恢复、跨cut/gap不串clip、seek/undo/relink/结构切换的迟到结果拒绝、VFR与有理数fps的源PTS映射、Pause/Resume/单步、GPU失败/关闭与所有lease最终归还。实际原生窗口验证显示内容/时序，独立像素oracle保证正确性，才算接入完成。
+
+<a id="eight-k-playback-evidence"></a>
+#### 9.1.2 8K实测与可复跑证据（2026-11-20）
+
+设备为Apple M4 Pro/Metal、24 GiB统一内存，应用为Release＋ui-automation。实际视频为VideoToolbox编码HEVC、7680×4320、8-bit YUV420、30/1fps、8秒240帧；ffprobe独立核对stream及decoded-frame尺寸。素材生成参数、文件SHA-256与画布尺寸见[fixture记录](../../test-results/window-playback/fixture-8k.json)。源与序列/交付texture均为真实8K，Corrector使用原FP16/AP1算法；没有将8K降为1080p或CPU读图预览。
+
+每项测6秒，8ms间隔通过Slint MCP读取实际monitor `Frame`状态，100ms采样worker/UI计数。HTTP观察到的变化是下界，不是GPU timestamp或屏幕扫描输出FPS；启动prefill包含在采样段，UI计数包含初始帧。P95为被观察到的显示更新间隔，不能用180次worker发布冒充180次UI显示。各项单独运行，不并行跑GPU回归；曾有并行回归/观察者启动干扰的两Corrector测量，单列留档但不用于下表。
+
+`late`专指worker在超过一帧周期后发布到期输出的计数，不是Slint实际扫描呈现lateness；UI消费迟缓由displayed差额、coalesced及monitor采样间隔另行观察。真实视频和可直接重开的单/双Corrector/旁路工程保存在`test-results/window-playback/8k-hevc30.mp4`及同目录`8k-*.oqvideo.json`，工程使用相对素材路径。
+
+| 8K30图 | 观察到的monitor变化 | UI实际交付计数 | 更新间隔P95(ms) | 应用帧credit峰值(GiB) | pipeline创建 / graph target分配 | late / drop / 合并 |
+|---|---:|---:|---:|---:|---:|---:|
+| Corrector旁路 | 179 | 180 | 40.37 | 1.035 | 1 / 1 | 0 / 0 / 0 |
+| 一个活动Corrector，Exposure +1 | 178 | 179 | 41.73 | 1.282 | 2 / 3 | 0 / 0 / 0 |
+| 两个串行活动Corrector，Exposure +1、−0.5 | 178 | 179 | 40.01 | 1.530 | 3 / 5 | 0 / 0 / 0 |
+
+三项source open均为1、CPU image bytes均为0，host在途/ready峰值均为2；一/两Corrector实测source请求持续预取，final稳定输出4个RGBA8 slot共530,841,600 bytes，未超过2 GiB全局上限。pipeline/target数字是会话累计创建，不是每帧创建。峰值只覆盖共享FrameBudget可观测物理credit，不能宣称进程RSS/VT私有DPB也小于该数。原始报告：[旁路](../../test-results/window-playback/8k-bypass/measurement.json)、[单Corrector最终版本](../../test-results/window-playback/8k-final/measurement.json)、[双Corrector隔离运行](../../test-results/window-playback/8k-chain-isolated/measurement.json)，各目录有原生截图/应用日志。
+
+最终保留工程另跑9秒观察完整8秒视频，[报告](../../test-results/window-playback/8k-reopen-full/measurement.json)实际观察到序列0–239共240个显示位置，终态frame239/sourcePTS7,966,666,667ns、playing=false、queue=ready=0，UI delivered241（初始Exact1＋Play240），late/drop/coalesced均0。该完整运行credit峰值1,509,598,144 bytes（约1.406 GiB），高于上表单Corrector六秒段但仍有界。采样末尾约883ms画面不变是视频结束后保持最后帧，不是播放中停顿；不能把EOF静止算成实时卡顿。
+
+最终原生正确性套件：[Nodes/Corrector 15/15](../../test-results/clip-pipeline/nodes-ui-2026-11-20T09-20-46-290Z/report.html)、[时间线15/15](../../test-results/phase6/ui-2026-11-20T09-21-24-613Z/report.html)，包含保存/重开、取消/撤销、clip隔离、源PTS、play/pause与实际像素。新流水更快时曾暴露保存提示被frame状态覆盖，已将monitor状态与IO回执分离；自动化同时等待实际Inspector/连线事务生效，避免把临时accessibility handle当稳定状态。核心SDK452、视频55、图宿主82（2项既有ignored）测试通过，本轮未运行coverage gate。
+
+同一1080p30活动Corrector的旧单帧Release与新窗口各观察到180次monitor变化/6秒，P95分别48.97/47.01ms；原本已达到素材节奏，不宣称这里有倍数FPS提升。旧512 MiB路径在全8K工程首帧60秒超时，新路径明确配置2 GiB并通过；这既包括容量/liveness修复，也包括窗口接入，不能把两者全算为单纯流水提速。当前结果只证明该设备/素材/效果与短窗口运行，不代表任意8K codec、复杂图或平台都实时，不是完整压力/覆盖率/功耗或纯GPU耗时测量。
+
+```sh
+apps/open_quartz_slint/runtime/ffmpeg -f lavfi -i testsrc2=size=7680x4320:rate=30 -t 8 \
+  -c:v hevc_videotoolbox -tag:v hvc1 -b:v 50M -pix_fmt yuv420p -y /tmp/oq-playback-8k.mp4
+cargo build --release --manifest-path apps/open_quartz_video_editor/Cargo.toml --features ui-automation
+DYLD_LIBRARY_PATH="$PWD/apps/open_quartz_slint/runtime/ffmpeg-media/lib" \
+  node scripts/measure-video-editor-playback.mjs \
+  apps/open_quartz_video_editor/target/release/open_quartz_video_editor \
+  /absolute/path/full-resolution.oqvideo.json test-results/window-playback/recheck 6
+```
+
+测量器要求工程已引用真实素材，记录完整Corrector配置与输入/输出尺寸，检查UI显示计数、零CPU拷贝及budget/window边界；不会为了通过测量改工程质量。`Playback metrics`无障碍JSON区分submitted、worker presented、UI displayed、late/drop/coalesced与sourcePTS；窗口只展示精简摘要。图像算法/像素由既有独立GPU oracle及原生正确性套件另验，不以彩条运动和计数代替全部数值契约。
+
+
 
 ### 9.2 前瞻窗口与解码游标
 
@@ -272,12 +344,51 @@ flowchart LR
 
 目标状态明确区分 Planned、Admitted、SourceReady、GpuSubmitted、GpuReady、ConsumerReleased。Submitted 不是完成；同 queue 依赖优先用顺序/设备同步表达，跨平台 codec/encoder 使用真实完成协议。原 importer 的逐次 CPU wait 只能在 retained AVFrame、原生 wrapper、输出 slot 与 completion 回收被证明正确后替换；不能仅删 wait。错误、取消、timeout 或设备丢失均停止新 admission，已在途资源按真实完成或设备安全销毁协议退出。
 
+<a id="stage-queues-resource-lifetimes"></a>
+#### 9.3.1 按异步阶段缓冲，不按 node 设置 queue
+
+**后续流水设计契约，非新增实现声明。** CPU侧任务/就绪队列、GPU资源存储和设备执行顺序是不同概念：queue缓冲调度身份与owner；中间纹理承载像素；lease/完成条件防止像素仍被使用时覆盖或归还。本文的“阶段queue”不等于新建`wgpu::Queue`，所有兼容GPU工作继续使用同一Device/Queue。逻辑就绪集合也不要求各自创建线程、channel或独立物理池。
+
+| 边界 | 默认组织方式 | 引入独立缓冲的条件 |
+|---|---|---|
+| 解码/源准备 → 图执行 | 按需求身份与source PTS索引的有界源就绪集合，复用核心预取/cursor | 解码异步完成且须与GPU消费解耦；VFR可让多个序列需求共享同一源owner，不机械复制像素 |
+| 同图相邻GPU node/pass | 有序命令、显式依赖和中间纹理；无逐node FIFO、无逐级CPU完成等待 | 只有确需跨异步执行域或保留版本时才增加缓冲，图上增加node不自动增加queue |
+| 分支汇合/同Device track合成 | 同一帧任务的依赖就绪记录，输入纹理保持至最后消费者用完 | 输入尚未齐全时可保持有界依赖状态，不因此给每条输入边建独立播放器/队列 |
+| GPU图 → 显示/编码 | 带GpuReady条件的有界StableFrame完成集合，按deadline/输出帧序消费 | 这些消费者与图执行生命周期不同，必须保留稳定像素，不能只排live texture handle |
+| 独立异步推理后端、跨设备或平台交接 | 沿既有任务身份/真实完成协议保留必要输入输出 | 仅在实际后端需要时建立有界交接；推理node本身不意味着每个GPU pass都要queue |
+| feedback/时域node | 算法声明的历史状态与按序求值 | 历史buffer是算法语义，不是普通播放积压队列；不把未知时域节点加入当前视频能力 |
+
+**图内资源与跨帧复用规则**
+
+- 编译/执行计划表达读写依赖、尺寸、格式、颜色/alpha及资源别名。先允许多个node在同一batch按依赖编码；不为制造“流水”而逐node submit、CPU wait或detach复制，也不要求任意Shader融合。独立分支有并行机会不等于驱动必须并行，同一会话求值及feedback仍按核心契约有序。
+- 每个在途资源版本区分生产者、GPU读取者及外部消费者：命令已编码但尚未提交的依赖也必须保持owner；写入下一帧之前，要保证前一版本的所有读取已被正确排序或完成。一个快分支不能覆盖仍等待慢分支汇合的纹理。
+- 同一Queue内可依靠已建立的提交/资源依赖顺序复用纹理，无须每个node CPU等fence；跨Queue/设备/平台须有真实同步协议。资源跨异步边界存活时使用受预算的多版本slot或必要GPU detach；仅克隆Arc保生存期，不能证明像素不被后续写入。
+- 最后GPU读取提交完成后，且所有外部lease释放，物理资源才能回池/归还credit。逻辑输出Alias保留来源owner及provenance，不产生专属queue/输出纹理；扇出共享输入，不能按每条边重复计费。中间纹理只有生命周期和格式兼容且无在途读写冲突时才可复用；不声称当前已实现通用瞬态纹理alias优化。
+- 池容量由全局在途帧窗口、图DAG活跃资源峰值和消费者保留决定，不是“node数量×固定queue深度”。完整最小工作集在admission预检，不可满足则拒绝；增加node不能绕开共享预算创建隐藏buffer。
+
+<a id="same-frame-track-join"></a>
+#### 9.3.2 多轨出口按序列帧汇合，不按每轨最新帧混合
+
+**未来多轨设计，当前产品仍仅单视频轨。** 多轨采用相同的帧需求/图依赖模型；不能把本节当成已有多轨合成、音频同步或轨道编辑能力。先按下面规则固定汇合契约，后续多轨单独实现和验收，不给单轨阶段引入空的join服务。
+
+- 一次合成需求以`sequence revision + playback/seek epoch + sequenceFrame + render规格/颜色契约`标识，携带该时刻确定的合成recipe和完整依赖集合。依赖项含track/clip/版本、图/参数/资源generation、源时间映射及实际源PTS。具体字段复用现有身份类型，必要扩展在实现时定义，不另建重复时钟。不同素材的实际PTS不必相等，但必须分别满足同一个序列时刻的采样映射，不能简单用源PTS相等判断同帧。
+- TimelinePlanner在该序列时刻确定有效轨道、叠放/混合顺序、变换和alpha/颜色契约。空轨、明确关闭视频输出的轨道、clip之外或明确禁用的贡献按recipe确定为无贡献；是否完全遮挡必须由可证明的语义裁剪，不能仅看UI选中/可见性。缺失资源、失败或未就绪的有效轨道不是透明帧，不得冒充无贡献。
+- **同一Device图内执行优先**：track出口只是合成node的中间输入纹理，由图依赖协调就绪，可在同batch编码，不必每轨detach或排一个FIFO。是否保留多个图会话由真实状态/后端隔离需求决定，不机械规定“一个track一个播放器/FramePipeline/decoder”。
+- **确需独立异步处理时**：使用共享的有界join集合，按合成需求身份登记每个依赖的Pending/Ready/Failed/Cancelled与资源owner；只有所需输入全部齐全且契约一致才执行合成。物理上可共用map/池/调度器，不要求每轨独立FIFO；同一贡献可按不可变内容身份被多个需求共享引用。去重键不清楚时宁可不复用，不能跨clip/epoch猜测复用。
+- join不能“每轨取最新”或用上一帧mask补齐；独立完成可乱序到达，但帧n与帧n+1不能混合。某轨持续慢时暂停更多远期需求，优先满足最早仍有用的合成需求，避免其他快轨积压。完成输出、部分join和等待任务共同占用窗口额度，不能只限制最终queue却让内部join无界增长。
+- 接受合成需求前，统一预检并预留可前进的最小依赖/中间工作集、汇合输出和交付额度；多个会话的预留由核心预算协调，不允许快轨持满全部credit、慢轨/合成器永远无额度的环路。首个可前进工作集不可能时明确capacity失败；满足前进后才利用剩余额度投机，资源不按轨道重复预留/重复计费。禁止持预算锁等待另一轨完成，也不靠临时突破预算解死锁。
+- 实时deadline已过时，按§9.1.1政策跳过**整个过期合成帧的显示**；当前epoch内尚有效的其他帧可继续前进。未执行静态任务可撤销，已提交工作等真实完成；必要时域计算仍须保留。不能为保FPS隐式省略一个有效track、降低其质量或换用错误时间的像素。离线导出等待全依赖，明确失败或反压，不继承显示丢帧。
+- seek/recipe/revision/source失效撤销相应join发布资格及未提交任务；共享源/资源只有最后引用和实际GPU读取结束后才回收。迟到的旧track结果只释放自身owner，不能填入新join或解除新请求pending。单条track失败使依赖它的合成需求明确失败，独立未来需求按错误/取消政策处理，不以永远Pending吞掉错误。暂停/关闭清理未呈现需求并drain在途owner，不提前销毁消费者仍持有的图像。
+
+**补充验收门**：多级串行node、扇出/汇合的非交换效果须与独立像素oracle一致；人为延迟一分支并跨帧推进，证明中间纹理不被覆盖、快分支有界背压并在释放后恢复。未来多轨另测不同帧率/VFR及不同source PTS的同序列帧映射、乱序到达不混帧、慢轨不隐式复用旧图、gap/禁用与error区分、叠放/alpha/颜色正确、低预算时仍可前进或提前拒绝、共享输入只计一次、seek/revision后旧join不复活及所有owner归还。比较pipeline/target分配、queue/join峰值与物理工作集，不能用每级queue数量或线程数量作为性能证据。
+
+
 ### 9.4 预算、过载与优先级
 
 初始预算为设计默认值，不是实测性能指标：
 
 - scrub 一个活动/一个最新待处理只约束交互意图。播放/导出有各自有界在途窗口，不共享 latest-only 输出槽。
-- 当前FrameBudget采用保守固定64 application surfaces/512MiB，窗口/稳定池另有局部容量；不是自动读取device建议工作集10%。按用户批准范围，应用拥有的native retained surface、graph/feedback纹理、resident scratch与output slot统一计费；weights/模型准备内存另列，VT/driver/MPSGraph私有pool无法观测/硬限额，明确不属于完整process RSS上限。宿主可显式注入协调者，最小工作集不可能时拒绝，而非无界扩张。
+- 核心FrameBudget默认仍为64 application surfaces/512 MiB；视频宿主在任何初始Exact/验证/Play之前显式注入64 surfaces/2 GiB共享上限，以容纳8K FP16及多个稳定输出。窗口按源/画布较大extent选高水位（RGBA8单帧至少64 MiB时为2，其余3）、prefill2；稳定输出容量为high+2、最多1 GiB，窗口native/source子预算也有界。池跨extent保留的容量只取有界lifetime high-water，未按设备内存比例自动扩张。源预取、native导入、图纹理、稳定帧和缩略图共用物理协调者；不把VT/driver/MPSGraph私有池计为已硬限额，也不是进程RSS上限。聚合最小工作集在部分分配前预检，不能满足则明确拒绝；`peak_usage`记录成功唯一物理credit分配/重分配的生命周期峰值，释放到0不清零，surface/bytes峰值可发生在不同时间。
 - 推理输出池当前最多三份 consumer lease；窗口不能假定可无限增加模型在途帧。最终呈现保留、任务执行和必要最小 slot 优先，低优先级缓存只用剩余额度。
 - 缩略图/代理磁盘缓存默认上限 2 GiB、LRU 淘汰；不删除原素材，不将代理误标原片。基础解码前瞻与短窗口预渲染属于 P0～P2，完整磁盘渲染缓存/代理仍属 P4。
 - 前台精确定位优先于投机预取，播放低水位补给优先于缩略图；导出与交互共享物理预算但各有会话，不承诺同时满速。导出必须有最低前进额度；资源不足时暂停可见的背景任务/预览，不能一边让用户导出一边将其永久饿死。

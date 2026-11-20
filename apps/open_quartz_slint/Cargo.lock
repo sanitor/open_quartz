@@ -3783,6 +3783,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "oq-inference",
  "oq-media",
+ "parking_lot",
  "pollster",
  "regex",
  "reqwest",

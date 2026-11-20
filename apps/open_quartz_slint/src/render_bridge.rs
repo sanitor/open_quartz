@@ -23,7 +23,8 @@ use std::path::PathBuf;
 use crate::inference_runtime::{host_resource_plan, LiveInferenceState, ModelMessage, InferenceRuntime};
 use std::collections::BTreeMap;
 pub struct RenderUpdate {
-    generation: u64,
+    pub generation: u64,
+    pub graph_result: Option<Result<(), String>>,
     pub status: Option<String>,
     pub texture: Option<GpuOutputHandle>,
     pub clear_image: bool,
@@ -40,6 +41,7 @@ impl RenderUpdate {
     fn new(generation: u64) -> Self {
         Self {
             generation,
+            graph_result: None,
             status: None,
             texture: None,
             clear_image: false,
@@ -131,6 +133,7 @@ pub(crate) enum Command {
         reset_resources: bool,
         images: BTreeMap<String, ImageUpload>,
         play: bool,
+        preview: bool,
     },
     LoadInference {
         generation: u64,
@@ -250,6 +253,13 @@ impl RenderBridge {
         images: BTreeMap<String, ImageUpload>,
         play: bool,
     ) -> Result<(), String> {
+        self.submit_graph(graph, images, play, false)
+    }
+    pub fn set_preview_graph(&mut self, graph: Graph, images: BTreeMap<String, ImageUpload>, play: bool) -> Result<u64, String> {
+        self.submit_graph(graph, images, play, true)?;
+        Ok(self.generation)
+    }
+    fn submit_graph(&mut self, graph: Graph, images: BTreeMap<String, ImageUpload>, play: bool, preview: bool) -> Result<(), String> {
         self.generation = self.generation.wrapping_add(1);
         self.accepting_frames = true;
         self.sender
@@ -259,6 +269,7 @@ impl RenderBridge {
                 reset_resources: std::mem::take(&mut self.reset_resources),
                 images,
                 play,
+                preview,
             })
             .map_err(|_| "Native render thread is no longer available".to_owned())
     }
@@ -392,6 +403,7 @@ fn publish_graph_rejection(updates: &Mutex<Option<RenderUpdate>>, generation: u6
             *update = RenderUpdate::new(generation);
         }
         let parsed = serde_json::from_str::<open_quartz::SdkError>(error).ok();
+        update.graph_result = Some(Err(error.to_owned()));
         update.node_error = parsed.clone();
         update.status = Some(format!(
             "Graph replacement rejected; previous graph retained: {}",
@@ -450,6 +462,7 @@ fn render_worker(
     let mut preview_tick = Instant::now();
     let mut pending_video_previews = BTreeMap::<String, Instant>::new();
     let mut pending_stable_preview = false;
+    let mut pending_corrector_preview = false;
     let mut meter = RenderMeter::new(Instant::now());
     #[cfg(all(test, feature = "inference-e2e"))]
     let mut diagnostic_node: Option<String> = None;
@@ -470,7 +483,7 @@ fn render_worker(
         if inference.reap_workers() {
             publish_inference(&updates, generation, &inference);
         }
-        let command = if running || inference.is_loading() || !pending_video_previews.is_empty() || pending_stable_preview {
+        let command = if running || inference.is_loading() || !pending_video_previews.is_empty() || pending_stable_preview || pending_corrector_preview {
             match receiver.recv_timeout(Duration::from_millis(16)) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -505,6 +518,7 @@ fn render_worker(
             Some(Command::Shutdown) => break,
             Some(Command::Wake) => { wake_pending.store(false, std::sync::atomic::Ordering::Release); }
             Some(Command::Pause) => {
+                pending_corrector_preview = false;
                 let _ = host.pause();
                 playback_requested = false;
                 running = false;
@@ -517,6 +531,7 @@ fn render_worker(
                 reset_resources,
                 images,
                 play,
+                preview,
             }) => {
                 let preparation: Result<_, String> = (|| {
                     let resource_plan = host_resource_plan(&graph)?;
@@ -568,8 +583,14 @@ fn render_worker(
                     }
                 };
                 generation = next_generation;
+                if let Ok(mut pending) = updates.lock() {
+                    let update = pending.get_or_insert_with(|| RenderUpdate::new(generation));
+                    if update.generation != generation { *update = RenderUpdate::new(generation); }
+                    update.graph_result = Some(Ok(()));
+                }
                 graph_has_rendered = false;
                 pending_stable_preview = false;
+                pending_corrector_preview = false;
                 source_preview_nodes = graph.nodes().iter().filter(|node| {
                     matches!(node.node_type, open_quartz::NodeType::Input | open_quartz::NodeType::Inference)
                 }).map(|node| node.id.clone()).collect();
@@ -579,10 +600,10 @@ fn render_worker(
                 stopped = false;
                 ready_to_start = !play;
                 playback_requested = play;
-                publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
+                if !preview { publish_metrics(&updates, generation, meter.suspend(Instant::now(), true)); }
                 pending_video_previews = next_video_previews;
                 preview_nodes = graph.nodes().iter().filter(|node| {
-                    matches!(node.node_type, open_quartz::NodeType::Shader | open_quartz::NodeType::Constant | open_quartz::NodeType::Renderer)
+                    matches!(node.node_type, open_quartz::NodeType::Shader | open_quartz::NodeType::ColorCorrector | open_quartz::NodeType::Constant | open_quartz::NodeType::Renderer)
                         || node.data.outputs.iter().any(|port| port.data_type == open_quartz::DataType::Sampler2d)
                 }).map(|node| node.id.clone()).collect();
                 preview_tick = Instant::now() - Duration::from_millis(100);
@@ -602,13 +623,13 @@ fn render_worker(
                     if graph.nodes().is_empty() || !playback_requested {
                         return Ok(false);
                     }
-                    host.start_playback()?;
+                    if !preview { host.start_playback()?; }
                     Ok(true)
                 })();
                 match result {
                     Ok(should_run) => {
                         running = should_run;
-                        publish_metrics(&updates, generation, meter.suspend(Instant::now(), true));
+                        if !preview { publish_metrics(&updates, generation, meter.suspend(Instant::now(), true)); }
                         let status = if running {
                             format!("{description} · Graph ready; waiting for renderer output")
                         } else if graph.nodes().is_empty() {
@@ -619,7 +640,8 @@ fn render_worker(
                         let status = if video_pipelines.is_empty() { status } else {
                             format!("{status} · {}", video_pipelines.values().cloned().collect::<Vec<_>>().join("; "))
                         };
-                        publish_status(&updates, generation, status, true);
+                        publish_status(&updates, generation, status, !preview);
+                        pending_corrector_preview = preview && !play;
                         current_graph = Some(graph);
                     }
                     Err(error) => {
@@ -718,6 +740,7 @@ fn render_worker(
                 generation: requested,
                 action,
             }) if requested == generation => {
+                pending_corrector_preview = false;
                 let result = match action.as_str() {
                     "pause" => {
                         if running {
@@ -811,6 +834,22 @@ fn render_worker(
             Some(Command::LoadInference { .. } | Command::UnloadInference { .. }) => {}
             None => {}
         }
+        if pending_corrector_preview && !running && !render_failed {
+            match host.render_preview() {
+                Ok(rendered) if rendered.width > 0 && rendered.height > 0 => {
+                    pending_corrector_preview = false;
+                    graph_has_rendered = true;
+                    if preview_renderer.is_none() { preview_renderer = Some(rendered.output_node_id); }
+                    pending_stable_preview = true;
+                    preview_tick = Instant::now() - Duration::from_millis(100);
+                }
+                Ok(_) => {},
+                Err(error) => {
+                    pending_corrector_preview = false;
+                    publish_graph_rejection(&updates, generation, &error);
+                }
+            }
+        }
         publish_inference_metrics(&updates, generation, host.inference_metrics());
         // A source preview uploads decoded pixels only. It must never call
         // render_next/start_playback or consume the graph's first frame work.
@@ -897,7 +936,10 @@ fn render_worker(
                 Ok(None) => return Ok(None),
                 // An unexecuted/disconnected inspector node may not have a texture.
                 // Choosing it must not pause a healthy graph's Renderer output.
-                Err(FrameCaptureError::InvalidSource(_)) if preview_renderer.is_some() => return Ok(None),
+                Err(FrameCaptureError::InvalidSource(error)) if preview_renderer.is_some() => {
+                    publish_status(&updates, generation, format!("Selected preview unavailable: {error}"), false);
+                    return Ok(None);
+                }
                 Err(error) => return Err(error.to_string()),
             };
             Ok(Some(output))

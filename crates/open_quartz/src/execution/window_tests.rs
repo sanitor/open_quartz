@@ -9,6 +9,88 @@ fn window_accept(p: &mut FramePipeline, demand: FrameDemand) {
 }
 
 #[test]
+fn exact_preview_rejects_impossible_combined_graph_and_output_minimum() {
+    pollster::block_on(async {
+        let render = device().await;
+        let budget = crate::resources::FrameBudget::new(1, 16).unwrap();
+        render.backend().set_frame_budget(budget.clone()).unwrap();
+        let mut p = pipeline(render, &animated_graph());
+        assert_eq!(budget.usage(), (1, 16));
+        let request = demand(&p, 1, 1, 0, vec![]);
+        assert!(matches!(p.submit_preview(request), FrameAdmission::Rejected { .. }));
+        assert!(!p.has_in_flight());
+        assert_eq!(budget.usage(), (1, 16));
+    });
+}
+
+#[test]
+fn stable_output_budget_preserves_retained_leases_and_shared_accounting() {
+    pollster::block_on(async {
+        let mut p = pipeline(device().await, &animated_graph());
+        let request = demand(&p, 1, 1, 250_000_000, vec![]);
+        accepted(&mut p, request);
+        let held = rendered(complete(&mut p));
+        let original = pixels(&p, &held);
+        let usage = p.frame_budget_usage();
+        p.configure_stable_output_budget(StableFrameBudget { max_frames: 4, max_bytes: 64 }).unwrap();
+        assert_eq!(p.frame_budget_usage(), usage);
+        assert_eq!(p.stable_output_usage(), (1, 16));
+        assert_eq!(pixels(&p, &held), original);
+        assert!(p.configure_stable_output_budget(StableFrameBudget { max_frames: 3, max_bytes: 15 }).is_err());
+        assert_eq!(p.stable_output_budget().max_bytes, 64);
+        assert_eq!(pixels(&p, &held), original);
+        assert!(p.configure_stable_output_budget(StableFrameBudget { max_frames: 2, max_bytes: 64 }).is_err());
+        assert!(p.configure_stable_output_budget(StableFrameBudget { max_frames: 0, max_bytes: 64 }).is_err());
+        assert!(p.configure_stable_output_budget(StableFrameBudget { max_frames: 4, max_bytes: 0 }).is_err());
+        let shared = p.backend().frame_budget();
+        assert!(p.configure_stable_output_budget(StableFrameBudget { max_frames: 4, max_bytes: shared.limits().1 + 1 }).is_err());
+        assert!(Arc::ptr_eq(&shared, &p.backend().frame_budget()));
+    });
+}
+
+#[test]
+fn stable_output_budget_rejects_pending_queued_and_unconsumed_terminals() {
+    pollster::block_on(async {
+        let mut p = pipeline(device().await, &animated_graph());
+        let budget = StableFrameBudget { max_frames: 4, max_bytes: 128 };
+        let request = demand(&p, 1, 1, 0, vec![]);
+        accepted(&mut p, request);
+        assert!(p.configure_stable_output_budget(budget).is_err());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while p.pending.is_some() {
+            p.progress();
+            assert!(Instant::now() < deadline);
+        }
+        assert!(p.configure_stable_output_budget(budget).is_err());
+        drop(p.poll_completion().unwrap());
+        p.configure_stable_output_budget(budget).unwrap();
+        p.configure_window(FrameWindowConfig::default()).unwrap();
+        let request = demand(&p, 2, 1, 1, vec![]);
+        window_accept(&mut p, request);
+        assert!(p.configure_stable_output_budget(budget).is_err());
+        drop(complete(&mut p));
+        p.configure_stable_output_budget(budget).unwrap();
+    });
+}
+
+#[test]
+fn eight_k_output_capacity_arithmetic_never_allocates_surfaces() {
+    let rgba = 7680_u64 * 4320 * 4;
+    assert_eq!(rgba * 3, 398_131_200);
+    let config = FrameWindowConfig { max_bytes: 1024 * 1024 * 1024, ..Default::default() };
+    assert!(config.validate_output_capacity(rgba, StableFrameBudget::default()).is_err());
+    let stable = StableFrameBudget { max_frames: 3, max_bytes: rgba * 3 };
+    config.validate_output_capacity(rgba, stable).unwrap();
+    assert!(config.validate_output_capacity(rgba * 2, stable).is_err());
+    let fp16 = StableFrameBudget { max_frames: 3, max_bytes: rgba * 6 };
+    config.validate_output_capacity(rgba * 2, fp16).unwrap();
+    assert!(FrameWindowConfig { max_bytes: rgba * 2, ..config }.validate_output_capacity(rgba, stable).is_err());
+    assert!(FrameWindowConfig { prefill: usize::MAX, ..config }.validate_output_capacity(rgba, stable).is_err());
+    #[cfg(feature = "native-video")]
+    assert_eq!(crate::media::sources::source_reservation_bytes(7680, 4320), rgba);
+}
+
+#[test]
 fn bounded_window_preserves_order_pixels_and_final_epoch_after_cancellation() {
     pollster::block_on(async {
         let mut p = pipeline(device().await, &animated_graph());

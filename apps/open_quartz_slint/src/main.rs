@@ -1,4 +1,5 @@
 mod app_controller;
+mod corrector_editor;
 mod graph_clipboard;
 mod graph_view_model;
 mod inference_runtime;

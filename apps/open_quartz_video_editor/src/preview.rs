@@ -1,16 +1,18 @@
 use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
-use crate::document::{ClipTransform, MediaAsset};
+use crate::document::{self, ClipTransform, MediaAsset, ProjectData, Rational};
 use open_quartz::execution::{
-    FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline,
+    FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline, FrameWindowConfig,
+    PreparedNativeGraph,
 };
 use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz::outputs::{FrameStamp, PlaybackCapabilities};
-use open_quartz::rendering::{RenderDevice, StableFrame};
+use open_quartz::rendering::{RenderDevice, StableFrame, StableFrameBudget};
 use slint::wgpu_30::WGPUConfiguration;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct PreviewRequest {
@@ -27,9 +29,63 @@ pub struct PreviewRequest {
 pub struct PreviewUpdate {
     pub ticket: u64,
     pub revision: u64,
+    pub epoch: u64,
     pub frame: u64,
     pub image: Result<StableFrame, String>,
     pub actual_pts_ns: Option<i64>,
+    pub cpu_copy_bytes: u64,
+}
+
+pub struct PlaybackRequest {
+    pub ticket: u64,
+    pub revision: u64,
+    pub start_frame: u64,
+    pub project: ProjectData,
+}
+enum PreviewCommand {
+    Exact(PreviewRequest),
+    Play(PlaybackRequest),
+}
+#[derive(Clone, Default, serde::Serialize)]
+pub struct PreviewProgress {
+    pub ticket: u64,
+    pub revision: u64,
+    pub epoch: u64,
+    pub frame: u64,
+    pub preparing: bool,
+    pub playing: bool,
+    pub width: u32,
+    pub height: u32,
+    pub displayed: u64,
+    pub displayed_frame: Option<u64>,
+    pub actual_pts_ns: Option<i64>,
+    pub displayed_width: u32,
+    pub displayed_height: u32,
+    pub byte_limit: u64,
+    pub stable_byte_limit: u64,
+    pub window_high_water: usize,
+    pub ready: usize,
+    pub ready_peak: usize,
+    pub source_opens: u64,
+    pub submitted: u64,
+    pub presented: u64,
+    pub coalesced: u64,
+    pub late: u64,
+    pub dropped: u64,
+    pub queue: usize,
+    pub queue_peak: usize,
+    pub surfaces: usize,
+    pub bytes: u64,
+    pub surfaces_peak: usize,
+    pub bytes_peak: u64,
+    pub lifetime_peaks: bool,
+    pub window_current_capacity: usize,
+    pub stable_surfaces: usize,
+    pub stable_bytes: u64,
+    pub pipeline_creations: u64,
+    pub target_allocations: u64,
+    pub decoded: u64,
+    pub uploaded: u64,
     pub cpu_copy_bytes: u64,
 }
 struct PipelineValidation {
@@ -39,11 +95,13 @@ struct PipelineValidation {
     result: mpsc::Sender<Result<(), String>>,
 }
 pub struct PreviewBridge {
-    sender: mpsc::SyncSender<()>,
-    validation_sender: mpsc::Sender<PipelineValidation>,
-    latest: Arc<Mutex<Option<PreviewRequest>>>,
+    validation_sender: mpsc::SyncSender<PipelineValidation>,
+    latest: Arc<Mutex<Option<PreviewCommand>>>,
     closed: Arc<AtomicBool>,
     updates: Arc<Mutex<Option<PreviewUpdate>>>,
+    progress: Arc<Mutex<PreviewProgress>>,
+    delivered: Arc<AtomicU64>,
+    coalesced: Arc<AtomicU64>,
     worker: Option<JoinHandle<()>>,
     pub backend: Arc<open_quartz::rendering::GpuBackend>,
 }
@@ -79,25 +137,36 @@ impl PreviewBridge {
             device,
             queue,
         };
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let (validation_sender, validation_receiver) = mpsc::channel();
+        // One shared coordinator also charges native imports, stable outputs and
+        // thumbnails. Extent-specific sublimits below never enlarge this cap.
+        backend.set_frame_budget(open_quartz::resources::FrameBudget::new(64, 2 * 1024 * 1024 * 1024)?)?;
+        let (validation_sender, validation_receiver) = mpsc::sync_channel(8);
         let latest = Arc::new(Mutex::new(None));
         let worker_latest = latest.clone();
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = closed.clone();
         let updates = Arc::new(Mutex::new(None));
         let publish = updates.clone();
+        let progress = Arc::new(Mutex::new(PreviewProgress::default()));
+        let worker_progress = progress.clone();
+        let delivered = Arc::new(AtomicU64::new(0));
+        let worker_delivered = delivered.clone();
+        let coalesced = Arc::new(AtomicU64::new(0));
+        let worker_coalesced = coalesced.clone();
         let worker = thread::Builder::new()
             .name("oq-editor-preview".into())
-            .spawn(move || run(render, receiver, validation_receiver, publish, worker_latest, worker_closed))
+            .spawn(move || run(render, validation_receiver, publish, worker_latest, worker_closed,
+                worker_progress, worker_delivered, worker_coalesced))
             .map_err(|e| e.to_string())?;
         Ok((
             Self {
-                sender,
                 validation_sender,
                 latest,
                 closed,
                 updates,
+                progress,
+                delivered,
+                coalesced,
                 worker: Some(worker),
                 backend,
             },
@@ -109,19 +178,22 @@ impl PreviewBridge {
         ))
     }
     pub fn request(&self, request: PreviewRequest) -> Result<(), String> {
+        self.command(PreviewCommand::Exact(request))
+    }
+    pub fn play(&self, request: PlaybackRequest) -> Result<(), String> {
+        self.command(PreviewCommand::Play(request))
+    }
+    fn command(&self, command: PreviewCommand) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("Preview worker is closed".into());
         }
-        *self
-            .latest
-            .lock()
-            .map_err(|_| "Preview intent lock is poisoned")? = Some(request);
-        match self.sender.try_send(()) {
-            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(()),
-            Err(mpsc::TrySendError::Disconnected(())) => {
-                Err("Preview worker is unavailable".into())
-            }
+        let mut latest = self.latest.lock().map_err(|_| "Preview intent lock is poisoned")?;
+        if latest.replace(command).is_some() {
+            self.coalesced.fetch_add(1, Ordering::Relaxed);
         }
+        drop(latest);
+        if let Some(worker) = &self.worker { worker.thread().unpark(); }
+        Ok(())
     }
     /// Preflight on the shared GPU owner without replacing the active graph or source.
     pub fn validate_pipeline(
@@ -135,21 +207,25 @@ impl PreviewBridge {
         }
         let (result, receiver) = mpsc::channel();
         self.validation_sender
-            .send(PipelineValidation { pipeline, width, height, result })
-            .map_err(|_| "Preview worker is unavailable")?;
-        match self.sender.try_send(()) {
-            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(receiver),
-            Err(mpsc::TrySendError::Disconnected(())) => {
-                Err("Preview worker is unavailable".into())
-            }
-        }
+            .try_send(PipelineValidation { pipeline, width, height, result })
+            .map_err(|error| format!("Preview validation unavailable: {error}"))?;
+        if let Some(worker) = &self.worker { worker.thread().unpark(); }
+        Ok(receiver)
     }
     pub fn take_update(&self) -> Option<PreviewUpdate> {
         self.updates.lock().ok()?.take()
     }
+    pub fn progress(&self) -> PreviewProgress {
+        let mut progress = self.progress.lock().map(|value| value.clone()).unwrap_or_default();
+        progress.displayed = self.delivered.load(Ordering::Relaxed);
+        progress
+    }
+    pub fn acknowledge_presented(&self) {
+        self.delivered.fetch_add(1, Ordering::Relaxed);
+    }
     pub fn shutdown(&mut self) {
         self.closed.store(true, Ordering::Release);
-        let _ = self.sender.try_send(());
+        if let Some(worker) = &self.worker { worker.thread().unpark(); }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -229,184 +305,17 @@ fn configure(
     configured: &mut Option<PreviewConfiguration>,
     request: &PreviewRequest,
 ) -> Result<bool, String> {
-    validate_dimensions(pipeline, request.width, request.height)?;
-    if request.asset.as_ref().is_some_and(|asset| !asset.online) {
-        return Err("Media offline — use Relink to restore the original file".into());
-    }
-    let key = PreviewConfiguration {
-        source: request.asset.as_ref().map(|asset| (asset.path.clone(), asset.fingerprint.clone())),
-        graph: graph(request)?,
-    };
+    let (key, prepared, _) = playback::prepare_region(pipeline, configured, request, false)?;
     if configured.as_ref() == Some(&key) {
         return Ok(false);
-    }
-    let mut prepared = pipeline.prepare_graph(&key.graph)?;
-    let source_changed = configured.as_ref().is_none_or(|previous| previous.source != key.source);
-    if source_changed {
-        if let Some(asset) = &request.asset {
-            prepared.stage_video(
-                SOURCE_ID,
-                NativeVideoConfig {
-                    kind: NativeVideoSourceKind::File,
-                    source: asset.path.clone(),
-                    looping: false,
-                    playback_rate: 1.0,
-                },
-                false,
-            )?;
-        }
     }
     pipeline.commit_graph(prepared)?;
     *configured = Some(key);
     Ok(true)
 }
-fn run(
-    render: RenderDevice,
-    receiver: mpsc::Receiver<()>,
-    validation_receiver: mpsc::Receiver<PipelineValidation>,
-    updates: Arc<Mutex<Option<PreviewUpdate>>>,
-    latest: Arc<Mutex<Option<PreviewRequest>>>,
-    closed: Arc<AtomicBool>,
-) {
-    let mut pipeline =
-        FramePipeline::from_render_device(render, PlaybackCapabilities { data_paths: vec![] });
-    let owner = thread::current();
-    let _ = pipeline.set_waker(Arc::new(move || owner.unpark()));
-    let mut current: Option<PreviewRequest> = None;
-    let mut pending_image: Option<StableFrame> = None;
-    let mut configured: Option<PreviewConfiguration> = None;
-    let mut epoch = 1u64;
-    let mut sequence = 0u64;
-    let mut last_source = 0u64;
-    let mut admitted = false;
-    loop {
-        if closed.load(Ordering::Acquire) {
-            break;
-        }
-        if matches!(
-            receiver.recv_timeout(Duration::from_millis(3)),
-            Err(mpsc::RecvTimeoutError::Disconnected)
-        ) {
-            break;
-        }
-        for validation in validation_receiver.try_iter() {
-            let result = (|| {
-                validate_dimensions(&pipeline, validation.width, validation.height)?;
-                let candidate = pipeline_graph(&validation.pipeline, validation.width, validation.height)?;
-                pipeline.prepare_graph(&candidate)?;
-                Ok(())
-            })();
-            let _ = validation.result.send(result);
-        }
-        let next = latest.lock().ok().and_then(|mut request| request.take());
-        if let Some(request) = next {
-            pipeline.cancel_pending();
-            while pipeline.poll_completion().is_some() {}
-            pending_image = None;
-            admitted = false;
-            let prepare = configure(&mut pipeline, &mut configured, &request);
-            let prepare = prepare.map(|changed| {
-                if changed || request.source_ns < last_source {
-                    epoch = epoch.saturating_add(1);
-                }
-            });
-            if let Err(error) = prepare {
-                publish(&updates, request, Err(error), 0);
-                current = None;
-            } else {
-                last_source = request.source_ns;
-                current = Some(request);
-            }
-        }
-        let Some(request) = current.as_ref() else {
-            continue;
-        };
-        if !admitted {
-            sequence = sequence.saturating_add(1);
-            let demand = FrameDemand {
-                request_id: request.ticket,
-                graph_revision: pipeline.revision(),
-                output_node_id: "output".into(),
-                sources: Vec::new(),
-                input: FrameEvaluationInput {
-                    stamp: FrameStamp {
-                        epoch,
-                        frame: sequence,
-                        timeline_ns: request.source_ns,
-                        deadline_ns: 0,
-                    },
-                    previous_timeline_ns: request.source_ns,
-                    date: [0.0; 4],
-                    mouse: [0.0; 4],
-                    resolution: [request.width as f32, request.height as f32, 1.0],
-                },
-            };
-            match pipeline.submit(demand) {
-                FrameAdmission::Accepted => admitted = true,
-                FrameAdmission::WouldBlock(_) => {}
-                FrameAdmission::Rejected { error, .. } => {
-                    publish(&updates, current.take().unwrap(), Err(error), 0);
-                    continue;
-                }
-            }
-        }
-        pipeline.progress();
-        let _ = pipeline.backend().device.poll(wgpu::PollType::Poll);
-        if let Some(completion) = pipeline.poll_completion() {
-            match completion.outcome {
-                FrameOutcome::Submitted(frame) => pending_image = Some(frame),
-                FrameOutcome::Failed(error) => {
-                    publish(&updates, current.take().unwrap(), Err(error), 0);
-                    continue;
-                }
-                FrameOutcome::Cancelled => {
-                    current = None;
-                    continue;
-                }
-            }
-        }
-        if pending_image
-            .as_ref()
-            .is_some_and(|image| image.ready.is_ready())
-        {
-            let bytes = pipeline
-                .video_metrics("video")
-                .map(|metrics| metrics.cpu_copy_bytes)
-                .unwrap_or(0);
-            publish(
-                &updates,
-                current.take().unwrap(),
-                Ok(pending_image.take().unwrap()),
-                bytes,
-            );
-        }
-    }
-    let _ = pipeline.dispose();
-}
-fn publish(
-    updates: &Mutex<Option<PreviewUpdate>>,
-    request: PreviewRequest,
-    image: Result<StableFrame, String>,
-    cpu_copy_bytes: u64,
-) {
-    let actual_pts_ns = image.as_ref().ok().and_then(|frame| {
-        frame
-            .identity
-            .content_stamp
-            .as_ref()
-            .and_then(|stamp| stamp.media_pts_ns)
-    });
-    if let Ok(mut slot) = updates.lock() {
-        *slot = Some(PreviewUpdate {
-            ticket: request.ticket,
-            revision: request.revision,
-            frame: request.frame,
-            image,
-            actual_pts_ns,
-            cpu_copy_bytes,
-        });
-    }
-}
+#[path = "preview_playback.rs"]
+mod playback;
+use playback::run;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]

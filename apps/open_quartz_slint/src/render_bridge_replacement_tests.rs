@@ -103,8 +103,9 @@ fn paused_selected_preview_retries_after_slow_consumers_release_without_resuming
     let backend = open_quartz::rendering::GpuBackend::from_device(device.clone(), queue);
     let graph: Graph = serde_json::from_value(serde_json::json!({"nodes":[
         {"id":"blue","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Blue","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(0.0,0.0,1.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":2,"height":2}},
-        {"id":"red","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Red","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(1.0,0.0,0.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":2,"height":2}}
-    ],"edges":[]})).unwrap();
+        {"id":"red","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"Red","shaderCode":"@fragment fn main()->@location(0) vec4f{return vec4f(1.0,0.0,0.0,1.0);}","inputs":[],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":2,"height":2}},
+        {"id":"renderer","type":"renderer","position":{"x":0,"y":0},"data":{"type":"renderer","label":"Final","shaderCode":"","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[],"uniforms":{}}}
+    ],"edges":[{"id":"final","source":"red","sourceHandle":"out","target":"renderer","targetHandle":"in"}]})).unwrap();
     bridge.select_preview(Some("blue".into())).unwrap();
     bridge.set_graph(graph, BTreeMap::new(), true).unwrap();
     let wait_for = |predicate: &dyn Fn(&RenderUpdate) -> bool| {

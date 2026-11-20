@@ -73,6 +73,8 @@ pub struct NativePlayer {
     last_stamp: Option<FrameStamp>,
     next_plan_ns: Option<u64>,
     preparing_since_ns: Option<u64>,
+    request_sequence: u64,
+    preview_pending: bool,
 }
 
 impl std::ops::Deref for NativePlayer {
@@ -134,7 +136,7 @@ impl NativePlayer {
         });
         (Self { pipeline, clock: CompositionClock::new(16_666_667), clock_origin: Instant::now(),
             mouse: [0.0; 4], perf: NativeRenderPerf::new(), last_stamp: None, next_plan_ns: None,
-            preparing_since_ns: None }, info)
+            preparing_since_ns: None, request_sequence: 0, preview_pending: false }, info)
     }
 
     pub fn set_graph(&mut self, graph_json: &str) -> Result<u32, String> {
@@ -146,9 +148,12 @@ impl NativePlayer {
         self.commit_graph(prepared)
     }
     pub fn commit_graph(&mut self, prepared: PreparedNativeGraph) -> Result<u32, String> {
+        let paused = self.pipeline.frame_state() == crate::evaluation::EngineState::Paused;
         let revision = self.pipeline.commit_graph(prepared)?;
+        if paused { self.pipeline.pause_execution()?; }
         self.last_stamp = None;
         self.next_plan_ns = None;
+        self.preview_pending = false;
         Ok(revision)
     }
     pub fn output_payload(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
@@ -159,6 +164,7 @@ impl NativePlayer {
             return Err("Playback can only start from a ready graph".into());
         }
         self.pipeline.cancel_pending();
+        self.preview_pending = false;
         #[cfg(feature = "native-video")]
         self.pipeline.videos.resume()?;
         self.clock.start(self.clock_now_ns());
@@ -173,9 +179,61 @@ impl NativePlayer {
     pub fn render_next(&mut self) -> Result<NativeFrameRendered, String> {
         self.render(self.clock_now_ns())
     }
+
+    /// Progress one explicitly requested preview at the frozen composition time.
+    /// A zero-sized result means source/GPU capacity is still pending; call again.
+    /// This never starts playback, advances its clock, or reopens an input source.
+    pub fn render_preview(&mut self) -> Result<NativeFrameRendered, String> {
+        let now_ns = self.clock_now_ns();
+        let clock = self.clock.state();
+        if clock.next_deadline_ns != 0 {
+            return Err("Frozen preview requires stopped or paused playback".into());
+        }
+        let (output_node_id, width, height) = {
+            let plan = self.pipeline.session.execution_plan().ok_or("Native engine has no execution plan")?;
+            let output = plan.output_nodes.first().cloned().ok_or("Graph has no renderer or terminal texture output")?;
+            (output, plan.default_width.max(1), plan.default_height.max(1))
+        };
+        if !self.preview_pending {
+            self.pipeline.cancel_pending();
+            while self.pipeline.poll_completion().is_some() {}
+            self.request_sequence = self.request_sequence.checked_add(1).ok_or("Native request sequence exhausted")?;
+            let stamp = FrameStamp { epoch: clock.epoch, frame: clock.frame.max(1),
+                timeline_ns: clock.timeline_ns, deadline_ns: now_ns };
+            let demand = FrameDemand { request_id: self.request_sequence, graph_revision: self.pipeline.revision(),
+                input: FrameEvaluationInput { stamp, previous_timeline_ns: clock.timeline_ns,
+                    date: utc_date_uniform(SystemTime::now()), mouse: self.mouse,
+                    resolution: [width as f32, height as f32, 1.0] },
+                output_node_id: output_node_id.clone(), sources: Vec::new() };
+            match self.pipeline.submit_preview(demand) {
+                FrameAdmission::Accepted => self.preview_pending = true,
+                FrameAdmission::WouldBlock(_) => {},
+                FrameAdmission::Rejected { error, .. } => return Err(error),
+            }
+        }
+        self.pipeline.progress();
+        let mut result = NativeFrameRendered { frame: clock.frame, timeline_ns: clock.timeline_ns,
+            revision: self.pipeline.revision(), output_node_id, width: 0, height: 0 };
+        if let Some(completion) = self.pipeline.poll_completion() {
+            self.preview_pending = false;
+            match completion.outcome {
+                FrameOutcome::Submitted(frame) => {
+                    self.pipeline.render_device.present_snapshot(&frame.identity.output_node_id, frame.output(),
+                        clock.frame, clock.timeline_ns)?;
+                    result.width = frame.image.width;
+                    result.height = frame.image.height;
+                    result.output_node_id = frame.identity.output_node_id;
+                }
+                FrameOutcome::Cancelled => {},
+                FrameOutcome::Failed(error) => return Err(error),
+            }
+        }
+        Ok(result)
+    }
     pub fn pause(&mut self) -> Result<(), String> {
         let now = self.clock_now_ns();
         self.pipeline.pause_execution()?;
+        self.preview_pending = false;
         self.clock.pause(now).map_err(runtime_error)?;
         self.clock.discard_lookahead();
         self.preparing_since_ns = None;
@@ -186,6 +244,8 @@ impl NativePlayer {
     }
     pub fn resume(&mut self) -> Result<(), String> {
         let now = self.clock_now_ns();
+        self.pipeline.cancel_pending();
+        self.preview_pending = false;
         self.pipeline.resume_execution()?;
         #[cfg(feature = "native-video")]
         self.pipeline.videos.resume()?;
@@ -193,6 +253,7 @@ impl NativePlayer {
     }
     pub fn stop(&mut self) -> Result<(), String> {
         self.pipeline.stop_execution()?;
+        self.preview_pending = false;
         #[cfg(feature = "native-video")]
         self.pipeline.videos.pause();
         self.clock.stop();
@@ -202,6 +263,7 @@ impl NativePlayer {
     }
     pub fn dispose(&mut self) -> Result<(), String> {
         self.pipeline.dispose()?;
+        self.preview_pending = false;
         self.clock.stop();
         Ok(())
     }
@@ -232,7 +294,8 @@ impl NativePlayer {
                 let stamp = FrameStamp { epoch: clock.epoch, frame: clock.frame,
                     timeline_ns: clock.timeline_ns, deadline_ns: planned_ns };
                 let plan = self.pipeline.session.execution_plan().expect("graph checked");
-                let demand = FrameDemand { request_id: clock.frame, graph_revision: self.pipeline.revision(),
+                self.request_sequence = self.request_sequence.checked_add(1).ok_or("Native request sequence exhausted")?;
+                let demand = FrameDemand { request_id: self.request_sequence, graph_revision: self.pipeline.revision(),
                     input: FrameEvaluationInput { stamp: stamp.clone(), previous_timeline_ns: clock.previous_timeline_ns,
                         date: utc_date_uniform(SystemTime::now()), mouse: self.mouse,
                         resolution: [plan.default_width.max(1) as f32, plan.default_height.max(1) as f32, 1.0] },
@@ -294,6 +357,64 @@ impl NativePlayer {
 #[cfg(test)]
 mod tests {
     use super::NativePlayer;
+
+    #[test]
+    fn explicit_preview_preserves_stopped_and_paused_clock_then_resumes() {
+        let (mut host, _) = pollster::block_on(NativePlayer::new()).unwrap();
+        let mut graph = serde_json::json!({
+            "nodes": [{ "id": "source", "type": "shader", "position": { "x": 0, "y": 0 },
+                "data": { "type": "shader", "label": "Frozen preview", "shaderCode":
+                    "@group(0) @binding(0) var<uniform> level: f32; @fragment fn main() -> @location(0) vec4f { return vec4f(level,0.0,0.0,1.0); }",
+                    "inputs": [{ "id": "level", "label": "level", "dataType": "float", "direction": "input" }],
+                    "outputs": [{ "id": "out", "label": "output", "dataType": "sampler2D", "direction": "output" }],
+                    "uniforms": { "level": 0.25 }, "autoSize": false, "width": 2, "height": 2 } }], "edges": []
+        });
+        host.set_graph(&graph.to_string()).unwrap();
+        host.stop().unwrap();
+        fn finish_preview(host: &mut NativePlayer) -> super::NativeFrameRendered {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let result = host.render_preview().unwrap();
+                if result.width != 0 { return result; }
+                assert!(std::time::Instant::now() < deadline, "Frozen preview failed to produce a real frame");
+                std::thread::yield_now();
+            }
+        }
+        let stopped_clock = host.clock.state();
+        let stopped = finish_preview(&mut host);
+        assert_eq!(host.clock.state(), stopped_clock);
+        assert_eq!(host.frame_state(), crate::evaluation::EngineState::Stopped);
+        assert_eq!((stopped.frame, stopped.timeline_ns, stopped.width, stopped.height), (0, 0, 2, 2));
+        let rgba = host.pipeline.render_device.read_output_rgba("source").unwrap().0;
+        assert!(rgba.chunks_exact(4).all(|pixel| pixel[0].abs_diff(64) <= 1 && pixel[1..] == [0,0,255]));
+
+        graph["nodes"][0]["data"]["uniforms"]["level"] = serde_json::json!(0.75);
+        host.set_graph(&graph.to_string()).unwrap();
+        finish_preview(&mut host);
+        assert_eq!(host.clock.state(), stopped_clock);
+        let rgba = host.pipeline.render_device.read_output_rgba("source").unwrap().0;
+        assert!(rgba.chunks_exact(4).all(|pixel| pixel[0].abs_diff(191) <= 1 && pixel[1..] == [0,0,255]));
+        host.start_playback().unwrap();
+        let first = host.render_next().unwrap();
+        assert_eq!(first.frame, 1, "Preview must not consume the first playback frame");
+        assert!(host.render_preview().is_err(), "Frozen preview cannot interfere with an active clock");
+        host.pause().unwrap();
+        let paused_clock = host.clock.state();
+        graph["nodes"][0]["data"]["uniforms"]["level"] = serde_json::json!(0.5);
+        host.set_graph(&graph.to_string()).unwrap();
+        finish_preview(&mut host);
+        assert_eq!(host.clock.state(), paused_clock);
+        assert_eq!(host.frame_state(), crate::evaluation::EngineState::Paused);
+        host.resume().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let resumed = host.render_next().unwrap();
+            if resumed.width != 0 { assert!(resumed.frame > first.frame); break; }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        host.stop().unwrap();
+    }
 
     #[test]
     fn output_payload_prefixes_little_endian_dimensions() {
@@ -410,10 +531,10 @@ mod tests {
         assert!(matches!(host.try_stable_preview("missing"), Err(FrameCaptureError::InvalidSource(_))));
         host.pipeline.render_device.upload_rgba("image", &[10, 20, 30, 255], 1, 1).unwrap();
         for budget in [StableFrameBudget { max_frames: 1, max_bytes: 8 }, StableFrameBudget { max_frames: 2, max_bytes: 7 }] {
-            host.pipeline.stable_previews = StableFramePool::new(host.backend(), budget).unwrap();
+            host.pipeline.selected_previews = StableFramePool::new(host.backend(), budget).unwrap();
             assert!(matches!(host.try_stable_preview("image"), Err(FrameCaptureError::Capacity)));
         }
-        host.pipeline.stable_previews = StableFramePool::new(host.backend(), StableFrameBudget { max_frames: 2, max_bytes: 8 }).unwrap();
+        host.pipeline.selected_previews = StableFramePool::new(host.backend(), StableFrameBudget { max_frames: 2, max_bytes: 8 }).unwrap();
         let first = host.try_stable_preview("image").unwrap().unwrap();
         let second = host.try_stable_preview("image").unwrap().unwrap();
         assert!(host.try_stable_preview("image").unwrap().is_none());

@@ -183,6 +183,38 @@ impl StableFramePool {
         Ok(pool)
     }
 
+    /// Change local limits without replacing the pool or revoking consumer leases.
+    /// Idle allocations may be reclaimed, but retained allocations must fit.
+    pub(crate) fn configure_budget(&mut self, budget: StableFrameBudget) -> Result<(), FrameCaptureError> {
+        if budget.max_frames == 0 || budget.max_bytes == 0 {
+            return Err(FrameCaptureError::InvalidSource("pool limits must be non-zero".into()));
+        }
+        if let Some(shared) = &self.frame_budget {
+            let (surfaces, bytes) = shared.limits();
+            if budget.max_frames > surfaces || budget.max_bytes > bytes {
+                return Err(FrameCaptureError::InvalidSource("stable output limits exceed the shared frame budget".into()));
+            }
+        }
+        self.poll_releases()?;
+        let slots = self.slots.get_mut().expect("stable frame pool lock poisoned");
+        let retained = slots.iter().filter(|slot| slot.busy.load(Ordering::Acquire));
+        let (frames, bytes) = retained.fold((0usize, 0u64), |(frames, bytes), slot| (frames + 1, bytes.saturating_add(slot.bytes)));
+        if frames > budget.max_frames || bytes > budget.max_bytes {
+            return Err(FrameCaptureError::InvalidSource("stable output limits are below retained consumer leases".into()));
+        }
+        if self.budget.max_frames != budget.max_frames || self.budget.max_bytes != budget.max_bytes {
+            slots.retain(|slot| slot.busy.load(Ordering::Acquire));
+        }
+        self.budget = budget;
+        Ok(())
+    }
+
+    /// Allocated pool surfaces and bytes, including idle reusable allocations.
+    pub fn usage(&self) -> (usize, u64) {
+        let slots = self.slots.lock().expect("stable frame pool lock poisoned");
+        (slots.len(), slots.iter().map(|slot| slot.bytes).sum())
+    }
+
     pub fn set_frame_budget(&mut self, frame_budget: Arc<FrameBudget>) -> Result<(), FrameCaptureError> {
         if let Some(existing) = &self.frame_budget {
             if Arc::ptr_eq(existing, &frame_budget) { return Ok(()); }
@@ -226,7 +258,7 @@ impl StableFramePool {
         if width == 0 || height == 0 || width > dimension_limit || height > dimension_limit {
             return Err(FrameCaptureError::InvalidSource("invalid stable frame dimensions".into()));
         }
-        let bytes_per_pixel = match format { TextureFormat::Rgba8Unorm => 4, TextureFormat::Rgba32Float => 16 };
+        let bytes_per_pixel = format.bytes_per_pixel();
         let bytes = u64::from(width).checked_mul(u64::from(height)).and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
             .ok_or(FrameCaptureError::Capacity)?;
         let total = bytes.checked_mul(count as u64).ok_or(FrameCaptureError::Capacity)?;
@@ -307,7 +339,7 @@ impl StableFramePool {
         self.capture(output, identity)
     }
 
-    fn capture(
+    pub(crate) fn capture(
         &self,
         source: GpuOutputHandle,
         identity: FrameSnapshotIdentity,
@@ -331,10 +363,7 @@ impl StableFramePool {
                 "dimensions, format or COPY_SRC usage disagree with the texture".into(),
             ));
         }
-        let bytes_per_pixel = match source.format {
-            TextureFormat::Rgba8Unorm => 4,
-            TextureFormat::Rgba32Float => 16,
-        };
+        let bytes_per_pixel = source.format.bytes_per_pixel();
         let bytes = u64::from(source.width)
             .checked_mul(u64::from(source.height))
             .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))

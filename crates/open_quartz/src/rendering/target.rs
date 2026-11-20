@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum TextureFormat {
     Rgba8Unorm,
+    Rgba16Float,
     Rgba32Float,
 }
 
@@ -10,7 +11,18 @@ impl From<TextureFormat> for wgpu::TextureFormat {
     fn from(format: TextureFormat) -> Self {
         match format {
             TextureFormat::Rgba8Unorm => Self::Rgba8Unorm,
+            TextureFormat::Rgba16Float => Self::Rgba16Float,
             TextureFormat::Rgba32Float => Self::Rgba32Float,
+        }
+    }
+}
+
+impl TextureFormat {
+    pub fn bytes_per_pixel(self) -> u64 {
+        match self {
+            Self::Rgba8Unorm => 4,
+            Self::Rgba16Float => 8,
+            Self::Rgba32Float => 16,
         }
     }
 }

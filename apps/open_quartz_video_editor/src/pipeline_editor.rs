@@ -3,15 +3,19 @@ use crate::clip_pipeline::{ClipPipeline, SOURCE_ID};
 use crate::graph_clipboard::GraphClipboard;
 use crate::graph_view_model::{port_at, GraphViewModel};
 use crate::inspector_forms::{FormKind, NodeFormsDraft};
+use crate::corrector_editor::{CorrectorAction, CorrectorDraft};
 use crate::uniform_literals::{effective_uniform_value, format_uniform_literal, parse_uniform_literal, uniform_shape};
 use open_quartz::{Graph, GraphCommand, NodeId, PortId, PortKey, Position, Project, ProjectFile, ProjectNode, NodeType};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "pipeline_corrector.rs"]
+mod pipeline_corrector;
 pub(super) enum PipelineCommand {
     Workspace(bool), Select(String, bool), Move(String, f32, f32),
     Port(String, String, bool), Drop(String, String, bool, f32, f32, f32),
     Edge(String), Add(i32), Action(String), Label(String), Shader(String),
     Size(i32, i32, bool), Uniform(String, String), Form(String, String), ApplyForm(String),
+    Corrector(String, String, String, String),
 }
 
 struct Draft {
@@ -52,6 +56,13 @@ struct Candidate {
     selection: BTreeSet<String>,
     validation: mpsc::Receiver<Result<(), String>>,
 }
+struct CorrectorState {
+    clip: String,
+    node: String,
+    revision: u64,
+    draft: CorrectorDraft,
+    preview: Option<ClipPipeline>,
+}
 #[derive(Default)]
 pub(super) struct PipelineEditor {
     clip: Option<String>,
@@ -59,11 +70,13 @@ pub(super) struct PipelineEditor {
     edge: Option<String>,
     port: Option<(String,String,bool)>,
     clipboard: Option<GraphClipboard>,
+    corrector_clipboard: Option<ProjectNode>,
     drafts: HashMap<(String,String), Draft>,
     candidate: Option<Candidate>,
     pub(super) error: String,
     effects: Vec<&'static crate::shader_catalog::ShaderPreset>,
     revision: Option<u64>,
+    corrector: Option<CorrectorState>,
 }
 impl PipelineEditor {
     pub(super) fn reset(&mut self) {
@@ -98,16 +111,18 @@ impl Controller {
         bind!(on_pipeline_uniform_draft_changed, |name,value| PipelineCommand::Uniform(name.to_string(),value.to_string()));
         bind!(on_pipeline_form_draft_changed, |key,value| PipelineCommand::Form(key.to_string(),value.to_string()));
         bind!(on_pipeline_apply_form, |key| PipelineCommand::ApplyForm(key.to_string()));
+        bind!(on_pipeline_corrector_event, |target,action,key,value| PipelineCommand::Corrector(target.to_string(),action.to_string(),key.to_string(),value.to_string()));
         let mut this=this.borrow_mut();
         this.pipeline_editor.effects=crate::shader_catalog::presets().iter().filter(|preset|matches!(preset.category,"COLOR"|"FILTER"|"DISTORTION"|"BLEND")).collect::<Vec<_>>();
         this.pipeline_editor.effects.sort_by_key(|preset|if preset.category=="COLOR"{0}else{1});
         let mut groups=Vec::new();
         for category in ["CUSTOM","COLOR","FILTER","DISTORTION","BLEND"] {
-            let effects:Vec<crate::PipelineEffect>=if category=="CUSTOM" { vec![crate::PipelineEffect { label:"Custom Shader".into(), index:-1, glyph:"ƒx".into() }] }
+            let mut effects:Vec<crate::PipelineEffect>=if category=="CUSTOM" { vec![crate::PipelineEffect { label:"Custom Shader".into(), index:-1, glyph:"ƒx".into() }] }
                 else { this.pipeline_editor.effects.iter().enumerate().filter(|(_,preset)|preset.category==category).map(|(index,preset)|crate::PipelineEffect {
                     label:preset.label.to_owned().into(), index:index as i32,
                     glyph:match category { "COLOR"=>"C", "FILTER"=>"F", "DISTORTION"=>"D", "BLEND"=>"B", _=>"□" }.into(),
                 }).collect() };
+            if category=="COLOR" { effects.insert(0,crate::PipelineEffect { label:"Color Corrector".into(),index:-3,glyph:"C".into() }); }
             let rows=effects.chunks(2).map(|pair|crate::PipelineEffectRow {
                 first:pair[0].clone(),
                 second:pair.get(1).cloned().unwrap_or_else(||crate::PipelineEffect { label:"".into(), index:-2, glyph:"".into() }),
@@ -128,7 +143,7 @@ impl Controller {
         if draft.baseline != node { *draft=Draft::new(&node); }
         Some(draft)
     }
-    pub(super) fn pipeline_has_drafts(&self) -> bool { self.pipeline_editor.candidate.is_some() || self.pipeline_editor.drafts.values().any(Draft::dirty) }
+    pub(super) fn pipeline_has_drafts(&self) -> bool { self.pipeline_editor.candidate.is_some() || self.pipeline_editor.drafts.values().any(Draft::dirty) || self.pipeline_editor.corrector.as_ref().is_some_and(|state|state.draft.dirty()) }
     fn pipeline_error(&mut self, error: String) {
         self.pipeline_editor.error=error.clone();
         self.status(error);
@@ -136,6 +151,7 @@ impl Controller {
     }
     pub(super) fn pipeline_command(&mut self, command: PipelineCommand) {
         if let PipelineCommand::Workspace(open)=command {
+            if !open { self.discard_pipeline_corrector(); }
             if open {
                 let id=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some())
                     .or_else(||self.document.clip_at(self.playhead).map(|c|c.id.clone()));
@@ -154,6 +170,7 @@ impl Controller {
         }
         match command {
             PipelineCommand::Select(id,add) => {
+                self.discard_pipeline_corrector();
                 self.pause();
                 if !add {self.pipeline_editor.selected.clear();}
                 if !self.pipeline_editor.selected.insert(id.clone())&&add {self.pipeline_editor.selected.remove(&id);}
@@ -180,10 +197,13 @@ impl Controller {
                 let Some(id)=self.pipeline_editor.clip.clone()else{return;};
                 let Some(clip)=self.document.clip(&id)else{return;};
                 let mut pipeline=clip.pipeline.clone();
-                let (code,label)=if index<0 {("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f{return textureSample(image,imageSampler,uv);}","Custom Shader")}
-                    else if let Some(effect)=self.pipeline_editor.effects.get(index as usize){(effect.code,effect.label)}else{return;};
                 let after=self.pipeline_editor.selected.iter().next().map(String::as_str).unwrap_or(SOURCE_ID);
-                match pipeline.add_serial(after,code,label){
+                let result=if index==-3 { pipeline.add_corrector_serial(after) } else {
+                    let (code,label)=if index==-1 {("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f{return textureSample(image,imageSampler,uv);}","Custom Shader")}
+                        else if let Some(effect)=self.pipeline_editor.effects.get(index as usize){(effect.code,effect.label)}else{return;};
+                    pipeline.add_serial(after,code,label)
+                };
+                match result {
                     Ok(node)=>self.prepare_pipeline(pipeline,BTreeSet::from([node])),Err(e)=>self.pipeline_error(e),
                 }
             }
@@ -194,6 +214,7 @@ impl Controller {
             PipelineCommand::Uniform(name,value)=>{if let Some(d)=self.pipeline_draft(){d.uniforms.insert(name,value);}self.publish_pipeline_inspector();}
             PipelineCommand::Form(key,value)=>{if let Some(d)=self.pipeline_draft(){d.forms.change(&key,&value);}self.publish_pipeline_inspector();}
             PipelineCommand::ApplyForm(key)=>self.apply_pipeline_inspector(&format!("form:{key}")),
+            PipelineCommand::Corrector(target,action,key,value)=>self.pipeline_corrector_event(&target,&action,&key,&value),
             PipelineCommand::Workspace(_)=>{}
         }
     }
@@ -224,7 +245,7 @@ impl Controller {
         match action {
             "cancel-connection"=>{self.pipeline_editor.port=None;self.pipeline_editor.edge=None;self.publish_pipeline();}
             "select-all"=>{self.pipeline_editor.selected=pipeline.graph().nodes.iter().filter(|n|!ClipPipeline::is_protected(&n.id)).map(|n|n.id.clone()).collect();self.publish_pipeline();}
-            "discard-drafts"=>{let clip=self.pipeline_editor.clip.clone().unwrap_or_default();let selected=self.pipeline_editor.selected.clone();self.pipeline_editor.drafts.retain(|(c,n),_|c!=&clip||!selected.contains(n));self.pipeline_editor.error.clear();self.publish_pipeline_inspector();}
+            "discard-drafts"=>{self.discard_pipeline_corrector();let clip=self.pipeline_editor.clip.clone().unwrap_or_default();let selected=self.pipeline_editor.selected.clone();self.pipeline_editor.drafts.retain(|(c,n),_|c!=&clip||!selected.contains(n));self.pipeline_editor.error.clear();self.publish_pipeline_inspector();}
             "remove-nodes"=>{let ids=self.pipeline_editor.selected.iter().cloned().collect::<Vec<_>>();match pipeline.remove_nodes(&ids){Ok(())=>self.prepare_pipeline(pipeline,BTreeSet::new()),Err(e)=>self.pipeline_error(e)}}
             "delete-edge"=>{if let Some(edge)=self.pipeline_editor.edge.clone(){match pipeline.apply_command(GraphCommand::Disconnect{edge_id:edge}){Ok(())=>self.prepare_pipeline(pipeline,self.pipeline_editor.selected.clone()),Err(e)=>self.pipeline_error(e)}}}
             "reconnect-edge"=>{
@@ -233,10 +254,25 @@ impl Controller {
                 }
             }
             "copy"=>{
-                let selected=self.pipeline_editor.selected.iter().filter(|id|!ClipPipeline::is_protected(id)).cloned().collect();
+                let selected:BTreeSet<String>=self.pipeline_editor.selected.iter().filter(|id|!ClipPipeline::is_protected(id)).cloned().collect();
+                self.pipeline_editor.corrector_clipboard=if selected.len()==1 {
+                    pipeline.graph().nodes.iter().find(|node|selected.contains(&node.id)&&node.node_type==NodeType::ColorCorrector).cloned()
+                }else{None};
                 self.pipeline_editor.clipboard=GraphClipboard::capture(&as_project(pipeline.graph().clone()),&selected);self.publish_pipeline();
             }
             "paste"=>{
+                if let Some(original)=self.pipeline_editor.corrector_clipboard.clone(){
+                    let after=self.pipeline_editor.selected.iter().next().map(String::as_str).unwrap_or(SOURCE_ID);
+                    let result=pipeline.add_corrector_serial(after).and_then(|id|{
+                        let mut data=pipeline.graph().nodes.iter().find(|node|node.id==id).expect("inserted corrector").data.clone();
+                        data.color_corrector=original.data.color_corrector;
+                        data.label=original.data.label;
+                        pipeline.apply_command(GraphCommand::UpdateNodeData{node_id:NodeId::new(&id),data})?;
+                        Ok(id)
+                    });
+                    match result{Ok(id)=>self.prepare_pipeline(pipeline,BTreeSet::from([id])),Err(error)=>self.pipeline_error(error)}
+                    return;
+                }
                 if let Some(clipboard)=self.pipeline_editor.clipboard.as_mut(){
                     let mut project=as_project(pipeline.graph().clone());
                     match clipboard.paste(&mut project).map_err(sdk_error).and_then(|selected|{pipeline.replace_graph(project.graph_snapshot())?;Ok(selected)}){
@@ -349,10 +385,12 @@ impl Controller {
         window.set_pipeline_is_shader(editable&&node.as_ref().is_some_and(|n|n.node_type==NodeType::Shader));
         window.set_pipeline_supports_output_size(editable&&node.as_ref().is_some_and(|n|matches!(n.node_type,NodeType::Shader|NodeType::Constant)));
         let graph=self.pipeline_editor.clip.as_deref().and_then(|id|self.document.clip(id)).map(|c|c.pipeline.graph().clone()).unwrap_or_default();
+        self.publish_pipeline_corrector(node.as_ref());
         let Some(node)=node else {
             window.set_pipeline_inspector_dirty(false);return;
         };
         let error=self.pipeline_editor.error.clone();
+        let corrector_dirty=self.pipeline_editor.corrector.as_ref().is_some_and(|state|state.draft.dirty());
         let Some(draft)=self.pipeline_draft()else{return;};
         if window.get_pipeline_node_label()!=draft.label.as_str(){window.set_pipeline_node_label(draft.label.clone().into());}
         if window.get_pipeline_shader_code()!=draft.code.as_str(){window.set_pipeline_shader_code(draft.code.clone().into());}
@@ -367,7 +405,7 @@ impl Controller {
         }).collect::<Vec<_>>();
         window.set_pipeline_uniforms_valid(uniforms.iter().all(|u|u.valid));
         window.set_pipeline_uniform_dirty(draft.uniforms.iter().any(|(name,value)|node.data.inputs.iter().find(|p|&p.label==name).is_some_and(|p|*value!=format_uniform_literal(&effective_uniform_value(&node,p)))));
-        window.set_pipeline_inspector_dirty(editable&&draft.dirty());
+        window.set_pipeline_inspector_dirty(editable&&(draft.dirty()||corrector_dirty));
         window.set_pipeline_validation_message(error.into());
         window.set_pipeline_ports(ModelRc::new(VecModel::from(node.data.inputs.iter().chain(&node.data.outputs).map(|port|crate::InspectorPort{label:port.label.clone().into(),data_type:format!("{:?}",port.data_type).into(),output:port.direction==open_quartz::PortDirection::Output}).collect::<Vec<_>>())));
         // Keep form field identities stable while a text field owns focus.

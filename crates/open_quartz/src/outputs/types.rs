@@ -188,7 +188,7 @@ pub struct PlaybackCapabilities {
 /// Unknown must remain explicit rather than silently labelling arbitrary shader values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum FrameColorSpace { Unknown, Srgb, LinearBt709 }
+pub enum FrameColorSpace { Unknown, Srgb, LinearBt709, AcesCgLinear }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

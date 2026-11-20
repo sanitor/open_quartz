@@ -58,8 +58,8 @@ impl ClipPipeline {
             if node.id == SOURCE_ID {
                 continue;
             }
-            if !matches!(node.node_type, NodeType::Shader | NodeType::Constant | NodeType::Math) {
-                return Err("Clip pipelines support only static Shader, Constant and Math nodes".into());
+            if !matches!(node.node_type, NodeType::Shader | NodeType::Constant | NodeType::Math | NodeType::ColorCorrector) {
+                return Err("Clip pipelines support only static Shader, Constant, Math and Color Corrector nodes".into());
             }
             let data = &node.data;
             if data.input_mode.is_some() || data.input_data_type.is_some() || data.system_source.is_some()
@@ -103,6 +103,19 @@ impl ClipPipeline {
                     || !data.shader_code.is_empty()
                 {
                     return Err(format!("Math node {} has invalid executable ports", node.id));
+                }
+            } else if node.node_type == NodeType::ColorCorrector {
+                data.color_corrector.as_ref().ok_or("Color Corrector node is missing its configuration")?
+                    .validate().map_err(|error| error.to_string())?;
+                let mut factory = project(Graph::default());
+                let (expected, _) = factory.create_graph_node(NodeFactoryRequest::ColorCorrector {
+                    position: None,
+                }, 0).map_err(|error| error.to_string())?;
+                if !ports_match(&data.inputs, &expected.data.inputs)
+                    || !ports_match(&data.outputs, &expected.data.outputs)
+                    || !data.shader_code.is_empty()
+                {
+                    return Err(format!("Color Corrector node {} has invalid executable ports", node.id));
                 }
             } else {
                 let parsed = parse_shader(&data.shader_code);
@@ -173,6 +186,19 @@ impl ClipPipeline {
 
     /// Insert a factory shader into the selected serial connection, preserving downstream fan-out.
     pub fn add_serial(&mut self, after: &str, code: &str, label: &str) -> Result<String, String> {
+        self.add_serial_factory(after, |position| NodeFactoryRequest::Shader {
+            position: Some(position), code: code.to_owned(), label: label.to_owned(),
+            template_name: Some(label.to_owned()), shader_template_id: None,
+        })
+    }
+
+    pub fn add_corrector_serial(&mut self, after: &str) -> Result<String, String> {
+        self.add_serial_factory(after, |position| NodeFactoryRequest::ColorCorrector {
+            position: Some(position),
+        })
+    }
+
+    fn add_serial_factory(&mut self, after: &str, factory: impl FnOnce(Position) -> NodeFactoryRequest) -> Result<String, String> {
         let before_output = after == OUTPUT_ID;
         let after = if after == OUTPUT_ID {
             self.graph.edges.iter().find(|edge| edge.target == OUTPUT_ID)
@@ -192,11 +218,9 @@ impl ClipPipeline {
             return Err("Serial insertion requires a downstream connection".into());
         }
         let mut aggregate = project(self.graph.clone());
-        let (node, _) = aggregate.create_graph_node(NodeFactoryRequest::Shader {
-            position: Some(Position { x: source.position.x + 240.0, y: source.position.y }),
-            code: code.to_owned(), label: label.to_owned(), template_name: Some(label.to_owned()),
-            shader_template_id: None,
-        }, 0).map_err(|error| error.to_string())?;
+        let (node, _) = aggregate.create_graph_node(factory(Position {
+            x: source.position.x + 240.0, y: source.position.y,
+        }), 0).map_err(|error| error.to_string())?;
         let samplers = node.data.inputs.iter().filter(|port| port.data_type == DataType::Sampler2d).collect::<Vec<_>>();
         if samplers.len() != 1 || node.data.outputs.len() != 1 {
             return Err("Serial insertion requires exactly one image input and one fragment output".into());

@@ -175,3 +175,56 @@ fn node_factory_covers_every_executable_variant_and_math_descriptor() {
     let extra_ports = math_ports("math", 4, PortDirection::Input);
     assert_eq!(extra_ports[3].label, "value");
 }
+
+#[test]
+fn corrector_factory_edits_history_and_persistence_keep_executable_semantics() {
+    use crate::operators::{evaluate_color_corrector, ColorDomain};
+    let sdk = OpenQuartz::new(Environment::headless());
+    let mut project = sdk.create_project("Corrector");
+    let (node, _) = project.create_graph_node(NodeFactoryRequest::ColorCorrector { position: None }, 0).unwrap();
+    assert_eq!(node.node_type, NodeType::ColorCorrector);
+    assert!(node.data.shader_code.is_empty());
+    let mut data = node.data.clone();
+    data.color_corrector.as_mut().unwrap().primaries.exposure = 1.0;
+    project.apply_graph_command(GraphCommand::UpdateNodeData { node_id: NodeId::new(&node.id), data }, project.graph_revision()).unwrap();
+    let saved = serde_json::to_value(project.to_file()).unwrap();
+    let reopened = Project::try_from_file(serde_json::from_value(saved.clone()).unwrap()).unwrap();
+    let config = reopened.graph().nodes()[0].data.color_corrector.as_ref().unwrap();
+    let result = evaluate_color_corrector(config, ColorDomain::AcesCgLinear, [-0.5,0.25,2.0,0.4]).unwrap();
+    for (actual,expected) in result.into_iter().zip([-1.0,0.5,4.0,0.4]) { assert!((actual-expected).abs()<1e-5); }
+    project.rollback_graph(project.graph_revision()).unwrap();
+    assert!(project.graph().nodes()[0].data.color_corrector.as_ref().unwrap().is_identity());
+    project.redo_graph(project.graph_revision()).unwrap();
+    assert_eq!(project.graph().nodes()[0].data.color_corrector.as_ref().unwrap().primaries.exposure,1.0);
+
+    let before = project.to_file();
+    let revision = project.graph_revision();
+    let mut invalid = project.graph().nodes()[0].data.clone();
+    invalid.color_corrector.as_mut().unwrap().primaries.gamma[0] = 0.0;
+    assert!(project.apply_graph_command(GraphCommand::UpdateNodeData { node_id: NodeId::new(&node.id), data: invalid },revision).is_err());
+    assert_eq!(project.graph_revision(), revision);
+    assert_eq!(project.to_file(), before);
+    let mut malformed = saved;
+    malformed["graph"]["nodes"][0]["data"]["colorCorrector"]["algorithmVersion"] = serde_json::json!(900);
+    assert!(serde_json::from_value::<ProjectFile>(malformed).is_err());
+}
+
+#[test]
+fn corrector_rejects_payload_type_mismatch_shader_disguise_and_port_mutation() {
+    let sdk = OpenQuartz::new(Environment::headless());
+    let mut project = sdk.create_project("Corrector validation");
+    let (node, _) = project.create_graph_node(NodeFactoryRequest::ColorCorrector { position: None }, 0).unwrap();
+    for data in [
+        NodeData { color_corrector: None, ..node.data.clone() },
+        NodeData { node_type: NodeType::Shader, ..node.data.clone() },
+        NodeData { shader_code: "@fragment fn main() {}".to_owned(), ..node.data.clone() },
+        NodeData { inputs: vec![], ..node.data.clone() },
+        NodeData { width: Some(512), ..node.data.clone() },
+        NodeData { feedback_enabled: Some(true), ..node.data.clone() },
+    ] {
+        assert!(project.apply_graph_command(GraphCommand::UpdateNodeData { node_id: NodeId::new(&node.id), data }, project.graph_revision()).is_err());
+    }
+    let mut detached = node.data;
+    detached.node_type = NodeType::Shader;
+    assert!(serde_json::from_value::<NodeData>(serde_json::to_value(detached).unwrap()).is_err());
+}
