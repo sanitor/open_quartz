@@ -43,6 +43,10 @@ jobs:
       - name: Build portable Slint desktop
         run: npm run build
 
+      - name: Build and verify the Studio archive
+        if: runner.os == 'macOS'
+        run: npm run package:video-editor
+
       - uses: actions/upload-artifact@v4
         with:
           name: slint-${{ matrix.os }}
@@ -72,6 +76,7 @@ jobs:
           name: Open Quartz ${{ github.ref_name }}
           body: |
             Native Slint desktop is the default application. Unpack the archive before launching.
+            OpenQuartz-Studio archives contain the standalone macOS video editor.
             macOS archives contain an ad-hoc-signed .app, not a notarized installer;
             Windows archives include the runtime and screen saver export host.
             See CHANGELOG.md for release notes and README.md for platform requirements.

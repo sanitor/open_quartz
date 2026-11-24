@@ -17,6 +17,7 @@
     "test:editor": "cargo test --manifest-path crates/slint_code_editor/Cargo.toml --locked",
     "dev:video-editor": "node scripts/video-editor.mjs dev",
     "build:video-editor": "node scripts/video-editor.mjs build",
+    "package:video-editor": "node scripts/video-editor.mjs package",
     "test:video-editor": "node scripts/video-editor.mjs test",
     "test:video-editor:ui": "node scripts/video-editor.mjs test-ui",
     "test:video-editor:ui:smoke": "node scripts/video-editor.mjs test-ui --smoke",

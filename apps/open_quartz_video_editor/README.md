@@ -14,7 +14,7 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1` SDK 和现有 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
+命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio1` SDK 和开发测试使用的 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
@@ -96,6 +96,10 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 **代理预览** 用素材库的 **Prepare proxy** 在后台生成最多 640 × 360 的视频代理。代理通过逐帧验证后可用 **Use proxies** 切换，**Use originals** 恢复原片预览。生成可以取消，已验证的代理可以重用。导出始终用原片，工程继续保存原素材的路径和指纹。
 
 **EXPORT** 导出整个序列或指定区间，格式为 8-bit SDR H.264/MP4，沿用工程画布尺寸和帧率。默认起点为 0，结束点为序列总帧数。修改 **Start frame** 和 **End frame (exclusive)** 可按帧选区，结束帧不写入成片。音频同步裁切为 48 kHz 双声道 AAC，成片时间从零开始。分辨率预设等比适配指定尺寸，帧率预设按序列时间选择源帧，码率预设控制 H.264 目标码率。导出使用启动时的工程快照，窗口底部显示进度，工具栏可取消。完成时原子提交到新的本地 `.mp4` 路径。
+
+## macOS 发行包
+
+`npm run package:video-editor` 构建当前 Mac 架构的独立 **OpenQuartz Studio.app** 并输出到 `dist-desktop/`。应用包包含同一次构建产出的 LGPL FFmpeg 媒体库和代理工具，以及对应源码、补丁和许可文件。打包脚本重新解包 ZIP，移除开发媒体路径后检查签名及动态库依赖，运行 Studio 的 `--help`，并用随包 FFmpeg 转封装测试素材。发布工作流在 macOS 构建机运行同一命令。包使用 ad-hoc 签名，外部发布需要 Developer ID 签名与 Apple 公证。
 
 ## 验证
 

@@ -1476,6 +1476,31 @@ try{
    await expectColor('blue');
    await close();
  });
+ await step('Generate a proxy for reordered VFR footage with a nonzero origin', async () => {
+   const original = resolve('crates/oq-media/tests/source-time.mp4');
+   const previous = new Set(await cacheFiles());
+   await launch();
+   await fileAction('IMPORT', original, 'Import media');
+   await waitState('source PTS 0 ns');
+   await click('Prepare proxy'); await waitState('Proxy ready');
+   const created = (await cacheFiles()).filter(name => !previous.has(name));
+   assert.equal(created.length, 1);
+   const timestamps = path => {
+     const decoded = spawnSync(ffmpeg, ['-hide_banner', '-copyts', '-i', path,
+       '-vf', 'showinfo', '-vsync', '0', '-f', 'null', '-'], { env: mediaEnv, encoding: 'utf8' });
+     assert.equal(decoded.status, 0, decoded.stderr);
+     return Array.from(decoded.stderr.matchAll(/\bn:\s+\d+ pts:\s+(\d+)\b/g), match => Number(match[1]));
+   };
+   const source = timestamps(original);
+   assert.equal(source.length, 34);
+   assert.equal(source[0], 2000);
+   assert(source.some((timestamp, index) => timestamp - source[index - 1] === 200));
+   const proxy = timestamps(join(output, 'proxies', created[0]));
+   assert.deepEqual(proxy, source.map(pts => pts - source[0]));
+   await fileAction('SAVE AS', join(output, 'proxy-vfr.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   await close();
+ });
  const chooseExportOption = async (label, steps, value) => {
    const box = await client.find({ label, role: 'Combobox' });
    await client.click(box);

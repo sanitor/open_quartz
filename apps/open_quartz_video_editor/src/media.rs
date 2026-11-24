@@ -149,6 +149,20 @@ pub fn audio_metadata(path: &Path) -> Result<Option<AudioAsset>, String> {
     oq_media::probe_audio(path).map_err(|error| error.to_string())?.audio.map(audio_asset).transpose()
 }
 
+#[cfg(target_os = "macos")]
+pub fn proxy_encoder_path() -> Result<PathBuf, String> {
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join("../Resources/runtime/ffmpeg")));
+    let development = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../open_quartz_slint/runtime/ffmpeg-media/bin/ffmpeg");
+    installed
+        .into_iter()
+        .chain([development])
+        .find(|path| path.is_file())
+        .ok_or_else(|| "Proxy encoder unavailable. Run npm run prepare:desktop".into())
+}
+
 pub fn configure_runtime() -> Result<(), String> {
     if std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").is_some() {
         return Ok(());

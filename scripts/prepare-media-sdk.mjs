@@ -1,6 +1,6 @@
 // Reproducible, LGPL-only libav SDK for the macOS in-process VideoToolbox backend.
-// The existing FFmpeg executable remains the camera/software fallback and is
-// distributed separately with its own notices. No Homebrew libraries are bundled.
+// The matching FFmpeg CLI builds Studio previews with the same redistributable SDK.
+// No Homebrew libraries are bundled.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { availableParallelism } from 'node:os';
@@ -14,7 +14,7 @@ export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
-const revision = 'oq-vt-hw3-metal-encode-r2-audio1';
+const revision = 'oq-vt-hw3-metal-encode-r2-audio1-studio1';
 
 function run(command, args, cwd) {
   return new Promise((accept, reject) => {
@@ -29,6 +29,7 @@ export async function prepareMediaSdk() {
   if (!['arm64', 'x64'].includes(process.arch)) throw new Error(`Unsupported macOS architecture: ${process.arch}`);
   const marker = `${sha256}\n${revision}\n${process.arch}\n`;
   if (await readFile(join(mediaSdk, '.build-id'), 'utf8').catch(() => '') === marker) {
+    await access(join(mediaSdk, 'bin', 'ffmpeg'));
     await access(join(mediaSdk, 'lib', 'libavcodec.62.dylib'));
     await access(join(mediaSdk, 'lib', 'libswresample.6.dylib'));
     await access(join(mediaSdk, 'lib', 'pkgconfig', 'libavcodec.pc'));
@@ -54,8 +55,9 @@ export async function prepareMediaSdk() {
   const args = [
     `--prefix=${install}`, '--disable-autodetect', '--disable-everything',
     `--extra-version=${revision}`,
-    '--disable-programs', '--disable-doc', '--disable-debug', '--disable-static', '--enable-shared',
-    '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--disable-avfilter',
+    '--disable-programs', '--enable-ffmpeg', '--disable-doc', '--disable-debug', '--disable-static', '--enable-shared',
+    '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--enable-avfilter',
+    '--enable-filter=scale,format,null,anull,aformat,aresample',
     '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-swresample', '--enable-videotoolbox',
     '--enable-encoder=h264_videotoolbox,aac', '--enable-muxer=mp4,mov',
     '--enable-decoder=h264,hevc,mpeg4,vp9,av1,aac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le',
@@ -63,7 +65,7 @@ export async function prepareMediaSdk() {
     '--enable-demuxer=mov,matroska,avi,mpegts,wav,aac', '--enable-protocol=file',
     '--enable-hwaccel=h264_videotoolbox,hevc_videotoolbox',
     '--install-name-dir=@rpath', '--extra-cflags=-mmacosx-version-min=13.0',
-    '--extra-ldflags=-mmacosx-version-min=13.0',
+    '--extra-ldflags=-mmacosx-version-min=13.0 -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/../lib',
     ...(process.arch === 'x64' ? ['--disable-x86asm'] : []),
   ];
   await run('./configure', args, source);
@@ -83,8 +85,8 @@ export async function prepareMediaSdk() {
   await copyFile(archive, join(staging, `ffmpeg-${version}.tar.xz`));
   await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-hardware.patch'), join(staging, 'ffmpeg-videotoolbox-hardware.patch'));
   await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-reorder.patch'), join(staging, 'ffmpeg-videotoolbox-reorder.patch'));
-  await writeFile(join(staging, 'BUILD-CONFIG.txt'), `${sourceUrl}\nSHA-256: ${sha256}\n./configure ${args.join(' ')}\n`);
-  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require H.264/HEVC hardware decode and Metal-compatible output; enable hardware H.264 encoder and MP4/MOV mux; backport upstream H.264 reorder-depth correction 2da55bf59a68801a8157ab141a487196ce3416a8.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch and patch -p1 < ffmpeg-videotoolbox-reorder.patch before configuring. Original source, exact patches, LGPL license and build options included.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
+  await writeFile(join(staging, 'BUILD-CONFIG.txt'), `${sourceUrl}\nSHA-256: ${sha256}\n./configure ${args.map(arg => /\s/.test(arg) ? JSON.stringify(arg) : arg).join(' ')}\n`);
+  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require H.264/HEVC hardware decode and Metal-compatible output; enable a matching FFmpeg CLI with scaling, hardware H.264 encoding and MP4/MOV muxing; backport upstream H.264 reorder-depth correction 2da55bf59a68801a8157ab141a487196ce3416a8.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch and patch -p1 < ffmpeg-videotoolbox-reorder.patch before configuring. Original source, exact patches, LGPL license and build options included.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
   await writeFile(join(staging, '.build-id'), marker);
   await rm(mediaSdk, { recursive: true, force: true });
   await rename(staging, mediaSdk);

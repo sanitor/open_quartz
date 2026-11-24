@@ -159,7 +159,7 @@ fn build(
     }
     let key = format!(
         "{:x}",
-        Sha256::digest(format!("oq-preview-360p-v1:{}", asset.fingerprint).as_bytes())
+        Sha256::digest(format!("oq-preview-360p-v2:{}", asset.fingerprint).as_bytes())
     );
     let path = directory.join(format!("{key}.mp4"));
     let meta = path.with_extension("sha256");
@@ -213,8 +213,7 @@ fn build(
 }
 
 fn transcode(asset: &MediaAsset, destination: &Path, cancel: &AtomicBool) -> Result<(), String> {
-    let encoder =
-        std::env::var_os("OPEN_QUARTZ_FFMPEG_PATH").ok_or("Media runtime is unavailable")?;
+    let encoder = crate::media::proxy_encoder_path()?;
     let scale = (640.0 / f64::from(asset.width))
         .min(360.0 / f64::from(asset.height))
         .min(1.0);
@@ -241,14 +240,21 @@ fn transcode(asset: &MediaAsset, destination: &Path, cancel: &AtomicBool) -> Res
             "-an",
             "-vf",
             &filter,
-            "-vsync",
-            "0",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+        ])
+        .arg(format!(
+            "{}/{}",
+            asset.time_base.numerator, asset.time_base.denominator
+        ))
+        .args([
             "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
+            "h264_videotoolbox",
+            "-allow_sw",
+            "0",
+            "-b:v",
+            "1400k",
             "-pix_fmt",
             "yuv420p",
             "-color_primaries",
@@ -288,38 +294,53 @@ fn match_frames(original: &Path, proxy: &Path, cancel: &Arc<AtomicBool>) -> Resu
         Session::open_with_cancel(original, cancel.clone()).map_err(|error| error.to_string())?;
     let mut proxy =
         Session::open_with_cancel(proxy, cancel.clone()).map_err(|error| error.to_string())?;
-    if original
-        .source_info()
-        .duration_ns()
-        .map_err(|error| error.to_string())?
-        != proxy
+    let duration = |session: &Session| {
+        session
             .source_info()
             .duration_ns()
             .map_err(|error| error.to_string())?
-    {
-        return Err("Proxy duration differs from the original".into());
-    }
-    fn relative(session: &mut Session) -> Result<Option<i64>, String> {
-        let Some(frame) = session.next_frame().map_err(|error| error.to_string())? else {
-            return Ok(None);
-        };
-        Ok(Some(
-            frame
-                .frame
-                .pts_ns()
-                .ok_or("Unknown proxy frame timestamp")?,
-        ))
-    }
+            .ok_or_else(|| "Video duration is unknown".to_owned())
+    };
+    let original_duration = duration(&original)?;
+    let proxy_duration = duration(&proxy)?;
+    let mut last = None;
     loop {
-        let original = relative(&mut original)?;
-        let proxy = relative(&mut proxy)?;
-        if original != proxy {
-            return Err("Proxy presentation timestamps differ from the original".into());
-        }
-        if original.is_none() {
-            return Ok(());
+        let source = original.next_frame().map_err(|error| error.to_string())?;
+        let derived = proxy.next_frame().map_err(|error| error.to_string())?;
+        match (source, derived) {
+            (None, None) => break,
+            (Some(source), Some(derived)) => {
+                let pts = source
+                    .frame
+                    .pts_ns()
+                    .ok_or("Unknown source frame timestamp")?;
+                if derived.frame.pts_ns() != Some(pts) {
+                    return Err("Proxy presentation timestamps differ from the original".into());
+                }
+                last = Some((pts, source, derived));
+            }
+            _ => return Err("Proxy frame count differs from the original".into()),
         }
     }
+    let (last_pts, source, derived) = last.ok_or("Video has no presentation frames")?;
+    // The project keeps the original edit bounds. A new MP4 may report a
+    // different container duration after reordering the same presentation frames.
+    let tail_end = |frame: oq_media::FrameLease, duration| {
+        frame
+            .frame
+            .presentation_end_ns()
+            .map(|end| {
+                end.unwrap_or(last_pts)
+                    .min(duration)
+                    .min(original_duration)
+                    .max(last_pts)
+            })
+            .map_err(|error| error.to_string())
+    };
+    if tail_end(source, original_duration)? != tail_end(derived, proxy_duration)? {
+        return Err("Proxy does not preserve the original tail frame coverage".into());
+    }
+    Ok(())
 }
 
 fn make_room(directory: &Path, target: &Path, incoming: u64) -> Result<(), String> {

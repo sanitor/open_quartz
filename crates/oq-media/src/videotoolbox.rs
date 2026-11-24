@@ -90,6 +90,18 @@ impl VideoToolboxFrame {
     pub fn pts_ns(&self) -> Option<i64> {
         self.pts_ns
     }
+    /// End of the declared frame interval on the stream-relative clock.
+    pub fn presentation_end_ns(&self) -> Result<Option<i64>, MediaError> {
+        let Some((pts, timestamp)) = self.pts_ns.zip(self.timestamp) else {
+            return Ok(None);
+        };
+        let ticks = unsafe { (*self.raw).duration };
+        if ticks <= 0 {
+            return Ok(None);
+        }
+        let duration = timestamp.time_base.ticks_to_ns(i128::from(ticks))?;
+        Ok(pts.checked_add(duration))
+    }
     pub fn timestamp(&self) -> Option<SourceTimestamp> {
         self.timestamp
     }
@@ -469,15 +481,9 @@ impl Session {
             if allow_tail { tail = Some(frame); }
         }
         if let Some(frame) = tail {
-            let ticks = unsafe { (*frame.frame.raw).duration };
-            if ticks > 0 {
-                let duration = self.info.time_base.ticks_to_ns(i128::from(ticks))?;
-                let covers = frame.frame.pts_ns().and_then(|pts| pts.checked_add(duration))
-                    .is_some_and(|end| target_ns < end);
-                if covers {
-                    self.selected = Some(frame.try_clone()?);
-                    return selected_frame(frame, target_ns).map(Some);
-                }
+            if frame.frame.presentation_end_ns()?.is_some_and(|end| target_ns < end) {
+                self.selected = Some(frame.try_clone()?);
+                return selected_frame(frame, target_ns).map(Some);
             }
         }
 
