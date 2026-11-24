@@ -27,6 +27,7 @@ export struct AudioTrackRow { id: string, name: string, muted: bool, locked: boo
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
+export struct DissolveRow { lane: int, start: float, duration: float, description: string }
 
 
 component AssetCard inherits Rectangle {
@@ -275,6 +276,7 @@ export component EditorWindow inherits Window {
     in property <string> monitor_status;
     in property <[AssetRow]> assets;
     in property <[ClipRow]> clips;
+    in property <[DissolveRow]> dissolves;
     in property <[TrackRow]> tracks;
     in property <MonitorBox> monitor_box;
     in-out property <bool> show_transform: false;
@@ -304,6 +306,7 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_duration: "0";
     in property <string> selected_clip_end: "0";
     in property <string> selected_clip_speed: "100";
+    in property <string> selected_dissolve_duration: "0";
     in property <bool> can_place_video;
     in property <bool> can_roll_end;
     in property <string> selected_clip_source_in: "0";
@@ -874,6 +877,7 @@ export component EditorWindow inherits Window {
                                 TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_out", value); } }
                                 if root.selected_clip_id != "": TimingField { label: "Speed (%)"; value: root.selected_clip_speed; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("speed", value); } }
                                 if root.can_roll_end: TimingField { label: "Roll cut (frame)"; value: root.selected_clip_end; committed(value) => { root.clip_timing_changed("roll", value); } }
+                                if root.can_roll_end: TimingField { label: "Dissolve (frames)"; value: root.selected_dissolve_duration; committed(value) => { root.clip_timing_changed("dissolve", value); } }
                                 Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 12px; }
                                 if root.selected_clip_id != "": VerticalLayout {
                                     spacing: 8px;
@@ -1062,6 +1066,15 @@ export component EditorWindow inherits Window {
                                         accessible-description: clip.description;
                                         clicked => { editor_focus.focus(); root.audio_clip_action(clip.id, "select", ""); }
                                     }
+                                }
+                                for dissolve in root.dissolves: Rectangle {
+                                    x: 10px + dissolve.start * root.timeline_zoom * 1px;
+                                    y: dissolve.lane * 84px + 61px;
+                                    width: max(2px, dissolve.duration * root.timeline_zoom * 1px);
+                                    height: 15px; border-radius: 2px; background: #906335;
+                                    accessible-role: groupbox; accessible-label: "Dissolve";
+                                    accessible-description: dissolve.description;
+                                    Text { text: "Dissolve"; width: parent.width; height: parent.height; color: #fff1d8; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                 }
                                 Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px; width: 2px; height: parent.height; background: #ff525b; }
                                 if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px - 1px; height: 2px; width: parent.width; background: root.accent; }

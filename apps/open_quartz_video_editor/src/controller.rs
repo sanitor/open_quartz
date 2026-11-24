@@ -1,6 +1,6 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{sequence_request, PlaybackRequest, PreviewBridge, PreviewRequest};
-use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, EditorWindow, TrackRow};
+use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
@@ -869,6 +869,9 @@ impl Controller {
             "speed" => self.document.set_speed(
                 &id, value.trim().parse().map_err(|_| "Speed must be a whole percentage from 25 to 400")?,
             ),
+            "dissolve" => self.document.set_dissolve(
+                &id, value.trim().parse().map_err(|_| "Enter a dissolve duration in frames, or 0 to remove it")?,
+            ),
             "source_in" | "source-in" => self.document.set_timing(
                 &id,
                 clip.timeline_start,
@@ -1414,6 +1417,17 @@ impl Controller {
         window.set_can_place_video(self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
             .is_some_and(|asset| asset.online && asset.has_video()));
         window.set_can_roll_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_roll_end(id)));
+        let dissolves: Vec<_> = tracks.iter().enumerate().flat_map(|(lane, track)| {
+            track.dissolve_ranges().map(move |(item, range)| DissolveRow {
+                lane: lane as i32,
+                start: range.start as f32,
+                duration: item.frames as f32,
+                description: format!("{} · frames {}–{}", track.name, range.start, range.end - 1).into(),
+            })
+        }).collect();
+        if window.get_dissolves().iter().ne(dissolves.iter().cloned()) {
+            window.set_dissolves(ModelRc::new(VecModel::from(dissolves)));
+        }
         if !tracks.iter().any(|track| track.id == self.selected_track) {
             self.selected_track = tracks[0].id.clone();
         }
@@ -1500,6 +1514,8 @@ impl Controller {
             window.set_selected_clip_start(clip.timeline_start.to_string().into());
             window.set_selected_clip_duration(clip.duration.to_string().into());
             window.set_selected_clip_speed(clip.speed_percent.to_string().into());
+            let frames = self.document.clip_track(&clip.id).map_or(0, |track| track.dissolve_duration(&clip.id));
+            window.set_selected_dissolve_duration(frames.to_string().into());
             window.set_selected_clip_end(clip.timeline_end().unwrap_or(0).to_string().into());
             window.set_selected_clip_source_in(clip.source_in_pts.to_string().into());
             let out = self

@@ -10,12 +10,15 @@ use std::path::{Path, PathBuf};
 mod audio;
 #[path = "document_timing.rs"]
 mod timing;
+#[path = "document_transition.rs"]
+mod transition;
+pub use transition::DissolveSide;
 #[path = "document_animation.rs"]
 mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -150,10 +153,12 @@ pub struct VideoTrack {
     pub visible: bool,
     pub locked: bool,
     pub clips: Vec<Clip>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dissolves: Vec<transition::Dissolve>,
 }
 impl VideoTrack {
     fn new(id: String, name: String) -> Self {
-        Self { id, name, visible: true, locked: false, clips: Vec::new() }
+        Self { id, name, visible: true, locked: false, clips: Vec::new(), dissolves: Vec::new() }
     }
 
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
@@ -881,6 +886,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 return Err("Invalid clip transform".into());
             }
         }
+        transition::validate_dissolves(data, track)?;
     }
     audio::validate_audio(data)
 }
@@ -997,15 +1003,25 @@ pub fn source_time_ns(
     sequence_frame: u64,
     sequence_fps: Rational,
 ) -> Result<u64, String> {
-    let offset = sequence_frame
-        .checked_sub(clip.timeline_start)
-        .ok_or("Frame precedes selected clip")?;
+    if sequence_frame < clip.timeline_start {
+        return Err("Frame precedes selected clip".into());
+    }
     let clip_end = clip.timeline_end()?;
     if sequence_frame >= clip_end {
         return Err("Frame follows selected clip".into());
     }
-    let (ticks, numerator, denominator) =
-        shifted_source(clip, i128::from(offset), sequence_fps, asset.time_base)?;
+    extended_source_time_ns(asset, clip, sequence_frame, sequence_fps)
+}
+
+/// Samples the validated source handles of an active dissolve.
+pub(super) fn extended_source_time_ns(
+    asset: &MediaAsset,
+    clip: &Clip,
+    sequence_frame: u64,
+    sequence_fps: Rational,
+) -> Result<u64, String> {
+    let offset = i128::from(sequence_frame) - i128::from(clip.timeline_start);
+    let (ticks, numerator, denominator) = shifted_source(clip, offset, sequence_fps, asset.time_base)?;
     let relative = i128::from(ticks)
         - i128::from(
             asset
@@ -1116,6 +1132,62 @@ mod tests {
         assert_eq!(fps.frames_to_ns(30000).unwrap(), 1_001_000_000_000);
         assert_eq!(fps.ns_to_frames_floor(1_001_000_000_000).unwrap(), 30000);
         assert!(Rational::new(0, 1).is_err());
+    }
+    #[test]
+    fn dissolve_uses_extended_handles_without_moving_the_cut_and_rolls_atomically() {
+        let mut doc = project();
+        insert_asset(&mut doc, Path::new("movie.mp4"));
+        let outgoing = doc.add_clip("asset-1").unwrap();
+        doc.trim_right(&outgoing, 12).unwrap();
+        let incoming = doc.add_clip("asset-1").unwrap();
+        doc.set_timing(&incoming, 12, 12, 9030).unwrap();
+        doc.set_dissolve(&outgoing, 4).unwrap();
+        assert_eq!(doc.data.tracks[0].next_video_boundary(9), Some(10));
+        assert_eq!(doc.data.tracks[0].next_video_boundary(10), Some(14));
+        assert_eq!(doc.data.tracks[0].next_video_boundary(12), Some(14));
+        let active: Vec<_> = doc.data.video_inputs(11).collect();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].clip.id, outgoing);
+        assert_eq!(active[1].clip.id, incoming);
+        let asset = doc.asset("asset-1").unwrap();
+        assert_eq!(extended_source_time_ns(asset, active[1].clip, 11, doc.data.fps), Ok(966_666_666));
+        assert_eq!(doc.clip(&incoming).unwrap().timeline_start, 12);
+
+        let old = doc.data.clone();
+        let revision = doc.revision;
+        assert!(doc.set_timing(&incoming, 12, 12, 9000).is_err());
+        assert_eq!(doc.data, old);
+        assert_eq!(doc.revision, revision);
+        doc.roll_end(&outgoing, 13).unwrap();
+        assert_eq!(doc.data.tracks[0].next_video_boundary(10), Some(11));
+        assert_eq!(doc.data.video_inputs(14).count(), 2);
+        assert_eq!(doc.data.video_inputs(15).count(), 1);
+        doc.lift(&incoming).unwrap();
+        assert!(doc.data.tracks[0].dissolves.is_empty());
+        assert!(doc.undo());
+        assert_eq!(doc.data.video_inputs(13).count(), 2);
+    }
+    #[test]
+    fn same_track_dissolves_can_touch_but_cannot_overlap() {
+        let mut doc = project();
+        insert_asset(&mut doc, Path::new("movie.mp4"));
+        let a = doc.add_clip("asset-1").unwrap();
+        doc.trim_right(&a, 8).unwrap();
+        let b = doc.add_clip("asset-1").unwrap();
+        doc.set_timing(&b, 8, 4, 9030).unwrap();
+        let c = doc.add_clip("asset-1").unwrap();
+        doc.set_timing(&c, 12, 8, 9050).unwrap();
+        doc.set_dissolve(&a, 6).unwrap();
+        let revision = doc.revision;
+        let snapshot = doc.data.clone();
+        assert_eq!(doc.set_dissolve(&b, 6), Err("Dissolves cannot overlap on the same track".into()));
+        assert_eq!(doc.revision, revision);
+        assert_eq!(doc.data, snapshot);
+        doc.set_dissolve(&b, 2).unwrap();
+        assert_eq!(doc.data.tracks[0].next_video_boundary(10), Some(11));
+        assert_eq!(doc.data.tracks[0].next_video_boundary(11), Some(13));
+        let inputs: Vec<_> = doc.data.video_inputs(11).map(|input| input.clip.id.as_str()).collect();
+        assert_eq!(inputs, [b.as_str(), c.as_str()]);
     }
     #[test]
     fn retime_preserves_source_span_and_split_samples_across_rate_rounding() {

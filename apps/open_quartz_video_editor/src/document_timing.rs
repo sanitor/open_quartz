@@ -122,6 +122,9 @@ impl ProjectData {
         let left = &mut self.tracks[track].clips[index];
         left.resize_right(at - left.timeline_start);
         self.split_link(revision, &original_id, right_id.clone());
+        if let Some(item) = self.tracks[track].dissolves.iter_mut().find(|item| item.outgoing == original_id) {
+            item.outgoing = right_id.clone();
+        }
         Ok(right_id)
     }
 
@@ -131,6 +134,7 @@ impl ProjectData {
             .drain(indices)
             .map(|clip| clip.id)
             .collect();
+        self.tracks[track].dissolves.retain(|item| !removed.contains(&item.outgoing) && !removed.contains(&item.incoming));
         for lane in &mut self.audio_tracks {
             lane.clips.retain(|clip| {
                 !matches!(&clip.placement,

@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 6);
+   assert.equal(data.schema_version, 7);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -706,6 +706,87 @@ try{
    await expectColor('three-quarter');
    await click('NEXT'); await waitState('playhead 3 frames');
    await expectColor('red');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
+ const dissolveProject = join(output, 'dissolve.oqvideo.json');
+ const dissolveField = async frames => enter(await clipControl('Dissolve (frames)'), frames);
+ const dissolveMarkers = () => client.byLabel('Dissolve', { role: 'Groupbox' });
+ const expectDissolve = async (first, last) => client.waitFor(async () =>
+   (await dissolveMarkers()).some(marker => marker.accessibleDescription.endsWith(`frames ${first}–${last}`)),
+ { description: `dissolve marker covers frames ${first}–${last}` });
+ await step('Dissolve real adjacent media in scrub, playback and independently decoded MP4', async () => {
+   const fixture = JSON.parse(await readFile(multiProject, 'utf8'));
+   const outgoing = fixture.data.tracks[0].clips[0];
+   const incoming = fixture.data.tracks.at(-1).clips[0];
+   const outgoingAsset = fixture.data.assets.find(asset => asset.id === outgoing.asset_id);
+   const incomingAsset = fixture.data.assets.find(asset => asset.id === incoming.asset_id);
+   const second = incomingAsset.time_base.denominator / incomingAsset.time_base.numerator;
+   Object.assign(outgoing, { timeline_start: 0, duration: 6, source_in_pts: outgoingAsset.start_pts });
+   Object.assign(incoming, { timeline_start: 6, duration: 6, source_in_pts: incomingAsset.start_pts + second / 5 });
+   for (const clip of [outgoing, incoming]) {
+     Object.assign(clip, { source_subtick_numerator: 0, source_subtick_denominator: 1 });
+     Object.assign(clip.transform, { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, exposure: 0 });
+   }
+   Object.assign(fixture.data, {
+     width: 320, height: 180,
+     tracks: [{ ...fixture.data.tracks[0], name: 'Dissolve track', clips: [outgoing, incoming] }],
+   });
+   const seed = join(output, 'dissolve-seed.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   await click('FIT TIMELINE');
+   await client.click(await item('foreground.mp4'));
+   await dissolveField(4);
+   await expectDissolve(4, 7);
+   assert.deepEqual(await positions('foreground.mp4'), [[0, 6]]);
+   assert.deepEqual(await positions('background.mp4'), [[6, 6]]);
+   for (let i = 0; i < 5; i++) await click('NEXT');
+   await waitState('playhead 5 frames');
+   await expectColor('three-quarter');
+   await click('NEXT'); await waitState('playhead 6 frames');
+   await expectColor('blend');
+   await snapshot('18-dissolve-midpoint');
+   for (let i = 0; i < 6; i++) await click('PREVIOUS');
+   await waitState('playhead 0 frames');
+   await click('PLAY'); await waitState('playhead 11 frames');
+   await expectColor('blue');
+   await fileAction('SAVE AS', dissolveProject, 'Save project'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(dissolveProject, 'utf8')).data;
+   assert.deepEqual(saved.tracks[0].dissolves, [{ outgoing: outgoing.id, incoming: incoming.id, frames: 4 }]);
+   const exported = join(output, 'dissolve.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     { maxBuffer: 4 * 1024 * 1024 });
+   const stride = 320 * 180 * 3;
+   assert.equal(pixels.length, stride * 12);
+   const colors = [[255, 0, 0], [225, 0, 137], [188, 0, 188], [137, 0, 225], [0, 0, 255]];
+   for (let frame = 0; frame < 12; frame++) {
+     const color = colors[Math.min(4, Math.max(0, frame - 4))];
+     const offset = frame * stride + (90 * 320 + 160) * 3;
+     assert(color.every((expected, channel) => Math.abs(pixels[offset + channel] - expected) < 22),
+       `dissolve frame ${frame} has RGB ${[...pixels.subarray(offset, offset + 3)]}`);
+   }
+   await close();
+ }, { core: true });
+ await step('Resize and remove a saved dissolve and reject missing incoming footage', async () => {
+   await launch(dissolveProject); await waitState('clips 2');
+   await click('FIT TIMELINE');
+   await expectDissolve(4, 7);
+   await client.click(await item('foreground.mp4'));
+   await dissolveField(2); await expectDissolve(5, 6);
+   await click('UNDO'); await expectDissolve(4, 7);
+   await dissolveField(0);
+   await client.waitFor(async () => (await dissolveMarkers()).length === 0, { description: 'remove the dissolve marker' });
+   await client.click(await item('background.mp4'));
+   const { data } = JSON.parse(await readFile(dissolveProject, 'utf8'));
+   const asset = data.assets.find(asset => asset.name === 'background.mp4');
+   await enter(await clipControl('Source in'), asset.start_pts);
+   await client.click(await item('foreground.mp4'));
+   await dissolveField(4); await waitState('Not enough source before the incoming clip');
+   assert.equal((await dissolveMarkers()).length, 0);
+   assert.deepEqual(await positions('foreground.mp4'), [[0, 6]]);
+   assert.deepEqual(await positions('background.mp4'), [[6, 6]]);
    await click('SAVE'); await waitState('Project saved');
    await close();
  });

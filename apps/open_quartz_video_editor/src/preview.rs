@@ -1,5 +1,5 @@
 use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
-use crate::document::{self, ClipTransform, MediaAsset, ProjectData, Rational};
+use crate::document::{self, ClipTransform, DissolveSide, MediaAsset, ProjectData, Rational};
 use open_quartz::execution::{
     FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline, FrameWindowConfig,
     PreparedNativeGraph,
@@ -34,12 +34,21 @@ pub struct PreviewRequest {
 pub struct PreviewLayer {
     pub clip_id: String,
     pub track_name: String,
+    track_id: String,
     pub asset: MediaAsset,
     pub source_ns: u64,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
     speed_percent: u16,
     opacity: Option<OpacityAnimation>,
+    dissolve: Option<DissolveLayer>,
+}
+
+#[derive(Clone, Copy)]
+struct DissolveLayer {
+    side: DissolveSide,
+    start_ns: u64,
+    end_ns: u64,
 }
 
 #[derive(Clone)]
@@ -55,7 +64,8 @@ pub fn sequence_request(
     transform_override: Option<(&str, ClipTransform)>,
 ) -> Result<PreviewRequest, String> {
     let mut layers = Vec::new();
-    for (track, clip) in project.active_clips(frame) {
+    for input in project.video_inputs(frame) {
+        let (track, clip) = (input.track, input.clip);
         let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
             .ok_or_else(|| format!("{}: missing clip media", track.name))?;
         let opacity = if clip.opacity_keys.is_empty() { None } else {
@@ -65,14 +75,21 @@ pub fn sequence_request(
                 source_in_ns: document::source_time_ns(asset, clip, clip.timeline_start, project.fps)?,
             })
         };
+        let dissolve = input.dissolve.map(|(side, range)| -> Result<_, String> {
+            let start_ns = project.fps.frames_to_ns(range.start)?;
+            let end_ns = project.fps.frames_to_ns(range.end)?;
+            if start_ns == end_ns { return Err("Dissolve time range is too short".into()); }
+            Ok(DissolveLayer { side, start_ns, end_ns })
+        }).transpose()?;
         layers.push(PreviewLayer {
-            clip_id: clip.id.clone(), track_name: track.name.clone(), asset: asset.clone(),
-            source_ns: document::source_time_ns(asset, clip, frame, project.fps)?,
+            clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), asset: asset.clone(),
+            source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)?,
             transform: transform_override.filter(|(id, _)| *id == clip.id)
                 .map_or(clip.transform, |(_, value)| value),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
             speed_percent: clip.speed_percent,
             opacity,
+            dissolve,
         });
     }
     let mut request = PreviewRequest {
@@ -100,18 +117,16 @@ pub fn sequence_request(
 }
 
 fn sequence_region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, duration: u64) -> Result<(PreviewRequest, u64), String> {
-    let end = project.tracks.iter().filter(|track| track.visible).flat_map(|track| {
-        let active_end = track.clip_at(frame).and_then(|clip| clip.timeline_end().ok());
-        let next = track.clips.partition_point(|clip| clip.timeline_start <= frame);
-        active_end.into_iter().chain(track.clips.get(next).map(|clip| clip.timeline_start))
-    }).min().unwrap_or(duration);
+    let end = project.tracks.iter().filter(|track| track.visible)
+        .filter_map(|track| track.next_video_boundary(frame)).min().unwrap_or(duration);
     Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?, end))
 }
 fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut times = BTreeMap::new();
-    for (_, clip) in project.active_clips(frame) {
+    for input in project.video_inputs(frame) {
+        let clip = input.clip;
         let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
-        let source_ns = document::source_time_ns(asset, clip, frame, project.fps)?;
+        let source_ns = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
         if request.asset.is_some() {
             times.insert(SOURCE_ID.into(), source_ns);
             return Ok((source_ns, times));
@@ -127,6 +142,9 @@ fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame:
 
 impl PreviewRequest {
     fn animation_origin_ns(&self) -> u64 {
+        if let Some(origin) = self.layers.iter().filter_map(|layer| layer.dissolve.map(|item| item.start_ns)).min() {
+            return origin;
+        }
         self.layers.iter().filter_map(|layer| layer.opacity.as_ref())
             .map(|animation| animation.timeline_start_ns).max().unwrap_or(0)
     }

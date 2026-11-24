@@ -1,6 +1,7 @@
 use open_quartz::project::{Edge, Graph, NodeFactoryRequest};
 
 use super::{OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
+use crate::document::DissolveSide;
 
 fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, speed_percent: u16) -> String {
     let timeline_scale = 100.0 / f64::from(speed_percent);
@@ -40,8 +41,10 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
     // uniforms select the draw order, independently of source bindings.
     let mut slots: Vec<_> = request.layers.iter().collect();
     slots.sort_by_key(|layer| layer.clip_id.as_str());
+    let mut tracks: Vec<_> = request.layers.iter().rev().map(|layer| layer.track_id.as_str()).collect();
+    tracks.dedup();
     let origin = request.animation_origin_ns();
-    if slots.iter().any(|layer| layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
+    if slots.iter().any(|layer| layer.dissolve.is_some() || layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
         bindings.push_str(&format!("@group(0) @binding({}) var<uniform> iTime:f32;\n", slots.len() * 4));
     }
     for (index, layer) in slots.iter().enumerate() {
@@ -84,12 +87,8 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
             binding + 2,
             binding + 3,
         ));
-        let order = request
-            .layers
-            .iter()
-            .rev()
-            .position(|item| item.clip_id == layer.clip_id)
-            .expect("layer belongs to the frame plan");
+        let order = tracks.iter().position(|id| *id == layer.track_id)
+            .expect("layer belongs to an active track");
         let t = layer.transform;
         let (sin, cos) = t.rotation.to_radians().sin_cos();
         parameters.insert(
@@ -107,13 +106,26 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
             }
             None => format!("placement{index}.w"),
         };
+        let weight = match layer.dissolve {
+            None => "1.0".to_owned(),
+            Some(dissolve) => {
+                let start = (dissolve.start_ns - origin) as f64 / 1_000_000_000.0;
+                let span = (dissolve.end_ns - dissolve.start_ns) as f64 / 1_000_000_000.0;
+                let progress = format!("clamp((iTime - {start:.9e}) / {span:.9e}, 0.0, 1.0)");
+                match dissolve.side {
+                    DissolveSide::Outgoing => format!("(1.0 - {progress})"),
+                    DissolveSide::Incoming => progress,
+                }
+            }
+        };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), placement{index}, blend{index});\n\
                 let rgb = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0).rgb;\n\
                 if (all(p >= vec2f(0.0)) && all(p <= vec2f(1.0))) {{\n\
                     let alpha = {alpha};\n\
-                    result = linear(clamp(rgb * blend{index}.z, vec3f(0.0), vec3f(1.0))) * alpha + result * (1.0 - alpha);\n\
+                    let color = linear(clamp(rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
+                    track_pixel += vec4f(color * alpha, alpha) * {weight};\n\
                 }}\n\
             }}\n"
         ));
@@ -136,10 +148,12 @@ fn encoded(c:vec3f) -> vec3f {{
 @fragment fn main(@location(0) uv:vec2f) -> @location(0) vec4f {{
     var result = vec3f(0.0);
     for (var order = 0; order < {}; order++) {{
+        var track_pixel = vec4f(0.0);
         {draws}
+        result = track_pixel.rgb + result * (1.0 - track_pixel.a);
     }}
     return vec4f(encoded(result), 1.0);
-}}", request.width, request.height, slots.len());
+}}", request.width, request.height, tracks.len());
     let (mut output, _) = crate::clip_pipeline::project(Graph::default())
         .create_graph_node(
             NodeFactoryRequest::Shader {
