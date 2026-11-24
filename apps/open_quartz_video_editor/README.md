@@ -14,7 +14,7 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2` SDK 和现有 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
+命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1` SDK 和现有 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
@@ -26,7 +26,7 @@ cargo run --release --manifest-path apps/open_quartz_video_editor/Cargo.toml -- 
 
 **有界播放流水**。Play把工程snapshot交给preview worker；worker拥有唯一视频时钟，使用核心前瞻窗口、prefill、按PTS映射的序列deadline呈现和切点/gap预热。UI不再每tick提交帧，正常时钟推进不取消合法在途工作；seek/改图仍撤销旧发布资格。8K全尺寸图有显式2 GiB应用可观测共享预算和局部池上限，不能满足最小工作集时明确失败，不暗中降分辨率或改FP16算法。实现与验收见[有界流水播放](DESIGN.md#bounded-playback-proposal)。
 
-缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织，不给每个node机械设置queue；[多轨同帧汇合](DESIGN.md#same-frame-track-join)由同一帧需求协调所有活动视频源。Release降低CPU开销，不代表已实现音频、代理、任意时域效果或所有8K素材的实时保证。
+缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织。[多轨同帧汇合](DESIGN.md#same-frame-track-join)由同一帧需求协调所有活动视频源。带声音的序列播放由音频设备驱动画面时间。
 
 窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭；视频硬件运行路径的平台限制不变。关闭按钮仍走未保存工程确认。
 
@@ -39,7 +39,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Timeline Editing
 
-- **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频。文件必须可精确定位且有可信 stream origin/duration。显示实际尺寸、平均帧率、在线状态和有界 GPU 缩略图；有音轨的素材明确提示仅使用视频。
+- **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频，以及带明确时长的 AAC 或 PCM 音频。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
 - **ADD CLIP** / 素材旁的 **+**：将选定素材放入目标轨道的可用空隙。普通移动保留其他片段的时间。同轨重叠时拒绝放置，跨轨重叠按轨道顺序合成。
 - 时间线上拖动片段移动；拖两侧边缘修剪。**一次松手只有一个历史条目；Esc 取消拖动草稿**。
 - 点击标尺定位，**PREVIOUS / NEXT** 逐序列帧步进，**SPLIT** 在播放头处分割，**DELETE** 为 lift 删除，保留空隙。空隙真实渲染不透明黑色。
@@ -49,7 +49,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Nodes Workspace — Phase 7
 
-Select **Nodes** with an active timeline clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor; it does not introduce a second editor graph or project. Project saving includes each clip pipeline inside its track in schema 3. Opening schema 1 migrates each clip to a direct source→output pipeline.
+Select **Nodes** with an active video clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor. Project saving includes each clip pipeline inside its track in schema 4. Opening schema 1 migrates each clip to a direct source→output pipeline.
 
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.
@@ -77,9 +77,11 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。Schema 1/2 打开时迁移到单条视频轨，保存使用 Schema 3。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 4，已有视频片段维持原来的声音状态。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
-**EXPORT** 将整个序列导出为 8-bit SDR H.264/MP4，沿用工程的偶数画布尺寸和帧率。输入新的本地 `.mp4` 路径，导出按启动时的工程快照渲染全部帧，包括切点、黑色空隙、轨道可见性和片段效果。窗口底部显示进度，工具栏可取消。导出最终通过原子提交生成文件，已有路径会报错。当前导出只有视频。音频剪辑、转场、文本和代理属于后续交付。
+**音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。
+
+**EXPORT** 将整个序列导出为 8-bit SDR H.264/MP4，沿用工程的画布尺寸和帧率。含音频片段的序列会写入 48 kHz 双声道 AAC。导出使用启动时的工程快照，窗口底部显示进度，工具栏可取消。完成时原子提交到新的本地 `.mp4` 路径。转场、文本、代理和音频波形属于后续交付。
 
 ## 验证
 

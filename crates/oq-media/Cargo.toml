@@ -12,7 +12,7 @@ default = []
 videotoolbox = ["dep:ffmpeg-next"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format"] }
+ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format", "software-resampling"] }
 
 [dev-dependencies]
 tempfile = "3"

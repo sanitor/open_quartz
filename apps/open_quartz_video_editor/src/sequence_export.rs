@@ -110,7 +110,7 @@ fn run(
     project: ProjectData,
     revision: u64,
     path: &Path,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     progress: &Mutex<(String, bool)>,
 ) -> Result<bool, String> {
     let duration = project.duration_frames();
@@ -120,7 +120,7 @@ fn run(
         .filter(|track| track.visible)
         .flat_map(|track| track.clips.iter().map(|clip| clip.asset_id.as_str()))
         .collect();
-    let mut sources = Vec::with_capacity(source_ids.len());
+    let mut sources = BTreeSet::new();
     for asset in project
         .assets
         .iter()
@@ -129,8 +129,16 @@ fn run(
         if !asset.online {
             return Err(format!("Media offline: {} — use Relink", asset.name));
         }
-        sources.push(PathBuf::from(&asset.path));
+        sources.insert(PathBuf::from(&asset.path));
     }
+    let audio = crate::audio_mix::AudioMix::new(&project, cancel.clone())?;
+    if let Some(audio) = &audio {
+        sources.extend(audio.sources().cloned());
+    }
+    let audio = audio.map(|mut audio| -> oq_media::AudioRender {
+        Box::new(move |start, block| audio.render(start, block))
+    });
+    let sources: Vec<_> = sources.into_iter().collect();
     if cancel.load(Ordering::Acquire) {
         return Ok(false);
     }
@@ -164,7 +172,7 @@ fn run(
     };
     let pipeline =
         FramePipeline::from_render_device(render, PlaybackCapabilities { data_paths: vec![] });
-    let mut job = ExportJob::new_sequence(pipeline, config, sequence, &sources)?;
+    let mut job = ExportJob::new_sequence_with_audio(pipeline, config, sequence, &sources, audio)?;
     let owner = thread::current();
     job.set_waker(Arc::new(move || owner.unpark()))?;
     let mut cancelling = false;

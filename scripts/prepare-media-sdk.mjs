@@ -14,7 +14,7 @@ export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
-const revision = 'oq-vt-hw3-metal-encode-r2';
+const revision = 'oq-vt-hw3-metal-encode-r2-audio1';
 
 function run(command, args, cwd) {
   return new Promise((accept, reject) => {
@@ -30,6 +30,7 @@ export async function prepareMediaSdk() {
   const marker = `${sha256}\n${revision}\n${process.arch}\n`;
   if (await readFile(join(mediaSdk, '.build-id'), 'utf8').catch(() => '') === marker) {
     await access(join(mediaSdk, 'lib', 'libavcodec.62.dylib'));
+    await access(join(mediaSdk, 'lib', 'libswresample.6.dylib'));
     await access(join(mediaSdk, 'lib', 'pkgconfig', 'libavcodec.pc'));
     return;
   }
@@ -54,11 +55,12 @@ export async function prepareMediaSdk() {
     `--prefix=${install}`, '--disable-autodetect', '--disable-everything',
     `--extra-version=${revision}`,
     '--disable-programs', '--disable-doc', '--disable-debug', '--disable-static', '--enable-shared',
-    '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--disable-avfilter', '--disable-swresample',
-    '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-videotoolbox',
-    '--enable-encoder=h264_videotoolbox', '--enable-muxer=mp4,mov',
-    '--enable-decoder=h264,hevc,mpeg4,vp9,av1', '--enable-parser=h264,hevc,mpeg4video,vp9,av1',
-    '--enable-demuxer=mov,matroska,avi,mpegts', '--enable-protocol=file',
+    '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--disable-avfilter',
+    '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-swresample', '--enable-videotoolbox',
+    '--enable-encoder=h264_videotoolbox,aac', '--enable-muxer=mp4,mov',
+    '--enable-decoder=h264,hevc,mpeg4,vp9,av1,aac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le',
+    '--enable-parser=h264,hevc,mpeg4video,vp9,av1,aac',
+    '--enable-demuxer=mov,matroska,avi,mpegts,wav,aac', '--enable-protocol=file',
     '--enable-hwaccel=h264_videotoolbox,hevc_videotoolbox',
     '--install-name-dir=@rpath', '--extra-cflags=-mmacosx-version-min=13.0',
     '--extra-ldflags=-mmacosx-version-min=13.0',

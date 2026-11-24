@@ -23,6 +23,8 @@ component NodeEffectTile inherits Rectangle {
 }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool }
+export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, gain: string }
+export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
 
@@ -248,7 +250,7 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status);
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level);
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
@@ -257,6 +259,17 @@ export component EditorWindow inherits Window {
     in-out property <string> io_status: "All changes saved";
     in property <string> export_status;
     in property <bool> export_active;
+    in property <string> audio_level;
+    in property <[AudioTrackRow]> audio_tracks;
+    in property <[AudioClipRow]> audio_clips;
+    in property <string> audio_clip_id;
+    in property <string> audio_clip_name;
+    in property <string> audio_clip_start;
+    in property <string> audio_clip_end;
+    in property <string> audio_clip_source;
+    in property <string> audio_clip_gain;
+    in property <bool> audio_clip_linked;
+    in property <bool> audio_clip_locked;
     in property <string> monitor_status;
     in property <[AssetRow]> assets;
     in property <[ClipRow]> clips;
@@ -377,6 +390,8 @@ export component EditorWindow inherits Window {
     callback clip_drop_error(string, string, int) -> string;
     callback clip_snap(string, string, int, string, float) -> int;
     callback track_action(string, string, string);
+    callback audio_track_action(string, string, string);
+    callback audio_clip_action(string, string, string);
     callback reorder_track(string, string, bool);
     callback asset_place(string, string, int);
     callback monitor_gesture(string, string, float, float, float);
@@ -830,7 +845,18 @@ export component EditorWindow inherits Window {
                         }
                         if !root.nodes_open: VerticalLayout {
                             HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip properties"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
-                            clip_properties := ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
+                            if root.audio_clip_id != "": ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
+                                Text { text: root.audio_clip_name; color: root.text; wrap: word-wrap; }
+                                Text { text: "Audio timing uses 48 kHz samples. End is exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
+                                TimingField { label: "Audio start"; value: root.audio_clip_start; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "start", value); } }
+                                TimingField { label: "Audio end"; value: root.audio_clip_end; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "end", value); } }
+                                TimingField { label: "Audio source in"; value: root.audio_clip_source; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "source", value); } }
+                                TimingField { label: "Audio clip gain (%)"; value: root.audio_clip_gain; enabled: !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "gain", value); } }
+                                if root.audio_clip_linked: Button { text: "Unlink audio"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "unlink", ""); } }
+                                if !root.audio_clip_linked: Button { text: "Delete audio clip"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "delete", ""); } }
+                                Rectangle { vertical-stretch: 1; }
+                            } }
+                            if root.audio_clip_id == "": clip_properties := ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
                                 Text { text: root.selected_clip_name; color: root.text; font-size: 12px; font-weight: 600; wrap: word-wrap; }
                                 Text { text: "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 TimingField { label: "Timeline start"; value: root.selected_clip_start; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("start", value); } }
@@ -962,17 +988,33 @@ export component EditorWindow inherits Window {
                                     TrackButton { glyph: "×"; label: "Delete empty " + track.name; enabled: root.tracks.length > 1 && !track.locked; clicked => { root.track_action(track.id, "delete", ""); } }
                                 }
                             }
+                            for track[index] in root.audio_tracks: Rectangle {
+                                y: (root.tracks.length + index) * 84px + timeline_scroll.content-y;
+                                height: 84px; width: parent.width; background: #223031;
+                                border-width: 1px; border-color: root.border;
+                                Text { x: 8px; y: 5px; text: track.name; color: root.text; font-size: 11px; }
+                                HorizontalLayout {
+                                    x: 5px; y: 30px; height: 28px; width: parent.width - 10px; spacing: 3px;
+                                    TrackButton { glyph: track.muted ? "×" : "♪"; label: (track.muted ? "Unmute " : "Mute ") + track.name; clicked => { root.audio_track_action(track.id, "mute", ""); } }
+                                    TrackButton { glyph: track.locked ? "◆" : "◇"; label: (track.locked ? "Unlock " : "Lock ") + track.name; clicked => { root.audio_track_action(track.id, "lock", ""); } }
+                                    LineEdit { text: track.gain; accessible-label: track.name + " gain (%)"; accepted(value) => { root.audio_track_action(track.id, "gain", value); } }
+                                }
+                            }
                             if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px + timeline_scroll.content-y - 1px; height: 2px; width: parent.width; background: root.accent; }
                         }
                         timeline_scroll := ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
                             content-width: max(self.visible-width, root.timeline_content_width * 1px);
-                            content-height: max(self.visible-height, root.tracks.length * 84px + 1px);
+                            content-height: max(self.visible-height, (root.tracks.length + root.audio_tracks.length) * 84px + 1px);
                             Rectangle {
                                 width: timeline_scroll.content-width; height: timeline_scroll.content-height; background: #17191b;
                                 for track[index] in root.tracks: Rectangle {
                                     y: index * 84px; height: 84px; width: parent.width;
                                     background: track.selected ? #232d2e : #1e2527; border-width: 1px; border-color: #30363b;
+                                }
+                                for track[index] in root.audio_tracks: Rectangle {
+                                    y: (root.tracks.length + index) * 84px; height: 84px; width: parent.width;
+                                    background: #1b292a; border-width: 1px; border-color: #30484a;
                                 }
                                 for tick in Math.ceil(timeline_scroll.visible-width / 1px / max(0.0001, root.timeline_zoom) / root.ruler_step) + 2: Rectangle {
                                     private property <int> frame: (tick + Math.floor(-timeline_scroll.content-x / 1px / max(0.0001, root.timeline_zoom) / root.ruler_step)) * root.ruler_step;
@@ -993,12 +1035,25 @@ export component EditorWindow inherits Window {
                                     snapped_delta(kind, delta, track) => { return root.clip_snap(clip.id, kind, delta, track, root.timeline_zoom); }
                                     autoscroll(x, y) => { root.edge_scroll(x, y, true); }
                                 }
+                                for clip in root.audio_clips: Rectangle {
+                                    x: 10px + clip.start * root.timeline_zoom * 1px;
+                                    y: (root.tracks.length + clip.lane) * 84px + 7px;
+                                    width: max(2px, clip.duration * root.timeline_zoom * 1px);
+                                    height: 69px; border-radius: 4px; clip: true;
+                                    background: clip.muted ? #384647 : clip.selected ? #27756b : #254e49;
+                                    Text { x: 8px; y: 9px; text: clip.name; color: root.text; font-size: 11px; }
+                                    TouchArea {
+                                        accessible-role: button; accessible-label: "Audio clip " + clip.name;
+                                        accessible-description: clip.description;
+                                        clicked => { editor_focus.focus(); root.audio_clip_action(clip.id, "select", ""); }
+                                    }
+                                }
                                 Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px; width: 2px; height: parent.height; background: #ff525b; }
                                 if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px - 1px; height: 2px; width: parent.width; background: root.accent; }
                             }
                         }
                     }
-                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " clips · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "Space play · ← / → step · ⌘/Ctrl+B split · Esc cancel"; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
+                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " video · " + root.audio_clips.length + " audio · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.audio_level; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
                 }
             }
             Rectangle { height: 26px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 12px; Text { text: root.export_status == "" ? root.project_status : root.export_status; color: #939ba2; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #939ba2; font-size: 11px; vertical-alignment: center; } } }
@@ -1050,7 +1105,7 @@ export component EditorWindow inherits Window {
                     padding: 24px; spacing: 12px;
                     Text { text: root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
-                    if root.file_dialog_kind == "export": Text { text: "Entire sequence · H.264 MP4 · Video only · Choose a new file"; color: root.secondary; font-size: 11px; }
+                    if root.file_dialog_kind == "export": Text { text: "Entire sequence · H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Choose a new file"; color: root.secondary; font-size: 11px; }
                     HorizontalLayout {
                         spacing: 10px;
                         LineEdit {

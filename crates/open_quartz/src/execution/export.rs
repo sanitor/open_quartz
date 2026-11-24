@@ -7,7 +7,8 @@ use crate::rendering::{
 };
 use crate::resources::source_identity::SourceFileIdentity;
 use oq_media::{
-    EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, Mp4Encoder,
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus,
+    Mp4Encoder,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
@@ -105,7 +106,7 @@ pub struct ExportJob {
 
 impl ExportJob {
     pub fn new(pipeline: FramePipeline, config: ExportConfig) -> Result<Self, String> {
-        Self::start(pipeline, config, None, None)
+        Self::start(pipeline, config, None, None, None)
     }
 
     /// Capture all timeline source identities before preparing the first region.
@@ -115,11 +116,22 @@ impl ExportJob {
         sequence: impl ExportSequence + 'static,
         source_paths: &[PathBuf],
     ) -> Result<Self, String> {
+        Self::new_sequence_with_audio(pipeline, config, sequence, source_paths, None)
+    }
+
+    /// Render the optional audio bus on the encoder worker in output sample order.
+    pub fn new_sequence_with_audio(
+        pipeline: FramePipeline,
+        config: ExportConfig,
+        sequence: impl ExportSequence + 'static,
+        source_paths: &[PathBuf],
+        audio: Option<AudioRender>,
+    ) -> Result<Self, String> {
         let identities = source_paths
             .iter()
             .map(|path| SourceFileIdentity::capture(path))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::start(pipeline, config, Some(Box::new(sequence)), Some(identities))
+        Self::start(pipeline, config, Some(Box::new(sequence)), Some(identities), audio)
     }
 
     fn start(
@@ -127,6 +139,7 @@ impl ExportJob {
         config: ExportConfig,
         mut sequence: Option<Box<dyn ExportSequence>>,
         identities: Option<Vec<SourceFileIdentity>>,
+        audio: Option<AudioRender>,
     ) -> Result<Self, String> {
         if pipeline.has_in_flight() {
             return Err("export requires an idle graph session".into());
@@ -193,8 +206,8 @@ impl ExportJob {
                     .into(),
             );
         }
-        let encoder =
-            Mp4Encoder::open(&config.output, config.encoder.clone()).map_err(|e| e.to_string())?;
+        let encoder = Mp4Encoder::open_with_audio(&config.output, config.encoder.clone(), audio)
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             pipeline,
             converter,

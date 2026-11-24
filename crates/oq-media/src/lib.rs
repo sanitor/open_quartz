@@ -196,10 +196,25 @@ pub struct ColorInfo {
 mod encoder;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use encoder::{
-    EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface,
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface,
     Mp4Encoder,
 };
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 mod videotoolbox;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use videotoolbox::{ActualPipeline, FrameLease, Session, VideoToolboxFrame};
+
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+mod audio;
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+pub use audio::{audio_sample, probe_audio, AudioProbe, AudioReader, AudioSourceInfo, StereoSample, AUDIO_RATE, MAX_AUDIO_BLOCK};
+
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+fn require_media_sdk() -> Result<(), MediaError> {
+    let version = unsafe { std::ffi::CStr::from_ptr(ffmpeg_next::ffi::av_version_info()) }
+        .to_string_lossy();
+    if !version.contains("oq-vt-hw3-metal-encode-r2-audio1") {
+        return Err(format!("Unverified FFmpeg SDK: {version}; expected oq-vt-hw3-metal-encode-r2-audio1").into());
+    }
+    ffmpeg_next::init().map_err(|error| format!("FFmpeg init failed: {error}").into())
+}

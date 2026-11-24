@@ -6,7 +6,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: u32 = 3;
+#[path = "document_audio.rs"]
+mod audio;
+pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
+const SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -71,6 +74,8 @@ pub struct MediaAsset {
     pub time_base: Rational,
     pub fps: Option<Rational>,
     pub has_audio: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioAsset>,
     pub online: bool,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -159,6 +164,8 @@ pub struct ProjectData {
     pub fps: Rational,
     pub assets: Vec<MediaAsset>,
     pub tracks: Vec<VideoTrack>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_tracks: Vec<audio::AudioTrack>,
 }
 impl Default for ProjectData {
     fn default() -> Self {
@@ -174,6 +181,7 @@ impl Default for ProjectData {
             },
             assets: Vec::new(),
             tracks: vec![VideoTrack::new(DEFAULT_TRACK.into(), "Video 1".into())],
+            audio_tracks: Vec::new(),
         }
     }
 }
@@ -195,7 +203,14 @@ impl ProjectData {
     }
 
     pub fn duration_frames(&self) -> u64 {
-        self.clips().filter_map(|clip| clip.timeline_end().ok()).max().unwrap_or(0)
+        self.clips().filter_map(|clip| clip.timeline_end().ok())
+            .chain(self.audio_tracks.iter().flat_map(|track| &track.clips).filter_map(|clip| {
+                match clip.placement {
+                    AudioPlacement::Independent { start, duration, .. } =>
+                        self.fps.sample_to_frame_ceil(start.checked_add(duration)?).ok(),
+                    AudioPlacement::Linked { .. } => None,
+                }
+            })).max().unwrap_or(0)
     }
 
     fn clip_position(&self, id: &str) -> Result<(usize, usize), String> {
@@ -329,6 +344,8 @@ impl EditorDocument {
         let source_in = asset
             .start_pts
             .ok_or("Precise placement requires a known source presentation timestamp")?;
+        let has_audio = asset.audio.is_some();
+        let revision = self.revision;
         let clip = Clip {
             id: id.clone(),
             asset_id: asset.id,
@@ -343,12 +360,14 @@ impl EditorDocument {
         self.transact(|data| {
             data.tracks[track].clips.push(clip);
             data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
+            if has_audio { data.link_audio(revision, asset_id, id.clone())?; }
             Ok(())
         })?;
         Ok(id)
     }
     pub fn split(&mut self, clip_id: &str, at: u64) -> Result<String, String> {
-        let right_id = new_id("clip", self.revision);
+        let revision = self.revision;
+        let right_id = new_id("clip", revision);
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
             let mut right = data.tracks[track].clips[index].clone();
@@ -369,6 +388,7 @@ impl EditorDocument {
             right.duration = end - at;
             data.tracks[track].clips[index].duration = left_duration;
             data.tracks[track].clips.insert(index + 1, right);
+            data.split_link(revision, clip_id, right_id.clone());
             Ok(())
         })?;
         Ok(right_id)
@@ -377,6 +397,9 @@ impl EditorDocument {
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
             data.tracks[track].clips.remove(index);
+            for lane in &mut data.audio_tracks {
+                lane.clips.retain(|clip| !matches!(&clip.placement, AudioPlacement::Linked { video_id } if video_id == clip_id));
+            }
             Ok(())
         })
     }
@@ -604,6 +627,7 @@ impl EditorDocument {
         }
         let mut candidate = self.data.clone();
         change(&mut candidate)?;
+        audio::validate_locked_links(&self.data, &candidate)?;
         validate(&candidate)?;
         if candidate == self.data {
             return Ok(());
@@ -707,6 +731,10 @@ impl EditorDocument {
                 .into_owned();
             asset.online = Path::new(&asset.path).is_file()
                 && fingerprint(Path::new(&asset.path)).is_ok_and(|sum| sum == asset.fingerprint);
+            #[cfg(target_os = "macos")]
+            if asset.online && asset.has_audio && asset.audio.is_none() {
+                asset.audio = crate::media::audio_metadata(Path::new(&asset.path)).ok().flatten();
+            }
         }
         let mut project = Self::new(data)?;
         project.path = Some(path);
@@ -724,7 +752,7 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
     }
     let mut file: Envelope = serde_json::from_slice(bytes)
         .map_err(|error| format!("Cannot parse project file: {error}"))?;
-    if !matches!(file.schema_version, 1 | 2 | SCHEMA_VERSION) {
+    if !matches!(file.schema_version, 1..=SCHEMA_VERSION) {
         return Err(format!("Unsupported project schema {}", file.schema_version));
     }
     if file.data.get("schema_version").and_then(serde_json::Value::as_u64)
@@ -732,7 +760,7 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
     {
         return Err("Project schema header and data disagree".into());
     }
-    if file.schema_version < SCHEMA_VERSION {
+    if file.schema_version <= 2 {
         let project = file.data.as_object_mut().ok_or("Cannot parse project data")?;
         if project.contains_key("tracks") { return Err("Legacy project already contains tracks".into()); }
         let mut clips = project.remove("clips").ok_or("Legacy project is missing clips")?;
@@ -777,9 +805,6 @@ fn validate(data: &ProjectData) -> Result<(), String> {
         Rational::new(asset.time_base.numerator, asset.time_base.denominator)?;
         if let Some(fps) = asset.fps {
             Rational::new(fps.numerator, fps.denominator)?;
-        }
-        if asset.width == 0 || asset.height == 0 {
-            return Err("Media dimensions must be positive".into());
         }
         if asset.duration_pts.is_some_and(|duration| duration <= 0) {
             return Err("Media duration must be positive".into());
@@ -829,6 +854,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 .iter()
                 .find(|asset| asset.id == clip.asset_id)
                 .unwrap();
+            if !asset.has_video() { return Err("Video clip references an audio-only asset".into()); }
             let origin = asset
                 .start_pts
                 .ok_or("Precise placement requires a known source presentation timestamp")?;
@@ -863,7 +889,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    audio::validate_audio(data)
 }
 fn first_gap(clips: &[Clip], duration: u64) -> Result<u64, String> {
     let mut ordered = clips.iter().collect::<Vec<_>>();
@@ -1063,6 +1089,7 @@ mod tests {
                 denominator: 1,
             }),
             has_audio: false,
+            audio: None,
             online: true,
         }
     }

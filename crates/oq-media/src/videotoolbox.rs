@@ -10,7 +10,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use std::{
-    ffi::{c_void, CStr, CString},
+    ffi::{c_void, CString},
     path::{Path, PathBuf},
     ptr,
 };
@@ -161,11 +161,7 @@ impl Session {
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::MediaError::cancelled());
         }
-        let version = unsafe { CStr::from_ptr(ffi::av_version_info()) }.to_string_lossy();
-        if !version.contains("oq-vt-hw3-metal-encode-r2") {
-            return Err(format!("Unverified FFmpeg build ({version}); VideoToolbox requires hardware-required, Metal-compatible oq-vt-hw3-metal-encode-r2").into());
-        }
-        ffmpeg_next::init().map_err(|e| format!("libav initialization failed: {e}"))?;
+        crate::require_media_sdk()?;
         let path = path
             .as_ref()
             .canonicalize()

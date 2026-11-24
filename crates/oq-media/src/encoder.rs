@@ -182,6 +182,8 @@ pub struct EncodeFrame {
     pub pts: i64,
     pub duration: i64,
 }
+/// Renders ordered 48 kHz stereo blocks relative to the beginning of the output.
+pub type AudioRender = Box<dyn FnMut(u64, &mut [crate::StereoSample]) -> Result<(), crate::MediaError> + Send>;
 pub enum EncodeAdmission {
     Accepted,
     WouldBlock(EncodeFrame),

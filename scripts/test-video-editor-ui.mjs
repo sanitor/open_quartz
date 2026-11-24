@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 3);
+   assert.equal(data.schema_version, 4);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -309,12 +309,144 @@ try{
    assert.deepEqual((await readdir(output)).sort(), filesBefore);
    await close();
  });
+ const audioProject = join(output, 'audio.oqvideo.json');
+ const audioOutput = join(output, 'audio-mix.mp4');
+ const mediaEnv = { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' };
+ const mediaCommand = (args, options = {}) => execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', ...args], { env: mediaEnv, ...options });
+ const pcm = path => {
+   const bytes = mediaCommand(['-i', path, '-map', '0:a:0', '-f', 'f32le', '-ac', '2', '-ar', '48000', '-'],
+     { maxBuffer: 4 * 1024 * 1024 });
+   return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+ };
+ const amplitude = (samples, seconds, frequency) => {
+   const start = Math.round(seconds * 48000);
+   const count = 4800;
+   let real = 0, imaginary = 0;
+   for (let i = 0; i < count; i++) {
+     const phase = 2 * Math.PI * i * frequency / 48000;
+     real += samples[(start + i) * 2] * Math.cos(phase);
+     imaginary += samples[(start + i) * 2] * Math.sin(phase);
+   }
+   return 2 * Math.hypot(real, imaginary) / count;
+ };
+ const writeAudioFixture = () => {
+   const linked = join(output, 'linked-tone.mp4'), independent = join(output, 'independent-tone.wav');
+   const picture = generate('audio-picture.mp4', 'red');
+   mediaCommand(['-i', picture, '-itsoffset', '0.25', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2.75',
+     '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-y', linked]);
+   mediaCommand(['-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=44100:duration=3', '-c:a', 'pcm_s16le', '-y', independent]);
+   return { linked, independent };
+ };
+ const audioClip = async filename => client.find({ label: `Audio clip ${filename}`, role: 'Button', visible: false });
+ const waitAudio = async () => client.waitFor(async () => /Audio output [1-9][0-9]*%/.test(await state()),
+   { description: 'the device is receiving non-silent mixed PCM' });
+ await step('Linked audio and a resampled WAV play together and export as stereo AAC', async () => {
+   const { linked, independent } = writeAudioFixture();
+   await launch();
+   await fileAction('IMPORT', linked, 'Import media'); await waitState('assets 1');
+   await click('ADD CLIP'); await waitState('clips 1');
+   await client.waitFor(async () => (await audioClip('linked-tone.mp4')).accessibleDescription.endsWith('linked video'),
+     { description: 'linked sound is present on the timeline' });
+   await fileAction('IMPORT', independent, 'Import media'); await waitState('assets 2');
+   await click('Add independent-tone.wav to timeline');
+   await waitState('audio clips 2');
+   const audioTimeline = await client.find({ id: 'EditorWindow::timeline_scroll' });
+   await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId, deltaX: 0, deltaY: -170,
+     position: { x: audioTimeline.absolutePosition.x + 100, y: audioTimeline.absolutePosition.y + 50 } });
+   assert((await audioClip('independent-tone.wav')).accessibleDescription.startsWith('0 samples to 144000'));
+   await click('PLAY');
+   await waitAudio();
+   await client.waitFor(async () => /playhead (?:[2-9]|[1-9]\d) frames/.test(await state()),
+     { description: 'video playhead follows audio device playback' });
+   await click('PAUSE');
+   await client.waitFor(async () => !(await state()).includes('Audio output'), { description: 'pause stops audio output' });
+   await fileAction('SAVE AS', audioProject, 'Save project'); await waitState('Project saved');
+   await fileAction('EXPORT', audioOutput, 'Export MP4'); await waitState('Export complete');
+   const streams = spawnSync(ffmpeg, ['-hide_banner', '-i', audioOutput, '-map', '0:v:0', '-t', '0', '-f', 'null', '-'],
+     { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(streams.status, 0, streams.stderr);
+   assert.match(streams.stderr, /Audio: aac[^\n]*48000 Hz, stereo/);
+   const samples = pcm(audioOutput);
+   assert(samples.length / 2 >= 144000 && samples.length / 2 < 145024, 'stereo audio duration matches 90 video frames with at most an AAC tail block');
+   assert(amplitude(samples, 0.04, 880) > 0.04, 'WAV is present before linked audio starts');
+   assert(amplitude(samples, 0.04, 440) < 0.006, 'delayed linked audio starts at its media timestamp');
+   assert(amplitude(samples, 0.45, 880) > 0.04, 'resampled WAV remains audible during overlap');
+   assert(amplitude(samples, 0.45, 440) > 0.04, 'linked AAC is audible during overlap');
+   await snapshot('17-audio-mix');
+   await close();
+ }, { core: true });
  const findInput = label => client.find({ label, role: 'TextInput' });
  const enter = async (input, value) => {
    await client.click(input);
    await client.setValue(input, String(value));
    await client.key('\n');
  };
+ await step('Audio gain, mute and linked trim persist and affect the rendered mix', async () => {
+   await launch(audioProject); await waitState('clips 1');
+   await click('Lock Audio 1');
+   await client.click(await item('linked-tone.mp4'));
+   await enter(await findInput('Timeline end'), 45);
+   await waitState('Audio 1 is locked');
+   assert((await item('linked-tone.mp4')).accessibleDescription.includes('duration 90 frames'));
+   await click('Unlock Audio 1');
+   await enter(await findInput('Timeline end'), 60);
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('0 samples to 96000'));
+   await click('UNDO');
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('0 samples to 144000'));
+   await click('NEXT'); await waitState('playhead 1 frames');
+   await click('SPLIT'); await waitState('audio clips 3');
+   const linkedIntervals = (await client.byLabel('Audio clip linked-tone.mp4', { role: 'Button' }))
+     .map(item => item.accessibleDescription).sort();
+   assert.deepEqual(linkedIntervals, ['0 samples to 1600 · linked video', '1600 samples to 144000 · linked video']);
+   await click('UNDO'); await waitState('audio clips 2');
+   await enter(await findInput('Audio 1 gain (%)'), 25);
+   await fileAction('EXPORT', join(output, 'audio-gain.mp4'), 'Export MP4'); await waitState('Export complete');
+   const quieter = pcm(join(output, 'audio-gain.mp4'));
+   assert(amplitude(quieter, 0.45, 440) < amplitude(pcm(audioOutput), 0.45, 440) * 0.35);
+   assert(amplitude(quieter, 0.45, 880) > 0.04);
+   await click('Mute Audio 1');
+   await client.find({ label: 'Unmute Audio 1', role: 'Button' });
+   await fileAction('EXPORT', join(output, 'audio-muted.mp4'), 'Export MP4'); await waitState('audio-muted.mp4');
+   const muted = pcm(join(output, 'audio-muted.mp4'));
+   assert(amplitude(muted, 0.45, 440) < 0.006);
+   assert(amplitude(muted, 0.45, 880) > 0.04);
+   await click('Unmute Audio 1');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+   await launch(audioProject); await waitState('clips 1');
+   assert.equal((await findInput('Audio 1 gain (%)')).accessibleValue, '25');
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.endsWith('linked video'));
+   await click('PLAY');
+   await waitAudio();
+   await client.waitFor(async () => {
+     const status = await state();
+     return status.includes('playhead 89 frames') && !status.includes('Audio output');
+   }, { description: 'the audio device drains and playback stops on the final frame' });
+   await close();
+ });
+ await step('Unlink and edit source, position, trim and gain at sample precision', async () => {
+   await launch(audioProject); await waitState('clips 1');
+   await client.click(await audioClip('linked-tone.mp4'));
+   assert.equal(Boolean((await findInput('Audio start')).accessibleEnabled), false);
+   await click('Unlink audio');
+   const length = 144000;
+   await enter(await findInput('Audio start'), 123);
+   await enter(await findInput('Audio end'), 48123);
+   await enter(await findInput('Audio source in'), 24000);
+   await enter(await findInput('Audio clip gain (%)'), 50);
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('123 samples to 48123'));
+   await click('Delete audio clip');
+   assert.equal((await client.byLabel('Audio clip linked-tone.mp4', { role: 'Button', visible: false })).length, 0);
+   await click('UNDO');
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('123 samples to 48123'));
+   await fileAction('SAVE AS', join(output, 'unlinked.oqvideo.json'), 'Save project'); await waitState('Project saved');
+   const data = JSON.parse(await readFile(join(output, 'unlinked.oqvideo.json'), 'utf8')).data;
+   const clip = data.audio_tracks[0].clips[0];
+   assert.deepEqual(clip.placement, { kind: 'independent', start: 123, duration: 48000, source: 24000 });
+   assert.equal(clip.gain, 0.5);
+   assert.equal(data.tracks[0].clips[0].duration * 1600, length);
+   await close();
+ });
  const clipControl = async (label, role = 'TextInput') => {
    const viewport = await client.find({ id: 'EditorWindow::clip_properties' });
    const scroll = deltaY => client.value('dispatch_pointer_scroll', {

@@ -123,6 +123,8 @@ pub struct PlaybackRequest {
     pub revision: u64,
     pub start_frame: u64,
     pub project: ProjectData,
+    #[cfg(target_os = "macos")]
+    pub audio_clock: Option<Arc<crate::audio_output::AudioClock>>,
 }
 enum PreviewCommand {
     Exact(PreviewRequest),

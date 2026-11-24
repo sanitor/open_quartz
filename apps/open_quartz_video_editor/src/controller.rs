@@ -1,6 +1,6 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Rational};
 use crate::preview::{sequence_request, PlaybackRequest, PreviewBridge, PreviewRequest};
-use crate::{AssetRow, ClipRow, EditorWindow, TrackRow};
+use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, EditorWindow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
@@ -52,6 +52,7 @@ pub struct Controller {
     ticket: u64,
     selected_asset: Option<String>,
     selected_clip: Option<String>,
+    selected_audio: Option<String>,
     selected_track: String,
     monitor_gesture: Option<MonitorGesture>,
     timeline_capture: Option<(String, u64)>,
@@ -66,11 +67,15 @@ pub struct Controller {
     thumbnails: HashMap<String, Thumbnail>,
     asset_model: Rc<VecModel<AssetRow>>,
     clip_model: Rc<VecModel<ClipRow>>,
+    audio_track_model: Rc<VecModel<AudioTrackRow>>,
+    audio_clip_model: Rc<VecModel<AudioClipRow>>,
     timer: slint::Timer,
     deferred_refresh: bool,
     busy: bool,
     #[cfg(target_os = "macos")]
     export: Option<crate::preview::export::ExportTask>,
+    #[cfg(target_os = "macos")]
+    audio: Option<crate::audio_output::AudioPlayback>,
     pipeline_editor: PipelineEditor,
 }
 impl Controller {
@@ -84,8 +89,12 @@ impl Controller {
         let (io_send, io_receive) = mpsc::channel();
         let asset_model = Rc::new(VecModel::default());
         let clip_model = Rc::new(VecModel::default());
+        let audio_track_model = Rc::new(VecModel::default());
+        let audio_clip_model = Rc::new(VecModel::default());
         window.set_assets(ModelRc::from(asset_model.clone()));
         window.set_clips(ModelRc::from(clip_model.clone()));
+        window.set_audio_tracks(ModelRc::from(audio_track_model.clone()));
+        window.set_audio_clips(ModelRc::from(audio_clip_model.clone()));
         let this = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             document: EditorDocument::default(),
@@ -99,6 +108,7 @@ impl Controller {
             ticket: 0,
             selected_asset: None,
             selected_clip: None,
+            selected_audio: None,
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
             timeline_capture: None,
@@ -113,11 +123,15 @@ impl Controller {
             thumbnails: HashMap::new(),
             asset_model,
             clip_model,
+            audio_track_model,
+            audio_clip_model,
             timer: slint::Timer::default(),
             deferred_refresh: false,
             busy: false,
             #[cfg(target_os = "macos")]
             export: None,
+            #[cfg(target_os = "macos")]
+            audio: None,
             pipeline_editor: PipelineEditor::default(),
         }));
         window.set_project_status(description.into());
@@ -256,6 +270,28 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_audio_track_action(move |id, action, value| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let result = controller.document.audio_track(&id, &action, &value);
+                controller.finish_edit(result);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_audio_clip_action(move |id, action, value| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if action == "select" {
+                    controller.selected_clip = None;
+                    controller.selected_audio = Some(id.to_string());
+                    controller.refresh();
+                } else {
+                    let result = controller.document.edit_audio_clip(&id, &action, &value);
+                    controller.finish_edit(result);
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_reorder_track(move |id, anchor, after| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -363,6 +399,9 @@ impl Controller {
         self.asset_preview = false;
         self.requested = None;
         if self.selected_clip.as_ref().is_some_and(|id| self.document.clip(id).is_none()) { self.selected_clip = None; }
+        if self.selected_audio.as_ref().is_some_and(|id| !self.document.data.audio_tracks.iter().any(|track| track.clips.iter().any(|clip| &clip.id == id))) {
+            self.selected_audio = None;
+        }
         self.refresh();
         self.request_preview();
     }
@@ -375,6 +414,11 @@ impl Controller {
             self.status("Selected media is offline and cannot be placed on the timeline");
             return;
         }
+        if self.document.asset(id).is_some_and(|asset| !asset.has_video()) {
+            let result = self.document.place_audio(id, start.unwrap_or(self.playhead));
+            self.finish_edit(result);
+            return;
+        }
         match self.document.place_clip(id, track, start) {
             Ok(clip_id) => {
                 let start = self.document.clip(&clip_id).expect("inserted clip exists").timeline_start;
@@ -383,6 +427,7 @@ impl Controller {
                 self.selected_track = track.to_owned();
                 self.selected_asset = Some(id.to_owned());
                 self.selected_clip = Some(clip_id);
+                self.selected_audio = None;
                 self.asset_preview = false;
                 self.requested = None;
                 self.deferred_refresh = true;
@@ -468,6 +513,7 @@ impl Controller {
                     self.document = EditorDocument::default();
                     self.selected_asset = None;
                     self.selected_clip = None;
+                    self.selected_audio = None;
                     self.playhead = 0;
                     self.clear_images();
                     self.changed();
@@ -577,7 +623,7 @@ impl Controller {
         let weak_window = state.window.clone();
         let selected = run_reentrant_native_dialog(state, || match kind {
             "import" => rfd::FileDialog::new()
-                .add_filter("Video", &["mp4", "mov", "m4v", "mkv"])
+                .add_filter("Video and audio", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac"])
                 .pick_file(),
             "open" => rfd::FileDialog::new()
                 .add_filter("Video project", &["json"])
@@ -738,6 +784,7 @@ impl Controller {
             return;
         };
         self.selected_clip = Some(id.to_owned());
+        self.selected_audio = None;
         self.selected_asset = Some(clip.asset_id.clone());
         let result = match kind {
             "move" => self.document.move_clip_to(
@@ -816,6 +863,8 @@ impl Controller {
     fn pause(&mut self) {
         let was_playing = self.playing;
         self.playing = false;
+        #[cfg(target_os = "macos")]
+        self.audio.take();
         if was_playing {
             let progress = self.preview.progress();
             if progress.ticket == self.ticket && progress.revision == self.document.revision {
@@ -841,6 +890,11 @@ impl Controller {
             return;
         }
         self.asset_preview = false;
+        #[cfg(target_os = "macos")]
+        match crate::audio_output::AudioPlayback::start(&self.document.data, self.playhead) {
+            Ok(playback) => self.audio = playback,
+            Err(error) => { self.status(error); return; }
+        }
         self.playing = true;
         self.requested = None;
         self.refresh();
@@ -851,10 +905,13 @@ impl Controller {
             if self.requested.is_some_and(|(revision, _, asset)| revision == self.document.revision && !asset) { return; }
             self.ticket += 1;
             let request = PlaybackRequest { ticket: self.ticket, revision: self.document.revision,
-                start_frame: self.playhead, project: self.document.data.clone() };
+                start_frame: self.playhead, project: self.document.data.clone(),
+                #[cfg(target_os = "macos")]
+                audio_clock: self.audio.as_ref().map(|audio| audio.clock.clone()),
+            };
             match self.preview.play(request) {
                 Ok(()) => self.requested = Some((self.document.revision, self.playhead, false)),
-                Err(error) => { self.playing = false; self.status(error); }
+                Err(error) => { self.pause(); self.status(error); }
             }
             return;
         }
@@ -867,7 +924,7 @@ impl Controller {
                 .map(|asset| PreviewRequest {
                     ticket: self.ticket, revision: self.document.revision, frame: self.playhead,
                     source_ns: 0, width: self.document.data.width, height: self.document.data.height,
-                    asset: Some(asset), transform: ClipTransform::default(), pipeline: Default::default(),
+                    asset: asset.has_video().then_some(asset), transform: ClipTransform::default(), pipeline: Default::default(),
                     layers: Vec::new(),
                 })
         } else {
@@ -911,6 +968,18 @@ impl Controller {
 
     fn tick(&mut self) {
         #[cfg(target_os = "macos")]
+        if let Some(error) = self.audio.as_ref().and_then(|audio| audio.error()) {
+            self.pause();
+            self.status(error);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(window) = self.window.upgrade() {
+            let status = self.audio.as_ref().map_or(String::new(), |audio| {
+                format!("Audio output {}%", (audio.clock.peak() * 100.0).round() as u32)
+            });
+            if window.get_audio_level().as_str() != status { window.set_audio_level(status.into()); }
+        }
+        #[cfg(target_os = "macos")]
         if let Some(export) = &self.export {
             let (status, finished) = export.progress();
             if let Some(window) = self.window.upgrade() {
@@ -931,6 +1000,7 @@ impl Controller {
                 UiCommand::SelectAsset(id) => {
                     self.selected_asset = Some(id);
                     self.selected_clip = None;
+                    self.selected_audio = None;
                     self.asset_preview = true;
                     self.requested = None;
                     self.pause();
@@ -943,6 +1013,7 @@ impl Controller {
                     if let Some(clip) = self.document.clip(&id).cloned() {
                         if let Some(track) = self.document.clip_track(&id) { self.selected_track = track.id.clone(); }
                         self.selected_clip = Some(id);
+                        self.selected_audio = None;
                         self.selected_asset = Some(clip.asset_id.clone());
                         if self.asset_preview || self.playhead < clip.timeline_start
                             || self.playhead >= clip.timeline_end().unwrap_or(0) {
@@ -984,6 +1055,7 @@ impl Controller {
                                     self.selected_asset = Some(id);
                                     self.asset_preview = true;
                                     self.selected_clip = None;
+                                    self.selected_audio = None;
                                     self.requested = None;
                                     self.refresh();
                                     self.request_preview();
@@ -1002,6 +1074,7 @@ impl Controller {
                             self.document = document;
                             self.playhead = 0;
                             self.selected_clip = None;
+                            self.selected_audio = None;
                             self.selected_asset =
                                 self.document.data.assets.first().map(|a| a.id.clone());
                             self.asset_preview = false;
@@ -1041,6 +1114,8 @@ impl Controller {
             if self.playing {
                 self.playhead = progress.frame;
                 self.playing = progress.playing;
+                #[cfg(target_os = "macos")]
+                if !self.playing { self.audio.take(); }
                 self.refresh_time();
                 if let Some(window) = self.window.upgrade() { window.set_playing(self.playing); }
                 self.refresh_monitor();
@@ -1084,7 +1159,7 @@ impl Controller {
                             }
                         }
                         let thumbnail_asset = if self.asset_preview {
-                            self.selected_asset.clone()
+                            self.selected_asset.as_ref().filter(|id| self.document.asset(id).is_some_and(MediaAsset::has_video)).cloned()
                         } else {
                             let mut active = self.document.data.active_clips(update.frame);
                             active.next().filter(|(_, clip)| clip.transform == ClipTransform::default()
@@ -1189,6 +1264,48 @@ impl Controller {
             window.set_playing(self.playing);
         }
     }
+    fn refresh_audio(&self, window: &EditorWindow) {
+        let data = &self.document.data;
+        let tracks = data.audio_tracks.iter().map(|track| AudioTrackRow {
+            id: track.id.clone().into(), name: track.name.clone().into(), muted: track.muted,
+            locked: track.locked, gain: (track.gain * 100.0).round().to_string().into(),
+        }).collect::<Vec<_>>();
+        reconcile(&self.audio_track_model, tracks, |row| row.id.as_str(), |a, b| a == b);
+        let scale = f64::from(data.fps.numerator) / f64::from(data.fps.denominator)
+            / crate::document::SAMPLE_RATE as f64;
+        let mut rows = Vec::new();
+        let mut selection = None;
+        for (lane, track) in data.audio_tracks.iter().enumerate() {
+            for clip in &track.clips {
+                let Ok(interval) = clip.interval(data) else { continue };
+                let asset_name = data.assets.iter().find(|asset| asset.id == clip.asset_id)
+                    .map_or("Missing media", |asset| asset.name.as_str());
+                let selected = self.selected_audio.as_ref() == Some(&clip.id);
+                let linked = matches!(clip.placement, document::AudioPlacement::Linked { .. });
+                rows.push(AudioClipRow {
+                    id: clip.id.clone().into(), lane: lane as i32, name: asset_name.into(),
+                    start: (interval.start as f64 * scale) as f32,
+                    duration: ((interval.end - interval.start) as f64 * scale) as f32,
+                    description: format!("{} samples to {}{}", interval.start, interval.end, if linked { " · linked video" } else { "" }).into(),
+                    selected, muted: track.muted,
+                });
+                if selected { selection = Some((clip, asset_name, interval, track.locked, linked)); }
+            }
+        }
+        reconcile(&self.audio_clip_model, rows, |row| row.id.as_str(), |a, b| a == b);
+        if let Some((clip, name, interval, locked, linked)) = selection {
+            window.set_audio_clip_id(clip.id.clone().into());
+            window.set_audio_clip_name(name.into());
+            window.set_audio_clip_start(interval.start.to_string().into());
+            window.set_audio_clip_end(interval.end.to_string().into());
+            window.set_audio_clip_source(interval.source.to_string().into());
+            window.set_audio_clip_gain((clip.gain * 100.0).round().to_string().into());
+            window.set_audio_clip_locked(locked);
+            window.set_audio_clip_linked(linked);
+        } else {
+            window.set_audio_clip_id("".into());
+        }
+    }
     fn refresh(&mut self) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -1203,6 +1320,7 @@ impl Controller {
         );
         window.set_can_undo(self.document.can_undo());
         window.set_can_redo(self.document.can_redo());
+        self.refresh_audio(&window);
         window.set_sequence_duration(self.document.duration_frames().min(i32::MAX as u64) as i32);
         window.set_sequence_timecode(
             timecode(self.document.duration_frames(), self.document.data.fps).into(),
@@ -1387,6 +1505,8 @@ impl Controller {
     }
     pub fn shutdown(&mut self) {
         self.timer.stop();
+        #[cfg(target_os = "macos")]
+        self.audio.take();
         self.clear_images();
         self.preview.shutdown();
         #[cfg(target_os = "macos")]
@@ -1442,6 +1562,10 @@ fn reconcile<T: Clone + 'static>(
     }
 }
 fn asset_details(asset: &MediaAsset) -> String {
+    let audio = asset.audio.as_ref().map(|audio| format!("{} · {} Hz · {} ch", audio.codec.to_uppercase(), audio.rate, audio.channels));
+    if !asset.has_video() {
+        return audio.unwrap_or_default();
+    }
     format!(
         "{} × {} · {} · {}",
         asset.width,
@@ -1453,11 +1577,7 @@ fn asset_details(asset: &MediaAsset) -> String {
                 f64::from(fps.numerator) / f64::from(fps.denominator)
             ))
             .unwrap_or_else(|| "VFR".into()),
-        if asset.has_audio {
-            "Video only · audio unused"
-        } else {
-            "No audio"
-        }
+        audio.as_deref().unwrap_or(if asset.has_audio { "Audio codec unsupported" } else { "No audio" })
     )
 }
 fn timecode(frame: u64, fps: Rational) -> String {
@@ -1530,12 +1650,16 @@ mod native_dialog_tests {
             window: slint::Weak::default(), document, preview, backend,
             io_send, io_receive, ui_send, ui_receive, generation: 0, ticket: 0,
             selected_asset: None, selected_clip: Some(first), asset_preview: false,
+            selected_audio: None,
             playhead: 0, playing: false, requested: None,
             displayed: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
+            audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
             #[cfg(target_os = "macos")]
             export: None,
+            #[cfg(target_os = "macos")]
+            audio: None,
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,

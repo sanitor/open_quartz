@@ -1,0 +1,450 @@
+use super::*;
+use std::collections::HashSet;
+
+pub const SAMPLE_RATE: u64 = 48_000;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioAsset {
+    pub stream: usize,
+    pub time_base: Rational,
+    pub start_pts: i64,
+    pub duration_pts: Option<i64>,
+    pub rate: u32,
+    pub channels: u16,
+    pub codec: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioTrack {
+    pub id: String,
+    pub name: String,
+    pub muted: bool,
+    pub locked: bool,
+    pub gain: f32,
+    pub clips: Vec<AudioClip>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioClip {
+    pub id: String,
+    pub asset_id: String,
+    pub gain: f32,
+    pub placement: AudioPlacement,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", tag = "kind", deny_unknown_fields)]
+pub enum AudioPlacement {
+    Linked {
+        video_id: String,
+    },
+    Independent {
+        start: u64,
+        duration: u64,
+        source: i64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioInterval {
+    pub start: u64,
+    pub end: u64,
+    pub source: i64,
+}
+
+impl MediaAsset {
+    pub fn has_video(&self) -> bool {
+        self.width != 0 && self.height != 0
+    }
+}
+
+impl Rational {
+    pub fn frame_to_sample(self, frame: u64) -> Result<u64, String> {
+        Rational::new(self.numerator, self.denominator)?;
+        let time =
+            u128::from(frame) * u128::from(self.denominator as u32) * u128::from(SAMPLE_RATE);
+        let divisor = self.numerator as u128;
+        u64::try_from((time + divisor / 2) / divisor)
+            .map_err(|_| "Sequence audio sample overflow".into())
+    }
+
+    pub fn sample_to_frame_ceil(self, sample: u64) -> Result<u64, String> {
+        Rational::new(self.numerator, self.denominator)?;
+        let numerator = u128::from(sample) * self.numerator as u128;
+        let denominator = self.denominator as u128 * u128::from(SAMPLE_RATE);
+        let frame = u64::try_from(numerator / denominator)
+            .map_err(|_| "Audio timeline duration overflow")?;
+        if self.frame_to_sample(frame)? >= sample {
+            Ok(frame)
+        } else {
+            frame
+                .checked_add(1)
+                .ok_or_else(|| "Audio timeline duration overflow".into())
+        }
+    }
+}
+
+fn source_sample(pts: i64, subtick: u64, divisor: u64, base: Rational) -> Result<i64, String> {
+    if divisor == 0 {
+        return Err("Invalid source sub-tick divisor".into());
+    }
+    let fraction = i128::from(pts)
+        .checked_mul(i128::from(divisor))
+        .and_then(|value| value.checked_add(i128::from(subtick)))
+        .and_then(|value| value.checked_mul(i128::from(base.numerator)))
+        .and_then(|value| value.checked_mul(i128::from(SAMPLE_RATE)))
+        .ok_or("Audio source sample overflow")?;
+    let denominator = i128::from(divisor) * i128::from(base.denominator);
+    let magnitude = fraction
+        .checked_abs()
+        .and_then(|value| value.checked_add(denominator / 2))
+        .ok_or("Audio source sample overflow")?;
+    i64::try_from(fraction.signum() * (magnitude / denominator))
+        .map_err(|_| "Audio source sample overflow".into())
+}
+
+impl AudioClip {
+    pub fn interval(&self, data: &ProjectData) -> Result<AudioInterval, String> {
+        match &self.placement {
+            AudioPlacement::Independent {
+                start,
+                duration,
+                source,
+            } => Ok(AudioInterval {
+                start: *start,
+                end: start
+                    .checked_add(*duration)
+                    .ok_or("Audio timeline range overflow")?,
+                source: *source,
+            }),
+            AudioPlacement::Linked { video_id } => {
+                let (track, index) = data.clip_position(video_id)?;
+                let clip = &data.tracks[track].clips[index];
+                let asset = data
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset_id && asset.id == self.asset_id)
+                    .ok_or("Linked audio and video must reference the same asset")?;
+                Ok(AudioInterval {
+                    start: data.fps.frame_to_sample(clip.timeline_start)?,
+                    end: data.fps.frame_to_sample(clip.timeline_end()?)?,
+                    source: source_sample(
+                        clip.source_in_pts,
+                        clip.source_subtick_numerator,
+                        clip.source_subtick_denominator,
+                        asset.time_base,
+                    )?,
+                })
+            }
+        }
+    }
+}
+
+fn valid_gain(gain: f32) -> bool {
+    (0.0..=2.0).contains(&gain)
+}
+
+pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
+    let mut tracks = HashSet::new();
+    let mut clips = HashSet::new();
+    let mut links = HashSet::new();
+    for asset in &data.assets {
+        if let Some(audio) = &asset.audio {
+            Rational::new(audio.time_base.numerator, audio.time_base.denominator)?;
+            if !asset.has_audio
+                || audio.rate == 0
+                || audio.channels == 0
+                || audio.duration_pts.is_some_and(|duration| duration <= 0)
+            {
+                return Err("Invalid audio source metadata".into());
+            }
+        }
+        if !asset.has_video() && (asset.width != 0 || asset.height != 0 || asset.audio.is_none()) {
+            return Err("Asset requires valid video or audio metadata".into());
+        }
+    }
+    for track in &data.audio_tracks {
+        if track.id.is_empty()
+            || track.name.trim().is_empty()
+            || !tracks.insert(&track.id)
+            || !valid_gain(track.gain)
+        {
+            return Err("Invalid audio track".into());
+        }
+        let mut intervals = Vec::with_capacity(track.clips.len());
+        for clip in &track.clips {
+            if clip.id.is_empty()
+                || !clips.insert(&clip.id)
+                || !valid_gain(clip.gain)
+                || !data
+                    .assets
+                    .iter()
+                    .any(|asset| asset.id == clip.asset_id && asset.audio.is_some())
+            {
+                return Err("Invalid audio clip or missing source".into());
+            }
+            if let AudioPlacement::Linked { video_id } = &clip.placement {
+                if !links.insert(video_id) {
+                    return Err("Video clip already has linked audio".into());
+                }
+            }
+            let range = clip.interval(data)?;
+            if range.end <= range.start
+                || i64::try_from(range.end - range.start)
+                    .ok()
+                    .and_then(|len| range.source.checked_add(len))
+                    .is_none()
+            {
+                return Err("Invalid audio clip range".into());
+            }
+            data.fps.sample_to_frame_ceil(range.end)?;
+            intervals.push(range);
+        }
+        intervals.sort_by_key(|range| range.start);
+        if intervals.windows(2).any(|pair| pair[0].end > pair[1].start) {
+            return Err(format!("Audio clips overlap on {}", track.name));
+        }
+    }
+    Ok(())
+}
+
+impl ProjectData {
+    fn insert_audio(
+        &mut self,
+        revision: u64,
+        asset_id: &str,
+        placement: AudioPlacement,
+    ) -> Result<(), String> {
+        let clip = AudioClip {
+            id: new_id("audio-clip", revision),
+            asset_id: asset_id.into(),
+            gain: 1.0,
+            placement,
+        };
+        let range = clip.interval(self)?;
+        let target = self.audio_tracks.iter().position(|track| {
+            !track.locked
+                && track.clips.iter().all(|other| {
+                    other
+                        .interval(self)
+                        .is_ok_and(|other| range.end <= other.start || range.start >= other.end)
+                })
+        });
+        let index = match target {
+            Some(index) => index,
+            None => {
+                self.audio_tracks.push(AudioTrack {
+                    id: new_id("audio-track", revision),
+                    name: format!("Audio {}", self.audio_tracks.len() + 1),
+                    muted: false,
+                    locked: false,
+                    gain: 1.0,
+                    clips: Vec::new(),
+                });
+                self.audio_tracks.len() - 1
+            }
+        };
+        self.audio_tracks[index].clips.push(clip);
+        Ok(())
+    }
+
+    pub(super) fn link_audio(
+        &mut self,
+        revision: u64,
+        asset_id: &str,
+        video_id: String,
+    ) -> Result<(), String> {
+        self.insert_audio(revision, asset_id, AudioPlacement::Linked { video_id })
+    }
+
+    pub(super) fn split_link(&mut self, revision: u64, original: &str, right: String) {
+        for track in &mut self.audio_tracks {
+            if let Some(mut clip) = track.clips.iter().find(|clip| matches!(&clip.placement, AudioPlacement::Linked { video_id } if video_id == original)).cloned() {
+                clip.id = new_id("audio-clip", revision);
+                clip.placement = AudioPlacement::Linked { video_id: right };
+                track.clips.push(clip);
+                return;
+            }
+        }
+    }
+}
+
+pub(super) fn validate_locked_links(old: &ProjectData, new: &ProjectData) -> Result<(), String> {
+    for track in old.audio_tracks.iter().filter(|track| track.locked) {
+        for clip in &track.clips {
+            if matches!(clip.placement, AudioPlacement::Linked { .. })
+                && clip.interval(old)?
+                    != clip
+                        .interval(new)
+                        .map_err(|_| format!("{} is locked", track.name))?
+            {
+                return Err(format!("{} is locked", track.name));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl EditorDocument {
+    pub fn edit_audio_clip(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
+        self.transact(|data| {
+            let (lane, index) = data
+                .audio_tracks
+                .iter()
+                .enumerate()
+                .find_map(|(i, track)| {
+                    track
+                        .clips
+                        .iter()
+                        .position(|clip| clip.id == id)
+                        .map(|j| (i, j))
+                })
+                .ok_or("Audio clip is missing")?;
+            if data.audio_tracks[lane].locked {
+                return Err(format!("{} is locked", data.audio_tracks[lane].name));
+            }
+            let interval = data.audio_tracks[lane].clips[index].interval(data)?;
+            let clips = &mut data.audio_tracks[lane].clips;
+            let clip = &mut clips[index];
+            match action {
+                "unlink" => {
+                    clip.placement = AudioPlacement::Independent {
+                        start: interval.start,
+                        duration: interval.end - interval.start,
+                        source: interval.source,
+                    }
+                }
+                "gain" => {
+                    clip.gain = value
+                        .trim()
+                        .parse::<f32>()
+                        .map_err(|_| "Enter a gain percentage from 0 to 200")?
+                        / 100.0;
+                    if !valid_gain(clip.gain) {
+                        return Err("Enter a gain percentage from 0 to 200".into());
+                    }
+                }
+                "delete" if matches!(clip.placement, AudioPlacement::Independent { .. }) => {
+                    clips.remove(index);
+                }
+                "start" | "end" | "source" => {
+                    let AudioPlacement::Independent {
+                        start,
+                        duration,
+                        source,
+                    } = &mut clip.placement
+                    else {
+                        return Err("Unlink audio to edit it independently".into());
+                    };
+                    match action {
+                        "start" => {
+                            *start = value
+                                .trim()
+                                .parse()
+                                .map_err(|_| "Enter a non-negative sequence sample")?
+                        }
+                        "end" => {
+                            let end: u64 = value
+                                .trim()
+                                .parse()
+                                .map_err(|_| "Enter a non-negative sequence sample")?;
+                            *duration = end.checked_sub(*start).ok_or("End must follow start")?;
+                        }
+                        _ => {
+                            *source = value
+                                .trim()
+                                .parse()
+                                .map_err(|_| "Enter a source sample position")?
+                        }
+                    }
+                }
+                _ => return Err("Unknown audio clip action".into()),
+            }
+            Ok(())
+        })
+    }
+
+    pub fn place_audio(&mut self, asset_id: &str, frame: u64) -> Result<(), String> {
+        let audio = self
+            .asset(asset_id)
+            .and_then(|asset| asset.audio.as_ref())
+            .ok_or("Asset has no supported audio stream")?;
+        let source = source_sample(audio.start_pts, 0, 1, audio.time_base)?;
+        let duration = audio
+            .duration_pts
+            .ok_or("Audio placement requires a known duration")?;
+        let end_pts = audio
+            .start_pts
+            .checked_add(duration)
+            .ok_or("Audio source duration overflow")?;
+        let end = source_sample(end_pts, 0, 1, audio.time_base)?;
+        let duration = end
+            .checked_sub(source)
+            .and_then(|duration| u64::try_from(duration).ok())
+            .ok_or("Audio source duration overflow")?;
+        let start = self.data.fps.frame_to_sample(frame)?;
+        let revision = self.revision;
+        self.transact(|data| {
+            data.insert_audio(
+                revision,
+                asset_id,
+                AudioPlacement::Independent {
+                    start,
+                    duration,
+                    source,
+                },
+            )
+        })
+    }
+
+    pub fn audio_track(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
+        self.transact(|data| {
+            let track = data
+                .audio_tracks
+                .iter_mut()
+                .find(|track| track.id == id)
+                .ok_or("Audio track is missing")?;
+            match action {
+                "mute" => track.muted = !track.muted,
+                "lock" => track.locked = !track.locked,
+                "gain" => {
+                    track.gain = value
+                        .trim()
+                        .parse::<f32>()
+                        .map_err(|_| "Enter a gain percentage from 0 to 200")?
+                        / 100.0;
+                    if !valid_gain(track.gain) {
+                        return Err("Enter a gain percentage from 0 to 200".into());
+                    }
+                }
+                _ => return Err("Unknown audio track action".into()),
+            }
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_integer_fps_audio_boundaries_are_computed_from_origin() {
+        let fps = Rational::new(30_000, 1001).unwrap();
+        assert_eq!(fps.frame_to_sample(1).unwrap(), 1602);
+        assert_eq!(fps.frame_to_sample(2).unwrap(), 3203);
+        assert_eq!(fps.frame_to_sample(30_000).unwrap(), 48_048_000);
+        for frame in 1..100 {
+            let sample = fps.frame_to_sample(frame).unwrap();
+            assert_eq!(fps.sample_to_frame_ceil(sample).unwrap(), frame);
+            assert_eq!(fps.sample_to_frame_ceil(sample + 1).unwrap(), frame + 1);
+        }
+        assert_eq!(
+            source_sample(0, 1, 3, Rational::new(1, 30).unwrap()).unwrap(),
+            533
+        );
+    }
+}

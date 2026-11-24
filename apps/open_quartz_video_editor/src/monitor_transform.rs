@@ -360,6 +360,7 @@ impl Controller {
                     .expect("active clip has a track");
                 self.selected_track = track.id.clone();
                 self.selected_clip = Some(clip.id.clone());
+                self.selected_audio = None;
                 self.selected_asset = Some(clip.asset_id.clone());
                 if phase == "start" && !track.locked {
                     if let Some(geometry) = self.geometry(&clip, clip.transform) {

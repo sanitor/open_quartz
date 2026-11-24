@@ -1,4 +1,4 @@
-use crate::document::{fingerprint, new_id, MediaAsset, Rational};
+use crate::document::{fingerprint, new_id, AudioAsset, MediaAsset, Rational};
 use std::path::{Path, PathBuf};
 
 /// Preparation-only metadata and first-frame capability check, never software pixels.
@@ -9,9 +9,25 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             .canonicalize()
             .map_err(|error| format!("Cannot access media: {error}"))?;
         if !canonical.is_file() {
-            return Err("Select a regular local video file".into());
+            return Err("Select a regular local media file".into());
         }
         let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+        let streams = oq_media::probe_audio(&canonical).map_err(|error| error.to_string())?;
+        let audio = streams.audio.map(audio_asset).transpose()?;
+        let name = canonical.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let path = canonical.to_string_lossy().into_owned();
+        if !streams.has_video {
+            let audio = audio.ok_or("Media file has no supported AAC or PCM stream")?;
+            if audio.duration_pts.is_none() {
+                return Err("Audio-only files require a known duration".into());
+            }
+            return Ok(MediaAsset {
+                id: new_id("asset", 0), name, path, fingerprint: fingerprint(&canonical)?,
+                size_bytes: metadata.len(), width: 0, height: 0, duration_pts: audio.duration_pts,
+                start_pts: Some(audio.start_pts), time_base: audio.time_base, fps: None,
+                has_audio: true, audio: Some(audio), online: true,
+            });
+        }
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
         let info = session.source_info().clone();
         if !matches!(info.codec.as_str(), "h264" | "hevc") {
@@ -37,12 +53,8 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
         }
         Ok(MediaAsset {
             id: new_id("asset", 0),
-            name: canonical
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            path: canonical.to_string_lossy().into_owned(),
+            name,
+            path,
             fingerprint: fingerprint(&canonical)?,
             size_bytes: metadata.len(),
             width: frame.frame.frame.width(),
@@ -55,6 +67,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 .map(|fps| Rational::new(fps.numerator, fps.denominator))
                 .transpose()?,
             has_audio: info.has_audio,
+            audio,
             online: true,
         })
     }
@@ -66,6 +79,21 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 .into(),
         )
     }
+}
+
+#[cfg(target_os = "macos")]
+fn audio_asset(info: oq_media::AudioSourceInfo) -> Result<AudioAsset, String> {
+    Ok(AudioAsset {
+        stream: info.stream_index,
+        time_base: Rational::new(info.time_base.numerator, info.time_base.denominator)?,
+        start_pts: info.start_pts, duration_pts: info.duration_pts, rate: info.sample_rate,
+        channels: info.channels, codec: info.codec,
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub fn audio_metadata(path: &Path) -> Result<Option<AudioAsset>, String> {
+    oq_media::probe_audio(path).map_err(|error| error.to_string())?.audio.map(audio_asset).transpose()
 }
 
 pub fn configure_runtime() -> Result<(), String> {

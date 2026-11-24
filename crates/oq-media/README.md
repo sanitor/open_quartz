@@ -22,7 +22,7 @@ env OPEN_QUARTZ_FFMPEG_PATH=$PWD/apps/open_quartz_slint/runtime/ffmpeg \
 
 SDK 构建脚本、补丁和 LGPL 对应源码分发当前由宿主仓库提供；独立部署仍需配置 libav 的链接和运行库发现。媒体核心没有 OpenQuartz Rust 依赖，但 SDK 准备尚未提取成独立分发工具。
 
-运行时要求`oq-vt-hw3-metal-encode-r2`构建标识；旧decode-only hw2、hw1及未修复重排的hw3 SDK拒绝，不保留alias。锁定FFmpeg8.1.1/LGPL-only，保留H.264/HEVC硬件required/Metal输出，启用`h264_videotoolbox`与MP4/MOV mux；回移上游[2da55bf](https://github.com/FFmpeg/FFmpeg/commit/2da55bf59a68801a8157ab141a487196ce3416a8)修正H.264两级B-pyramid被误报一帧重排造成DTS>PTS。编码allow_sw=0/require_sw=0要求硬件，report.hardware来自此硬件必需配置，不是另一次VT属性查询。准备脚本按新identity重建；原源码、两份精确patch/build config/LGPL notices均分发。历史8K节只代表旧hw2测量。
+运行时要求`oq-vt-hw3-metal-encode-r2-audio1`构建标识；旧decode-only hw2、hw1及未修复重排的hw3 SDK拒绝，不保留alias。锁定FFmpeg8.1.1/LGPL-only，保留H.264/HEVC硬件required/Metal输出，启用`h264_videotoolbox`与MP4/MOV mux；回移上游[2da55bf](https://github.com/FFmpeg/FFmpeg/commit/2da55bf59a68801a8157ab141a487196ce3416a8)修正H.264两级B-pyramid被误报一帧重排造成DTS>PTS。编码allow_sw=0/require_sw=0要求硬件，report.hardware来自此硬件必需配置，不是另一次VT属性查询。准备脚本按新identity重建；原源码、两份精确patch/build config/LGPL notices均分发。历史8K节只代表旧hw2测量。
 
 帧保留原生表面，不映射到 CPU。当前 OpenQuartz 的可选 GPU 消费者通过 CoreVideo/Metal 导入平面，并转换为 SDR sRGB RGBA；该适配尚位于宿主执行层，不是本 crate 的 API。当前支持 NV12/P010/BGRA8、BT.709/BT.470BG primaries 及 BT.709/SMPTE170M/sRGB transfer；BT.470BG 在逆 transfer 后以 D65 线性 RGB 原色矩阵转换到 BT.709，再编码 sRGB，不冒充 BT.709 源。HDR、旋转、crop、非方形像素和隔行呈现等未实现语义明确报错。
 
@@ -118,3 +118,5 @@ ffmpeg -f lavfi -i testsrc2=size=7680x4320:rate=30 -frames:v 300 \
 从父进程启动 Release `decode` 示例并捕获 stdout，按 300/墙钟秒数计算完整文件 FPS；核实 300 帧、实际尺寸、NV12/P010、首末 PTS 和 `hardware: Some(true)`。不要逐帧打印到终端后把终端速度算作解码速度。公平比较时保持设备负载、素材、构建模式和计时边界一致；解码吞吐、帧交付吞吐与屏幕 FPS 必须分别报告。
 
 调查原始 JSON 保存在本机忽略目录 `test-results/media-bitdepth/`；该目录不随 crate 发布。本节保留关键测量方法、结果和边界，阅读不依赖本机产物。
+
+音频解码支持 AAC 和小端 PCM，按流 PTS 取样并用 libswresample 转换为 48 kHz 双声道。MP4 编码器可接收同一采样网格上的 PCM 生成 AAC，和视频包交错写入同一个 MP4。

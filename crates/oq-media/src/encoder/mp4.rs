@@ -1,5 +1,7 @@
 use super::EncoderSurface;
-use super::{EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus};
+use super::{
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus,
+};
 use crate::{MediaError, RationalTimeBase};
 use ffmpeg_next::{codec, format, Dictionary, Packet};
 use std::ffi::CString;
@@ -9,6 +11,10 @@ use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+#[path = "mp4_audio.rs"]
+mod audio;
+use audio::AudioEncoder;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 enum Command {
@@ -48,9 +54,18 @@ pub struct Mp4Encoder {
 }
 impl Mp4Encoder {
     pub fn open(path: impl AsRef<Path>, config: EncoderConfig) -> Result<Self, MediaError> {
-        Self::open_with_writer(path, config, |file| file)
+        Self::open_with_audio(path, config, None)
     }
 
+    pub fn open_with_audio(
+        path: impl AsRef<Path>,
+        config: EncoderConfig,
+        audio: Option<AudioRender>,
+    ) -> Result<Self, MediaError> {
+        Self::start(path, config, audio, |file| file)
+    }
+
+    #[cfg(test)]
     fn open_with_writer<W, F>(
         path: impl AsRef<Path>,
         config: EncoderConfig,
@@ -60,9 +75,26 @@ impl Mp4Encoder {
         W: std::io::Write + std::io::Seek + Send + 'static,
         F: FnOnce(File) -> W + Send + 'static,
     {
+        Self::start(path, config, None, make_writer)
+    }
+
+    fn start<W, F>(
+        path: impl AsRef<Path>,
+        config: EncoderConfig,
+        audio: Option<AudioRender>,
+        make_writer: F,
+    ) -> Result<Self, MediaError>
+    where
+        W: std::io::Write + std::io::Seek + Send + 'static,
+        F: FnOnce(File) -> W + Send + 'static,
+    {
         validate(&config)?;
         let target = path.as_ref().to_path_buf();
-        if !target.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4")) {
+        if !target
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+        {
             return Err("H.264 export target must have an .mp4 extension".into());
         }
         if target.exists() && !config.overwrite {
@@ -99,7 +131,7 @@ impl Mp4Encoder {
                     }
                 };
                 let writer = make_writer(writer);
-                let mut pipeline = match Pipeline::open(&temp, writer, &thread_config) {
+                let mut pipeline = match Pipeline::open(&temp, writer, &thread_config, audio) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
                         let _ = fs::remove_file(&temp);
@@ -134,7 +166,11 @@ impl Mp4Encoder {
                                 set_status(
                                     &thread_status,
                                     &thread_waker,
-                                    EncoderStatus::Failed(error.clone()),
+                                    if error.kind == crate::ErrorKind::Cancelled {
+                                        EncoderStatus::Cancelled
+                                    } else {
+                                        EncoderStatus::Failed(error)
+                                    },
                                 );
                                 return;
                             }
@@ -149,7 +185,11 @@ impl Mp4Encoder {
                                     set_status(
                                         &thread_status,
                                         &thread_waker,
-                                        EncoderStatus::Failed(error.clone()),
+                                        if error.kind == crate::ErrorKind::Cancelled {
+                                            EncoderStatus::Cancelled
+                                        } else {
+                                            EncoderStatus::Failed(error)
+                                        },
                                     );
                                     return;
                                 }
@@ -518,19 +558,17 @@ struct Pipeline {
     encoder: codec::encoder::video::Encoder,
     stream: usize,
     time_base: RationalTimeBase,
+    audio: Option<AudioEncoder>,
+    end_pts: i64,
 }
 impl Pipeline {
     fn open(
         _path: &Path,
         writer: impl std::io::Write + std::io::Seek + Send + 'static,
         c: &EncoderConfig,
+        render_audio: Option<AudioRender>,
     ) -> Result<Self, MediaError> {
-        let version = unsafe { std::ffi::CStr::from_ptr(ffmpeg_next::ffi::av_version_info()) }
-            .to_string_lossy();
-        if !version.contains("oq-vt-hw3-metal-encode-r2") {
-            return Err(format!("Unverified FFmpeg SDK: {version}").into());
-        }
-        ffmpeg_next::init().map_err(|e| format!("FFmpeg init failed: {e}"))?;
+        crate::require_media_sdk()?;
         let custom_io = format::context::StreamIo::from_write_seek(writer)
             .map_err(|e| format!("Cannot create MP4 AVIO: {e}"))?;
         let mut output = format::output_to_stream(custom_io, None, Some("mp4"))
@@ -569,6 +607,9 @@ impl Pipeline {
         stream.set_parameters(&encoder);
         let stream_index = stream.index();
         drop(stream);
+        let audio = render_audio
+            .map(|render| AudioEncoder::open(&mut output, render))
+            .transpose()?;
         output
             .write_header()
             .map_err(|e| format!("Cannot write MP4 header: {e}"))?;
@@ -577,9 +618,15 @@ impl Pipeline {
             encoder,
             stream: stream_index,
             time_base: c.time_base,
+            audio,
+            end_pts: 0,
         })
     }
     fn encode(&mut self, input: EncodeFrame, credit: InputCredit) -> Result<u64, MediaError> {
+        self.end_pts = input
+            .pts
+            .checked_add(input.duration)
+            .ok_or("Encoder timestamp overflow")?;
         let mut frame = ffmpeg_next::util::frame::video::Video::empty();
         frame.set_color_range(ffmpeg_next::color::Range::MPEG);
         frame.set_color_space(ffmpeg_next::color::Space::BT709);
@@ -622,6 +669,10 @@ impl Pipeline {
             }
         }
         packets += self.packets()?;
+        if let Some(audio) = &mut self.audio {
+            let end = crate::audio_sample(self.end_pts, self.time_base)?;
+            audio.encode_until(&mut self.output, end, false)?;
+        }
         Ok(packets)
     }
     fn packets(&mut self) -> Result<u64, MediaError> {
@@ -684,6 +735,11 @@ impl Pipeline {
             if count == 0 {
                 break;
             }
+        }
+        if let Some(audio) = &mut self.audio {
+            let end = crate::audio_sample(self.end_pts, self.time_base)?;
+            audio.encode_until(&mut self.output, end, true)?;
+            audio.finish(&mut self.output)?;
         }
         self.output
             .write_trailer()

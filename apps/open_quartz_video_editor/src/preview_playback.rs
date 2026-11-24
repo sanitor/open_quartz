@@ -39,11 +39,18 @@ struct WarmRegion { request: PreviewRequest, end: u64, key: PreviewConfiguration
 struct PlaybackSession {
     project: Option<ProjectData>, request: PreviewRequest, end: u64, duration: u64,
     start_frame: u64, next_frame: u64, clock: Option<Instant>, fps: Rational,
+    #[cfg(target_os = "macos")]
+    audio_clock: Option<Arc<crate::audio_output::AudioClock>>,
     config: FrameWindowConfig, pending: VecDeque<FrameMetadata>, ready: VecDeque<ReadyFrame>,
     warm: Option<WarmRegion>, warm_error: Option<String>, refill: bool,
 }
 impl PlaybackSession {
     fn new(command: PreviewCommand) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        let audio_clock = match &command {
+            PreviewCommand::Exact(_) => None,
+            PreviewCommand::Play(play) => play.audio_clock.clone(),
+        };
         let (project, request, end, duration, fps) = match command {
             PreviewCommand::Exact(request) => {
                 let end = request.frame.saturating_add(1);
@@ -61,12 +68,16 @@ impl PlaybackSession {
         let (config, _) = request_limits(&request, fps)?;
         let start_frame = request.frame;
         Ok(Self { project, request, end, duration, start_frame, next_frame: start_frame, clock: None, fps, config,
+            #[cfg(target_os = "macos")]
+            audio_clock,
             pending: VecDeque::with_capacity(config.high_water), ready: VecDeque::with_capacity(config.high_water), warm: None, warm_error: None, refill: true })
     }
     fn position_at(&self, elapsed_ns: u64) -> u64 {
         self.start_frame.saturating_add(self.fps.ns_to_frames_floor(elapsed_ns).unwrap_or(0)).min(self.duration.saturating_sub(1))
     }
     fn elapsed_ns(&self) -> u64 {
+        #[cfg(target_os = "macos")]
+        if let Some(clock) = &self.audio_clock { return clock.elapsed_ns(); }
         self.clock.map(|clock| clock.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64).unwrap_or(0)
     }
     fn source_times(&self, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
@@ -215,7 +226,11 @@ fn worker_step(pipeline: &mut FramePipeline, session: &mut PlaybackSession, conf
         }
     }
     stats.ready_peak = stats.ready_peak.max(session.ready.len());
-    if session.clock.is_none() && session.prefilled() { session.clock = Some(Instant::now()); }
+    if session.clock.is_none() && session.prefilled() {
+        session.clock = Some(Instant::now());
+        #[cfg(target_os = "macos")]
+        if let Some(clock) = &session.audio_clock { clock.start(); }
+    }
     let elapsed = session.elapsed_ns();
     stats.frame = session.position_at(elapsed); stats.preparing = session.clock.is_none();
     if session.clock.is_some() {
@@ -238,7 +253,12 @@ fn worker_step(pipeline: &mut FramePipeline, session: &mut PlaybackSession, conf
     stats.queue = session.occupancy(); stats.queue_peak = stats.queue_peak.max(stats.queue);
     stats.ready = session.ready.len(); stats.ready_peak = stats.ready_peak.max(stats.ready);
     if session.next_frame == session.end && session.occupancy() == 0 {
-        if session.end == session.duration { stats.playing = false; return Ok(true); }
+        if session.end == session.duration {
+            #[cfg(target_os = "macos")]
+            if session.audio_clock.as_ref().is_some_and(|clock| !clock.finished()) { return Ok(false); }
+            stats.playing = false;
+            return Ok(true);
+        }
         if session.elapsed_ns() < session.fps.frames_to_ns(session.end.saturating_sub(session.start_frame))? { return Ok(false); }
         if let Some(error) = session.warm_error.take() { return Err(error); }
         if let Some(warm) = session.warm.take() {
