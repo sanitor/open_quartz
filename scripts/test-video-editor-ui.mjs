@@ -23,7 +23,7 @@ const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r))
 let child,client,exited,stdout='',stderr='';
 const project=join(output,'edit.oqvideo.json');
 async function launch(path){
-  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1',OPEN_QUARTZ_EDITOR_RECOVERY_DIR:join(output,'recovery')},stdio:['pipe','pipe','pipe']});
+  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1',OPEN_QUARTZ_EDITOR_RECOVERY_DIR:join(output,'recovery'),OPEN_QUARTZ_PROXY_CACHE_DIR:join(output,'proxies')},stdio:['pipe','pipe','pipe']});
   child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);
   exited=new Promise((accept,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>accept({code,signal}));});
   client=new SlintUiClient(`http://127.0.0.1:${port}/mcp`);
@@ -1400,6 +1400,80 @@ try{
    await expectColor('blend');
    await fileAction('SAVE AS', join(output, 'still-dissolve.oqvideo.json'), 'Save project');
    await waitState('Project saved');
+   await close();
+ });
+ const proxyProject = join(output, 'proxy-seed.oqvideo.json');
+ const cacheFiles = async () => (await readdir(join(output, 'proxies'))).filter(name => /^[a-f0-9]{64}\.mp4$/.test(name));
+ await step('Preview from a verified 360p proxy while export requires the original media', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const video = fixture.data.assets.find(asset => asset.name === 'background.mp4');
+   fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.some(clip => clip.asset_id === video.id));
+   await writeFile(proxyProject, JSON.stringify(fixture));
+   await launch(proxyProject); await waitState('clips 1');
+   await client.click(await assetCard(video.name));
+   await expectColor('blue');
+   await click('Prepare proxy');
+   await waitState('Proxy ready');
+   const [proxy] = await cacheFiles();
+   assert(proxy);
+   const proxyPath = join(output, 'proxies', proxy);
+   const info = spawnSync(ffmpeg, ['-hide_banner', '-i', proxyPath, '-t', '0', '-f', 'null', '-'],
+     { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(info.status, 0, info.stderr);
+   assert.match(info.stderr, /Video: h264[^\n]*640x360/);
+   await click('Use proxies'); await waitState('Proxy preview enabled');
+   await expectColor('blue');
+   const original = resolve(output, video.path);
+   const moved = original + '.offline';
+   await rename(original, moved);
+   try {
+     await click('NEXT'); await waitState('Frame 1 · source PTS 33333333 ns');
+     await click('PLAY'); await waitState('Frame 8 · source PTS 266666667 ns');
+     await expectColor('blue');
+     const failed = join(output, 'proxy-missing-original.mp4');
+     await fileAction('EXPORT', failed, 'Export MP4'); await waitState('Export failed');
+     assert(!(await readdir(output)).includes('proxy-missing-original.mp4'));
+   } finally {
+     await rename(moved, original);
+   }
+   const fromOriginal = join(output, 'original-with-proxy-enabled.mp4');
+   await exportRange(fromOriginal, 1, 4); await waitState('Export complete');
+   assert((await readdir(output)).includes('original-with-proxy-enabled.mp4'));
+   await click('Use originals'); await waitState('Original preview enabled');
+   await expectColor('blue');
+   await close();
+ }, { core: true });
+ await step('Reuse a cached proxy after reopening and cancel an unrelated preparation', async () => {
+   await launch(proxyProject); await waitState('clips 1');
+   await client.click(await assetCard('background.mp4'));
+   const previous = await cacheFiles();
+   await click('Prepare proxy'); await waitState('Proxy ready');
+   assert.deepEqual(await cacheFiles(), previous);
+   await client.click(await assetCard('foreground.mp4'));
+   await click('Prepare proxy');
+   await click('Cancel proxy'); await waitState('Proxy cancelled');
+   assert.deepEqual(await cacheFiles(), previous);
+   assert(!(await readdir(join(output, 'proxies'))).some(name => name.startsWith('.building')));
+   await close();
+ });
+ await step('Seek and play through the last cut of an eight-minute proxy project', async () => {
+   const path = join(output, 'proxy-many-cuts.oqvideo.json');
+   const fixture = JSON.parse(await readFile(proxyProject, 'utf8'));
+   const [track] = fixture.data.tracks;
+   const [clip] = track.clips;
+   track.clips = Array.from({ length: 160 }, (_, index) => ({
+     ...clip, id: `proxy-stress-${index}`, timeline_start: index * 90, duration: 90,
+   }));
+   fixture.data.markers = [{ id: 'proxy-last', frame: 14397, name: 'Last proxy frames' }];
+   await writeFile(path, JSON.stringify(fixture));
+   await launch(path); await waitState('clips 160');
+   await client.click(await assetCard('background.mp4'));
+   await click('Prepare proxy'); await waitState('Proxy ready');
+   await click('Use proxies'); await waitState('Proxy preview enabled');
+   await click('FIT TIMELINE');
+   await click('Go to Last proxy frames'); await waitState('Frame 14397 · source PTS 2900000000 ns');
+   await click('PLAY'); await waitState('Frame 14399 · source PTS 2966666667 ns');
+   await expectColor('blue');
    await close();
  });
  const chooseExportOption = async (label, steps, value) => {

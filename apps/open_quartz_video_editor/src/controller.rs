@@ -83,6 +83,8 @@ pub struct Controller {
     audio: Option<crate::audio_output::AudioPlayback>,
     #[cfg(target_os = "macos")]
     waveforms: crate::audio_waveform::Waveforms,
+    #[cfg(target_os = "macos")]
+    proxies: crate::proxy::Proxies,
     pipeline_editor: PipelineEditor,
 }
 impl Controller {
@@ -143,6 +145,8 @@ impl Controller {
             audio: None,
             #[cfg(target_os = "macos")]
             waveforms: Default::default(),
+            #[cfg(target_os = "macos")]
+            proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
         }));
         window.set_project_status(description.into());
@@ -565,6 +569,26 @@ impl Controller {
         }
         match action {
             "import" | "media" => self.import_dialog(),
+            #[cfg(target_os = "macos")]
+            "prepare-proxy" => {
+                let asset = self.selected_asset.as_deref().and_then(|id| self.document.asset(id)).cloned();
+                let result = asset.as_ref().ok_or_else(|| "Select a video asset".to_owned())
+                    .and_then(|asset| self.proxies.start(asset));
+                self.set_proxy_status(result.map_or_else(|error| error, |_| "Preparing proxy…".into()));
+            }
+            #[cfg(target_os = "macos")]
+            "cancel-proxy" => {
+                self.proxies.cancel();
+                self.set_proxy_status("Cancelling proxy…".into());
+            }
+            #[cfg(target_os = "macos")]
+            "toggle-proxies" => {
+                self.pause();
+                self.proxies.enabled = !self.proxies.enabled;
+                self.requested = None;
+                self.set_proxy_status(if self.proxies.enabled { "Proxy preview enabled" } else { "Original preview enabled" }.into());
+                self.request_preview();
+            }
             "add-title" => match self.document.add_title(self.playhead) {
                 Ok((track, clip)) => self.focus_placed_clip(None, &track, clip),
                 Err(error) => self.status(error),
@@ -1101,12 +1125,34 @@ impl Controller {
         self.refresh();
         self.request_preview();
     }
+    #[cfg(target_os = "macos")]
+    fn set_proxy_status(&self, text: String) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_proxy_status(text.into());
+        }
+        self.refresh_proxy_controls();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_proxy_controls(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_proxy_mode(self.proxies.enabled);
+            window.set_proxy_building(self.proxies.building());
+            window.set_proxy_can_prepare(self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
+                .is_some_and(|asset| asset.online && asset.has_video()));
+        }
+    }
+
     fn request_preview(&mut self) {
         if self.playing {
             if self.requested.is_some_and(|(revision, _, asset)| revision == self.document.revision && !asset) { return; }
             self.ticket += 1;
             let request = PlaybackRequest { ticket: self.ticket, revision: self.document.revision,
-                start_frame: self.playhead, project: self.document.data.clone(),
+                start_frame: self.playhead,
+                #[cfg(target_os = "macos")]
+                project: self.proxies.project(&self.document.data),
+                #[cfg(not(target_os = "macos"))]
+                project: self.document.data.clone(),
                 #[cfg(target_os = "macos")]
                 audio_clock: self.audio.as_ref().map(|audio| audio.clock.clone()),
             };
@@ -1129,7 +1175,15 @@ impl Controller {
                 |id| self.pipeline_preview_for(id),
                 self.monitor_gesture.as_ref().map(|draft| (draft.clip.as_str(), draft.value)))
         };
-        match plan.and_then(|request| self.preview.request(request)) {
+        match plan.and_then(|request| {
+            #[cfg(target_os = "macos")]
+            let request = {
+                let mut request = request;
+                request.map_video_assets(|asset| self.proxies.apply(asset));
+                request
+            };
+            self.preview.request(request)
+        }) {
             Ok(()) => { self.requested = Some(identity); self.refresh_monitor(); }
             Err(error) => self.status(error),
         }
@@ -1239,6 +1293,15 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(status) = self.proxies.poll() {
+            self.set_proxy_status(status);
+            if self.proxies.enabled {
+                self.pause();
+                self.requested = None;
+                self.request_preview();
+            }
+        }
         if !self.busy {
             if let Some(result) = self.recovery.poll(&self.document) {
                 if let Some(window) = self.window.upgrade() {
@@ -1628,6 +1691,8 @@ impl Controller {
             return;
         };
         self.refresh_recovery();
+        #[cfg(target_os = "macos")]
+        self.refresh_proxy_controls();
         if !self.document.is_dirty() {
             window.set_recovery_status("".into());
         }
@@ -1848,6 +1913,11 @@ impl Controller {
     }
     fn clear_images(&mut self) {
         #[cfg(target_os = "macos")]
+        {
+            self.proxies = Default::default();
+            self.set_proxy_status(String::new());
+        }
+        #[cfg(target_os = "macos")]
         { self.waveforms = Default::default(); }
         self.monitor_gesture = None;
         self.timeline_capture = None;
@@ -2041,6 +2111,8 @@ mod native_dialog_tests {
             audio: None,
             #[cfg(target_os = "macos")]
             waveforms: Default::default(),
+            #[cfg(target_os = "macos")]
+            proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,

@@ -51,6 +51,20 @@ enum LayerSource {
     Still(MediaAsset),
 }
 
+#[cfg(target_os = "macos")]
+impl PreviewRequest {
+    pub fn map_video_assets(&mut self, mut update: impl FnMut(&mut MediaAsset)) {
+        if let Some(asset) = &mut self.asset {
+            update(asset);
+        }
+        for layer in &mut self.layers {
+            if let LayerSource::Video { asset, .. } = &mut layer.source {
+                update(asset);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DissolveLayer {
     side: DissolveSide,

@@ -383,7 +383,7 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "");
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status);
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
@@ -392,6 +392,10 @@ export component EditorWindow inherits Window {
     in-out property <string> io_status: "All changes saved";
     in property <string> export_status;
     in property <string> recovery_status;
+    in property <bool> proxy_mode;
+    in property <bool> proxy_building;
+    in property <bool> proxy_can_prepare;
+    in property <string> proxy_status;
     in property <bool> recovery_available;
     in property <bool> previous_available;
     in property <bool> export_active;
@@ -819,6 +823,15 @@ export component EditorWindow inherits Window {
                         if root.library_tab == "media": VerticalLayout {
                             spacing: 0px;
                             HorizontalLayout { height: 38px; padding-left: 12px; padding-right: 8px; cross-axis-alignment: center; Text { text: "Media library"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } } }
+                            if root.proxy_can_prepare || root.proxy_building || root.proxy_mode: VerticalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Button { text: root.proxy_building ? "Cancel proxy" : "Prepare proxy"; enabled: root.proxy_building || root.proxy_can_prepare; clicked => { root.project_action(root.proxy_building ? "cancel-proxy" : "prepare-proxy"); } }
+                                    Button { text: root.proxy_mode ? "Use originals" : "Use proxies"; clicked => { root.project_action("toggle-proxies"); } }
+                                }
+                                if root.proxy_status != "": Text { text: root.proxy_status; color: root.secondary; font-size: 11px; wrap: word-wrap; }
+                            }
                             LineEdit { accessible-label: "Search media"; text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
                             HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "Project media"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                             ScrollView {

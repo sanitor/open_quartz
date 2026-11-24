@@ -1166,10 +1166,16 @@ fn stored_asset_path(project_dir: &Path, path: &Path) -> String {
     relative.to_string_lossy().into_owned()
 }
 pub fn fingerprint(path: &Path) -> Result<String, String> {
+    fingerprint_until(path, || false)
+}
+pub fn fingerprint_until(path: &Path, cancelled: impl Fn() -> bool) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| format!("Cannot open media file: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
     loop {
+        if cancelled() {
+            return Err("Media fingerprint interrupted".into());
+        }
         let count = file
             .read(&mut buffer)
             .map_err(|error| format!("Cannot fingerprint media: {error}"))?;
