@@ -68,7 +68,7 @@
 
 | 阶段 | 扩展能力 | 不可省略的前提 |
 |---|---|---|
-| 多轨合成 | 图层顺序、锁定/禁用、叠加、转场 | overlap 语义、同一时刻多源取帧、线性混合和资源预算 |
+| [多轨合成](#multi-track-composition) | 图层顺序、锁定/隐藏、画中画、跨轨编辑 | 同一时刻多源取帧、线性混合和资源预算。转场另行扩展 |
 | 音频编辑 | 音视频关联、波形、增益、混音、淡入淡出 | sample 精度定位、音频主时钟、设备时钟漂移、音频编码与封装 |
 | 动画与 AI | 关键帧、抠像、分割、深度、超分辨率 | 同帧完成身份、缓存、预览降质可见、离线结果完整等待 |
 | 代理与大工程 | 可切换代理、后台转码、磁盘缓存 | 原片↔代理时间映射、内容指纹、磁盘配额与可取消任务 |
@@ -229,7 +229,7 @@ flowchart TD
 
 **当前单轨实现**：视频编辑器已删除Controller播放clock/single-flight逐tick请求路径。Play提交不可变工程snapshot与起始序列帧，既有preview worker持有唯一单调播放时钟，复用`FramePipeline::submit_window/progress/poll_completion`执行源预取、按序图求值和有界稳定输出；UI的16ms timer只消费worker进度/图像并投影状态，不决定下一帧admission。
 
-单轨播放已接入prefill、低/高水位、deadline呈现、未准入过期静态帧跳过、seek取消/精确最终目标、Pause/Resume及clip/gap预热切换。同一个worker处理Exact与Play，不另建decoder/GPU执行器或逐node队列。多轨join、音频、代理/磁盘渲染缓存及任意时域效果仍是后续能力；下表中的离线编辑器导出也未接入UI。本轮实测范围与限制见§9.1.2。
+单轨播放已接入prefill、低/高水位、deadline呈现、未准入过期静态帧跳过、seek取消/精确最终目标、Pause/Resume及clip/gap预热切换。同一个worker处理Exact与Play，不另建decoder/GPU执行器或逐node队列。音频、代理/磁盘渲染缓存及任意时域效果仍是后续能力；下表中的离线编辑器导出也未接入UI。本轮实测范围与限制见§9.1.2。
 
 | 工作模式 | 需求与调度 | 不可破坏的条件 |
 |---|---|---|
@@ -369,7 +369,7 @@ flowchart LR
 <a id="same-frame-track-join"></a>
 #### 9.3.2 多轨出口按序列帧汇合，不按每轨最新帧混合
 
-**未来多轨设计，当前产品仍仅单视频轨。** 多轨采用相同的帧需求/图依赖模型；不能把本节当成已有多轨合成、音频同步或轨道编辑能力。先按下面规则固定汇合契约，后续多轨单独实现和验收，不给单轨阶段引入空的join服务。
+**多轨首版已复用相同的帧需求与图依赖模型。** 原生源准备在同一有界需求内按源节点分别取样，GPU 图只对准备齐全的帧执行。跨设备、跨推理后端或独立序列的汇合沿用下列契约。
 
 - 一次合成需求以`sequence revision + playback/seek epoch + sequenceFrame + render规格/颜色契约`标识，携带该时刻确定的合成recipe和完整依赖集合。依赖项含track/clip/版本、图/参数/资源generation、源时间映射及实际源PTS。具体字段复用现有身份类型，必要扩展在实现时定义，不另建重复时钟。不同素材的实际PTS不必相等，但必须分别满足同一个序列时刻的采样映射，不能简单用源PTS相等判断同帧。
 - TimelinePlanner在该序列时刻确定有效轨道、叠放/混合顺序、变换和alpha/颜色契约。空轨、明确关闭视频输出的轨道、clip之外或明确禁用的贡献按recipe确定为无贡献；是否完全遮挡必须由可证明的语义裁剪，不能仅看UI选中/可见性。缺失资源、失败或未就绪的有效轨道不是透明帧，不得冒充无贡献。
@@ -437,7 +437,68 @@ ExportJob：Queued → Preparing → Rendering/Encoding → Draining → Committ
 
 启用音频设备后选择音频主时钟，视频按其目标采样并允许可见的预览丢帧；暂停/seek 同时 flush 对应音频队列和失效旧视频结果。设备切换、重采样漂移和 underrun 有明确状态，不让多个独立 timer 互相追赶。
 
-多视频轨之后规定从下到上合成顺序、隐藏/锁定语义、overlap、转场占用区间、可重放关键帧函数。过渡到这些格式时升级 schema 并迁移，不能令旧 app 静默读取新项目却丢掉轨道和音频。
+<a id="multi-track-composition"></a>
+### 12.1 多视频轨合成
+
+**时间线持有叠放顺序和片段变换，运行时派生序列合成计划。** 需要独立的序列合成职责。普通画中画和叠层由编辑器自动生成 GPU 图依赖，复用核心执行器。现有 Nodes 工作区继续编辑单个片段的效果图。未来若需要跨片段遮罩、跟踪和任意路由，可让用户显式创建有输入、有时间范围的合成片段。该片段的输出仍可按普通图层参与外层时间线叠放。
+
+首版已接入 [EditorDocument](src/document.rs)、[序列合成图](src/sequence_composition.rs)、[节目监视器手势](src/monitor_transform.rs)和 [Slint 时间线](ui/editor.slint)。使用现有 macOS SDR 视频素材能力，支持静态位置、等比缩放、旋转、透明度和普通多轨编辑。转场、裁剪、关键帧、非 Normal 混合模式和音频各有独立语义，放到后续交付。
+
+#### 竞品参考
+
+| 产品或引擎 | 可核对的行为 | OpenQuartz 的取舍 |
+|---|---|---|
+| DaVinci Resolve | Edit 页叠放片段后，可直接在 Viewer 缩放和移动上层片段，Inspector 可编辑同一属性。多源节点合成由用户显式创建 Fusion Clip，该片段可以包含多个时间线片段。 [Edit](https://www.blackmagicdesign.com/products/davinciresolve/edit) · [Fusion 手册](https://documents.blackmagicdesign.com/UserManuals/FusionManual.pdf) | 日常叠层留在 Edit，复杂跨源路由有明确的片段边界。 |
+| Premiere | 高轨片段盖在低轨上。Program Monitor 的手柄和 Effect Controls 数值共同编辑片段 Motion。Timeline 另有显式 Rearrange 操作。 [Motion](https://helpx.adobe.com/premiere/desktop/add-video-effects/commonly-used-effects/apply-motion-effect.html) · [Rearrange](https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/rearrange-clips-on-the-timeline.html) | Viewer 与 Inspector 共用片段参数。同轨冲突首版沿用现有拒绝语义。 |
+| Shotcut、Kdenlive、MLT | Shotcut 支持拖轨头改序，也提供上移/下移命令。Kdenlive 默认自动做轨道合成，轨头菜单支持同类轨道上移/下移。MLT 的 tractor 将 multitrack 和转场包装为一个输出源。 [Shotcut 发布说明](https://www.shotcut.org/download/releasenotes/) · [Kdenlive 时间线](https://docs.kdenlive.org/en/user_interface/timeline.html#reordering-tracks) · [Kdenlive 合成设置](https://docs.kdenlive.org/en/getting_started/configure_kdenlive/configuration_misc.html) · [MLT 框架](https://mltframework.org/docs/framework/) | 拖轨头和上移/下移按钮走同一事务，轨道顺序直接驱动画面。参考 MLT 的输出边界，执行继续走现有 wgpu/Metal 管线。 |
+| AVFoundation | 用时间区间内的有序 layer instructions 表达轨道层级、变换和透明度，也允许自定义 compositor。 [图层顺序](https://developer.apple.com/documentation/avfoundation/avvideocompositioninstruction-swift.class/layerinstructions?changes=la_9_8_7_8&language=objc) · [AVVideoComposition](https://developer.apple.com/documentation/avfoundation/avvideocomposition?changes=lat__5_8_2&language=objc) | 有序图层足够表达普通 NLE 合成。保留 OpenQuartz 图执行能力供片段效果使用。 |
+
+#### 文档和时间线编辑
+
+- Schema 3 在现有单序列 `ProjectData` 中持久化 `tracks: Vec<VideoTrack>`，顺序为**从上到下**。轨道包含稳定 `TrackId`、名称、`visible`、`locked` 和按开始帧排序的 `clips`。轨道数组是层级的唯一来源。片段全局 `ClipId`、源入点、效果图与参数随跨轨移动保留。序列时长仍由所有轨道最大片段终点决定，隐藏轨道也计入。运行时计划、选择、滚动、拖拽草稿均在持久模型之外。
+- 旧 Schema 1 经直通图迁移，Schema 1/2 的全部片段放入一个确定性 ID 的 V1，默认可见、解锁，保留位置、源时间、变换和图。保存写 Schema 3 并保持现有原子写入规则。读取校验内外版本一致、轨道与片段 ID 唯一、有效引用、同轨半开区间不重叠。旧版本应用对 Schema 3 显式报版本不支持。
+- **时间线工具栏**提供加轨。轨头提供重命名、显隐、锁定、上移/下移和删除空轨。保留至少一条视频轨，删除非空轨前先移走片段。锁定保留画面贡献，阻止向该轨放置、移出、修剪、变换、Nodes 修改和删除。本轨的排序手柄也禁用，其他可编辑轨移过它时采用同一插入规则。显隐是独立命令。隐藏轨仍可在时间线上选中和编辑，节目监视器忽略其图层。
+- **拖片段**时横向改序列起点，纵向改目标轨，保持抓取点相对片段起点的帧偏移。片段边缘只做本轨 trim。跨轨时间重叠合法。同轨冲突时 ghost 标红并给出原因，松手取消。相接的半开区间合法。素材库拖入使用同一落点校验。工具栏 Add Clip 在当前可写目标轨寻找第一个可容纳的空位，锁定时提示选择可写轨。需要额外一轨时通过轨头加轨。
+- **拖整轨**只从轨头手柄发起，显示插入线，落点用相邻 `TrackId` 与前后关系表达。预拖时只更新候选顺序与插入线，松手应用叠放结果。片段时间和选中项按 ID 保持。轨头按钮和键盘快捷键提供同一命令。重排已有轨道、在同轨移动 clip、跨轨移动 clip 分别使用不同的命令。
+- 轨头固定在左，时间标尺固定在上，轨头与 lane 共用纵向滚动偏移。拖动到边缘时自动滚动，并在新视口坐标下重算目标。吸附阈值按视口像素计算，吸附点包括播放头和目标轨可用切点，trim 以其所在线轨为目标轨。最终时间量化到序列帧，排序、吸附与碰撞由 Rust 计算。选中片段优先作为 Inspector 与 Nodes 目标。未显式选中时，播放头下最上层有效片段可用于观察，split/trim 等写命令须有明确片段目标。
+- 手势从原始值和项目 revision 开始，移动仅更新草稿和预览，松手用同一候选执行文档校验和一次提交。Esc、失去指针捕获、工程被替换或 revision 已变时取消。无效或零变化操作保留历史和 redo。所有入口统一检查锁轨，包括数值编辑、快捷键和 Nodes 的异步提交。
+
+#### 节目监视器里的移动与缩放
+
+1. Edit 页提供 Transform 开关。默认点画布按从上到下的变换后几何选中当前帧可见的片段。选中片段的手柄优先命中，透明度为零的片段通过时间线选中。首版用几何判定，逐像素 alpha 采样留给未来有透明素材需求时评估。在时间线上显式选中被遮挡的片段，Transform 仍显示其外框、四角和旋转柄。锁轨的片段仅显示只读外框。隐藏轨、离开片段区间或无有效同帧合成画面时，手柄停用。
+2. 拖框内部移动，拖角等比缩放且固定对角，旋转柄绕片段中心。缩放夹到合法范围，越过对角时保持最小值。移动吸附可对齐序列中心和边界，容差使用视口像素。Inspector 提供位置、缩放、旋转、透明度与 Reset，使用 `ClipTransform` 同一份值。保留现有归一化 `x/y`、`scale` 和 `exposure`，增加默认零旋转和 `opacity=1`。Inspector 可显示序列像素，内部左上为原点、Y 向下，位移仍以序列宽高归一化。
+3. UI 先从 Slint `contain` 实际显示矩形映射到序列画布像素，使用与渲染器相同的 `contain → scale → rotate → translate` 几何。片段宽高由原片解码尺寸及效果出口尺寸决定。用逆矩阵做命中，用正矩阵投影边框。逻辑手柄保持固定屏幕大小，画面裁到序列画布。覆盖层占用的视口空间、窗口大小和 DPI 不进入工程参数。窗口缩放和滚动时刷新投影。
+4. 开始空间手势时暂停并锁定当前有效呈现的序列帧，冻结该帧的图层与源取样。在上一帧仍挂在屏幕上且当前定位未完成时，等待对应图像后才启用手柄。pointer move 立即刷新 Slint 覆盖层和 Inspector，以最新草稿提交合成请求。用 `gestureEpoch + draftSeq` 区分迟到的草稿帧。松手复用同一几何参数，提交一次 `SetClipTransform` 并请求精确最终帧。取消回到已提交快照。手柄、选框和吸附线均由 Slint 绘制，最终视频纹理只含节目图像。
+
+#### 取帧与 GPU 执行
+
+```mermaid
+flowchart LR
+    D["时间线快照与序列帧号"] --> P["有序图层帧计划"]
+    P --> S["按需解码与同帧输入就绪"]
+    S --> G["片段效果图分支"]
+    G --> C["序列合成与输出转换"]
+    C --> V["节目监视器"]
+    C --> E["离线编码"]
+```
+
+1. **计划**。用一个 `SequenceFramePlan` 取代单素材 `PreviewRequest` 的内容部分。给定冻结 revision 与序列帧 `n`，按半开区间找每条可见轨的有效片段，输出有序 layer 列表及各自的 ClipId、Graph 版本、变换、素材身份、目标源时间。按 clip in 和有理数序列时间独立映射每个素材，使用目标处或之后首张 presentation frame。到达 EOF 时，仅在目标仍处于已知源时长内、末帧声明的时长覆盖目标时使用末帧。Play 中同时有效的片段集合可按切点划为区间，逐帧变化的源时间仍单独计算。无贡献输出黑帧。有效层缺素材或失败使该帧失败，并定位到具体轨道和片段。
+2. **解码与时间**。共享现有 worker、`FramePipeline` 和 GPU 资源预算。`submit_window_with_source_times` 按源节点传入独立媒体取样时间，源准备阶段收集同一需求的全部源帧后才提交图求值。多轨工程使用片段作用域的源节点，多层合成与单层区间切换时仍可保留活动片段的解码游标。同一素材的不同入点可独立取帧。连续空间手势请求同一时刻时，优先复用已有源选择和已上传的 GPU 源纹理。预览和将来的离线导出使用同一个帧计划。外部输入需要由独立后端提供时，可沿用核心 `FrameDemand.sources` 路径。
+3. **图与执行**。按活动片段效果生成一份运行图。各片段节点和端口使用 ClipId 命名空间，受保护的片段输出接入序列的合成 Shader。变换、透明度和叠放次序走 Shader 参数。轨道排序和空间手势复用编译好的多轨 Shader。首版使用单个片元 pass 按顺序混合，后续可按实测需要扩展为核心 typed op 和按层 GPU draw list。
+4. **颜色和覆盖**。旧片段效果及曝光沿用原 SDR 语义。片段矩形外保留透明覆盖，矩形内覆盖乘片段透明度。现有任意 Shader alpha 保持片段效果语义。序列输出将采样转换到线性 Rec.709/sRGB 原色域，在片元寄存器中按 source-over 累积。黑色为初始底色，混合结束后编码到显示域。单轨原有变换继续使用兼容输出，保持旧工程留白、采样和曝光的像素基线。
+5. **汇合和发布**。按 [同帧汇合](#same-frame-track-join) 预留各源、工作纹理与最终稳定帧的总预算。每层源帧可能有不同实际 PTS，全部必须匹配同一序列需求。单一节目输出携带记录的各实际 PTS 与完整需求身份，最终用稳定帧 lease 交给 Slint 或编码端。实时过期按整帧跳过，Exact 等待最终有效请求的成功或失败。发生错误时监视器可保留最后完成的完整帧，并标明该帧位置和错误。离线输出等待全部输入或失败。空间拖动期间复用当前精确时刻的源选择。单独保留不可变效果纹理版本须计入预算，可在后续性能评估后引入。
+
+#### 实施顺序和验收
+
+| 工作包 | 完成标准 |
+|---|---|
+| 两源 GPU 验证 | 无窗口运行同一核心执行器，用两段不同颜色、尺寸、帧率或源入点的真实视频验证两路源绑定、透明留白、轨道互换、线性混合及片段效果隔离。读回仅用于独立像素 oracle。例如两路纯红/蓝、上层 50% 混合、输出按 sRGB 编码时，重叠区红蓝通道各约 188/255，容差按格式量化另定。与现有单轨截帧逐像素对照。 |
+| 多轨编辑与项目迁移 | 用原生窗口完成「建 V2 → 拖素材到 V2 → 移动/缩放得到画中画 → 在 Inspector 查看同值 → 拖轨头改序 → 隐藏 → undo/redo → 保存重开」。同时覆盖跨轨碰撞、相邻边界、锁轨、取消、缩放窗口后的命中、横纵滚动中的落点、旧工程重开和每次手势恰好一次历史。 |
+| 播放与离线一致性 | 用不同帧率、不同源入点、同素材双实例及迟到层验证切点、scrub、播放、无窗口离线取同帧的内容一致。验证 seek/编辑后旧结果失效、超预算明确报错、lease 在取消/退出后全部归还。以 Apple Silicon 双路 1080p30 SDR 为第一条实测线，记录机器、输入规格、实际显示帧率、丢帧、拖动响应、峰值资源和 CPU 回传字节。另测单轨回归。编码 UI 仍是独立交付。 |
+
+首版验收覆盖 57 项编辑器 Rust 测试、41 项核心执行测试、8 项解码测试和原生 Edit/Nodes 自动化。原生多轨场景使用两路 1920×1080 SDR H.264（30 fps 与 24 fps），验证了拖入、缩放、移动、顺序、锁轨、重开和逐源 PTS 至序列末帧。[原生 Edit 报告](../../test-results/phase6/ui-2026-11-23T13-45-13-283Z/result.json) · [原生 Nodes 报告](../../test-results/clip-pipeline/nodes-ui-2026-11-23T13-45-55-247Z/result.json)
+
+Apple M4 Pro 上同一工程的 30 fps 序列实测 3 秒，原生监视器采到 89 次帧更新，采样间隔中位数 33.6 ms，worker 记录 0 丢帧、0 CPU 图像回传，应用可观测峰值约 101 MiB。该测量使用双色素材与基础画中画。[实测原始记录](../../test-results/window-playback/multitrack-1080p-2026-11-23/measurement.json)
 
 ## 13. 工程与测试布局
 

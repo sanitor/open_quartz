@@ -14,7 +14,7 @@ fn document() -> EditorDocument {
         time_base: Rational { numerator: 1, denominator: 30 },
         fps: Some(Rational { numerator: 30, denominator: 1 }), has_audio: false, online: false,
     });
-    data.clips.push(Clip {
+    data.tracks[0].clips.push(Clip {
         id: "clip-1".into(), asset_id: "asset-1".into(), timeline_start: 0, duration: 60,
         source_in_pts: 9000, source_subtick_numerator: 1, source_subtick_denominator: 3,
         transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
@@ -63,7 +63,7 @@ fn added_and_split_clips_have_independent_pipeline_values_and_exact_source_time(
     document.set_clip_pipeline(&right, edited, document.revision).unwrap();
     assert_eq!(document.clip("clip-1").unwrap().pipeline, pipeline);
     assert_eq!(document.clip(&second).unwrap().pipeline, ClipPipeline::default());
-    let expected_right = before.clips.iter().find(|clip| clip.id == right).unwrap();
+    let expected_right = before.clips().find(|clip| clip.id == right).unwrap();
     let mut actual_right = document.clip(&right).unwrap().clone();
     actual_right.pipeline = expected_right.pipeline.clone();
     assert_eq!(&actual_right, expected_right);
@@ -104,26 +104,28 @@ fn pipeline_commit_undo_redo_noop_stale_and_invalid_commands_share_document_hist
 }
 
 #[test]
-fn schema_one_migrates_only_legacy_clips_and_saves_explicit_schema_two_pipelines() {
+fn schema_one_migrates_to_explicit_pipeline_in_default_track() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("legacy.oqvideo.json");
     let original = document_with_media(dir.path());
     let mut legacy = serialized(&original);
     legacy["schema_version"] = serde_json::json!(1);
     legacy["data"]["schema_version"] = serde_json::json!(1);
+    legacy["data"]["clips"] = legacy["data"]["tracks"][0]["clips"].clone();
+    legacy["data"].as_object_mut().unwrap().remove("tracks");
     legacy["data"]["clips"][0].as_object_mut().unwrap().remove("pipeline");
     write_project(&path, &legacy);
     let mut migrated = EditorDocument::open(path.clone()).unwrap();
     assert_eq!(migrated.data, original.data);
-    assert_eq!(migrated.data.schema_version, 2);
+    assert_eq!(migrated.data.schema_version, 3);
     assert_eq!(migrated.clip("clip-1").unwrap().pipeline, ClipPipeline::default());
     assert!(!migrated.is_dirty());
     assert!(!migrated.can_undo());
     migrated.save().unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(saved["schema_version"], 2);
-    assert_eq!(saved["data"]["schema_version"], 2);
-    assert!(saved["data"]["clips"][0].get("pipeline").is_some());
+    assert_eq!(saved["schema_version"], 3);
+    assert_eq!(saved["data"]["schema_version"], 3);
+    assert!(saved["data"]["tracks"][0]["clips"][0].get("pipeline").is_some());
     assert_eq!(EditorDocument::open(path.clone()).unwrap().data, migrated.data);
     let object = legacy["data"]["clips"][0].as_object_mut().unwrap();
     object.remove("source_subtick_numerator");
@@ -135,19 +137,46 @@ fn schema_one_migrates_only_legacy_clips_and_saves_explicit_schema_two_pipelines
 }
 
 #[test]
+fn schema_two_migrates_without_changing_legacy_transform_or_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy-effects.oqvideo.json");
+    let mut original = document_with_media(dir.path());
+    let mut pipeline = ClipPipeline::default();
+    pipeline.add_serial("video",
+        "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { return textureSample(image,imageSampler,uv); }",
+        "Legacy effect").unwrap();
+    original.set_clip_pipeline("clip-1", pipeline, original.revision).unwrap();
+    let transform = ClipTransform { scale: 0.75, x: -0.2, y: 0.3, exposure: -1.0, ..Default::default() };
+    original.set_transform("clip-1", transform, original.revision).unwrap();
+    let mut legacy = serialized(&original);
+    legacy["schema_version"] = serde_json::json!(2);
+    legacy["data"]["schema_version"] = serde_json::json!(2);
+    let old_data = legacy["data"].as_object_mut().unwrap();
+    let mut clips = old_data.remove("tracks").unwrap()[0]["clips"].clone();
+    let old_transform = clips[0]["transform"].as_object_mut().unwrap();
+    old_transform.remove("rotation");
+    old_transform.remove("opacity");
+    old_data.insert("clips".into(), clips);
+    write_project(&path, &legacy);
+    let migrated = EditorDocument::open(path).unwrap();
+    assert_eq!(migrated.data, original.data);
+    assert_eq!(migrated.clip_track("clip-1").unwrap().id, DEFAULT_TRACK);
+}
+
+#[test]
 fn schema_loading_rejects_missing_null_invalid_and_undeclared_pipelines() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("invalid.oqvideo.json");
     let original = serialized(&document());
     let mut variants = Vec::new();
     let mut missing = original.clone();
-    missing["data"]["clips"][0].as_object_mut().unwrap().remove("pipeline");
+    missing["data"]["tracks"][0]["clips"][0].as_object_mut().unwrap().remove("pipeline");
     variants.push(missing);
     let mut null = original.clone();
-    null["data"]["clips"][0]["pipeline"] = serde_json::Value::Null;
+    null["data"]["tracks"][0]["clips"][0]["pipeline"] = serde_json::Value::Null;
     variants.push(null);
     let mut invalid = original.clone();
-    invalid["data"]["clips"][0]["pipeline"]["graph"]["edges"][0]["sourceHandle"] = "missing".into();
+    invalid["data"]["tracks"][0]["clips"][0]["pipeline"]["graph"]["edges"][0]["sourceHandle"] = "missing".into();
     variants.push(invalid);
     let mut conflicting = original.clone();
     conflicting["schema_version"] = serde_json::json!(1);
@@ -157,11 +186,11 @@ fn schema_loading_rejects_missing_null_invalid_and_undeclared_pipelines() {
     not_legacy["data"]["schema_version"] = serde_json::json!(1);
     variants.push(not_legacy);
     let mut unknown = original.clone();
-    unknown["data"]["clips"][0]["future_effects"] = serde_json::json!([]);
+    unknown["data"]["tracks"][0]["clips"][0]["future_effects"] = serde_json::json!([]);
     variants.push(unknown);
     let mut unsupported = original;
-    unsupported["schema_version"] = serde_json::json!(3);
-    unsupported["data"]["schema_version"] = serde_json::json!(3);
+    unsupported["schema_version"] = serde_json::json!(4);
+    unsupported["data"]["schema_version"] = serde_json::json!(4);
     variants.push(unsupported);
     for value in variants {
         write_project(&path, &value);

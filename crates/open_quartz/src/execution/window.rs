@@ -80,6 +80,7 @@ pub struct FrameStageEvent {
 pub(super) struct QueuedFrame {
     pub demand: FrameDemand,
     pub prefetched: bool,
+    pub source_times: std::collections::BTreeMap<String, u64>,
     pub reserved_bytes: u64,
     pub targets: Option<crate::rendering::PreparedFrameTargets>,
 }
@@ -165,6 +166,20 @@ impl super::FramePipeline {
     /// Admission owns bounded plans, not graph evaluator state. It never seeks,
     /// decodes, waits for GPU completion or mutates graph textures.
     pub fn submit_window(&mut self, demand: FrameDemand) -> super::FrameAdmission {
+        self.submit_window_with_source_times(demand, &Default::default())
+    }
+
+    /// Each override is a native source-node ID and its media seek time.
+    /// The demand stamp retains the host clock used for window ordering.
+    /// Overrides use the editor selection policy, including reuse at the same
+    /// paused target and a verified last-frame interval when CFR outpaces the source.
+    pub fn submit_window_with_source_times(
+        &mut self, demand: FrameDemand, source_times: &std::collections::BTreeMap<String, u64>,
+    ) -> super::FrameAdmission {
+        #[cfg(not(feature = "native-video"))]
+        if !source_times.is_empty() {
+            return super::FrameAdmission::Rejected { demand, error: "Native video is disabled".into() };
+        }
         if !self.window.enabled {
             if let Err(error) = self.configure_window(self.window.config) {
                 return super::FrameAdmission::Rejected { demand, error };
@@ -287,11 +302,12 @@ impl super::FramePipeline {
                 .iter()
                 .map(|source| source.node_id.clone())
                 .collect::<Vec<_>>();
-            match self.videos.prefetch_at(
+            match self.videos.prefetch_at_source_times(
                 demand.request_id,
                 demand.input.stamp.timeline_ns,
                 demand.input.stamp.epoch,
                 &excluded,
+                source_times,
             ) {
                 Ok(true) => {}
                 Ok(false) => return super::FrameAdmission::WouldBlock(demand),
@@ -303,6 +319,7 @@ impl super::FramePipeline {
         self.window.queued.push_back(super::QueuedFrame {
             demand,
             prefetched: true,
+            source_times: source_times.clone(),
             reserved_bytes: bytes,
             targets: Some(targets),
         });
@@ -416,6 +433,7 @@ impl super::FramePipeline {
                     stamp: queued.demand.input.stamp,
                     graph_revision: queued.demand.graph_revision,
                     outcome: super::FrameOutcome::Cancelled,
+                    source_pts_ns: Vec::new(),
                 });
             }
             return;
@@ -431,11 +449,12 @@ impl super::FramePipeline {
                 .iter()
                 .map(|value| value.node_id.clone())
                 .collect::<Vec<_>>();
-            match self.videos.prefetch_at(
+            match self.videos.prefetch_at_source_times(
                 queued.demand.request_id,
                 queued.demand.input.stamp.timeline_ns,
                 queued.demand.input.stamp.epoch,
                 &excluded,
+                &queued.source_times,
             ) {
                 Ok(true) => queued.prefetched = true,
                 Ok(false) | Err(_) => break, // active admission reports source failure with its terminal
@@ -469,7 +488,7 @@ impl super::FramePipeline {
                 }
             },
         };
-        match self.submit_prepared(queued.demand, targets, false) {
+        match self.submit_prepared(queued.demand, targets, false, &queued.source_times) {
             super::FrameAdmission::Accepted => {}
             super::FrameAdmission::Rejected { demand, error } => {
                 self.finish(demand, super::FrameOutcome::Failed(error))

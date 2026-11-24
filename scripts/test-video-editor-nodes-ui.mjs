@@ -268,7 +268,7 @@ function generate(name, color) {
 function clipFor(data, name) {
   const asset = data.assets.find(asset => asset.name === name);
   assert(asset, `Missing saved asset ${name}`);
-  const clips = data.clips.filter(clip => clip.asset_id === asset.id);
+  const clips = data.tracks.flatMap(track => track.clips).filter(clip => clip.asset_id === asset.id);
   assert.equal(clips.length, 1, `Expected one saved ${name} clip`);
   return clips[0];
 }
@@ -307,8 +307,8 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4');
     await waitNodeCount(2); await snapshot('01-nodes-default-red', 'red');
     originalData = await save(true);
-    assert.equal(originalData.schema_version, 2);
-    assert.deepEqual(originalData.clips.map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
+    assert.equal(originalData.schema_version, 3);
+    assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
   });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {
     for (const id of ['video', 'output']) {
@@ -529,7 +529,7 @@ try {
     await selectNode(correctorId); await editCorrector(-1);
     data = await save();
     const asset = data.assets.find(asset => asset.name === 'red.mp4');
-    const halves = data.clips.filter(clip => clip.asset_id === asset.id).sort((a, b) => a.timeline_start - b.timeline_start);
+    const halves = data.tracks.flatMap(track => track.clips).filter(clip => clip.asset_id === asset.id).sort((a, b) => a.timeline_start - b.timeline_start);
     assert.equal(halves.length, 2);
     assert.deepEqual(halves.map(clip => clip.pipeline.graph.nodes.find(node => node.id === correctorId).data.colorCorrector.primaries.exposure), [-2, -1]);
     await click('UNDO'); await correctorValue(-2); await click('UNDO'); await waitState('clips 2');

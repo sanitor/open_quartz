@@ -1,6 +1,6 @@
 # OpenQuartz Studio — 视频编辑器
 
-独立 Rust + Slint 应用，和原节点图应用 `apps/open_quartz_slint` 并列，提供素材库、硬件预览、单轨时间线及片段级 Nodes 渲染管线。**Nodes复用OpenQuartz节点编辑器交互与GPU图执行，工作区流程参考DaVinci Resolve Color页**；不声称完整Resolve功能对等，不包含其专有代码、品牌和资源。
+独立 Rust + Slint 应用，和原节点图应用 `apps/open_quartz_slint` 并列，提供素材库、硬件预览、多轨时间线及片段级 Nodes 渲染管线。**Nodes复用OpenQuartz节点编辑器交互与GPU图执行，工作区流程参考DaVinci Resolve Color页**；不声称完整Resolve功能对等，不包含其专有代码、品牌和资源。
 
 
 ## 启动
@@ -24,9 +24,9 @@ npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 cargo run --release --manifest-path apps/open_quartz_video_editor/Cargo.toml -- --project /absolute/path/edit.oqvideo.json
 ```
 
-**当前已实现单轨有界流水**：Play把工程snapshot交给preview worker；worker拥有唯一视频时钟，使用核心前瞻窗口、prefill、按PTS映射的序列deadline呈现和切点/gap预热。UI不再每tick提交帧，正常时钟推进不取消合法在途工作；seek/改图仍撤销旧发布资格。8K全尺寸图有显式2 GiB应用可观测共享预算和局部池上限，不能满足最小工作集时明确失败，不暗中降分辨率或改FP16算法。实现与验收见[有界流水播放](DESIGN.md#bounded-playback-proposal)。
+**有界播放流水**。Play把工程snapshot交给preview worker；worker拥有唯一视频时钟，使用核心前瞻窗口、prefill、按PTS映射的序列deadline呈现和切点/gap预热。UI不再每tick提交帧，正常时钟推进不取消合法在途工作；seek/改图仍撤销旧发布资格。8K全尺寸图有显式2 GiB应用可观测共享预算和局部池上限，不能满足最小工作集时明确失败，不暗中降分辨率或改FP16算法。实现与验收见[有界流水播放](DESIGN.md#bounded-playback-proposal)。
 
-缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织，不给每个node机械设置queue；[多轨同帧join](DESIGN.md#same-frame-track-join)仍为未来设计，当前产品保持单视频轨。Release降低CPU开销，不代表已实现音频、代理、任意时域效果或所有8K素材的实时保证。
+缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织，不给每个node机械设置queue；[多轨同帧汇合](DESIGN.md#same-frame-track-join)由同一帧需求协调所有活动视频源。Release降低CPU开销，不代表已实现音频、代理、任意时域效果或所有8K素材的实时保证。
 
 窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭；视频硬件运行路径的平台限制不变。关闭按钮仍走未保存工程确认。
 
@@ -37,10 +37,10 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 # 可选值：left / right / platform
 ```
 
-## Timeline Editing — Phase 6
+## Timeline Editing
 
 - **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频。文件必须可精确定位且有可信 stream origin/duration。显示实际尺寸、平均帧率、在线状态和有界 GPU 缩略图；有音轨的素材明确提示仅使用视频。
-- **ADD CLIP** / 素材旁的 **+**：将选定素材放入单视频轨的可用空隙。普通移动不 ripple；片段重叠被拒绝。
+- **ADD CLIP** / 素材旁的 **+**：将选定素材放入目标轨道的可用空隙。普通移动保留其他片段的时间。同轨重叠时拒绝放置，跨轨重叠按轨道顺序合成。
 - 时间线上拖动片段移动；拖两侧边缘修剪。**一次松手只有一个历史条目；Esc 取消拖动草稿**。
 - 点击标尺定位，**PREVIOUS / NEXT** 逐序列帧步进，**SPLIT** 在播放头处分割，**DELETE** 为 lift 删除，保留空隙。空隙真实渲染不透明黑色。
 - 右侧 **Timeline start / Timeline end** 用序列帧；**Source in / Source out** 用原始 stream ticks。结束点为半开边界；输入后按 Enter 提交。分割和修剪保留有理数源入点，不逐次截断到整数源帧。
@@ -49,12 +49,12 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Nodes Workspace — Phase 7
 
-Select **Nodes** with an active timeline clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor; it does not introduce a second editor graph or project. Project saving includes each clip pipeline in schema 2, and opening schema 1 migrates clips to a direct source→output pipeline.
+Select **Nodes** with an active timeline clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor; it does not introduce a second editor graph or project. Project saving includes each clip pipeline inside its track in schema 3. Opening schema 1 migrates each clip to a direct source→output pipeline.
 
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.
 - The workspace follows a panel layout: **Media / Nodes** tabs share the left library; the Nodes tab shows grouped, two-column square effect tiles; node settings use the same right property sidebar as clip timing. The clip-instance strip stays above the graph, separate from the full timeline.
-- Current support: static single-image Shader, Constant and Math graphs. Inference, arbitrary resource nodes, multi-input compositing, time/feedback nodes, Gallery/versions, scopes, professional color management and video export UI are not implemented.
+- Current support: static single-image Shader, Constant and Math graphs. Inference, arbitrary resource nodes, arbitrary multi-source effects, time/feedback nodes, Gallery/versions, scopes, professional color management and video export UI are not implemented.
 
 
 
@@ -69,15 +69,17 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 文件对话框支持粘贴完整本地路径，也可点击 **Browse…** 使用系统文件选择器。macOS的OpenPanel是嵌套主线程事件循环；编辑器在进入选择器前先释放controller可变借用，以便Slint计时器/native回调重入，取消也返回原路径对话框。
 
-快捷键：Space 播放/暂停；←/→ 步进；⌘/Ctrl+B 分割；Delete/Backspace lift；⌘/Ctrl+Z 撤销；⌘/Ctrl+Shift+Z 重做；⌘/Ctrl+S 保存；⌘/Ctrl+Shift+S 另存为；⌘/Ctrl+O 打开；⌘/Ctrl+I 导入；Esc 取消。
+快捷键：Space 播放/暂停；←/→ 步进；⌘/Ctrl+B 分割；Delete/Backspace lift；⌘/Ctrl+Z 撤销；⌘/Ctrl+Shift+Z 重做；⌘/Ctrl+S 保存；⌘/Ctrl+Shift+S 另存为；⌘/Ctrl+O 打开；⌘/Ctrl+I 导入；Option+Shift+↑/↓ 重排选中的轨道；Esc 取消。
 
 ## 实际渲染与边界
 
 预览使用现有 `execution::FramePipeline`，不是复制原图应用的渲染循环。`PreviewBridge` 只负责有界最终意图、request/revision 身份和 UI/worker 交接；核心流水负责源选择、图执行、稳定帧和设备完成。Slint 与视频图共享同一个 wgpu 30 Device/Queue；普通预览与 GPU 缩略图不回传 CPU 像素，读回仅用于测试 oracle。
 
-源选择沿用已交付 Phase 3 的 `frame_at_ns` 契约：目标之后第一张实际 presentation frame；状态显示真实 source PTS，不以平均帧率猜 PTS。序列自身始终用有理数 CFR 帧位置。固定画布采用 contain-fit / 黑边。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
+源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持单轨有界播放/暂停、精确定位、clip/gap预热与原生Corrector；完整吸附/空间颜色工具、代理和普遍性能保证未交付。**本应用没有视频导出UI、音频播放/剪辑、文本、转场或多轨**；核心Phase5 headless H.264/MP4能力独立可用，编辑器导出和分发闭环仍属后续范围。
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。Schema 1/2 打开时迁移到单条视频轨，保存使用 Schema 3。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+
+音频剪辑、转场、文本、代理和编辑器导出 UI 属于后续交付。核心 Phase 5 无窗口 H.264/MP4 能力独立可用。
 
 ## 验证
 
@@ -89,7 +91,7 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-`npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. The current Rust behavior suite has 55 tests, including worker clock/prefill, exact seek supersession, gap/cut final-frame retirement, hysteresis and full-extent budget arithmetic. This change did not run the coverage gate; historical coverage results are not a new pass claim.
+`npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. The Rust behavior suite includes worker clock/prefill, exact seek supersession, gap/cut final-frame retirement, hysteresis and full-extent budget arithmetic. This change did not run the coverage gate; historical coverage results are not a new pass claim.
 
 Timeline-window acceptance includes 30-second media plus, 900-frame clips at default/maximum zoom, fit-to-sequence, fractional-scale trims, undo and persistence. Nodes-window acceptance uses actual red/blue H.264 fixtures and checks final monitor pixels; graph callback forwarding alone is not treated as success.
 

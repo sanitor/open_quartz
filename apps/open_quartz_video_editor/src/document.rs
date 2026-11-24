@@ -6,7 +6,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
+pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,7 +80,13 @@ pub struct ClipTransform {
     pub x: f32,
     pub y: f32,
     pub exposure: f32,
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "opaque")]
+    pub opacity: f32,
 }
+fn opaque() -> f32 { 1.0 }
+
 impl Default for ClipTransform {
     fn default() -> Self {
         Self {
@@ -87,6 +94,8 @@ impl Default for ClipTransform {
             x: 0.0,
             y: 0.0,
             exposure: 0.0,
+            rotation: 0.0,
+            opacity: 1.0,
         }
     }
 }
@@ -104,7 +113,6 @@ pub struct Clip {
     #[serde(default = "one")]
     pub source_subtick_denominator: u64,
     pub transform: ClipTransform,
-    #[serde(default)]
     pub pipeline: ClipPipeline,
 }
 impl Clip {
@@ -116,6 +124,32 @@ impl Clip {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct VideoTrack {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    pub locked: bool,
+    pub clips: Vec<Clip>,
+}
+impl VideoTrack {
+    fn new(id: String, name: String) -> Self {
+        Self { id, name, visible: true, locked: false, clips: Vec::new() }
+    }
+
+    pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
+        let index = self.clips.partition_point(|clip| clip.timeline_start <= frame);
+        self.clips.get(index.checked_sub(1)?)
+            .filter(|clip| clip.timeline_end().is_ok_and(|end| frame < end))
+    }
+
+    fn require_unlocked(&self) -> Result<(), String> {
+        if self.locked { return Err(format!("{} is locked", self.name)); }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectData {
     pub schema_version: u32,
     pub id: String,
@@ -124,7 +158,7 @@ pub struct ProjectData {
     pub height: u32,
     pub fps: Rational,
     pub assets: Vec<MediaAsset>,
-    pub clips: Vec<Clip>,
+    pub tracks: Vec<VideoTrack>,
 }
 impl Default for ProjectData {
     fn default() -> Self {
@@ -139,7 +173,7 @@ impl Default for ProjectData {
                 denominator: 1,
             },
             assets: Vec::new(),
-            clips: Vec::new(),
+            tracks: vec![VideoTrack::new(DEFAULT_TRACK.into(), "Video 1".into())],
         }
     }
 }
@@ -148,6 +182,38 @@ impl Default for ProjectData {
 struct ProjectFile {
     schema_version: u32,
     data: ProjectData,
+}
+
+impl ProjectData {
+    pub fn clips(&self) -> impl Iterator<Item = &Clip> {
+        self.tracks.iter().flat_map(|track| &track.clips)
+    }
+
+    pub fn active_clips(&self, frame: u64) -> impl Iterator<Item = (&VideoTrack, &Clip)> {
+        self.tracks.iter().filter(|track| track.visible)
+            .filter_map(move |track| track.clip_at(frame).map(|clip| (track, clip)))
+    }
+
+    pub fn duration_frames(&self) -> u64 {
+        self.clips().filter_map(|clip| clip.timeline_end().ok()).max().unwrap_or(0)
+    }
+
+    fn clip_position(&self, id: &str) -> Result<(usize, usize), String> {
+        self.tracks.iter().enumerate().find_map(|(track, lane)| {
+            lane.clips.iter().position(|clip| clip.id == id).map(|clip| (track, clip))
+        }).ok_or_else(|| "Selected clip no longer exists".into())
+    }
+
+    fn writable_clip(&self, id: &str) -> Result<(usize, usize), String> {
+        let position = self.clip_position(id)?;
+        self.tracks[position.0].require_unlocked()?;
+        Ok(position)
+    }
+
+    fn track_index(&self, id: &str) -> Result<usize, String> {
+        self.tracks.iter().position(|track| track.id == id)
+            .ok_or_else(|| "Video track no longer exists".into())
+    }
 }
 
 pub struct EditorDocument {
@@ -196,20 +262,18 @@ impl EditorDocument {
         self.data.assets.iter().find(|asset| asset.id == id)
     }
     pub fn clip(&self, id: &str) -> Option<&Clip> {
-        self.data.clips.iter().find(|clip| clip.id == id)
+        let (track, clip) = self.data.clip_position(id).ok()?;
+        Some(&self.data.tracks[track].clips[clip])
+    }
+    pub fn clip_track(&self, id: &str) -> Option<&VideoTrack> {
+        let (track, _) = self.data.clip_position(id).ok()?;
+        self.data.tracks.get(track)
     }
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
-        self.data.clips.iter().find(|clip| {
-            clip.timeline_start <= frame && clip.timeline_end().is_ok_and(|end| frame < end)
-        })
+        self.data.active_clips(frame).next().map(|(_, clip)| clip)
     }
     pub fn duration_frames(&self) -> u64 {
-        self.data
-            .clips
-            .iter()
-            .filter_map(|clip| clip.timeline_end().ok())
-            .max()
-            .unwrap_or(0)
+        self.data.duration_frames()
     }
     pub fn add_asset(&mut self, asset: MediaAsset) -> Result<(), String> {
         self.transact(|data| {
@@ -231,13 +295,21 @@ impl EditorDocument {
         expected_revision: u64,
     ) -> Result<(), String> {
         self.transact_at(expected_revision, |data| {
-            let clip = data.clips.iter_mut().find(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
+            let (track, index) = data.writable_clip(clip_id)?;
+            let clip = &mut data.tracks[track].clips[index];
             clip.pipeline = pipeline;
             Ok(())
         })
     }
+    #[cfg(test)]
     pub fn add_clip(&mut self, asset_id: &str) -> Result<String, String> {
+        let track = self.data.tracks[0].id.clone();
+        self.place_clip(asset_id, &track, None)
+    }
+
+    pub fn place_clip(&mut self, asset_id: &str, track: &str, start: Option<u64>) -> Result<String, String> {
+        let track = self.data.track_index(track)?;
+        self.data.tracks[track].require_unlocked()?;
         let asset = self
             .asset(asset_id)
             .cloned()
@@ -249,7 +321,10 @@ impl EditorDocument {
         if duration == 0 {
             return Err("Media is shorter than one sequence frame".into());
         }
-        let start = first_gap(&self.data.clips, duration)?;
+        let start = match start {
+            Some(start) => start,
+            None => first_gap(&self.data.tracks[track].clips, duration)?,
+        };
         let id = new_id("clip", self.revision);
         let source_in = asset
             .start_pts
@@ -266,8 +341,8 @@ impl EditorDocument {
             pipeline: ClipPipeline::default(),
         };
         self.transact(|data| {
-            data.clips.push(clip);
-            data.clips.sort_by_key(|clip| clip.timeline_start);
+            data.tracks[track].clips.push(clip);
+            data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
         })?;
         Ok(id)
@@ -275,12 +350,8 @@ impl EditorDocument {
     pub fn split(&mut self, clip_id: &str, at: u64) -> Result<String, String> {
         let right_id = new_id("clip", self.revision);
         self.transact(|data| {
-            let index = data
-                .clips
-                .iter()
-                .position(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
-            let mut right = data.clips[index].clone();
+            let (track, index) = data.writable_clip(clip_id)?;
+            let mut right = data.tracks[track].clips[index].clone();
             let end = right.timeline_end()?;
             if at <= right.timeline_start || at >= end {
                 return Err("Split point must be inside the selected clip".into());
@@ -296,58 +367,103 @@ impl EditorDocument {
             right.id = right_id.clone();
             right.timeline_start = at;
             right.duration = end - at;
-            data.clips[index].duration = left_duration;
-            data.clips.insert(index + 1, right);
+            data.tracks[track].clips[index].duration = left_duration;
+            data.tracks[track].clips.insert(index + 1, right);
             Ok(())
         })?;
         Ok(right_id)
     }
     pub fn lift(&mut self, clip_id: &str) -> Result<(), String> {
         self.transact(|data| {
-            let before = data.clips.len();
-            data.clips.retain(|clip| clip.id != clip_id);
-            if data.clips.len() == before {
-                return Err("Selected clip no longer exists".into());
-            }
+            let (track, index) = data.writable_clip(clip_id)?;
+            data.tracks[track].clips.remove(index);
             Ok(())
         })
     }
     pub fn move_clip(&mut self, clip_id: &str, target: u64) -> Result<(), String> {
+        let track = self.clip_track(clip_id).ok_or("Selected clip no longer exists")?.id.clone();
+        self.move_clip_to(clip_id, &track, target)
+    }
+    pub fn check_move(&self, clip_id: &str, track: &str, start: u64) -> Result<(), String> {
+        let (from, index) = self.data.writable_clip(clip_id)?;
+        let lane = &self.data.tracks[self.data.track_index(track)?];
+        lane.require_unlocked()?;
+        let end = start.checked_add(self.data.tracks[from].clips[index].duration)
+            .ok_or("Clip end frame overflow")?;
+        if lane.clips.iter().any(|clip| clip.id != clip_id
+            && overlaps(start, end, clip.timeline_start, clip.timeline_end().unwrap_or(u64::MAX))) {
+            return Err("Clip overlaps another clip on the video track".into());
+        }
+        Ok(())
+    }
+    pub fn move_clip_to(&mut self, clip_id: &str, track: &str, target: u64) -> Result<(), String> {
+        self.check_move(clip_id, track, target)?;
         self.transact(|data| {
-            let index = data
-                .clips
-                .iter()
-                .position(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
-            let duration = data.clips[index].duration;
-            let end = target
-                .checked_add(duration)
-                .ok_or("Clip end frame overflow")?;
-            if data.clips.iter().enumerate().any(|(other_index, other)| {
-                other_index != index
-                    && overlaps(
-                        target,
-                        end,
-                        other.timeline_start,
-                        other.timeline_end().unwrap_or(u64::MAX),
-                    )
-            }) {
-                return Err("Clip overlaps another clip on the video track".into());
-            }
-            data.clips[index].timeline_start = target;
-            data.clips.sort_by_key(|clip| clip.timeline_start);
+            let (from, index) = data.writable_clip(clip_id)?;
+            let to = data.track_index(track)?;
+            let mut clip = data.tracks[from].clips.remove(index);
+            clip.timeline_start = target;
+            data.tracks[to].clips.push(clip);
+            data.tracks[to].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
         })
     }
+    pub fn add_track(&mut self, before: &str) -> Result<String, String> {
+        let id = new_id("track", self.revision);
+        self.transact(|data| {
+            let index = data.track_index(before)?;
+            let number = (1..).find(|n| !data.tracks.iter().any(|track| track.name == format!("Video {n}"))).unwrap();
+            data.tracks.insert(index, VideoTrack::new(id.clone(), format!("Video {number}")));
+            Ok(())
+        })?;
+        Ok(id)
+    }
+    pub fn track_action(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
+        self.transact(|data| {
+            let index = data.track_index(id)?;
+            let count = data.tracks.len();
+            let track = &mut data.tracks[index];
+            match action {
+                "visible" => track.visible = !track.visible,
+                "lock" => track.locked = !track.locked,
+                "rename" => { track.require_unlocked()?; track.name = value.trim().into(); }
+                "delete" => {
+                    track.require_unlocked()?;
+                    if count == 1 || !track.clips.is_empty() {
+                        return Err("Keep at least one video track and remove clips before deleting a track".into());
+                    }
+                    data.tracks.remove(index);
+                }
+                _ => return Err("Unknown track action".into()),
+            }
+            Ok(())
+        })
+    }
+    pub fn reorder_track(&mut self, id: &str, anchor: &str, after: bool) -> Result<(), String> {
+        self.transact(|data| {
+            let index = data.track_index(id)?;
+            data.tracks[index].require_unlocked()?;
+            if id != anchor {
+                let track = data.tracks.remove(index);
+                let position = data.track_index(anchor)? + usize::from(after);
+                data.tracks.insert(position, track);
+            }
+            Ok(())
+        })
+    }
+    pub fn set_transform(&mut self, id: &str, transform: ClipTransform, revision: u64) -> Result<(), String> {
+        self.transact_at(revision, |data| {
+            let (track, index) = data.writable_clip(id)?;
+            data.tracks[track].clips[index].transform = transform;
+            Ok(())
+        })
+    }
+
     /// Keeps the right edge fixed; extension and contraction preserve exact source ticks.
     pub fn trim_left(&mut self, clip_id: &str, new_start: u64) -> Result<(), String> {
         self.transact(|data| {
-            let index = data
-                .clips
-                .iter()
-                .position(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
-            let old = data.clips[index].clone();
+            let (track, index) = data.writable_clip(clip_id)?;
+            let old = data.tracks[track].clips[index].clone();
             let end = old.timeline_end()?;
             if new_start >= end {
                 return Err("Left trim must leave at least one frame".into());
@@ -358,29 +474,26 @@ impl EditorDocument {
                 .find(|asset| asset.id == old.asset_id)
                 .ok_or("Clip media is missing")?;
             advance_source(
-                &mut data.clips[index],
+                &mut data.tracks[track].clips[index],
                 i128::from(new_start) - i128::from(old.timeline_start),
                 data.fps,
                 asset.time_base,
             )?;
-            data.clips[index].timeline_start = new_start;
-            data.clips[index].duration = end - new_start;
+            data.tracks[track].clips[index].timeline_start = new_start;
+            data.tracks[track].clips[index].duration = end - new_start;
+            data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
         })
     }
     /// Keeps the source in-point fixed; both directions must remain within the media range.
     pub fn trim_right(&mut self, clip_id: &str, new_end: u64) -> Result<(), String> {
         self.transact(|data| {
-            let index = data
-                .clips
-                .iter()
-                .position(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
-            let start = data.clips[index].timeline_start;
+            let (track, index) = data.writable_clip(clip_id)?;
+            let start = data.tracks[track].clips[index].timeline_start;
             if new_end <= start {
                 return Err("Right trim must leave at least one frame".into());
             }
-            data.clips[index].duration = new_end - start;
+            data.tracks[track].clips[index].duration = new_end - start;
             Ok(())
         })
     }
@@ -394,11 +507,8 @@ impl EditorDocument {
         source_in_pts: i64,
     ) -> Result<(), String> {
         self.transact(|data| {
-            let clip = data
-                .clips
-                .iter_mut()
-                .find(|clip| clip.id == clip_id)
-                .ok_or("Selected clip no longer exists")?;
+            let (track, index) = data.writable_clip(clip_id)?;
+            let clip = &mut data.tracks[track].clips[index];
             if source_in_pts != clip.source_in_pts {
                 clip.source_subtick_numerator = 0;
                 clip.source_subtick_denominator = 1;
@@ -406,7 +516,7 @@ impl EditorDocument {
             clip.timeline_start = timeline_start;
             clip.duration = duration;
             clip.source_in_pts = source_in_pts;
-            data.clips.sort_by_key(|clip| clip.timeline_start);
+            data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
         })
     }
@@ -614,7 +724,7 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
     }
     let mut file: Envelope = serde_json::from_slice(bytes)
         .map_err(|error| format!("Cannot parse project file: {error}"))?;
-    if !matches!(file.schema_version, 1 | SCHEMA_VERSION) {
+    if !matches!(file.schema_version, 1 | 2 | SCHEMA_VERSION) {
         return Err(format!("Unsupported project schema {}", file.schema_version));
     }
     if file.data.get("schema_version").and_then(serde_json::Value::as_u64)
@@ -622,8 +732,12 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
     {
         return Err("Project schema header and data disagree".into());
     }
-    if let Some(clips) = file.data.get_mut("clips").and_then(serde_json::Value::as_array_mut) {
-        for clip in clips {
+    if file.schema_version < SCHEMA_VERSION {
+        let project = file.data.as_object_mut().ok_or("Cannot parse project data")?;
+        if project.contains_key("tracks") { return Err("Legacy project already contains tracks".into()); }
+        let mut clips = project.remove("clips").ok_or("Legacy project is missing clips")?;
+        let legacy_clips = clips.as_array_mut().ok_or("Cannot parse project clips")?;
+        for clip in &mut *legacy_clips {
             let object = clip.as_object_mut().ok_or("Cannot parse project clip")?;
             match (file.schema_version, object.contains_key("pipeline")) {
                 (1, true) => return Err("Schema 1 clip contains unknown field `pipeline`".into()),
@@ -631,10 +745,14 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
                     object.insert("pipeline".into(), serde_json::to_value(ClipPipeline::default())
                         .map_err(|error| error.to_string())?);
                 }
-                (_, false) => return Err("Schema 2 clip is missing required field `pipeline`".into()),
+                (2, false) => return Err("Schema 2 clip is missing required field `pipeline`".into()),
                 _ => {}
             }
         }
+        legacy_clips.sort_by_key(|clip| clip.get("timeline_start").and_then(serde_json::Value::as_u64));
+        project.insert("tracks".into(), serde_json::json!([{
+            "id": DEFAULT_TRACK, "name": "Video 1", "visible": true, "locked": false, "clips": clips
+        }]));
     }
     file.data["schema_version"] = serde_json::json!(SCHEMA_VERSION);
     serde_json::from_value(file.data).map_err(|error| format!("Cannot parse project file: {error}"))
@@ -678,63 +796,71 @@ fn validate(data: &ProjectData) -> Result<(), String> {
         .map(|asset| asset.id.as_str())
         .collect::<std::collections::HashSet<_>>();
     let mut clip_ids = std::collections::HashSet::new();
-    let mut ordered = data.clips.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|clip| clip.timeline_start);
-    let mut previous_end = 0;
-    for clip in ordered {
-        if clip.id.is_empty() || !clip_ids.insert(clip.id.as_str()) {
-            return Err("Missing or duplicate clip ID".into());
+    let mut tracks = std::collections::HashSet::new();
+    if data.tracks.is_empty() { return Err("A sequence needs at least one video track".into()); }
+    for track in &data.tracks {
+        if track.id.is_empty() || track.name.trim().is_empty() || !tracks.insert(&track.id) {
+            return Err("Missing or duplicate video track ID or empty track name".into());
         }
-        clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
-        if !asset_ids.contains(clip.asset_id.as_str()) {
-            return Err("Clip references a missing media asset".into());
-        }
-        if clip.duration == 0 {
-            return Err("Clip duration must be positive".into());
-        }
-        if clip.source_subtick_denominator == 0
-            || clip.source_subtick_numerator >= clip.source_subtick_denominator
-        {
-            return Err("Invalid fractional source in-point".into());
-        }
-        let end = clip.timeline_end()?;
-        if clip.timeline_start < previous_end {
-            return Err("Video track clips cannot overlap".into());
-        }
-        previous_end = end;
-        let asset = data
-            .assets
-            .iter()
-            .find(|asset| asset.id == clip.asset_id)
-            .unwrap();
-        let origin = asset
-            .start_pts
-            .ok_or("Precise placement requires a known source presentation timestamp")?;
-        let duration = asset
-            .duration_pts
-            .ok_or("Exact placement requires a known video duration")?;
-        let media_end = origin
-            .checked_add(duration)
-            .ok_or("Media timestamp range overflow")?;
-        let (source_end, remainder, _) =
-            shifted_source(clip, i128::from(clip.duration), data.fps, asset.time_base)?;
-        if clip.source_in_pts < origin
-            || source_end > media_end
-            || (source_end == media_end && remainder != 0)
-        {
-            return Err("Clip source range extends outside media presentation duration".into());
-        }
-        let transform = clip.transform;
-        if !transform.scale.is_finite()
-            || !(0.1..=4.0).contains(&transform.scale)
-            || !transform.x.is_finite()
-            || !(-1.0..=1.0).contains(&transform.x)
-            || !transform.y.is_finite()
-            || !(-1.0..=1.0).contains(&transform.y)
-            || !transform.exposure.is_finite()
-            || !(-8.0..=8.0).contains(&transform.exposure)
-        {
-            return Err("Invalid clip transform".into());
+        let mut previous_end = 0;
+        for clip in &track.clips {
+            if clip.id.is_empty() || !clip_ids.insert(clip.id.as_str()) {
+                return Err("Missing or duplicate clip ID".into());
+            }
+            clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
+            if !asset_ids.contains(clip.asset_id.as_str()) {
+                return Err("Clip references a missing media asset".into());
+            }
+            if clip.duration == 0 {
+                return Err("Clip duration must be positive".into());
+            }
+            if clip.source_subtick_denominator == 0
+                || clip.source_subtick_numerator >= clip.source_subtick_denominator
+            {
+                return Err("Invalid fractional source in-point".into());
+            }
+            let end = clip.timeline_end()?;
+            if clip.timeline_start < previous_end {
+                return Err("Video track clips cannot overlap".into());
+            }
+            previous_end = end;
+            let asset = data
+                .assets
+                .iter()
+                .find(|asset| asset.id == clip.asset_id)
+                .unwrap();
+            let origin = asset
+                .start_pts
+                .ok_or("Precise placement requires a known source presentation timestamp")?;
+            let duration = asset
+                .duration_pts
+                .ok_or("Exact placement requires a known video duration")?;
+            let media_end = origin
+                .checked_add(duration)
+                .ok_or("Media timestamp range overflow")?;
+            let (source_end, remainder, _) =
+                shifted_source(clip, i128::from(clip.duration), data.fps, asset.time_base)?;
+            if clip.source_in_pts < origin
+                || source_end > media_end
+                || (source_end == media_end && remainder != 0)
+            {
+                return Err("Clip source range extends outside media presentation duration".into());
+            }
+            let transform = clip.transform;
+            if !transform.scale.is_finite()
+                || !(0.1..=4.0).contains(&transform.scale)
+                || !transform.x.is_finite()
+                || !(-1.0..=1.0).contains(&transform.x)
+                || !transform.y.is_finite()
+                || !(-1.0..=1.0).contains(&transform.y)
+                || !transform.rotation.is_finite()
+                || !(-180.0..=180.0).contains(&transform.rotation)
+                || !(0.0..=1.0).contains(&transform.opacity)
+                || !transform.exposure.is_finite()
+                || !(-8.0..=8.0).contains(&transform.exposure)
+            {
+                return Err("Invalid clip transform".into());
+            }
         }
     }
     Ok(())
@@ -990,7 +1116,7 @@ mod tests {
         second.timeline_start = 100;
         second.duration = 20;
         p.transact(|data| {
-            data.clips.push(second);
+            data.tracks[0].clips.push(second);
             Ok(())
         })
         .unwrap();
@@ -1294,7 +1420,7 @@ mod tests {
         p.set_sequence(1280, 720, Rational::new(60, 1).unwrap())
             .unwrap();
         assert_eq!(p.data.width, 1280);
-        assert_eq!(p.data.clips, before.clips);
+        assert_eq!(p.data.tracks[0].clips, before.tracks[0].clips);
         assert!(p.undo());
         assert_eq!(p.data, before);
         p.rename("  Renamed  ").unwrap();
@@ -1344,7 +1470,7 @@ mod tests {
         let opened = EditorDocument::open(relocated.join("edit.oqvideo.json")).unwrap();
         assert!(opened.data.assets[0].online);
         assert!(!opened.is_dirty());
-        assert_eq!(opened.data.clips, p.data.clips);
+        assert_eq!(opened.data.tracks[0].clips, p.data.tracks[0].clips);
         assert_eq!(
             Path::new(&opened.data.assets[0].path),
             relocated.join("media/clip.mp4").canonicalize().unwrap()

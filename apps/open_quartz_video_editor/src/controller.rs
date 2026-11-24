@@ -1,6 +1,6 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Rational};
-use crate::preview::{PlaybackRequest, PreviewBridge, PreviewRequest};
-use crate::{AssetRow, ClipRow, EditorWindow};
+use crate::preview::{sequence_request, PlaybackRequest, PreviewBridge, PreviewRequest};
+use crate::{AssetRow, ClipRow, EditorWindow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
@@ -11,6 +11,9 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 #[path = "pipeline_editor.rs"]
 mod pipeline_editor;
+#[path = "monitor_transform.rs"]
+mod monitor_transform;
+use monitor_transform::MonitorGesture;
 use pipeline_editor::{PipelineCommand, PipelineEditor};
 
 enum IoResult {
@@ -28,6 +31,8 @@ enum UiCommand {
         clip_id: String,
         kind: String,
         delta: i32,
+        track: String,
+        revision: u64,
     },
 }
 struct Thumbnail {
@@ -47,6 +52,10 @@ pub struct Controller {
     ticket: u64,
     selected_asset: Option<String>,
     selected_clip: Option<String>,
+    selected_track: String,
+    monitor_gesture: Option<MonitorGesture>,
+    timeline_capture: Option<(String, u64)>,
+    displayed_ticket: Option<u64>,
     asset_preview: bool,
     playhead: u64,
     playing: bool,
@@ -88,6 +97,10 @@ impl Controller {
             ticket: 0,
             selected_asset: None,
             selected_clip: None,
+            selected_track: crate::document::DEFAULT_TRACK.into(),
+            monitor_gesture: None,
+            timeline_capture: None,
+            displayed_ticket: None,
             asset_preview: false,
             playhead: 0,
             playing: false,
@@ -212,14 +225,63 @@ impl Controller {
                 controller.borrow_mut().seek(frame.max(0) as u64);
             }
         });
-        let gesture_sender = this.borrow().ui_send.clone();
-        window.on_clip_gesture(move |clip_id, kind, delta| {
-            let _ = gesture_sender.send(UiCommand::Gesture {
-                clip_id: clip_id.to_string(),
-                kind: kind.to_string(),
-                delta,
-            });
+        let weak = Rc::downgrade(this);
+        window.on_timeline_capture(move |id| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.timeline_capture = if id.is_empty() { None } else {
+                    Some((id.to_string(), controller.document.revision))
+                };
+            }
         });
+        let weak = Rc::downgrade(this);
+        window.on_clip_gesture(move |clip_id, kind, delta, track| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if let Some((id, revision)) = controller.timeline_capture.take().filter(|(id, _)| id == clip_id.as_str()) {
+                    let _ = controller.ui_send.send(UiCommand::Gesture {
+                        clip_id: id, kind: kind.to_string(), delta, track: track.to_string(), revision,
+                    });
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_track_action(move |id, action, value| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().track_action(&id, &action, &value);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_reorder_track(move |id, anchor, after| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if controller.timeline_capture.take().is_some_and(|(source, revision)|
+                    source == id.as_str() && revision == controller.document.revision) {
+                    let result = controller.document.reorder_track(&id, &anchor, after);
+                    controller.finish_edit(result);
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_clip_drop_error(move |id, track, delta| {
+            weak.upgrade().and_then(|controller| {
+                let controller = controller.borrow();
+                let clip = controller.document.clip(&id)?;
+                controller.document.check_move(&id, &track, clip.timeline_start.saturating_add_signed(i64::from(delta))).err()
+            }).unwrap_or_default().into()
+        });
+        let weak = Rc::downgrade(this);
+        window.on_clip_snap(move |id, kind, delta, track, zoom| {
+            weak.upgrade().map_or(delta, |controller| controller.borrow()
+                .snap_clip(&id, &kind, delta, &track, zoom))
+        });
+        let weak = Rc::downgrade(this);
+        window.on_asset_place(move |asset, track, frame| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().place_asset(&asset, &track, Some(frame.max(0) as u64));
+            }
+        });
+        Self::connect_monitor(this, window);
         let weak = Rc::downgrade(this);
         window.on_clip_timing_changed(move |field, value| {
             if let Some(controller) = weak.upgrade() {
@@ -290,7 +352,10 @@ impl Controller {
         }
     }
     fn changed(&mut self) {
+        self.monitor_gesture = None;
+        self.timeline_capture = None;
         self.pause();
+        self.playhead = self.playhead.min(self.document.duration_frames().saturating_sub(1));
         self.asset_preview = false;
         self.requested = None;
         if self.selected_clip.as_ref().is_some_and(|id| self.document.clip(id).is_none()) { self.selected_clip = None; }
@@ -298,25 +363,54 @@ impl Controller {
         self.request_preview();
     }
     fn add_asset_from_card(&mut self, id: &str) {
+        self.place_asset(id, &self.selected_track.clone(), None);
+    }
+
+    fn place_asset(&mut self, id: &str, track: &str, start: Option<u64>) {
         if !self.document.asset(id).is_some_and(|asset| asset.online) {
             self.status("Selected media is offline and cannot be placed on the timeline");
             return;
         }
-        match self.document.add_clip(id) {
+        match self.document.place_clip(id, track, start) {
             Ok(clip_id) => {
-                let clip = self.document.clip(&clip_id).expect("inserted clip exists");
-                self.playhead = clip.timeline_start;
+                let start = self.document.clip(&clip_id).expect("inserted clip exists").timeline_start;
+                self.pause();
+                self.playhead = start;
+                self.selected_track = track.to_owned();
                 self.selected_asset = Some(id.to_owned());
                 self.selected_clip = Some(clip_id);
                 self.asset_preview = false;
                 self.requested = None;
-                self.pause();
                 self.deferred_refresh = true;
                 self.status("Clip added · unsaved changes");
             }
             Err(error) => self.status(error),
         }
     }
+
+    fn track_action(&mut self, id: &str, action: &str, value: &str) {
+        if action == "select" {
+            self.selected_track = id.into();
+            self.refresh();
+            return;
+        }
+        let result = match action {
+            "add" => self.document.add_track(&self.selected_track).map(|id| self.selected_track = id),
+            "up" | "down" => {
+                let tracks = &self.document.data.tracks;
+                let neighbor = tracks.iter().position(|track| track.id == id)
+                    .and_then(|index| index.checked_add_signed(if action == "up" { -1 } else { 1 }))
+                    .and_then(|index| tracks.get(index)).map(|track| track.id.clone());
+                match neighbor {
+                    Some(anchor) => self.document.reorder_track(id, &anchor, action == "down"),
+                    None => return,
+                }
+            }
+            _ => self.document.track_action(id, action, value),
+        };
+        self.finish_edit(result);
+    }
+
     pub fn open_path(&mut self, path: PathBuf) {
         if self.busy {
             return;
@@ -410,9 +504,13 @@ impl Controller {
                     self.play();
                 }
             }
+            "track-up" => self.track_action(&self.selected_track.clone(), "up", ""),
+            "track-down" => self.track_action(&self.selected_track.clone(), "down", ""),
             "step-back" => self.seek(self.playhead.saturating_sub(1)),
             "step-forward" => self.seek(self.playhead.saturating_add(1)),
             "cancel" => {
+                self.timeline_capture = None;
+                self.cancel_monitor();
                 self.pause();
                 self.refresh();
             }
@@ -547,15 +645,7 @@ impl Controller {
             self.status("Import a media file first");
             return;
         };
-        match self.document.add_clip(&asset) {
-            Ok(id) => {
-                self.playhead = self.document.clip(&id).unwrap().timeline_start;
-                self.selected_clip = Some(id);
-                self.selected_asset = Some(asset);
-                self.changed();
-            }
-            Err(error) => self.status(error),
-        }
+        self.add_asset_from_card(&asset);
     }
     fn split(&mut self) {
         let Some(id) = self.selected_clip.clone() else {
@@ -577,15 +667,43 @@ impl Controller {
         let result = self.document.lift(&id);
         self.finish_edit(result);
     }
-    fn gesture(&mut self, id: &str, kind: &str, delta: i32) {
+    fn snap_clip(&self, id: &str, kind: &str, delta: i32, track: &str, zoom: f32) -> i32 {
+        let Some(clip) = self.document.clip(id) else { return delta; };
+        let Some(track) = self.document.data.tracks.iter().find(|item| item.id == track) else { return delta; };
+        if delta == 0 || zoom <= 0.0 { return delta; }
+        let end = clip.timeline_end().unwrap_or(clip.timeline_start);
+        let start = i128::from(clip.timeline_start);
+        let end = i128::from(end);
+        let mut anchors = match kind {
+            "trim-end" => vec![end],
+            "move" => vec![start, end],
+            _ => vec![start],
+        };
+        anchors.iter_mut().for_each(|anchor| *anchor += i128::from(delta));
+        let targets = std::iter::once(self.playhead).chain(track.clips.iter().filter(|other| other.id != id)
+            .flat_map(|other| [other.timeline_start, other.timeline_end().unwrap_or(other.timeline_start)]));
+        let mut best = None;
+        for target in targets {
+            for anchor in &anchors {
+                let correction = i128::from(target) - anchor;
+                if correction.abs() as f32 * zoom <= 7.0
+                    && best.is_none_or(|old: i128| correction.abs() < old.abs()) {
+                    best = Some(correction);
+                }
+            }
+        }
+        best.and_then(|correction| i32::try_from(i128::from(delta) + correction).ok()).unwrap_or(delta)
+    }
+
+    fn gesture(&mut self, id: &str, kind: &str, delta: i32, track: &str) {
         let Some(clip) = self.document.clip(id).cloned() else {
             return;
         };
         self.selected_clip = Some(id.to_owned());
+        self.selected_asset = Some(clip.asset_id.clone());
         let result = match kind {
-            "move" => self.document.move_clip(
-                id,
-                clip.timeline_start.saturating_add_signed(i64::from(delta)),
+            "move" => self.document.move_clip_to(
+                id, track, clip.timeline_start.saturating_add_signed(i64::from(delta)),
             ),
             "trim-start" => self.document.trim_left(
                 id,
@@ -597,6 +715,9 @@ impl Controller {
             }),
             _ => Err("Unknown timeline gesture".into()),
         };
+        if result.is_ok() {
+            if let Some(track) = self.document.clip_track(id) { self.selected_track = track.id.clone(); }
+        }
         self.finish_edit(result);
     }
     fn timing(&mut self, field: &str, value: &str) {
@@ -667,6 +788,7 @@ impl Controller {
         }
     }
     fn seek(&mut self, frame: u64) {
+        self.monitor_gesture = None;
         self.pause();
         self.asset_preview = false;
         self.playhead = frame.min(self.document.duration_frames().saturating_sub(1));
@@ -675,6 +797,7 @@ impl Controller {
         self.request_preview();
     }
     fn play(&mut self) {
+        self.monitor_gesture = None;
         if self.document.duration_frames() == 0 {
             self.status("Add media to the timeline first");
             return;
@@ -698,58 +821,24 @@ impl Controller {
             return;
         }
         let identity = (self.document.revision, self.playhead, self.asset_preview);
-        if self.requested == Some(identity) {
-            return;
-        }
-        let plan: Result<(Option<MediaAsset>, u64, ClipTransform), String> = (|| {
-            if self.asset_preview {
-                let asset = self
-                    .selected_asset
-                    .as_ref()
-                    .and_then(|id| self.document.asset(id))
-                    .cloned()
-                    .ok_or("Select a media asset")?;
-                return Ok((Some(asset), 0, ClipTransform::default()));
-            }
-            if let Some(clip) = self.document.clip_at(self.playhead) {
-                let asset = self
-                    .document
-                    .asset(&clip.asset_id)
-                    .cloned()
-                    .ok_or("Clip media is missing")?;
-                let source_ns =
-                    document::source_time_ns(&asset, clip, self.playhead, self.document.data.fps)?;
-                Ok((Some(asset), source_ns, clip.transform))
-            } else {
-                Ok((None, 0, ClipTransform::default()))
-            }
-        })();
-        match plan {
-            Ok((asset, source_ns, transform)) => {
-                self.ticket += 1;
-                let request = PreviewRequest {
-                    ticket: self.ticket,
-                    revision: self.document.revision,
-                    frame: self.playhead,
-                    source_ns,
-                    width: self.document.data.width,
-                    height: self.document.data.height,
-                    asset,
-                    transform,
-                    pipeline: if self.asset_preview {
-                        crate::clip_pipeline::ClipPipeline::default()
-                    } else {
-                        self.document.clip_at(self.playhead).map(|clip| {
-                            self.pipeline_preview_for(&clip.id).unwrap_or_else(|| clip.pipeline.clone())
-                        }).unwrap_or_default()
-                    },
-                };
-                if let Err(error) = self.preview.request(request) {
-                    self.status(error);
-                } else {
-                    self.requested = Some(identity);
-                }
-            }
+        if self.requested == Some(identity) { return; }
+        self.ticket += 1;
+        let plan = if self.asset_preview {
+            self.selected_asset.as_ref().and_then(|id| self.document.asset(id)).cloned()
+                .ok_or_else(|| "Select a media asset".to_owned())
+                .map(|asset| PreviewRequest {
+                    ticket: self.ticket, revision: self.document.revision, frame: self.playhead,
+                    source_ns: 0, width: self.document.data.width, height: self.document.data.height,
+                    asset: Some(asset), transform: ClipTransform::default(), pipeline: Default::default(),
+                    layers: Vec::new(),
+                })
+        } else {
+            sequence_request(&self.document.data, self.ticket, self.document.revision, self.playhead,
+                |id| self.pipeline_preview_for(id),
+                self.monitor_gesture.as_ref().map(|draft| (draft.clip.as_str(), draft.value)))
+        };
+        match plan.and_then(|request| self.preview.request(request)) {
+            Ok(()) => { self.requested = Some(identity); self.refresh_monitor(); }
             Err(error) => self.status(error),
         }
     }
@@ -770,16 +859,30 @@ impl Controller {
                 UiCommand::AddSelectedAsset => self.add_clip(),
                 UiCommand::SelectClip(id) => {
                     if let Some(clip) = self.document.clip(&id).cloned() {
+                        if let Some(track) = self.document.clip_track(&id) { self.selected_track = track.id.clone(); }
                         self.selected_clip = Some(id);
-                        self.selected_asset = Some(clip.asset_id);
-                        self.seek(clip.timeline_start);
+                        self.selected_asset = Some(clip.asset_id.clone());
+                        if self.asset_preview || self.playhead < clip.timeline_start
+                            || self.playhead >= clip.timeline_end().unwrap_or(0) {
+                            self.seek(clip.timeline_start);
+                        } else {
+                            self.refresh();
+                        }
                     }
                 }
                 UiCommand::Gesture {
                     clip_id,
                     kind,
                     delta,
-                } => self.gesture(&clip_id, &kind, delta),
+                    track,
+                    revision,
+                } => {
+                    if revision == self.document.revision {
+                        self.gesture(&clip_id, &kind, delta, &track);
+                    } else {
+                        self.status("Timeline changed while dragging");
+                    }
+                }
             }
         }
         self.poll_pipeline();
@@ -858,6 +961,7 @@ impl Controller {
                 self.playing = progress.playing;
                 self.refresh_time();
                 if let Some(window) = self.window.upgrade() { window.set_playing(self.playing); }
+                self.refresh_monitor();
             }
             progress.displayed_frame = self.displayed_frame;
             if let Some(frame) = &self.displayed {
@@ -900,9 +1004,9 @@ impl Controller {
                         let thumbnail_asset = if self.asset_preview {
                             self.selected_asset.clone()
                         } else {
-                            self.document
-                                .clip_at(update.frame)
-                                .map(|clip| clip.asset_id.clone())
+                            let mut active = self.document.data.active_clips(update.frame);
+                            active.next().filter(|(_, clip)| clip.transform == ClipTransform::default()
+                                && active.next().is_none()).map(|(_, clip)| clip.asset_id.clone())
                         };
                         if let Some(id) = thumbnail_asset {
                             if !self.thumbnails.contains_key(&id) {
@@ -922,17 +1026,25 @@ impl Controller {
                         }
                         self.displayed = Some(frame);
                         self.displayed_frame = Some(update.frame);
+                        self.displayed_ticket = Some(update.ticket);
+                        self.refresh_monitor();
                         if let Some(window) = self.window.upgrade() {
+                            let pts = if update.layer_pts_ns.is_empty() {
+                                update.actual_pts_ns.map(|v| v.to_string()).unwrap_or_else(|| "gap".into())
+                            } else {
+                                update.layer_pts_ns.iter().map(|(track, pts)| {
+                                    format!("{track} {}", pts.map(|v| v.to_string()).unwrap_or_else(|| "unknown".into()))
+                                }).collect::<Vec<_>>().join(", ")
+                            };
                             window.set_monitor_status(format!(
-                                "Frame {} · source PTS {} ns · CPU image bytes {}",
-                                update.frame,
-                                update.actual_pts_ns.map(|v| v.to_string()).unwrap_or_else(|| "gap".into()),
-                                update.cpu_copy_bytes
+                                "Frame {} · source PTS {pts} ns · CPU image bytes {}",
+                                update.frame, update.cpu_copy_bytes
                             ).into());
                         }
                     }
                     Err(error) => {
                         self.playing = false;
+                        self.refresh_monitor();
                         self.pipeline_editor.error = format!("Current pipeline failed; showing previous frame: {error}");
                         self.publish_pipeline();
                         self.status(self.pipeline_editor.error.clone());
@@ -1062,16 +1174,32 @@ impl Controller {
                     && same_image(&a.thumbnail, &b.thumbnail)
             },
         );
-        let clips = self
-            .document
-            .data
-            .clips
-            .iter()
-            .map(|clip| {
+        let tracks = &self.document.data.tracks;
+        if !tracks.iter().any(|track| track.id == self.selected_track) {
+            self.selected_track = tracks[0].id.clone();
+        }
+        let tracks_model: Vec<_> = tracks.iter().map(|track| TrackRow {
+            id: track.id.clone().into(),
+            name: track.name.clone().into(),
+            selected: track.id == self.selected_track,
+            visible: track.visible,
+            locked: track.locked,
+        }).collect();
+        // Track rows must remain mounted throughout a pointer capture.
+        let old_tracks = window.get_tracks();
+        if old_tracks.iter().ne(tracks_model.iter().cloned()) {
+            window.set_tracks(ModelRc::new(VecModel::from(tracks_model)));
+        }
+        let clips = tracks.iter().enumerate().flat_map(|(lane, track)| {
+            track.clips.iter().map(move |clip| (lane, track, clip))
+        }).map(|(lane, track, clip)| {
                 let asset = self.document.asset(&clip.asset_id);
                 let thumbnail = self.thumbnails.get(&clip.asset_id);
                 ClipRow {
                     id: clip.id.clone().into(),
+                    lane: lane as i32,
+                    track: track.id.clone().into(),
+                    locked: track.locked,
                     asset_name: asset.map(|a| a.name.as_str()).unwrap_or("Missing").into(),
                     start: clip.timeline_start.min(i32::MAX as u64) as i32,
                     duration: clip.duration.min(i32::MAX as u64) as i32,
@@ -1090,6 +1218,9 @@ impl Controller {
             |row| row.id.as_str(),
             |a, b| {
                 a.id == b.id
+                    && a.lane == b.lane
+                    && a.track == b.track
+                    && a.locked == b.locked
                     && a.asset_name == b.asset_name
                     && a.start == b.start
                     && a.duration == b.duration
@@ -1150,11 +1281,15 @@ impl Controller {
         }
         self.publish_pipeline();
         self.refresh_time();
+        self.refresh_monitor();
         if self.document.is_dirty() {
             self.status("Unsaved changes");
         }
     }
     fn clear_images(&mut self) {
+        self.monitor_gesture = None;
+        self.timeline_capture = None;
+        self.displayed_ticket = None;
         self.pipeline_editor.reset();
         if let Some(window) = self.window.upgrade() {
             window.set_monitor_image(slint::Image::default());
@@ -1311,6 +1446,10 @@ mod native_dialog_tests {
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
             pipeline_editor: PipelineEditor::default(),
+            selected_track: crate::document::DEFAULT_TRACK.into(),
+            monitor_gesture: None,
+            timeline_capture: None,
+            displayed_ticket: None,
         };
         controller.play();
         let admitted = controller.ticket;

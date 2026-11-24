@@ -131,9 +131,20 @@ impl PreparedNativeGraph {
 
     #[cfg(feature = "native-video")]
     pub fn prewarm_videos(&mut self, timeline_ns: u64, epoch: u64) -> Result<bool, String> {
+        self.prewarm_videos_with_source_times(timeline_ns, epoch, &Default::default())
+    }
+
+    #[cfg(feature = "native-video")]
+    pub fn prewarm_videos_with_source_times(
+        &mut self, timeline_ns: u64, epoch: u64, source_times: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<bool, String> {
         let mut ready = true;
-        for (_, source) in &mut self.videos {
-            ready &= source.prefetch_at(timeline_ns, epoch)?;
+        for (node, source) in &mut self.videos {
+            ready &= if let Some(&source_time) = source_times.get(node) {
+                source.prefetch_at_with_policy(source_time, epoch, true)?
+            } else {
+                source.prefetch_at(timeline_ns, epoch)?
+            };
         }
         Ok(ready)
     }
@@ -183,6 +194,7 @@ pub struct FrameCompletion {
     pub stamp: FrameStamp,
     pub graph_revision: u32,
     pub outcome: FrameOutcome,
+    pub source_pts_ns: Vec<(String, Option<i64>)>,
 }
 
 struct PendingFrame {
@@ -193,6 +205,9 @@ struct PendingFrame {
     waiting_inference: Option<String>,
     sources_uploaded: bool,
     media_pts_ns: Option<i64>,
+    source_pts_ns: Vec<(String, Option<i64>)>,
+    #[cfg(feature = "native-video")]
+    source_times: std::collections::BTreeMap<String, u64>,
 }
 
 /// Clock-free bounded source/GPU/output pipeline. Graph/feedback evaluation is
@@ -877,10 +892,15 @@ impl FramePipeline {
             Ok(None) => return FrameAdmission::WouldBlock(demand),
             Err(error) => return FrameAdmission::Rejected { demand, error },
         };
-        self.submit_prepared(demand, targets, preview)
+        self.submit_prepared(demand, targets, preview, &Default::default())
     }
 
-    fn submit_prepared(&mut self, demand: FrameDemand, targets: crate::rendering::PreparedFrameTargets, preview: bool) -> FrameAdmission {
+    fn submit_prepared(
+        &mut self, demand: FrameDemand, targets: crate::rendering::PreparedFrameTargets,
+        preview: bool, source_times: &std::collections::BTreeMap<String, u64>,
+    ) -> FrameAdmission {
+        #[cfg(not(feature = "native-video"))]
+        let _ = source_times;
         if self.pending.is_some() || self.completion.is_some() {
             return FrameAdmission::WouldBlock(demand);
         }
@@ -940,6 +960,9 @@ impl FramePipeline {
             waiting_inference: None,
             sources_uploaded: false,
             media_pts_ns: None,
+            source_pts_ns: Vec::new(),
+            #[cfg(feature = "native-video")]
+            source_times: source_times.clone(),
         });
         FrameAdmission::Accepted
     }
@@ -1053,7 +1076,7 @@ impl FramePipeline {
                 if !self.window.enabled {
                     self.latest = Some(frame.clone());
                 }
-                self.finish(pending.demand, FrameOutcome::Submitted(frame));
+                self.finish_with_sources(pending.demand, FrameOutcome::Submitted(frame), pending.source_pts_ns);
             }
             Ok(None) => {
                 self.pending = Some(pending);
@@ -1093,13 +1116,13 @@ impl FramePipeline {
             {
                 let excluded = pending.demand.sources.iter()
                     .map(|source| source.node_id.clone()).collect::<Vec<_>>();
-                if !self.videos.prefetch_at(pending.demand.request_id,
+                if !self.videos.prefetch_at_source_times(pending.demand.request_id,
                     pending.demand.input.stamp.timeline_ns,
-                    pending.demand.input.stamp.epoch, &excluded)? {
+                    pending.demand.input.stamp.epoch, &excluded, &pending.source_times)? {
                     return Ok(None);
                 }
                 let render_device = &mut self.render_device;
-                let Some(selected_pts) = self.videos.poll_upload_at(pending.demand.request_id,
+                let Some(selected_pts) = self.videos.poll_upload_selected(pending.demand.request_id,
                     |node_id, frame, _, _| match frame {
                         NativeVideoFrame::Rgba(_) => Err("Hardware-resident video required; CPU upload forbidden".into()),
                         #[cfg(target_os = "macos")]
@@ -1107,7 +1130,8 @@ impl FramePipeline {
                         #[cfg(all(windows, feature = "native-video-d3d12"))]
                         NativeVideoFrame::D3d12(frame) => render_device.upload_d3d12_yuv(node_id, frame).map(|_| true).map_err(|e| e.to_string()),
                     })? else { return Ok(None); };
-                pending.media_pts_ns = if excluded.is_empty() { selected_pts } else { None };
+                pending.media_pts_ns = if excluded.is_empty() && selected_pts.len() == 1 { selected_pts[0].1 } else { None };
+                pending.source_pts_ns = selected_pts;
             }
             pending.sources_uploaded = true;
             self.record_stage(&pending.demand, "SourceReady");
@@ -1230,6 +1254,10 @@ impl FramePipeline {
     }
 
     fn finish(&mut self, demand: FrameDemand, outcome: FrameOutcome) {
+        self.finish_with_sources(demand, outcome, Vec::new());
+    }
+
+    fn finish_with_sources(&mut self, demand: FrameDemand, outcome: FrameOutcome, source_pts_ns: Vec<(String, Option<i64>)>) {
         debug_assert!(self.completion.is_none());
         if self.window.enabled && matches!(outcome, FrameOutcome::Failed(_)) {
             self.window.failed = true;
@@ -1241,6 +1269,7 @@ impl FramePipeline {
             stamp: demand.input.stamp,
             graph_revision: demand.graph_revision,
             outcome,
+            source_pts_ns,
         });
     }
 
@@ -1273,7 +1302,7 @@ impl FramePipeline {
             while let Some(queued) = self.window.queued.pop_front() {
                 self.window.completed.push_back(FrameCompletion { request_id: queued.demand.request_id,
                     stamp: queued.demand.input.stamp, graph_revision: queued.demand.graph_revision,
-                    outcome: FrameOutcome::Cancelled });
+                    outcome: FrameOutcome::Cancelled, source_pts_ns: Vec::new() });
                 cancelled = true;
             }
             return cancelled;
@@ -1295,6 +1324,7 @@ impl FramePipeline {
                 stamp: queued.demand.input.stamp,
                 graph_revision: queued.demand.graph_revision,
                 outcome: FrameOutcome::Cancelled,
+                source_pts_ns: Vec::new(),
             });
         }
         true

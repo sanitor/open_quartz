@@ -343,11 +343,26 @@ impl Session {
         timeline_epoch: u64,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Option<SelectedFrame>, MediaError> {
+        self.frame_at_ns_cancellable_impl(target_ns, timeline_epoch, cancelled, false)
+    }
+
+    /// As with frame_at_ns_cancellable, with two editor affordances. A new
+    /// request for an unchanged target can reuse the selected immutable frame.
+    /// At EOF the final frame can cover a target inside its declared duration.
+    pub fn frame_at_ns_for_editing(
+        &mut self, target_ns: i64, timeline_epoch: u64, cancelled: Arc<AtomicBool>,
+    ) -> Result<Option<SelectedFrame>, MediaError> {
+        self.frame_at_ns_cancellable_impl(target_ns, timeline_epoch, cancelled, true)
+    }
+
+    fn frame_at_ns_cancellable_impl(
+        &mut self, target_ns: i64, timeline_epoch: u64, cancelled: Arc<AtomicBool>, editing: bool,
+    ) -> Result<Option<SelectedFrame>, MediaError> {
         *self
             .request_cancelled
             .lock()
             .map_err(|_| "Video request cancellation lock is poisoned")? = Some(cancelled.clone());
-        let result = self.frame_at_ns(target_ns, timeline_epoch);
+        let result = self.select_frame_at(target_ns, timeline_epoch, editing);
         *self
             .request_cancelled
             .lock()
@@ -380,6 +395,12 @@ impl Session {
         target_ns: i64,
         timeline_epoch: u64,
     ) -> Result<Option<SelectedFrame>, MediaError> {
+        self.select_frame_at(target_ns, timeline_epoch, false)
+    }
+
+    fn select_frame_at(
+        &mut self, target_ns: i64, timeline_epoch: u64, editing: bool,
+    ) -> Result<Option<SelectedFrame>, MediaError> {
         if self.is_cancelled() || timeline_epoch < self.timeline_epoch {
             return Err(MediaError::cancelled());
         }
@@ -388,6 +409,13 @@ impl Session {
                 ErrorKind::InvalidTarget,
                 "Source target must be nonnegative",
             ));
+        }
+        if editing && self.last_target_ns == Some(target_ns) {
+            if let Some(cached) = &mut self.selected {
+                self.timeline_epoch = timeline_epoch;
+                cached.timeline_epoch = timeline_epoch;
+                return selected_frame(cached.try_clone()?, target_ns).map(Some);
+            }
         }
         let origin = self.info.start_pts.ok_or_else(|| {
             MediaError::time(
@@ -425,7 +453,9 @@ impl Session {
                 return Ok(Some(selected_frame(cached.try_clone()?, target_ns)?));
             }
         }
-        self.selected = None;
+        let allow_tail = editing && self.info.duration_ns()?.is_some_and(|duration| target_ns < duration);
+        let cached = self.selected.take();
+        let mut tail = if allow_tail { cached } else { None };
         while let Some(frame) = self.decode_next()? {
             let actual_ns = frame.frame.pts_ns().ok_or_else(|| {
                 MediaError::time(
@@ -440,7 +470,21 @@ impl Session {
                 self.selected = Some(frame.try_clone()?);
                 return Ok(Some(selected_frame(frame, target_ns)?));
             }
+            if allow_tail { tail = Some(frame); }
         }
+        if let Some(frame) = tail {
+            let ticks = unsafe { (*frame.frame.raw).duration };
+            if ticks > 0 {
+                let duration = self.info.time_base.ticks_to_ns(i128::from(ticks))?;
+                let covers = frame.frame.pts_ns().and_then(|pts| pts.checked_add(duration))
+                    .is_some_and(|end| target_ns < end);
+                if covers {
+                    self.selected = Some(frame.try_clone()?);
+                    return selected_frame(frame, target_ns).map(Some);
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -725,10 +769,10 @@ fn selected_frame(frame: FrameLease, target_ns: i64) -> Result<SelectedFrame, Me
         frame,
         target_ns,
         actual_ns,
-        selection: if actual_ns == target_ns {
-            FrameSelection::Exact
-        } else {
-            FrameSelection::Following
+        selection: match actual_ns.cmp(&target_ns) {
+            std::cmp::Ordering::Equal => FrameSelection::Exact,
+            std::cmp::Ordering::Greater => FrameSelection::Following,
+            std::cmp::Ordering::Less => FrameSelection::CoveringTail,
         },
     })
 }

@@ -21,7 +21,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/white_64x64.mp4");
         let asset = crate::media::probe(&path).unwrap();
-        let mut request = PreviewRequest {
+        let mut request = PreviewRequest { layers: Vec::new(),
             ticket: 1,
             revision: 4,
             frame: 0,
@@ -84,7 +84,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/oq-media/tests/source-time.mp4");
         let mut asset = crate::media::probe(&path).unwrap();
-        let mut request = PreviewRequest {
+        let mut request = PreviewRequest { layers: Vec::new(),
             ticket: 1,
             revision: 7,
             frame: 0,
@@ -169,13 +169,13 @@ mod tests {
         );
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
-        let mut request = PreviewRequest {
+        let mut request = PreviewRequest { layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
         };
         let mut configured = None;
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         let original = render_request(&mut pipeline, &request);
         let original_pixels = pixels(&pipeline, &original);
         let original_metrics = pipeline.video_metrics(SOURCE_ID).unwrap();
@@ -191,7 +191,7 @@ mod tests {
             .data.uniforms.insert("strength".into(), serde_json::json!(0.25));
         request.pipeline.replace_graph(edited).unwrap();
         request.ticket += 1;
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         // Restaging VideoToolbox resets these counters; committing a new graph
         // must leave the exact live source in place before the next demand.
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames,
@@ -210,7 +210,7 @@ mod tests {
         stage.data.label = "Renamed stage".into();
         request.pipeline.replace_graph(edited).unwrap();
         let revision = pipeline.revision();
-        assert!(!configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(!configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.revision(), revision);
 
         let mut edited = request.pipeline.graph().clone();
@@ -219,7 +219,7 @@ mod tests {
         request.pipeline.replace_graph(edited).unwrap();
         let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
         request.ticket += 1;
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
         let half = render_request(&mut pipeline, &request);
         assert!(pixels(&pipeline, &half).chunks_exact(4).enumerate().all(|(index, p)| {
@@ -232,7 +232,7 @@ mod tests {
         request.pipeline = ClipPipeline::default();
         request.ticket += 1;
         let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
         let clean = render_request(&mut pipeline, &request);
         assert_eq!(pixels(&pipeline, &clean), original_pixels);
@@ -242,20 +242,20 @@ mod tests {
 
         let before = pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames;
         request.transform.exposure = -1.0;
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, before);
 
         // Both a fingerprint change at the same path and a different file path
         // are source changes, unlike any of the graph-only edits above.
         request.asset.as_mut().unwrap().fingerprint.push_str("-changed");
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, 0);
         request.ticket += 1;
         drop(render_request(&mut pipeline, &request));
         request.asset = Some(crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/gray_64x64.mp4")).unwrap());
         request.transform = ClipTransform::default();
-        assert!(configure(&mut pipeline, &mut configured, &request).unwrap());
+        assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, 0);
         request.ticket += 1;
         let gray = render_request(&mut pipeline, &request);
@@ -275,7 +275,7 @@ mod tests {
         let id = clip_pipeline.add_serial(SOURCE_ID,
             "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { return textureSample(image,imageSampler,uv)*vec4f(0.0,1.0,0.0,1.0); }",
             "Green").unwrap();
-        let mut request = PreviewRequest {
+        let mut request = PreviewRequest { layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: clip_pipeline,
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn gpu_candidate_preflight_reports_errors_without_replacing_the_live_preview() {
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
-        let mut request = PreviewRequest {
+        let mut request = PreviewRequest { layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: None,
             transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
@@ -365,7 +365,7 @@ mod tests {
         };
         assert!(initial.submitted >= 2, "playback must prefill before its first presentation");
         assert!(initial.queue_peak <= initial.window_high_water);
-        bridge.request(PreviewRequest { ticket: 11, revision: document.revision,
+        bridge.request(PreviewRequest { layers: Vec::new(), ticket: 11, revision: document.revision,
             frame: 3, source_ns: 100_000_000, width: 64, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: ClipPipeline::default() }).unwrap();
         let exact = wait(&bridge, 11);
@@ -399,11 +399,11 @@ mod tests {
         let id = asset.id.clone();
         document.add_asset(asset).unwrap(); document.add_clip(&id).unwrap();
         document.data.fps = Rational::new(10, 1).unwrap();
-        document.data.clips[0].duration = 2;
-        let mut next = document.data.clips[0].clone();
+        document.data.tracks[0].clips[0].duration = 2;
+        let mut next = document.data.tracks[0].clips[0].clone();
         next.id = "next-clip".into(); next.timeline_start = 4;
         next.transform.exposure = -1.0;
-        document.data.clips.push(next);
+        document.data.tracks[0].clips.push(next);
         bridge.play(PlaybackRequest { ticket: 1, revision: document.revision,
             start_frame: 0, project: document.data }).unwrap();
         let first = wait(&bridge, 1);
@@ -437,4 +437,69 @@ mod tests {
         assert!(saw_gap);
         bridge.shutdown();
     }
+    #[test]
+    fn two_native_sources_keep_independent_pts_and_blend_in_linear_light() {
+        crate::media::configure_runtime().unwrap();
+        let (mut bridge, _, _) = PreviewBridge::new().unwrap();
+        let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+        let tint = |color: &str| {
+            let mut pipeline = ClipPipeline::default();
+            let code = format!("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {{
+                let c = textureSample(image,imageSampler,uv);
+                return vec4f(vec3f({color}) * c.r, 1.0);
+            }}");
+            pipeline.add_serial(SOURCE_ID, &code, "Tint").unwrap();
+            pipeline
+        };
+        let mut document = crate::document::EditorDocument::default();
+        document.data.width = 128;
+        document.data.height = 64;
+        document.add_asset(asset.clone()).unwrap();
+        let background = document.add_clip(&asset.id).unwrap();
+        let foreground_track = document.add_track(document::DEFAULT_TRACK).unwrap();
+        let foreground = document.place_clip(&asset.id, &foreground_track, Some(0)).unwrap();
+        let start_pts = asset.start_pts.unwrap();
+        let two_tenths = i64::from(asset.time_base.denominator) /
+            (i64::from(asset.time_base.numerator) * 5);
+        document.set_timing(&background, 0, 5, start_pts + two_tenths).unwrap();
+        document.set_timing(&foreground, 0, 5, start_pts).unwrap();
+        document.set_clip_pipeline(&background, tint("0.0, 0.0, 1.0"), document.revision).unwrap();
+        document.set_clip_pipeline(&foreground, tint("1.0, 0.0, 0.0"), document.revision).unwrap();
+        document.set_transform(&background, ClipTransform { scale: 2.0, ..Default::default() }, document.revision).unwrap();
+        document.set_transform(&foreground, ClipTransform { opacity: 0.5, ..Default::default() }, document.revision).unwrap();
+
+        let exact = |bridge: &PreviewBridge, document: &crate::document::EditorDocument, ticket| {
+            bridge.request(sequence_request(&document.data, ticket, document.revision, 0, |_| None, None).unwrap()).unwrap();
+            wait(bridge, ticket)
+        };
+        let read = |frame: &StableFrame| pollster::block_on(bridge.backend.read_texture_rgba(
+            &frame.output().texture, 128, 64)).unwrap();
+        let sample = |pixels: &[u8], x: usize| {
+            let offset = (32 * 128 + x) * 4;
+            <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
+        };
+
+        let update = exact(&bridge, &document, 1);
+        assert_eq!(update.layer_pts_ns, [("Video 2".into(), Some(0)), ("Video 1".into(), Some(200_000_000))]);
+        assert_eq!(update.cpu_copy_bytes, 0);
+        let frame = update.image.unwrap();
+        let pixels = read(&frame);
+        assert_eq!(sample(&pixels, 20), [0, 0, 255, 255], "contain padding reveals the lower layer");
+        let [r, g, b, a] = sample(&pixels, 64);
+        assert!((185..=190).contains(&r) && (185..=190).contains(&b) && g == 0 && a == 255, "{r}, {g}, {b}, {a}");
+
+        bridge.play(PlaybackRequest { ticket: 2, revision: document.revision,
+            start_frame: 0, project: document.data.clone() }).unwrap();
+        let played = wait(&bridge, 2);
+        assert_eq!(played.frame, 0);
+        assert_eq!(read(&played.image.unwrap()), pixels);
+
+        document.reorder_track(document::DEFAULT_TRACK, &foreground_track, false).unwrap();
+        let reordered = exact(&bridge, &document, 3);
+        assert_eq!(sample(&read(&reordered.image.unwrap()), 64), [0, 0, 255, 255]);
+        assert_eq!(read(&frame), pixels, "later composition must preserve the displayed lease");
+        bridge.shutdown();
+    }
+
 }

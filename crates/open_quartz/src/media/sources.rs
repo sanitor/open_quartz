@@ -50,6 +50,7 @@ struct RequestProgress {
     timeline_ns: u64,
     epoch: u64,
     excluded: Vec<String>,
+    source_times: std::collections::BTreeMap<String, u64>,
     nodes: Vec<String>,
     selected: Vec<(String, Option<i64>)>,
     #[cfg(target_os = "macos")]
@@ -137,16 +138,20 @@ impl PreparedVideoSource {
     /// Starts/polls preparation without selecting on the calling thread. True
     /// means the exact selected surface is cached and ready to transfer at attach.
     pub fn prefetch_at(&mut self, timeline_ns: u64, epoch: u64) -> Result<bool, String> {
+        self.prefetch_at_with_policy(timeline_ns, epoch, false)
+    }
+
+    pub(crate) fn prefetch_at_with_policy(&mut self, timeline_ns: u64, epoch: u64, editing: bool) -> Result<bool, String> {
         #[cfg(target_os = "macos")]
         {
             if self.preparation.is_none() {
                 let Some(worker) = precise::Preparation::pooled_worker(self.frame_budget.clone()) else { return Ok(false); };
                 self.preparation = Some(precise::Preparation::new(worker, self.source.take().ok_or("Prepared source was already transferred")?));
             }
-            return self.preparation.as_mut().expect("preparation exists").poll(timeline_ns, epoch, self.prefetch_limits);
+            return self.preparation.as_mut().expect("preparation exists").poll(timeline_ns, epoch, self.prefetch_limits, editing);
         }
         #[cfg(not(target_os = "macos"))]
-        { let _ = (timeline_ns, epoch); Ok(true) }
+        { let _ = (timeline_ns, epoch, editing); Ok(true) }
     }
 }
 
@@ -297,8 +302,15 @@ impl VideoSources {
         epoch: u64,
         excluded: &[String],
     ) -> Result<bool, String> {
+        self.prefetch_at_source_times(request_id, timeline_ns, epoch, excluded, &Default::default())
+    }
+
+    pub(crate) fn prefetch_at_source_times(
+        &mut self, request_id: u64, timeline_ns: u64, epoch: u64, excluded: &[String],
+        source_times: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<bool, String> {
         if let Some(request) = self.requests.get(&request_id) {
-            if request.timeline_ns != timeline_ns || request.epoch != epoch || request.excluded != excluded {
+            if request.timeline_ns != timeline_ns || request.epoch != epoch || request.excluded != excluded || &request.source_times != source_times {
                 return Err("Video prefetch request ID was reused with a different demand".to_owned());
             }
             return Ok(true);
@@ -309,9 +321,12 @@ impl VideoSources {
         let mut nodes = self.node_ids();
         nodes.retain(|node| !excluded.contains(node));
         nodes.sort();
+        if source_times.keys().any(|node| nodes.binary_search(node).is_err()) {
+            return Err("Source time requires an attached native video node".into());
+        }
         #[cfg(target_os = "macos")]
         if let Some(worker) = &self.worker {
-            if !worker.enqueue(request_id, timeline_ns, epoch, &nodes, self.capacity, self.max_surfaces, self.max_bytes)? {
+            if !worker.enqueue(request_id, timeline_ns, epoch, &nodes, source_times, (self.capacity, self.max_surfaces, self.max_bytes))? {
                 return Ok(false);
             }
         }
@@ -319,6 +334,7 @@ impl VideoSources {
             timeline_ns,
             epoch,
             excluded: excluded.to_vec(),
+            source_times: source_times.clone(),
             nodes,
             selected: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -390,7 +406,7 @@ impl VideoSources {
         }))
     }
 
-    fn poll_upload_selected(
+    pub(crate) fn poll_upload_selected(
         &mut self,
         request_id: u64,
         mut upload: impl for<'frame> FnMut(&str, NativeVideoFrame<'frame>, u32, u32) -> Result<bool, String>,
@@ -431,7 +447,7 @@ impl VideoSources {
             }
             if let Some(source) = self.sources.get_mut(node) {
                 let mut blocked = false;
-                let result = source.upload_at(request.timeline_ns, request.epoch, &mut |frame, width, height| {
+                let result = source.upload_at(request.source_times.get(node).copied().unwrap_or(request.timeline_ns), request.epoch, &mut |frame, width, height| {
                     if matches!(&frame, NativeVideoFrame::Rgba(_)) {
                         return Err(format!("Hardware-resident video is required for node {node}; CPU RGBA upload is disabled"));
                     }
@@ -517,7 +533,7 @@ mod precise {
         pub worker: Arc<Worker>,
         pub node: String,
         request_id: u64,
-        target: Option<(u64, u64)>,
+        target: Option<(u64, u64, bool)>,
         ready: bool,
     }
     impl Preparation {
@@ -538,8 +554,8 @@ mod precise {
             worker.attach(&node, source);
             Self { worker, node, request_id, target: None, ready: false }
         }
-        pub fn poll(&mut self, timeline_ns: u64, epoch: u64, limits: (usize, u64)) -> Result<bool, String> {
-            if self.target != Some((timeline_ns, epoch)) {
+        pub fn poll(&mut self, timeline_ns: u64, epoch: u64, limits: (usize, u64), editing: bool) -> Result<bool, String> {
+            if self.target != Some((timeline_ns, epoch, editing)) {
                 self.worker.cancel_request(self.request_id);
                 if self.target.is_some() {
                     if let Some(source) = self.worker.lock().sources.get_mut(&self.node).and_then(|entry| entry.source.as_mut()) {
@@ -548,8 +564,9 @@ mod precise {
                 }
                 self.request_id = NEXT_PREPARATION.fetch_add(1, Ordering::AcqRel);
                 self.ready = false;
-                if !self.worker.enqueue(self.request_id, timeline_ns, epoch, std::slice::from_ref(&self.node), 3, limits.0, limits.1)? { return Ok(false); }
-                self.target = Some((timeline_ns, epoch));
+                let times = if editing { [(self.node.clone(), timeline_ns)].into() } else { Default::default() };
+                if !self.worker.enqueue(self.request_id, timeline_ns, epoch, std::slice::from_ref(&self.node), &times, (3, limits.0, limits.1))? { return Ok(false); }
+                self.target = Some((timeline_ns, epoch, editing));
             }
             if self.ready { return Ok(true); }
             let mut state = self.worker.lock();
@@ -605,6 +622,7 @@ mod precise {
         timeline_ns: u64,
         epoch: u64,
         nodes: Vec<String>,
+        source_times: std::collections::BTreeMap<String, u64>,
         credits: Vec<Option<Reservation>>,
         cancelled: Arc<AtomicBool>,
     }
@@ -741,7 +759,8 @@ mod precise {
             drop((removed, result));
         }
         pub fn reserved_usage(&self) -> (usize, u64) { reserved(&self.lock()) }
-        pub fn enqueue(&self, id: u64, timeline_ns: u64, epoch: u64, nodes: &[String], capacity: usize, max_surfaces: usize, max_bytes: u64) -> Result<bool, String> {
+        pub fn enqueue(&self, id: u64, timeline_ns: u64, epoch: u64, nodes: &[String], source_times: &std::collections::BTreeMap<String, u64>, limits: (usize, usize, u64)) -> Result<bool, String> {
+            let (capacity, max_surfaces, max_bytes) = limits;
             let mut state = self.lock();
             if let Some(error) = &state.startup_error { return Err(error.clone()); }
             let nodes: Vec<_> = nodes.iter().filter(|node| state.sources.contains_key(*node)).cloned().collect();
@@ -774,7 +793,7 @@ mod precise {
             }
             let generation = state.generation;
             state.reservations.insert(id, (nodes.len(), bytes));
-            state.queue.push_back(Job { id, generation, timeline_ns, epoch, nodes, credits, cancelled: Arc::new(AtomicBool::new(false)) });
+            state.queue.push_back(Job { id, generation, timeline_ns, epoch, nodes, source_times: source_times.clone(), credits, cancelled: Arc::new(AtomicBool::new(false)) });
             if state.trace_enabled {
                 state.record(SourceStageEvent { request_id: id, epoch, timeline_ns, node_id: None, stage: SourceStageKind::Enqueued, at: Instant::now(), actual_pts_ns: None, sequence: None });
             }
@@ -906,7 +925,9 @@ mod precise {
                         });
                     }
                 }
-                let mut result = source.prepare_exact_at_cancellable(job.timeline_ns, job.epoch, job.cancelled.clone());
+                let source_time = job.source_times.get(node).copied().unwrap_or(job.timeline_ns);
+                let mut result = source.prepare_exact(source_time, job.epoch, job.cancelled.clone(), job.source_times.contains_key(node))
+                    .map_err(|error| format!("Video source {node}: {error}"));
                 if shared.trace_enabled.load(Ordering::Acquire) {
                     let finished_at = Instant::now();
                     if let Ok(selected) = &result {

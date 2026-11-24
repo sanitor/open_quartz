@@ -8,7 +8,7 @@ use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use open_quartz::outputs::{FrameStamp, PlaybackCapabilities};
 use open_quartz::rendering::{RenderDevice, StableFrame, StableFrameBudget};
 use slint::wgpu_30::WGPUConfiguration;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -19,13 +19,71 @@ pub struct PreviewRequest {
     pub ticket: u64,
     pub revision: u64,
     pub frame: u64,
+    // The single-source viewer uses media time. Layered requests use sequence time.
     pub source_ns: u64,
     pub width: u32,
     pub height: u32,
     pub asset: Option<MediaAsset>,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
+    pub layers: Vec<PreviewLayer>,
 }
+/// Visible layers are stored from the top timeline row to the bottom.
+#[derive(Clone)]
+pub struct PreviewLayer {
+    pub clip_id: String,
+    pub track_name: String,
+    pub asset: MediaAsset,
+    pub source_ns: u64,
+    pub transform: ClipTransform,
+    pub pipeline: ClipPipeline,
+}
+
+pub fn sequence_request(
+    project: &ProjectData, ticket: u64, revision: u64, frame: u64,
+    mut pipeline_override: impl FnMut(&str) -> Option<ClipPipeline>,
+    transform_override: Option<(&str, ClipTransform)>,
+) -> Result<PreviewRequest, String> {
+    let mut layers = Vec::new();
+    for (track, clip) in project.active_clips(frame) {
+        let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
+            .ok_or_else(|| format!("{}: missing clip media", track.name))?;
+        layers.push(PreviewLayer {
+            clip_id: clip.id.clone(), track_name: track.name.clone(), asset: asset.clone(),
+            source_ns: document::source_time_ns(asset, clip, frame, project.fps)?,
+            transform: transform_override.filter(|(id, _)| *id == clip.id)
+                .map_or(clip.transform, |(_, value)| value),
+            pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
+        });
+    }
+    let mut request = PreviewRequest {
+        ticket, revision, frame, width: project.width, height: project.height,
+        asset: None, source_ns: project.fps.frames_to_ns(frame)?, transform: ClipTransform::default(),
+        pipeline: ClipPipeline::default(), layers: Vec::new(),
+    };
+    if let [layer] = layers.as_slice() {
+        if project.tracks.len() == 1 && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
+            let layer = layers.pop().expect("one preview layer");
+            request.asset = Some(layer.asset);
+            request.source_ns = layer.source_ns;
+            request.transform = layer.transform;
+            request.pipeline = layer.pipeline;
+            return Ok(request);
+        }
+    }
+    request.layers = layers;
+    Ok(request)
+}
+
+impl PreviewRequest {
+    fn sources(&self) -> impl Iterator<Item = (String, &MediaAsset, u64)> {
+        self.asset.iter().map(|asset| (SOURCE_ID.into(), asset, self.source_ns))
+            .chain(self.layers.iter().map(|layer| {
+                (composition::source_id(&layer.clip_id), &layer.asset, layer.source_ns)
+            }))
+    }
+}
+
 pub struct PreviewUpdate {
     pub ticket: u64,
     pub revision: u64,
@@ -33,6 +91,7 @@ pub struct PreviewUpdate {
     pub frame: u64,
     pub image: Result<StableFrame, String>,
     pub actual_pts_ns: Option<i64>,
+    pub layer_pts_ns: Vec<(String, Option<i64>)>,
     pub cpu_copy_bytes: u64,
 }
 
@@ -252,6 +311,7 @@ fn pipeline_graph(
 }
 
 fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
+    if !request.layers.is_empty() { return composition::graph(request); }
     let mut graph = pipeline_graph(&request.pipeline, request.width, request.height)?;
     let code = if let Some(asset) = &request.asset {
         let t = request.transform;
@@ -288,7 +348,7 @@ fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
 
 #[derive(PartialEq)]
 struct PreviewConfiguration {
-    source: Option<(String, String)>,
+    sources: BTreeMap<String, (String, String)>,
     graph: open_quartz::Graph,
 }
 
@@ -304,15 +364,19 @@ fn configure(
     pipeline: &mut FramePipeline,
     configured: &mut Option<PreviewConfiguration>,
     request: &PreviewRequest,
-) -> Result<bool, String> {
-    let (key, prepared, _) = playback::prepare_region(pipeline, configured, request, false)?;
+) -> Result<(bool, u64), String> {
+    let key = playback::configuration(request)?;
     if configured.as_ref() == Some(&key) {
-        return Ok(false);
+        return Ok((false, 0));
     }
+    let (prepared, opened) = playback::prepare_region(pipeline, configured, request, &key, false)?;
     pipeline.commit_graph(prepared)?;
     *configured = Some(key);
-    Ok(true)
+    Ok((true, opened))
 }
+#[path = "sequence_composition.rs"]
+mod composition;
+
 #[path = "preview_playback.rs"]
 mod playback;
 use playback::run;

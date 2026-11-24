@@ -165,6 +165,19 @@ impl Controller {
             }
             self.refresh();return;
         }
+        let read_only = match &command {
+            PipelineCommand::Select(..) | PipelineCommand::Edge(..) => true,
+            PipelineCommand::Action(action) => matches!(action.as_str(),
+                "copy" | "select-all" | "discard-drafts" | "cancel-connection"),
+            _ => false,
+        };
+        if !read_only {
+            if let Some(track) = self.pipeline_editor.clip.as_deref()
+                .and_then(|id| self.document.clip_track(id)).filter(|track| track.locked) {
+                self.pipeline_error(format!("{} is locked", track.name));
+                return;
+            }
+        }
         if self.pipeline_editor.candidate.is_some() {
             self.pipeline_error("Preparing pipeline; wait for completion before another edit".into());return;
         }

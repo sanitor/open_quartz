@@ -446,6 +446,13 @@ impl NativeVideoSource {
         epoch: u64,
         cancelled: Arc<AtomicBool>,
     ) -> Result<oq_media::SelectedFrame, String> {
+        self.prepare_exact(timeline_ns, epoch, cancelled, false)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn prepare_exact(
+        &mut self, timeline_ns: u64, epoch: u64, cancelled: Arc<AtomicBool>, editing: bool,
+    ) -> Result<oq_media::SelectedFrame, String> {
         let session = self.exact_session.as_mut().ok_or("Source has no precise cursor")?;
             const RATE_SCALE: u128 = 1_000_000_000;
             let rate_units = (self.config.playback_rate * RATE_SCALE as f64).round() as u128;
@@ -496,9 +503,11 @@ impl NativeVideoSource {
                 self.exact_loop_cycle =
                     u64::try_from(cycle).map_err(|_| "Video source loop count overflow")?;
             }
-            let selected = session
-                .frame_at_ns_cancellable(target_ns, self.exact_epoch, cancelled.clone())
-                .map_err(|e| e.to_string())?;
+            let selected = if editing {
+                session.frame_at_ns_for_editing(target_ns, self.exact_epoch, cancelled.clone())
+            } else {
+                session.frame_at_ns_cancellable(target_ns, self.exact_epoch, cancelled.clone())
+            }.map_err(|e| e.to_string())?;
             let selected = match selected {
                 Some(selected) => selected,
                 None if self.config.looping => {

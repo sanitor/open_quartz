@@ -299,6 +299,22 @@ fn assert_oracle(
 }
 
 #[test]
+fn editor_keeps_an_unchanged_source_target_across_epochs() {
+    let mut session = Session::open(source_time_fixture()).unwrap();
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let first = session.frame_at_ns_for_editing(500_000_000, 1, cancelled.clone()).unwrap().unwrap();
+    let repeated = session.frame_at_ns_for_editing(500_000_000, 2, cancelled.clone()).unwrap().unwrap();
+    assert_eq!(repeated.frame.timeline_epoch, 2);
+    assert_eq!(first.frame.source_epoch, repeated.frame.source_epoch);
+    assert_eq!(first.frame.sequence, repeated.frame.sequence);
+    assert_eq!(first.frame.frame.pixel_buffer(), repeated.frame.frame.pixel_buffer());
+    let backwards = session.frame_at_ns_for_editing(0, 3, cancelled).unwrap().unwrap();
+    assert_eq!(backwards.actual_ns, 0);
+    assert_eq!(backwards.frame.timeline_epoch, 3);
+    assert_ne!(backwards.frame.frame.pixel_buffer(), repeated.frame.frame.pixel_buffer());
+}
+
+#[test]
 fn source_time_access_matches_software_pts_and_frame_markers() {
     let oracle = software_oracle();
     let mut session = Session::open(source_time_fixture()).unwrap();

@@ -18,6 +18,8 @@ export component ToolButton inherits Rectangle {
         root.label == "PLAY" ? "Play" :
         root.label == "NEXT" ? "Next" :
         root.label == "ADD CLIP" ? "Add clip" :
+        root.label == "ADD TRACK" ? "Add video track" :
+        root.label == "TRANSFORM" ? "Transform clip" :
         root.label == "SPLIT" ? "Split" :
         root.label == "DELETE" ? "Delete" :
         root.label == "ZOOM OUT" ? "Zoom out" :
@@ -49,6 +51,8 @@ export component ToolButton inherits Rectangle {
         stroke-width: 1.7px;
         commands:
             root.glyph == "+" ? "M12 4V20 M4 12H20" :
+            root.glyph == "≡+" ? "M3 5H13 M3 12H11 M3 19H13 M18 7V17 M13 12H23" :
+            root.glyph == "⛶" ? "M5 5H19V19H5Z M3 3H7V7H3Z M17 3H21V7H17Z M3 17H7V21H3Z M17 17H21V21H17Z" :
             root.glyph == "↶" ? "M9 4L4 9L9 14 M4 9H14C22 9 22 20 14 20H10" :
             root.glyph == "↷" ? "M15 4L20 9L15 14 M20 9H10C2 9 2 20 10 20H14" :
             root.glyph == "▱" ? "M3 8V4H9L11 6H21V20H3Z M3 10H21" :

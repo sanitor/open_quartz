@@ -131,12 +131,14 @@ impl SourceInfo {
             .transpose()
     }
 }
-/// Exact/Following describe normalized original source PTS. Estimated is reserved
-/// for an explicitly estimated backend; the strict file Session never emits it.
+/// Selection relative to the original presentation timestamp. Estimated is
+/// reserved for an estimated backend and never emitted by the file Session.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FrameSelection {
     Exact,
     Following,
+    /// The final decoded frame covers the target according to its declared duration.
+    CoveringTail,
     Estimated,
 }
 

@@ -292,7 +292,7 @@ fn key(node: &str, port: &str) -> PortKey {
     PortKey::new(NodeId::new(node), open_quartz::project::PortId::new(port))
 }
 
-fn project(graph: Graph) -> Project {
+pub(super) fn project(graph: Graph) -> Project {
     Project::from_file(ProjectFile {
         version: PROJECT_FILE_VERSION.to_owned(), name: "Clip pipeline".to_owned(),
         created_at: String::new(), updated_at: String::new(), graph,

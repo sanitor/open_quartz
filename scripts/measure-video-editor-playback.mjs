@@ -38,7 +38,7 @@ const report = {
   binary, project, requestedSeconds: seconds,
   sequence: { width: file.data.width, height: file.data.height, fps: file.data.fps },
   assets: file.data.assets.map(asset => ({ name: asset.name, width: asset.width, height: asset.height, fps: asset.fps, path: asset.path })),
-  correctors: file.data.clips.flatMap(clip => clip.pipeline.graph.nodes.filter(node => node.type === 'colorcorrector').map(node => ({ clip: clip.id, config: node.data.colorCorrector }))),
+  correctors: (file.data.tracks?.flatMap(track => track.clips) ?? file.data.clips).flatMap(clip => clip.pipeline.graph.nodes.filter(node => node.type === 'colorcorrector').map(node => ({ clip: clip.id, config: node.data.colorCorrector }))),
   measurement: 'Slint native monitor Frame status changes sampled over HTTP; sampled counts are a lower bound, not GPU timestamps or a universal FPS guarantee. Playback metrics, when available, distinguish worker publication from UI display.',
   samples: [],
 };
