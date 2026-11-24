@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 7);
+   assert.equal(data.schema_version, 8);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -788,6 +788,137 @@ try{
    assert.deepEqual(await positions('foreground.mp4'), [[0, 6]]);
    assert.deepEqual(await positions('background.mp4'), [[6, 6]]);
    await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
+ const titleProject = join(output, 'title.oqvideo.json');
+ const titleText = 'Quartz 标题';
+ const titleField = async (label, value) => enter(await clipControl(label), value);
+ const whitePixels = (pixels, width, channels, left, top, right, bottom) => {
+   let white = 0;
+   for (let y = top; y < bottom; y++) {
+     for (let x = left; x < right; x++) {
+       const offset = (y * width + x) * channels;
+       if (pixels[offset] > 225 && pixels[offset + 1] > 225 && pixels[offset + 2] > 225) white++;
+     }
+   }
+   return white;
+ };
+ const previewHasTitle = async () => {
+   const preview = await client.find({ label: 'Video preview', role: 'Image' });
+   const window = await client.windowProperties();
+   const png = decodePng(await client.screenshot());
+   const scaleX = png.width * (window.scaleFactor || 1) / window.size.width;
+   const scaleY = png.height * (window.scaleFactor || 1) / window.size.height;
+   const { x, y } = center(preview);
+   return whitePixels(png.pixels, png.width, png.channels,
+     Math.floor((x - preview.size.width * 0.35) * scaleX),
+     Math.floor((y - preview.size.height * 0.18) * scaleY),
+     Math.ceil((x + preview.size.width * 0.35) * scaleX),
+     Math.ceil((y + preview.size.height * 0.18) * scaleY)) > 200;
+ };
+ await step('Add and edit a title over video, reopen it and verify exact MP4 frames', async () => {
+   const fixture = JSON.parse(await readFile(multiProject, 'utf8'));
+   const track = fixture.data.tracks.find(track => track.clips.some(clip =>
+     fixture.data.assets.find(asset => asset.id === clip.asset_id)?.name === 'background.mp4'));
+   const [base] = track.clips;
+   const media = fixture.data.assets.find(asset => asset.id === base.asset_id);
+   Object.assign(base, { timeline_start: 0, duration: 6, source_in_pts: media.start_pts,
+     source_subtick_numerator: 0, source_subtick_denominator: 1, opacity_keys: [] });
+   Object.assign(base.transform, { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, exposure: 0 });
+   Object.assign(fixture.data, { width: 320, height: 180, tracks: [{ ...track, visible: true, clips: [base] }] });
+   const seed = join(output, 'title-seed.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 1');
+   await click('NEXT'); await click('NEXT'); await waitState('playhead 2 frames');
+   await expectColor('blue');
+   await click('Add title'); await waitState('clips 2');
+   assert.equal((await positions('Title'))[0][0], 2);
+   await titleField('Title text', titleText);
+   assert.equal((await positions(titleText))[0][0], 2);
+   await titleField('Title size (%)', 22);
+   await titleField('Timeline end', 4);
+   assert.deepEqual(await positions(titleText), [[2, 2]]);
+   await client.waitFor(previewHasTitle, { description: 'white title glyphs over the program preview' });
+   await snapshot('19-title-overlay');
+   await fileAction('SAVE AS', titleProject, 'Save project'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(titleProject, 'utf8')).data;
+   const [titleTrack] = saved.tracks;
+   assert.equal(titleTrack.name, 'Titles');
+   assert.deepEqual(titleTrack.clips[0].title, { text: titleText, size_percent: 22 });
+   assert.equal(titleTrack.clips[0].asset_id, undefined);
+   await close();
+   await launch(titleProject); await waitState('clips 2');
+   await client.click(await item(titleText));
+   assert.equal((await clipControl('Title text')).accessibleValue, titleText);
+   assert.equal((await clipControl('Title size (%)')).accessibleValue, '22');
+   await client.waitFor(previewHasTitle, { description: 'saved title is visible after reopening' });
+   await click('NEXT'); await click('NEXT'); await waitState('playhead 4 frames');
+   await expectColor('blue');
+   const exported = join(output, 'title.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     { maxBuffer: 4 * 1024 * 1024 });
+   const stride = 320 * 180 * 3;
+   assert.equal(pixels.length, stride * 6);
+   for (let frame = 0; frame < 6; frame++) {
+     const image = pixels.subarray(frame * stride, (frame + 1) * stride);
+     const white = whitePixels(image, 320, 3, 0, 0, 320, 180);
+     assert(frame >= 2 && frame < 4 ? white > 350 : white === 0,
+       `frame ${frame} has ${white} white title pixels`);
+     const [r, g, b] = image.subarray((20 * 320 + 20) * 3, (20 * 320 + 20) * 3 + 3);
+     assert(r < 25 && g < 25 && b > 220, `frame ${frame} retains blue below the title`);
+   }
+   await close();
+ }, { core: true });
+ await step('Titles work without media and title validation preserves undoable edits', async () => {
+   await launch(); await waitState('assets 0; clips 0');
+   await click('Add title'); await waitState('assets 0; clips 1');
+   await client.waitFor(previewHasTitle, { description: 'title alone renders on the program canvas' });
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   await titleField('Title size (%)', 31);
+   await waitState('Title size must be a percentage from 1 to 30');
+   await titleField('Title text', '   ');
+   await waitState('Title text must contain 1 to 256 characters');
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   await titleField('Scale', 0.75);
+   const transform = await client.find({ label: 'TRANSFORM', role: 'Button' });
+   await client.click(transform);
+   const resizeGrip = async () => {
+     try {
+       return (await client.byLabel('Resize bottom right', { role: 'Button' }))[0];
+     } catch (error) {
+       if (!/destroyed|stale/i.test(error.message)) throw error;
+     }
+   };
+   const handle = await client.waitFor(resizeGrip, { description: 'resize grip on the selected title' });
+   const before = center(handle);
+   await client.drag(handle, { x: before.x - 60, y: before.y - 35 });
+   await client.waitFor(async () => {
+     const grip = await resizeGrip();
+     return grip && center(grip).x < before.x - 25;
+   }, { description: 'resize grip scales the generated title layer' });
+   await client.click(transform);
+   await click('UNDO'); await click('UNDO');
+   assert.equal((await clipControl('Scale')).accessibleValue, '1.000');
+   await click('NEXT'); await click('SPLIT'); await waitState('clips 2');
+   assert.deepEqual(await positions('Title'), [[0, 1], [1, 89]]);
+   await click('UNDO'); await waitState('clips 1');
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   await click('UNDO'); await waitState('assets 0; clips 0');
+   assert.equal((await client.byLabel('Reorder Titles', { role: 'Button' })).length, 0);
+   await click('REDO'); await waitState('assets 0; clips 1');
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   await client.click(await item('Title'));
+   await titleField('Timeline end', 3);
+   await fileAction('SAVE AS', join(output, 'title-only.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   const exported = join(output, 'title-only.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const image = mediaCommand(['-i', exported, '-frames:v', '1', '-vf', 'scale=320:180',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   assert.equal(image.length, 320 * 180 * 3);
+   assert(whitePixels(image, 320, 3, 0, 0, 320, 180) > 40);
+   assert(image.subarray(0, 3).every(channel => channel < 5));
    await close();
  });
  await step('Track names, button reordering, deletion and explicit show update the editor', async () => {

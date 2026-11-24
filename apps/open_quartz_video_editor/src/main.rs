@@ -8,6 +8,7 @@ mod audio_output;
 mod document;
 mod media;
 mod preview;
+mod title_raster;
 mod clip_pipeline;
 #[path = "../../open_quartz_slint/src/graph_view_model.rs"]
 mod graph_view_model;

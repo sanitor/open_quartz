@@ -85,18 +85,20 @@ impl ProjectData {
         if start >= end {
             return Err("Left trim must leave at least one frame".into());
         }
-        let time_base = self
-            .assets
-            .iter()
-            .find(|asset| asset.id == clip.asset_id)
-            .ok_or("Clip media is missing")?
-            .time_base;
-        advance_source(
-            clip,
-            i128::from(start) - i128::from(clip.timeline_start),
-            self.fps,
-            time_base,
-        )?;
+        if clip.title.is_none() {
+            let time_base = self
+                .assets
+                .iter()
+                .find(|asset| asset.id == clip.asset_id)
+                .ok_or("Clip media is missing")?
+                .time_base;
+            advance_source(
+                clip,
+                i128::from(start) - i128::from(clip.timeline_start),
+                self.fps,
+                time_base,
+            )?;
+        }
         clip.timeline_start = start;
         clip.duration = end - start;
         Ok(())

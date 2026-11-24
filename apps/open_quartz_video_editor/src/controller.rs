@@ -420,17 +420,17 @@ impl Controller {
             return;
         }
         match self.document.place_clip(id, track, start) {
-            Ok(clip_id) => self.focus_placed_clip(id, track, clip_id),
+            Ok(clip_id) => self.focus_placed_clip(Some(id), track, clip_id),
             Err(error) => self.status(error),
         }
     }
 
-    fn focus_placed_clip(&mut self, asset: &str, track: &str, clip_id: String) {
+    fn focus_placed_clip(&mut self, asset: Option<&str>, track: &str, clip_id: String) {
         let start = self.document.clip(&clip_id).expect("placed clip exists").timeline_start;
         self.pause();
         self.playhead = start;
         self.selected_track = track.to_owned();
-        self.selected_asset = Some(asset.to_owned());
+        self.selected_asset = asset.map(str::to_owned);
         self.selected_clip = Some(clip_id);
         self.selected_audio = None;
         self.asset_preview = false;
@@ -448,7 +448,7 @@ impl Controller {
         let track = self.selected_track.clone();
         let placement = if insert { Placement::Insert(self.playhead) } else { Placement::Overwrite(self.playhead) };
         match self.document.place_video(&asset, &track, placement) {
-            Ok(clip) => self.focus_placed_clip(&asset, &track, clip),
+            Ok(clip) => self.focus_placed_clip(Some(&asset), &track, clip),
             Err(error) => self.status(error),
         }
     }
@@ -521,6 +521,10 @@ impl Controller {
         }
         match action {
             "import" | "media" => self.import_dialog(),
+            "add-title" => match self.document.add_title(self.playhead) {
+                Ok((track, clip)) => self.focus_placed_clip(None, &track, clip),
+                Err(error) => self.status(error),
+            },
             "new" => {
                 if self.confirm_discard() {
                     self.pause();
@@ -823,7 +827,7 @@ impl Controller {
         };
         self.selected_clip = Some(id.to_owned());
         self.selected_audio = None;
-        self.selected_asset = Some(clip.asset_id.clone());
+        self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
         let result = match kind {
             "move" => self.document.move_clip_to(
                 id, track, clip.timeline_start.saturating_add_signed(i64::from(delta)),
@@ -851,6 +855,7 @@ impl Controller {
             return;
         };
         let result = (|| match field {
+            "title-text" | "title-size" => self.document.edit_title(&id, field, value),
             "start" => self.document.move_clip(
                 &id,
                 value
@@ -1050,7 +1055,7 @@ impl Controller {
                         if let Some(track) = self.document.clip_track(&id) { self.selected_track = track.id.clone(); }
                         self.selected_clip = Some(id);
                         self.selected_audio = None;
-                        self.selected_asset = Some(clip.asset_id.clone());
+                        self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
                         if self.asset_preview || self.playhead < clip.timeline_start
                             || self.playhead >= clip.timeline_end().unwrap_or(0) {
                             self.seek(clip.timeline_start);
@@ -1198,7 +1203,7 @@ impl Controller {
                             self.selected_asset.as_ref().filter(|id| self.document.asset(id).is_some_and(MediaAsset::has_video)).cloned()
                         } else {
                             let mut active = self.document.data.active_clips(update.frame);
-                            active.next().filter(|(_, clip)| clip.transform == ClipTransform::default()
+                            active.next().filter(|(_, clip)| clip.title.is_none() && clip.transform == ClipTransform::default()
                                 && active.next().is_none()).map(|(_, clip)| clip.asset_id.clone())
                         };
                         if let Some(id) = thumbnail_asset {
@@ -1417,6 +1422,7 @@ impl Controller {
         window.set_can_place_video(self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
             .is_some_and(|asset| asset.online && asset.has_video()));
         window.set_can_roll_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_roll_end(id)));
+        window.set_can_dissolve_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_dissolve_end(id)));
         let dissolves: Vec<_> = tracks.iter().enumerate().flat_map(|(lane, track)| {
             track.dissolve_ranges().map(move |(item, range)| DissolveRow {
                 lane: lane as i32,
@@ -1448,18 +1454,20 @@ impl Controller {
         }).map(|(lane, track, clip)| {
                 let asset = self.document.asset(&clip.asset_id);
                 let thumbnail = self.thumbnails.get(&clip.asset_id);
+                let title = clip.title.as_ref();
                 ClipRow {
                     id: clip.id.clone().into(),
                     lane: lane as i32,
                     track: track.id.clone().into(),
                     locked: track.locked,
-                    asset_name: asset.map(|a| a.name.as_str()).unwrap_or("Missing").into(),
+                    asset_name: title.map(|t| t.text.as_str()).or_else(|| asset.map(|a| a.name.as_str())).unwrap_or("Missing").into(),
+                    is_title: title.is_some(),
                     start: clip.timeline_start.min(i32::MAX as u64) as i32,
                     duration: clip.duration.min(i32::MAX as u64) as i32,
                     x: clip.timeline_start as f32 * zoom,
                     width: clip.duration as f32 * zoom,
                     selected: self.selected_clip.as_ref() == Some(&clip.id),
-                    online: asset.is_some_and(|a| a.online),
+                    online: title.is_some() || asset.is_some_and(|a| a.online),
                     thumbnail: thumbnail.map(|t| t.image.clone()).unwrap_or_default(),
                     has_thumbnail: thumbnail.is_some(),
                 }
@@ -1474,6 +1482,7 @@ impl Controller {
                     && a.lane == b.lane
                     && a.track == b.track
                     && a.locked == b.locked
+                    && a.is_title == b.is_title
                     && a.asset_name == b.asset_name
                     && a.start == b.start
                     && a.duration == b.duration
@@ -1504,10 +1513,15 @@ impl Controller {
             .and_then(|id| self.document.clip(id))
         {
             window.set_selected_clip_id(clip.id.clone().into());
+            window.set_selected_clip_is_title(clip.title.is_some());
+            if let Some(title) = &clip.title {
+                window.set_selected_title_text(title.text.as_str().into());
+                window.set_selected_title_size(title.size_percent.to_string().into());
+            }
             window.set_selected_clip_name(
-                self.document
-                    .asset(&clip.asset_id)
-                    .map(|a| a.name.as_str())
+                clip.title.as_ref().map(|title| title.text.as_str()).or_else(|| {
+                    self.document.asset(&clip.asset_id).map(|a| a.name.as_str())
+                })
                     .unwrap_or("Offline media")
                     .into(),
             );
@@ -1526,6 +1540,7 @@ impl Controller {
                 .unwrap_or(0);
             window.set_selected_clip_source_out(out.to_string().into());
         } else {
+            window.set_selected_clip_is_title(false);
             window.set_selected_clip_id("".into());
             window.set_selected_clip_name("No clip selected".into());
         }

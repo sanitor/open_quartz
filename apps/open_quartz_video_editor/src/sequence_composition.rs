@@ -1,6 +1,6 @@
-use open_quartz::project::{Edge, Graph, NodeFactoryRequest};
+use open_quartz::project::{Edge, Graph, InputMode, NodeFactoryRequest};
 
-use super::{OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
+use super::{LayerSource, OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
 use crate::document::DissolveSide;
 
 fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, speed_percent: u16) -> String {
@@ -58,6 +58,9 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
         inputs.push((namespace(&edge.source), namespace(&edge.source_handle)));
         for node in clip.nodes.iter().filter(|node| node.id != OUTPUT_ID) {
             let mut node = node.clone();
+            if node.id == SOURCE_ID && matches!(layer.source, LayerSource::Title(_)) {
+                node.data.input_mode = Some(InputMode::Image);
+            }
             node.id = namespace(&node.id);
             node.position.x = 0.0;
             node.position.y = 0.0;
@@ -118,13 +121,14 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
                 }
             }
         };
+        let alpha = if matches!(layer.source, LayerSource::Title(_)) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), placement{index}, blend{index});\n\
-                let rgb = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0).rgb;\n\
+                let sample = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0);\n\
                 if (all(p >= vec2f(0.0)) && all(p <= vec2f(1.0))) {{\n\
                     let alpha = {alpha};\n\
-                    let color = linear(clamp(rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
+                    let color = linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
                     track_pixel += vec4f(color * alpha, alpha) * {weight};\n\
                 }}\n\
             }}\n"

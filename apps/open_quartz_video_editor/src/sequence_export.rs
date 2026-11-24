@@ -118,7 +118,9 @@ fn run(
         .tracks
         .iter()
         .filter(|track| track.visible)
-        .flat_map(|track| track.clips.iter().map(|clip| clip.asset_id.as_str()))
+        .flat_map(|track| &track.clips)
+        .filter(|clip| clip.title.is_none())
+        .map(|clip| clip.asset_id.as_str())
         .collect();
     let mut sources = BTreeSet::new();
     for asset in project

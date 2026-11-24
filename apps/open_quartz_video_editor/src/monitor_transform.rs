@@ -226,14 +226,14 @@ impl Controller {
     }
 
     fn geometry(&self, clip: &Clip, transform: ClipTransform) -> Option<Geometry> {
-        let asset = self.document.asset(&clip.asset_id)?;
         let data = &self.document.data;
         let canvas = [data.width as f32, data.height as f32];
-        let source = sample_size(
-            &clip.pipeline,
-            [asset.width as f32, asset.height as f32],
-            canvas,
-        );
+        let source = if clip.title.is_some() {
+            canvas
+        } else {
+            let asset = self.document.asset(&clip.asset_id)?;
+            sample_size(&clip.pipeline, [asset.width as f32, asset.height as f32], canvas)
+        };
         Some(Geometry::from_transform(canvas, source, transform))
     }
 
@@ -373,7 +373,7 @@ impl Controller {
                 self.selected_track = track.id.clone();
                 self.selected_clip = Some(clip.id.clone());
                 self.selected_audio = None;
-                self.selected_asset = Some(clip.asset_id.clone());
+                self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
                 if phase == "start" && !track.locked {
                     if let Some(geometry) = self.geometry(&clip, clip.transform) {
                         self.monitor_gesture = Some(MonitorGesture {

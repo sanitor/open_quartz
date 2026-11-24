@@ -147,6 +147,13 @@ impl ProjectData {
 }
 
 impl EditorDocument {
+    pub fn can_dissolve_end(&self, id: &str) -> bool {
+        self.can_roll_end(id) && self.data.clip_position(id).is_ok_and(|(lane, index)| {
+            let clips = &self.data.tracks[lane].clips;
+            clips[index].title.is_none() && clips[index + 1].title.is_none()
+        })
+    }
+
     /// A zero duration removes the dissolve on the selected outgoing clip.
     pub fn set_dissolve(&mut self, id: &str, frames: u64) -> Result<(), String> {
         self.transact(|data| {
@@ -200,6 +207,9 @@ pub(super) fn validate_dissolves(data: &ProjectData, track: &VideoTrack) -> Resu
                 clip.id == item.incoming && left.timeline_end() == Ok(clip.timeline_start)
             })
             .ok_or("A dissolve needs adjacent clips on the same track")?;
+        if left.title.is_some() || right.title.is_some() {
+            return Err("A dissolve needs two video clips".into());
+        }
         if item.frames < 2 {
             return Err("Dissolve must span at least two frames".into());
         }

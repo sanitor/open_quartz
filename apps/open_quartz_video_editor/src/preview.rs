@@ -1,5 +1,5 @@
 use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
-use crate::document::{self, ClipTransform, DissolveSide, MediaAsset, ProjectData, Rational};
+use crate::document::{self, ClipTransform, DissolveSide, MediaAsset, ProjectData, Rational, Title};
 use open_quartz::execution::{
     FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline, FrameWindowConfig,
     PreparedNativeGraph,
@@ -35,13 +35,17 @@ pub struct PreviewLayer {
     pub clip_id: String,
     pub track_name: String,
     track_id: String,
-    pub asset: MediaAsset,
-    pub source_ns: u64,
+    source: LayerSource,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
     speed_percent: u16,
     opacity: Option<OpacityAnimation>,
     dissolve: Option<DissolveLayer>,
+}
+#[derive(Clone)]
+enum LayerSource {
+    Video { asset: MediaAsset, source_ns: u64 },
+    Title(Title),
 }
 
 #[derive(Clone, Copy)]
@@ -66,13 +70,18 @@ pub fn sequence_request(
     let mut layers = Vec::new();
     for input in project.video_inputs(frame) {
         let (track, clip) = (input.track, input.clip);
-        let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
-            .ok_or_else(|| format!("{}: missing clip media", track.name))?;
+        let source = if let Some(title) = &clip.title {
+            LayerSource::Title(title.clone())
+        } else {
+            let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
+                .ok_or_else(|| format!("{}: missing clip media", track.name))?;
+            LayerSource::Video { asset: asset.clone(), source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)? }
+        };
         let opacity = if clip.opacity_keys.is_empty() { None } else {
             Some(OpacityAnimation {
                 keys: clip.opacity_keys.clone(),
                 timeline_start_ns: project.fps.frames_to_ns(clip.timeline_start)?,
-                source_in_ns: document::source_time_ns(asset, clip, clip.timeline_start, project.fps)?,
+                source_in_ns: project.clip_source_time(clip, clip.timeline_start)?,
             })
         };
         let dissolve = input.dissolve.map(|(side, range)| -> Result<_, String> {
@@ -82,8 +91,7 @@ pub fn sequence_request(
             Ok(DissolveLayer { side, start_ns, end_ns })
         }).transpose()?;
         layers.push(PreviewLayer {
-            clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), asset: asset.clone(),
-            source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)?,
+            clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
             transform: transform_override.filter(|(id, _)| *id == clip.id)
                 .map_or(clip.transform, |(_, value)| value),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
@@ -101,11 +109,13 @@ pub fn sequence_request(
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
         if project.tracks.len() == 1 && layer.opacity.is_none()
+            && matches!(&layer.source, LayerSource::Video { .. })
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
             let layer = layers.pop().expect("one preview layer");
-            request.asset = Some(layer.asset);
-            request.source_ns = layer.source_ns;
+            let LayerSource::Video { asset, source_ns } = layer.source else { unreachable!("video selected") };
+            request.asset = Some(asset);
+            request.source_ns = source_ns;
             request.transform = layer.transform;
             request.pipeline = layer.pipeline;
             return Ok(request);
@@ -125,6 +135,7 @@ fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame:
     let mut times = BTreeMap::new();
     for input in project.video_inputs(frame) {
         let clip = input.clip;
+        if clip.title.is_some() { continue; }
         let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
         let source_ns = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
         if request.asset.is_some() {
@@ -133,7 +144,7 @@ fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame:
         }
         times.insert(composition::source_id(&clip.id), source_ns);
     }
-    let timeline_ns = if times.is_empty() { 0 } else {
+    let timeline_ns = if request.layers.is_empty() { 0 } else {
         project.fps.frames_to_ns(frame)?.checked_sub(request.animation_origin_ns())
             .ok_or("Frame precedes its animation origin")?
     };
@@ -151,8 +162,9 @@ impl PreviewRequest {
 
     fn sources(&self) -> impl Iterator<Item = (String, &MediaAsset, u64)> {
         self.asset.iter().map(|asset| (SOURCE_ID.into(), asset, self.source_ns))
-            .chain(self.layers.iter().map(|layer| {
-                (composition::source_id(&layer.clip_id), &layer.asset, layer.source_ns)
+            .chain(self.layers.iter().filter_map(|layer| {
+                let LayerSource::Video { asset, source_ns } = &layer.source else { return None; };
+                Some((composition::source_id(&layer.clip_id), asset, *source_ns))
             }))
     }
 }
@@ -432,6 +444,7 @@ fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
 #[derive(PartialEq)]
 struct PreviewConfiguration {
     sources: BTreeMap<String, (String, String)>,
+    titles: BTreeMap<String, (Title, u32, u32)>,
     graph: open_quartz::Graph,
 }
 

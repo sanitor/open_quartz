@@ -12,13 +12,16 @@ mod audio;
 mod timing;
 #[path = "document_transition.rs"]
 mod transition;
+#[path = "document_title.rs"]
+mod title;
+pub use title::Title;
 pub use transition::DissolveSide;
 #[path = "document_animation.rs"]
 mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -117,7 +120,10 @@ impl Default for ClipTransform {
 #[serde(deny_unknown_fields)]
 pub struct Clip {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub asset_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<Title>,
     pub timeline_start: u64,
     pub duration: u64,
     #[serde(default = "normal_speed", skip_serializing_if = "is_normal_speed")]
@@ -374,6 +380,7 @@ impl EditorDocument {
         let clip = Clip {
             id: id.clone(),
             asset_id: asset.id,
+            title: None,
             timeline_start: start,
             duration,
             speed_percent: normal_speed(),
@@ -810,11 +817,6 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 .ok_or("Media timestamp range overflow")?;
         }
     }
-    let asset_ids = data
-        .assets
-        .iter()
-        .map(|asset| asset.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
     let mut clip_ids = std::collections::HashSet::new();
     let mut tracks = std::collections::HashSet::new();
     if data.tracks.is_empty() { return Err("A sequence needs at least one video track".into()); }
@@ -829,9 +831,6 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             }
             clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
             clip.validate_opacity_keys()?;
-            if !asset_ids.contains(clip.asset_id.as_str()) {
-                return Err("Clip references a missing media asset".into());
-            }
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }
@@ -848,27 +847,42 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 return Err("Video track clips cannot overlap".into());
             }
             previous_end = end;
-            let asset = data
-                .assets
-                .iter()
-                .find(|asset| asset.id == clip.asset_id)
-                .unwrap();
-            if !asset.has_video() { return Err("Video clip references an audio-only asset".into()); }
-            let origin = asset
-                .start_pts
-                .ok_or("Precise placement requires a known source presentation timestamp")?;
-            let duration = asset
-                .duration_pts
-                .ok_or("Exact placement requires a known video duration")?;
-            let media_end = origin
-                .checked_add(duration)
-                .ok_or("Media timestamp range overflow")?;
-            let (source_end, remainder, _) = clip.source_out(data.fps, asset.time_base)?;
-            if clip.source_in_pts < origin
-                || source_end > media_end
-                || (source_end == media_end && remainder != 0)
-            {
-                return Err("Clip source range extends outside media presentation duration".into());
+            if let Some(title) = &clip.title {
+                title.validate()?;
+                if !clip.asset_id.is_empty()
+                    || clip.speed_percent != normal_speed()
+                    || clip.source_span_remainder != 0
+                    || clip.source_in_pts != 0
+                    || clip.source_subtick_numerator != 0
+                    || clip.source_subtick_denominator != 1
+                    || !clip.opacity_keys.is_empty()
+                    || clip.pipeline != ClipPipeline::default()
+                {
+                    return Err("Title clips use sequence timing and a generated image".into());
+                }
+            } else {
+                let asset = data
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset_id)
+                    .ok_or("Clip references a missing media asset")?;
+                if !asset.has_video() { return Err("Video clip references an audio-only asset".into()); }
+                let origin = asset
+                    .start_pts
+                    .ok_or("Precise placement requires a known source presentation timestamp")?;
+                let duration = asset
+                    .duration_pts
+                    .ok_or("Exact placement requires a known video duration")?;
+                let media_end = origin
+                    .checked_add(duration)
+                    .ok_or("Media timestamp range overflow")?;
+                let (source_end, remainder, _) = clip.source_out(data.fps, asset.time_base)?;
+                if clip.source_in_pts < origin
+                    || source_end > media_end
+                    || (source_end == media_end && remainder != 0)
+                {
+                    return Err("Clip source range extends outside media presentation duration".into());
+                }
             }
             let transform = clip.transform;
             if !transform.scale.is_finite()

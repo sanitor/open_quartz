@@ -153,8 +153,8 @@ impl Controller {
         if let PipelineCommand::Workspace(open)=command {
             if !open { self.discard_pipeline_corrector(); }
             if open {
-                let id=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some())
-                    .or_else(||self.document.clip_at(self.playhead).map(|c|c.id.clone()));
+                let id=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()))
+                    .or_else(||self.document.data.active_clips(self.playhead).find(|(_, clip)| clip.title.is_none()).map(|(_, clip)| clip.id.clone()));
                 if let Some(id)=id { self.selected_clip=Some(id.clone());
                     if let Some(clip)=self.document.clip(&id) {
                         if self.playhead<clip.timeline_start||self.playhead>=clip.timeline_end().unwrap_or(0){self.playhead=clip.timeline_start;}
@@ -356,14 +356,14 @@ impl Controller {
             }
         }
         if self.window.upgrade().is_some_and(|w|w.get_nodes_open()) && self.playing{
-            let clip=self.document.clip_at(self.playhead).map(|c|c.id.clone());
+            let clip=self.document.data.active_clips(self.playhead).find(|(_, clip)| clip.title.is_none()).map(|(_, clip)| clip.id.clone());
             if clip!=self.pipeline_editor.clip{self.selected_clip=clip;self.publish_pipeline();}
         }
     }
     pub(super) fn publish_pipeline(&mut self){
         let Some(window)=self.window.upgrade()else{return;};
         if !window.get_nodes_open(){return;}
-        let active=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some());
+        let active=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()));
         if active!=self.pipeline_editor.clip{
             self.pipeline_editor.clip=active.clone();self.pipeline_editor.selected.clear();self.pipeline_editor.edge=None;self.pipeline_editor.port=None;self.pipeline_editor.error.clear();
         }
