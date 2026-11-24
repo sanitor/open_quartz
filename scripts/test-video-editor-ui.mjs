@@ -1402,6 +1402,64 @@ try{
    await waitState('Project saved');
    await close();
  });
+ const chooseExportOption = async (label, steps, value) => {
+   const box = await client.find({ label, role: 'Combobox' });
+   await client.click(box);
+   for (let i = 0; i < steps; i++) await client.key('\uf701');
+   await client.key('\n');
+   await client.waitFor(async () => (await client.properties(box.handle)).accessibleValue === value,
+     { description: `export option ${value}` });
+ };
+ await step('Export with a scaled resolution, a different cadence and a bitrate preset', async () => {
+   await launch(exportProject); await waitState('clips 3');
+   const path = join(output, '720p-export.mp4');
+   await click('EXPORT');
+   await client.setValue(await rangeStart(), '1');
+   await client.setValue(await rangeEnd(), '11');
+   await chooseExportOption('Export resolution', 1, 'Fit 720p');
+   await chooseExportOption('Export frame rate', 1, '24 fps');
+   await chooseExportOption('Export bitrate', 2, 'High');
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Export MP4'); await waitState('Export complete');
+   const metadata = spawnSync(ffmpeg, ['-hide_banner', '-i', path, '-map', '0:v:0', '-t', '0', '-f', 'null', '-'],
+     { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(metadata.status, 0, metadata.stderr);
+   assert.match(metadata.stderr, /Video: h264[^\n]*1280x720[^\n]*24 fps/);
+   const frames = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const stride = 32 * 18 * 3;
+   assert.equal(frames.length, 8 * stride);
+   const expected = ['blue', 'blue', 'red', 'red', 'blue', 'blue', 'blue', 'black'];
+   for (let i = 0; i < expected.length; i++) {
+     const pixel = (9 * 32 + 16) * 3 + i * stride;
+     const [r, , b] = frames.subarray(pixel, pixel + 3);
+     assert.equal(r > 220 ? 'red' : b > 220 ? 'blue' : 'black', expected[i],
+       `sample ${i} reflects the 24 fps export cadence`);
+   }
+   assert.equal((await client.byLabel('Export resolution', { role: 'Combobox' })).length, 0);
+   await close();
+ }, { core: true });
+ await step('Export a rebased SRT sidecar and protect the existing destination', async () => {
+   await launch(subtitleProject); await waitState('clips 4');
+   const path = join(output, 'exported-cues.srt');
+   const exportCues = async () => {
+     await click('Export SRT');
+     await client.setValue(await rangeStart(), '3');
+     await client.setValue(await rangeEnd(), '8');
+     await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+     await click('Save SRT');
+   };
+   await exportCues(); await waitState('Subtitle file exported');
+   const saved = await readFile(path, 'utf8');
+   assert.equal(saved, [
+     '1', '00:00:00,000 --> 00:00:00,033', 'Handwritten cue', '第二行', '',
+     '2', '00:00:00,066 --> 00:00:00,133', 'First SRT cue', '另一个段落', '',
+     '3', '00:00:00,133 --> 00:00:00,166', 'Second SRT cue', '', '',
+   ].join('\n'));
+   await exportCues(); await waitState('SRT export failed');
+   assert.equal(await readFile(path, 'utf8'), saved);
+   await close();
+ }, { core: true });
  const spatialProject = join(output, 'spatial.oqvideo.json');
  const transformControl = async (label, value) => enter(await clipControl(label), value);
  const spatialButton = async label => client.click(await clipControl(label, 'Button'));

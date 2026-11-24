@@ -1,4 +1,4 @@
-import { Button, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 import { ToolButton } from "icon_button.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
@@ -460,6 +460,9 @@ export component EditorWindow inherits Window {
     in-out property <string> file_path;
     in-out property <string> export_start_frame;
     in-out property <string> export_end_frame;
+    in-out property <int> export_resolution;
+    in-out property <int> export_frame_rate;
+    in-out property <int> export_quality;
     in-out property <string> file_dialog_kind;
     in-out property <bool> file_dialog_open: false;
     in property <bool> spatial_editable;
@@ -1117,6 +1120,7 @@ export component EditorWindow inherits Window {
                         Button { text: "Add title"; clicked => { editor_focus.focus(); root.project_action("add-title"); } }
                         Button { text: "Add subtitle"; clicked => { editor_focus.focus(); root.project_action("add-subtitle"); } }
                         Button { text: "Import SRT"; clicked => { editor_focus.focus(); root.project_action("import-srt"); } }
+                        Button { text: "Export SRT"; clicked => { editor_focus.focus(); root.project_action("export-srt"); } }
                         Button { text: "Insert"; enabled: root.can_place_visual; clicked => { editor_focus.focus(); root.project_action("insert"); } }
                         Button { text: "Overwrite"; enabled: root.can_place_visual; clicked => { editor_focus.focus(); root.project_action("overwrite"); } }
                         ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != "" || (root.audio_clip_id != "" && !root.audio_clip_locked && !root.audio_clip_linked); clicked => { editor_focus.focus(); root.split_clip(); } }
@@ -1355,18 +1359,18 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 680px; height: root.file_dialog_kind == "export" ? 318px : 264px; background: root.panel;
+                width: 680px; height: root.file_dialog_kind == "export" ? 390px : root.file_dialog_kind == "export-srt" ? 318px : 264px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
                         text: "H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
                         color: root.secondary; font-size: 11px;
                     }
-                    if root.file_dialog_kind == "export": HorizontalLayout {
+                    if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt": HorizontalLayout {
                         spacing: 12px;
                         VerticalLayout {
                             spacing: 4px;
@@ -1379,12 +1383,30 @@ export component EditorWindow inherits Window {
                             LineEdit { text <=> root.export_end_frame; accessible-label: "Export end frame (exclusive)"; }
                         }
                     }
+                    if root.file_dialog_kind == "export": HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Resolution"; color: root.secondary; font-size: 12px; }
+                            ComboBox { accessible-label: "Export resolution"; current-index <=> root.export_resolution; model: ["Sequence size", "Fit 720p", "Fit 1080p", "Fit UHD"]; }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Frame rate"; color: root.secondary; font-size: 12px; }
+                            ComboBox { accessible-label: "Export frame rate"; current-index <=> root.export_frame_rate; model: ["Sequence rate", "24 fps", "25 fps", "30 fps", "60 fps"]; }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Bitrate"; color: root.secondary; font-size: 12px; }
+                            ComboBox { accessible-label: "Export bitrate"; current-index <=> root.export_quality; model: ["Standard", "Compact", "High"]; }
+                        }
+                    }
                     HorizontalLayout {
                         spacing: 10px;
                         LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -1395,7 +1417,7 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Rectangle { horizontal-stretch: 1; }
                         Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
-                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

@@ -1,3 +1,4 @@
+use crate::delivery::ExportOptions;
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, TrackRow};
@@ -625,13 +626,13 @@ impl Controller {
                 }
             }
             "save-as" => self.save_as(),
-            "export" => {
+            "export" | "export-srt" => {
                 if self.document.data.duration_frames() == 0 {
                     self.status("Add media to the timeline before exporting");
                 } else if self.pipeline_has_drafts() {
                     self.status("Apply or discard the pending node drafts before exporting");
                 } else {
-                    self.path_dialog("export");
+                    self.path_dialog(action);
                 }
             }
             #[cfg(target_os = "macos")]
@@ -716,7 +717,10 @@ impl Controller {
         self.pause();
         if let Some(window) = self.window.upgrade() {
             window.set_file_dialog_kind(kind.into());
-            if kind == "export" {
+            if matches!(kind, "export" | "export-srt") {
+                window.set_export_resolution(0);
+                window.set_export_frame_rate(0);
+                window.set_export_quality(0);
                 window.set_export_start_frame("0".into());
                 window.set_export_end_frame(self.document.duration_frames().to_string().into());
             }
@@ -726,9 +730,10 @@ impl Controller {
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Untitled.oqvideo.json".into())
                     .into()
-            } else if kind == "export" {
+            } else if matches!(kind, "export" | "export-srt") {
+                let name = if kind == "export-srt" { "subtitles.srt" } else { "export.mp4" };
                 self.document.path().and_then(|path| path.parent())
-                    .map(|parent| parent.join("export.mp4").to_string_lossy().into_owned())
+                    .map(|parent| parent.join(name).to_string_lossy().into_owned())
                     .unwrap_or_default().into()
             } else {
                 "".into()
@@ -762,6 +767,10 @@ impl Controller {
             "save-as" => rfd::FileDialog::new()
                 .set_file_name("Untitled.oqvideo.json")
                 .save_file(),
+            "export-srt" => rfd::FileDialog::new()
+                .add_filter("SubRip subtitles", &["srt"])
+                .set_file_name("subtitles.srt")
+                .save_file(),
             "export" => rfd::FileDialog::new()
                 .add_filter("MP4 video", &["mp4"])
                 .set_file_name("export.mp4")
@@ -787,8 +796,8 @@ impl Controller {
         if self.busy {
             return;
         }
-        if kind == "export" {
-            self.submit_export(path);
+        if matches!(kind, "export" | "export-srt") {
+            self.submit_export(path, kind == "export-srt");
             return;
         }
         if path.as_os_str().is_empty() {
@@ -1125,12 +1134,13 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
-    fn submit_export(&mut self, path: PathBuf) {
+    fn submit_export(&mut self, path: PathBuf, subtitles: bool) {
         let Some(window) = self.window.upgrade() else { return; };
+        let extension = if subtitles { "srt" } else { "mp4" };
         let range = if !path.is_absolute()
-            || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+            || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
         {
-            Err("Enter an absolute output path ending in .mp4".into())
+            Err(format!("Enter an absolute output path ending in .{extension}"))
         } else {
             export_frames(
                 window.get_export_start_frame().as_str(),
@@ -1141,7 +1151,19 @@ impl Controller {
         match range {
             Ok(frames) => {
                 window.set_file_dialog_open(false);
-                self.start_export(path, frames);
+                if subtitles {
+                    match crate::delivery::export_srt(&self.document.data, frames, &path) {
+                        Ok(()) => self.status(format!("Subtitle file exported · {}", path.display())),
+                        Err(error) => self.status(format!("SRT export failed · {error}")),
+                    }
+                } else {
+                    let options = ExportOptions {
+                        resolution: window.get_export_resolution(),
+                        frame_rate: window.get_export_frame_rate(),
+                        quality: window.get_export_quality(),
+                    };
+                    self.start_export(path, frames, options);
+                }
             }
             Err(error) => {
                 window.set_file_path(path.to_string_lossy().as_ref().into());
@@ -1187,7 +1209,7 @@ impl Controller {
         self.request_preview();
     }
 
-    fn start_export(&mut self, path: PathBuf, frames: Range<u64>) {
+    fn start_export(&mut self, path: PathBuf, frames: Range<u64>, options: ExportOptions) {
         #[cfg(target_os = "macos")]
         {
             if self.export.is_some() {
@@ -1195,7 +1217,7 @@ impl Controller {
             }
             let result = self.preview.export_device().and_then(|render| {
                 crate::preview::export::ExportTask::start(
-                    render, self.document.data.clone(), self.document.revision, path, frames,
+                    render, self.document.data.clone(), self.document.revision, path, frames, options,
                 )
             });
             match result {
@@ -1211,7 +1233,7 @@ impl Controller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (path, frames);
+            let _ = (path, frames, options);
             self.status("MP4 export requires macOS VideoToolbox");
         }
     }

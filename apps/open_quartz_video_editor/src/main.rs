@@ -7,6 +7,7 @@ mod audio_rate;
 mod audio_waveform;
 #[cfg(target_os = "macos")]
 mod audio_output;
+mod delivery;
 mod document;
 mod document_recovery;
 mod media;

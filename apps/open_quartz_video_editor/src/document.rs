@@ -721,10 +721,10 @@ impl EditorDocument {
         .map_err(|error| error.to_string())?;
         if let Ok(previous) = fs::read(&path) {
             if previous != serialized && decode_project_file(&previous).is_ok() {
-                write_project_atomic(&previous_project_path(&path), &previous, self.revision)?;
+                write_project_atomic(&previous_project_path(&path), &previous, self.revision, true)?;
             }
         }
-        write_project_atomic(&path, &serialized, self.revision)?;
+        write_project_atomic(&path, &serialized, self.revision, true)?;
         self.path = Some(path);
         self.saved_revision = self.revision;
         self.saved_data = self.data.clone();
@@ -740,7 +740,7 @@ impl EditorDocument {
     pub(crate) fn write_recovery(data: ProjectData, path: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec(&ProjectFile { schema_version: SCHEMA_VERSION, data })
             .map_err(|error| error.to_string())?;
-        write_project_atomic(path, &bytes, 0)
+        write_project_atomic(path, &bytes, 0, true)
     }
 
     pub fn open_as_recovery(path: PathBuf) -> Result<Self, String> {
@@ -788,7 +788,11 @@ pub fn previous_project_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.previous.oqvideo.json"))
 }
 
-fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64) -> Result<(), String> {
+pub(crate) fn write_new_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_project_atomic(path, bytes, 0, false)
+}
+
+fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64, replace: bool) -> Result<(), String> {
     let parent = path.parent().ok_or("Project directory is missing")?;
     let temp = parent.join(format!(
         ".{}.{}.tmp",
@@ -806,10 +810,15 @@ fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64) -> Result
             return Err(format!("Cannot write project: {error}"));
         }
     }
-    if let Err(error) = fs::rename(&temp, &path) {
+    let installed = if replace {
+        fs::rename(&temp, path)
+    } else {
+        fs::hard_link(&temp, path)
+    };
+    if !replace || installed.is_err() {
         let _ = fs::remove_file(&temp);
-        return Err(format!("Cannot commit project: {error}"));
     }
+    installed.map_err(|error| format!("Cannot commit file: {error}"))?;
     if let Ok(dir) = File::open(&parent) {
         let _ = dir.sync_all();
     }

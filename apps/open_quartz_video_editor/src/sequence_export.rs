@@ -3,6 +3,7 @@ use super::{
     FramePipeline, PlaybackCapabilities, PreviewConfiguration, PreviewRequest, ProjectData,
     RenderDevice, OUTPUT_ID,
 };
+use crate::delivery::{Cadence, ExportOptions};
 use open_quartz::execution::{ExportConfig, ExportJob, ExportPhase, ExportSequence};
 use open_quartz::rendering::InputInterpretation;
 use oq_media::{EncoderConfig, RationalTimeBase};
@@ -27,6 +28,7 @@ impl ExportTask {
         revision: u64,
         path: PathBuf,
         frames: Range<u64>,
+        options: ExportOptions,
     ) -> Result<Self, String> {
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(("Preparing MP4 export…".into(), false)));
@@ -41,6 +43,7 @@ impl ExportTask {
                     revision,
                     &path,
                     frames,
+                    options,
                     &worker_cancel,
                     &worker_progress,
                 );
@@ -85,17 +88,19 @@ struct Sequence {
     project: ProjectData,
     revision: u64,
     end: u64,
+    cadence: Cadence,
     configured: Option<PreviewConfiguration>,
     request: Option<PreviewRequest>,
 }
 
 impl ExportSequence for Sequence {
     fn prepare_region(&mut self, pipeline: &mut FramePipeline, frame: u64) -> Result<u64, String> {
+        let frame = self.cadence.sample(frame)?;
         let (request, end) = sequence_region(&self.project, 0, self.revision, frame, self.end)?;
         playback::configure_limits(pipeline, &request, self.project.fps)?;
         configure(pipeline, &mut self.configured, &request)?;
         self.request = Some(request);
-        Ok(end)
+        self.cadence.boundary(end)
     }
 
     fn source_times(&self, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
@@ -103,19 +108,21 @@ impl ExportSequence for Sequence {
             .request
             .as_ref()
             .ok_or("Export region has not been prepared")?;
-        sequence_source_times(&self.project, request, frame)
+        sequence_source_times(&self.project, request, self.cadence.sample(frame)?)
     }
 }
 
 fn video_source_ids<'a>(
     project: &'a ProjectData,
-    frames: &Range<u64>,
+    end: u64,
+    cadence: &Cadence,
+    total: u64,
     cancel: &AtomicBool,
-) -> BTreeSet<&'a str> {
+) -> Result<BTreeSet<&'a str>, String> {
     let mut ids = BTreeSet::new();
-    let mut frame = frames.start;
-    while frame < frames.end && !cancel.load(Ordering::Acquire) {
-        // The region planner includes both inputs before and after a dissolve cut.
+    let mut output_frame = 0;
+    while output_frame < total && !cancel.load(Ordering::Acquire) {
+        let frame = cadence.sample(output_frame)?;
         ids.extend(project.video_inputs(frame).filter_map(|input| {
             input
                 .clip
@@ -123,21 +130,26 @@ fn video_source_ids<'a>(
                 .is_none()
                 .then_some(input.clip.asset_id.as_str())
         }));
-        frame = sequence_region_end(project, frame, frames.end);
+        output_frame = cadence.boundary(sequence_region_end(project, frame, end))?;
     }
-    ids
+    Ok(ids)
 }
 
 fn run(
     render: RenderDevice,
-    project: ProjectData,
+    mut project: ProjectData,
     revision: u64,
     path: &Path,
     frames: Range<u64>,
+    options: ExportOptions,
     cancel: &Arc<AtomicBool>,
     progress: &Mutex<(String, bool)>,
 ) -> Result<bool, String> {
-    let source_ids = video_source_ids(&project, &frames, cancel);
+    let output_fps = options.fps(project.fps);
+    let cadence = Cadence::new(frames.start, project.fps, output_fps);
+    let total = cadence.boundary(frames.end)?;
+    (project.width, project.height) = options.extent(project.width, project.height);
+    let source_ids = video_source_ids(&project, frames.end, &cadence, total, cancel)?;
     if cancel.load(Ordering::Acquire) {
         return Ok(false);
     }
@@ -180,16 +192,15 @@ fn run(
     let config = ExportConfig {
         output: path.into(),
         output_node_id: OUTPUT_ID.into(),
-        frames,
+        frames: 0..total,
         encoder: EncoderConfig {
             width: project.width,
             height: project.height,
             time_base: RationalTimeBase {
-                numerator: project.fps.denominator,
-                denominator: project.fps.numerator,
+                numerator: output_fps.denominator,
+                denominator: output_fps.numerator,
             },
-            bitrate: (u64::from(project.width) * u64::from(project.height) * 4)
-                .clamp(2_000_000, 80_000_000),
+            bitrate: options.bitrate(project.width, project.height),
             queue_capacity: 3,
             max_b_frames: 0,
             overwrite: false,
@@ -202,6 +213,7 @@ fn run(
         project,
         revision,
         end,
+        cadence,
         configured: None,
         request: None,
     };
