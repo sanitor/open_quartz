@@ -2,7 +2,7 @@ use open_quartz::project::DataType;
 
 use super::Controller;
 use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
-use crate::document::{Clip, ClipTransform};
+use crate::document::{Clip, ClipTransform, Crop};
 use crate::{EditorWindow, MonitorBox};
 
 type Point = [f32; 2];
@@ -89,6 +89,13 @@ impl Geometry {
     fn contains(self, point: Point) -> bool {
         let local = rotate(sub(point, self.center), -self.angle);
         local[0].abs() <= self.half[0] && local[1].abs() <= self.half[1]
+    }
+
+    fn contains_crop(self, at: Point, crop: Crop) -> bool {
+        let local = rotate(sub(at, self.center), -self.angle);
+        let uv = [0.5 + local[0] / (2.0 * self.half[0]), 0.5 + local[1] / (2.0 * self.half[1])];
+        (crop.left..=1.0 - crop.right).contains(&uv[0])
+            && (crop.top..=1.0 - crop.bottom).contains(&uv[1])
     }
 
     fn overlay(self, locked: bool) -> MonitorBox {
@@ -258,13 +265,20 @@ impl Controller {
         let mut key_enabled = false;
         let mut on_key = false;
         let mut opacity_editable = false;
+        let mut spatial_editable = false;
+        let mut spatial_key_enabled = false;
+        let mut spatial_key = None;
         if let Some(clip) = selected {
-            let transform = draft.map_or(clip.transform, |draft| draft.value);
+            let transform = draft.map_or_else(|| clip.transform_at(self.playhead), |draft| draft.value);
             let track = self
                 .document
                 .clip_track(&clip.id)
                 .expect("selected clip has a track");
             writable = !track.locked;
+            spatial_key_enabled = writable && !self.playing && track.clip_at(self.playhead)
+                .is_some_and(|active| active.id == clip.id);
+            spatial_editable = writable && (clip.spatial_keys.is_empty() || spatial_key_enabled);
+            spatial_key = clip.spatial_key_at(self.playhead);
             let source_ns = self.document.data.clip_source_time(clip, self.playhead).ok();
             key_enabled = writable && source_ns.is_some() && !self.playing;
             on_key = source_ns.is_some_and(|ns| clip.opacity_keys.binary_search_by_key(&ns, |key| key.source_ns).is_ok());
@@ -287,11 +301,19 @@ impl Controller {
             let opacity = source_ns.map_or(transform.opacity, |ns| clip.opacity_at(ns));
             window.set_selected_clip_opacity(format(opacity * 100.0));
             window.set_selected_clip_exposure(format(transform.exposure));
+            window.set_crop_left(format(clip.crop.left * 100.0));
+            window.set_crop_top(format(clip.crop.top * 100.0));
+            window.set_crop_right(format(clip.crop.right * 100.0));
+            window.set_crop_bottom(format(clip.crop.bottom * 100.0));
         }
         window.set_selected_clip_writable(writable);
         window.set_opacity_key_enabled(key_enabled);
         window.set_on_opacity_key(on_key);
         window.set_opacity_editable(opacity_editable);
+        window.set_spatial_editable(spatial_editable);
+        window.set_spatial_key_enabled(spatial_key_enabled);
+        window.set_on_spatial_key(spatial_key.is_some());
+        window.set_eased_spatial_key(spatial_key.is_some_and(|key| key.ease));
         window.set_monitor_box(overlay);
     }
 
@@ -335,7 +357,7 @@ impl Controller {
                         .filter(|clip| {
                             !matches!(handle, Handle::Move)
                                 || self
-                                    .geometry(clip, clip.transform)
+                                    .geometry(clip, clip.transform_at(self.playhead))
                                     .is_some_and(|g| g.contains(point))
                         })
                 } else {
@@ -360,8 +382,8 @@ impl Controller {
                                 (self.document.data.clip_source_time(clip, self.playhead)
                                     .map_or(clip.transform.opacity, |ns| clip.opacity_at(ns)) > 0.0
                                     && self
-                                        .geometry(clip, clip.transform)
-                                        .is_some_and(|g| g.contains(point)))
+                                        .geometry(clip, clip.transform_at(self.playhead))
+                                        .is_some_and(|g| g.contains_crop(point, clip.crop)))
                                 .then_some(clip)
                             })
                     })
@@ -379,16 +401,17 @@ impl Controller {
                 self.selected_audio = None;
                 self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
                 if phase == "start" && !track.locked {
-                    if let Some(geometry) = self.geometry(&clip, clip.transform) {
+                    let pose = clip.transform_at(self.playhead);
+                    if let Some(geometry) = self.geometry(&clip, pose) {
                         self.monitor_gesture = Some(MonitorGesture {
                             clip: clip.id,
                             revision: self.document.revision,
                             frame: self.playhead,
                             origin: point,
-                            original: clip.transform,
+                            original: pose,
                             geometry,
                             handle,
-                            value: clip.transform,
+                            value: pose,
                         });
                     }
                 }
@@ -408,7 +431,7 @@ impl Controller {
                     let draft = self.monitor_gesture.take().expect("active monitor gesture");
                     let result =
                         self.document
-                            .set_transform(&draft.clip, draft.value, draft.revision);
+                            .set_transform_at(&draft.clip, draft.frame, draft.value, draft.revision);
                     self.finish_edit(result);
                 } else if previous != draft.value {
                     self.requested = None;
@@ -428,7 +451,8 @@ impl Controller {
             return;
         };
         let id = clip.id.clone();
-        let mut transform = clip.transform;
+        let spatial = matches!(field, "reset" | "x" | "y" | "scale" | "rotation");
+        let mut transform = if spatial { clip.transform_at(self.playhead) } else { clip.transform };
         let animated = !clip.opacity_keys.is_empty();
         let result = (|| {
             if field == "reset" {
@@ -439,6 +463,9 @@ impl Controller {
                     .map_err(|_| "Enter a numeric transform value")?;
                 if !value.is_finite() {
                     return Err("Transform value must be finite".into());
+                }
+                if field.starts_with("crop-") {
+                    return self.document.set_crop(&id, field, value / 100.0);
                 }
                 match field {
                     "x" => transform.x = value / self.document.data.width as f32,
@@ -451,8 +478,11 @@ impl Controller {
                     _ => return Err("Unknown transform field".into()),
                 }
             }
-            self.document
-                .set_transform(&id, transform, self.document.revision)
+            if spatial {
+                self.document.set_transform_at(&id, self.playhead, transform, self.document.revision)
+            } else {
+                self.document.set_transform(&id, transform, self.document.revision)
+            }
         })();
         self.finish_edit(result);
     }

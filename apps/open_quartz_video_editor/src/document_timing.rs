@@ -113,6 +113,7 @@ impl ProjectData {
                 )?;
             }
         }
+        clip.preserve_spatial_keys_on_trim(start)?;
         clip.timeline_start = start;
         clip.duration = end - start;
         Ok(())

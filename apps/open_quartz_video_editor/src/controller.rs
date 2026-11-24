@@ -654,6 +654,14 @@ impl Controller {
                 self.finish_edit(result);
             }
             "split" => self.split(),
+            "toggle-transform-key" | "ease-transform-key" => {
+                self.pause();
+                if let Some(id) = self.selected_clip.clone() {
+                    let action = if action == "toggle-transform-key" { "toggle-key" } else { "ease" };
+                    let result = self.document.spatial_action(&id, self.playhead, action);
+                    self.finish_edit(result);
+                }
+            }
             "add-opacity-key" | "remove-opacity-key" => {
                 self.pause();
                 if let Some(id) = self.selected_clip.clone() {

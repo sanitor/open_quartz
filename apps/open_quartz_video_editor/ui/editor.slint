@@ -462,6 +462,14 @@ export component EditorWindow inherits Window {
     in-out property <string> export_end_frame;
     in-out property <string> file_dialog_kind;
     in-out property <bool> file_dialog_open: false;
+    in property <bool> spatial_editable;
+    in property <bool> spatial_key_enabled;
+    in property <bool> on_spatial_key;
+    in property <bool> eased_spatial_key;
+    in property <string> crop_left;
+    in property <string> crop_top;
+    in property <string> crop_right;
+    in property <string> crop_bottom;
     in property <string> selected_clip_scale: "1.0";
     in property <string> selected_clip_x: "0.0";
     in property <string> selected_clip_y: "0.0";
@@ -1064,13 +1072,28 @@ export component EditorWindow inherits Window {
                                         Text { text: "Transform"; color: root.accent; vertical-alignment: center; }
                                         Button { text: "Reset"; enabled: root.selected_clip_writable; clicked => { root.transform_field("reset", ""); } }
                                     }
-                                    TimingField { label: "Position X (px)"; value: root.selected_clip_x; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("x", value); } }
-                                    TimingField { label: "Position Y (px)"; value: root.selected_clip_y; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("y", value); } }
-                                    TimingField { label: "Scale"; value: root.selected_clip_scale; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("scale", value); } }
-                                    TimingField { label: "Rotation (°)"; value: root.selected_clip_rotation; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("rotation", value); } }
+                                    TimingField { label: "Position X (px)"; value: root.selected_clip_x; enabled: root.spatial_editable; committed(value) => { root.transform_field("x", value); } }
+                                    TimingField { label: "Position Y (px)"; value: root.selected_clip_y; enabled: root.spatial_editable; committed(value) => { root.transform_field("y", value); } }
+                                    TimingField { label: "Scale"; value: root.selected_clip_scale; enabled: root.spatial_editable; committed(value) => { root.transform_field("scale", value); } }
+                                    TimingField { label: "Rotation (°)"; value: root.selected_clip_rotation; enabled: root.spatial_editable; committed(value) => { root.transform_field("rotation", value); } }
+                                    Button {
+                                        text: root.on_spatial_key ? "Remove transform keyframe" : "Add transform keyframe";
+                                        enabled: root.spatial_key_enabled;
+                                        clicked => { root.project_action("toggle-transform-key"); }
+                                    }
+                                    if root.on_spatial_key: Button {
+                                        text: root.eased_spatial_key ? "Use linear transform interpolation" : "Ease to next transform key";
+                                        enabled: root.spatial_key_enabled;
+                                        clicked => { root.project_action("ease-transform-key"); }
+                                    }
                                     TimingField { label: "Opacity (%)"; value: root.selected_clip_opacity; enabled: root.opacity_editable; committed(value) => { root.transform_field("opacity", value); } }
                                     if !root.selected_clip_uses_sequence_timing: Button { text: root.on_opacity_key ? "Remove opacity keyframe" : "Add opacity keyframe"; enabled: root.opacity_key_enabled; clicked => { root.project_action(root.on_opacity_key ? "remove-opacity-key" : "add-opacity-key"); } }
                                     TimingField { label: "Exposure (EV)"; value: root.selected_clip_exposure; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("exposure", value); } }
+                                    Text { text: "Crop"; color: root.accent; }
+                                    TimingField { label: "Crop left (%)"; value: root.crop_left; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-left", value); } }
+                                    TimingField { label: "Crop top (%)"; value: root.crop_top; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-top", value); } }
+                                    TimingField { label: "Crop right (%)"; value: root.crop_right; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-right", value); } }
+                                    TimingField { label: "Crop bottom (%)"; value: root.crop_bottom; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-bottom", value); } }
                                 }
 
                                 Text { text: "Press Enter to apply a frame value. Drag a clip to move it; drag an edge to trim. Esc cancels a drag."; color: root.secondary; font-size: 11px; wrap: word-wrap; }

@@ -1,6 +1,6 @@
 use open_quartz::project::{Edge, Graph, InputMode, NodeFactoryRequest};
 
-use super::{LayerSource, OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
+use super::{LayerSource, OpacityAnimation, PreviewRequest, SpatialAnimation, OUTPUT_ID, SOURCE_ID};
 use crate::document::DissolveSide;
 
 fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, speed_percent: u16) -> String {
@@ -24,6 +24,28 @@ fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, spe
     shader
 }
 
+fn spatial_function(index: usize, animation: &SpatialAnimation, origin: u64) -> String {
+    let start = (i128::from(animation.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
+    let seconds = |offset: i64| start + offset as f64 * animation.seconds_per_frame;
+    let pose = |key: &crate::document::SpatialKey| {
+        let value = key.pose;
+        format!("vec4f({:.9e}, {:.9e}, {:.9e}, {:.9e})", value.x, value.y, value.scale, value.rotation.to_radians())
+    };
+    let mut shader = format!("fn animated_pose{index}() -> vec4f {{\n");
+    for pair in animation.keys.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        let span = (i128::from(right.offset) - i128::from(left.offset)) as f64 * animation.seconds_per_frame;
+        let progress = if left.ease { "t * t * (3.0 - 2.0 * t)" } else { "t" };
+        shader.push_str(&format!(
+            "if (iTime < {:.9e}) {{ let t = clamp((iTime - ({:.9e})) / {:.9e}, 0.0, 1.0); return mix({}, {}, {progress}); }}\n",
+            seconds(right.offset), seconds(left.offset), span, pose(left), pose(right),
+        ));
+    }
+    let last = animation.keys.last().expect("animation has at least one key");
+    shader.push_str(&format!("return {};\n}}\n", pose(last)));
+    shader
+}
+
 pub(super) fn source_id(clip: &str) -> String {
     format!("{}:{clip}/{SOURCE_ID}", clip.len())
 }
@@ -44,7 +66,9 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
     let mut tracks: Vec<_> = request.layers.iter().rev().map(|layer| layer.track_id.as_str()).collect();
     tracks.dedup();
     let origin = request.animation_origin_ns();
-    if slots.iter().any(|layer| layer.dissolve.is_some() || layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
+    if slots.iter().any(|layer| layer.dissolve.is_some()
+        || layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)
+        || layer.spatial.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
         bindings.push_str(&format!("@group(0) @binding({}) var<uniform> iTime:f32;\n", slots.len() * 4));
     }
     for (index, layer) in slots.iter().enumerate() {
@@ -121,12 +145,22 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
                 }
             }
         };
+        let placement = if let Some(animation) = &layer.spatial {
+            animation_code.push_str(&spatial_function(index, animation, origin));
+            format!("let animated = animated_pose{index}(); let layer_place = vec4f(animated.xyz, placement{index}.w); let layer_blend = vec4f(cos(animated.w), sin(animated.w), blend{index}.zw);")
+        } else {
+            format!("let layer_place = placement{index}; let layer_blend = blend{index};")
+        };
+        let crop = layer.crop;
+        let minimum = format!("vec2f({:.9e}, {:.9e})", crop.left, crop.top);
+        let maximum = format!("vec2f({:.9e}, {:.9e})", 1.0 - crop.right, 1.0 - crop.bottom);
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
-                let p = source_uv(uv, vec2f(textureDimensions(layer{index})), placement{index}, blend{index});\n\
+                {placement}
+                let p = source_uv(uv, vec2f(textureDimensions(layer{index})), layer_place, layer_blend);\n\
                 let sample = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0);\n\
-                if (all(p >= vec2f(0.0)) && all(p <= vec2f(1.0))) {{\n\
+                if (all(p >= {minimum}) && all(p <= {maximum})) {{\n\
                     let alpha = {alpha};\n\
                     let color = linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
                     track_pixel += vec4f(color * alpha, alpha) * {weight};\n\

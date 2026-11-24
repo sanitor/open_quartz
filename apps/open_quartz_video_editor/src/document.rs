@@ -23,7 +23,10 @@ mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioInterval, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
+#[path = "document_spatial.rs"]
+mod spatial;
+pub use spatial::{Crop, SpatialKey};
 #[path = "document_timeline_tools.rs"]
 mod timeline_tools;
 pub use timeline_tools::Marker;
@@ -157,6 +160,10 @@ pub struct Clip {
     pub transform: ClipTransform,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opacity_keys: Vec<OpacityKey>,
+    #[serde(default, skip_serializing_if = "Crop::is_empty")]
+    pub crop: Crop,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spatial_keys: Vec<SpatialKey>,
     pub pipeline: ClipPipeline,
 }
 pub(super) fn is_normal_speed(value: &u16) -> bool { *value == normal_speed() }
@@ -420,6 +427,8 @@ impl EditorDocument {
             source_subtick_denominator: 1,
             transform: ClipTransform::default(),
             opacity_keys: Vec::new(),
+            crop: Crop::default(),
+            spatial_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
         };
         self.transact(|data| {
@@ -901,6 +910,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             }
             clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
             clip.validate_opacity_keys()?;
+            clip.validate_spatial()?;
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }
