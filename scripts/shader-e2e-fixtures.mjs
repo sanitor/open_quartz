@@ -182,8 +182,8 @@ function assertUniforms(entry, uniforms) {
   }
 }
 
-/** Build 34 runnable shader projects and export input/expected PNGs for reports. */
-export async function prepareShaderFixtures(outputDir) {
+/** Build runnable shader projects and export input/expected PNGs for reports. */
+export async function prepareShaderFixtures(outputDir, { labels } = {}) {
   assert.ok(outputDir, 'prepareShaderFixtures(outputDir) requires an output directory');
   const output = resolve(outputDir);
   await mkdir(output, { recursive: true });
@@ -205,7 +205,9 @@ export async function prepareShaderFixtures(outputDir) {
   }
   assert.notEqual(sourceHashes[0], sourceHashes[1], 'Dual-input fixture images must differ');
   const cases = [];
-  for (const entry of SHADER_CATALOG) {
+  const selected = labels ? SHADER_CATALOG.filter(entry => labels.has(entry.label)) : SHADER_CATALOG;
+  assert.equal(selected.length, labels?.size ?? SHADER_CATALOG.length, 'Unknown shader fixture label');
+  for (const entry of selected) {
     const texturePorts = entry.inputs.filter((input) => input.kind === 'texture');
     const uniforms = structuredClone(UNIFORMS[entry.label] ?? {});
     assertUniforms(entry, uniforms);
@@ -290,9 +292,9 @@ export async function prepareShaderFixtures(outputDir) {
     Object.defineProperty(result, 'expected', { value: reference, enumerable: false });
     cases.push(result);
   }
-  assert.equal(cases.length, SHADER_CATALOG.length, 'Every catalog shader must have exactly one fixture case');
+  assert.equal(cases.length, selected.length, 'Every selected catalog shader must have exactly one fixture case');
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length, 'Shader fixture case IDs must be unique');
-  for (const entry of SHADER_CATALOG) assert.equal(cases.filter((fixture) => fixture.label === entry.label).length, 1, `Expected exactly one case for ${entry.label}`);
+  for (const entry of selected) assert.equal(cases.filter((fixture) => fixture.label === entry.label).length, 1, `Expected exactly one case for ${entry.label}`);
   return cases;
 }
 

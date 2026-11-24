@@ -11,12 +11,17 @@ import { writeHtmlReport } from './slint-ui-report.mjs';
 
 // Run against an integrated ui-automation binary. No project/graph fixture is
 // injected: every saved node, edge and parameter originates in the native UI.
-const output = resolve(process.env.VIDEO_EDITOR_NODES_TEST_OUTPUT || `test-results/clip-pipeline/nodes-ui-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`);
-const binary = resolve(process.argv[2] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
+const args = process.argv.slice(2);
+const smoke = args.includes('--smoke');
+const positional = args.filter(arg => arg !== '--smoke');
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke]');
+const tier = smoke ? 'smoke' : 'full';
+const output = resolve(process.env.VIDEO_EDITOR_NODES_TEST_OUTPUT || `test-results/clip-pipeline/nodes-ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`);
+const binary = resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg = resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
 const project = join(output, 'clip-pipelines.oqvideo.json');
 await mkdir(output, { recursive: true });
-const report = { passed: false, binary, project, steps: [], screenshots: [], launches: [] };
+const report = { passed: false, tier, binary, project, steps: [], screenshots: [], launches: [], caseDefinitions: [] };
 const server = createServer();
 await new Promise(accept => server.listen(0, '127.0.0.1', accept));
 const serverPort = server.address().port;
@@ -247,7 +252,9 @@ async function snapshot(name, color) {
   report.screenshots.push(path);
   if (color) assert(await previewMatches(png, color), `${name}: expected ${color} GPU pixels`);
 }
-async function step(name, run) {
+async function step(name, run, { core = false } = {}) {
+  if (smoke && !core) return;
+  report.caseDefinitions.push({ id: name, title: name, description: 'Native UI actions and observable results', screenshotPrefixes: [] });
   const startedAt = new Date().toISOString(), first = report.screenshots.length;
   try {
     const details = await run();
@@ -309,7 +316,7 @@ try {
     originalData = await save(true);
     assert.equal(originalData.schema_version, 3);
     assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
-  });
+  }, { core: true });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {
     for (const id of ['video', 'output']) {
       await selectNode(id);
@@ -337,11 +344,11 @@ try {
     assert(graph.edges.some(edge => edge.source === invertId && edge.target === 'output'));
     assert.deepEqual(graphFor(data, 'blue.mp4'), graphFor(originalData, 'blue.mp4'));
     return { nodeId: invertId };
-  });
+  }, { core: true });
   await step('Clip switching isolates graphs and uses the same final video viewer', async () => {
     await selectClip('blue.mp4'); await waitNodeCount(2); await snapshot('04-isolated-blue', 'blue');
     await selectClip('red.mp4'); await waitNodeCount(3); await snapshot('05-return-red-cyan', 'cyan');
-  });
+  }, { core: true });
   await step('Shared custom shader editor applies real constant green output', async () => {
     await selectNode('output');
     const custom = await addEffect('Custom Shader'); customId = custom.id;
@@ -351,7 +358,7 @@ try {
     const node = graphFor(await save(), 'red.mp4').nodes.find(node => node.id === customId);
     assert.equal(node.data.shaderCode, GREEN);
     return { nodeId: customId, shader: GREEN };
-  });
+  }, { core: true });
   await step('Node drag commits layout, and undo/redo restore exact world coordinates', async () => {
     await click('Fit graph in view');
     const item = await header(customId), before = nodeState(item);
@@ -366,7 +373,7 @@ try {
     await client.waitFor(async () => { const current = nodeState(await header(customId)); return Math.abs(current.x - after.x) < 0.01 && Math.abs(current.y - after.y) < 0.01; }, { description: 'redo node layout' });
     await snapshot('07-layout-redo', 'green');
     return { before, after };
-  });
+  }, { core: true });
   await step('Downstream effect order, real port reconnection and serial removal change GPU pixels', async () => {
     await selectNode(customId);
     const secondInvert = await addEffect('Invert');
@@ -391,7 +398,7 @@ try {
     graph = graphFor(await save(), 'red.mp4');
     assert(!graph.nodes.some(node => node.id === secondInvert.id));
     assert(graph.edges.some(edge => edge.source === customId && edge.target === 'output'));
-  });
+  }, { core: true });
   await step('Bad shader syntax preserves the last valid frame and saved document', async () => {
     await selectNode(customId);
     const before = await save();
@@ -406,6 +413,7 @@ try {
     assert.deepEqual(await save(), before, 'Rejected shader must not change the serialized document');
   });
   await step('Uniform edits and label edits use real Inspector commits and one-step history', async () => {
+    await selectNode(customId);
     await setShader(GAIN);
     await client.waitFor(async()=> { try { return (await client.byLabel('Apply shader',{role:'Button'})).every(button=>!button.accessibleEnabled); } catch(error) { if (/destroyed|stale/i.test(error.message)) return false; throw error; } },{description:'shader commit completed'});
     await collapseSection('SHADER EDITOR'); await collapseSection('OUTPUT SIZE');
@@ -427,7 +435,7 @@ try {
     await click('REDO');
     await client.waitFor(async () => nodeState(await header(customId)).label === RENAMED, { description: 'redo node label' });
     await snapshot('16-label-redo', 'dim-green');
-  });
+  }, { core: true });
   await step('Save preserves graph, uniforms, layout, clip isolation and source timestamps', async () => {
     savedData = await save();
     const graph = graphFor(savedData, 'red.mp4'), custom = graph.nodes.find(node => node.id === customId);
@@ -440,7 +448,7 @@ try {
     }
     await writeFile(join(output, 'saved-project.json'), JSON.stringify(savedData, null, 2));
     await close();
-  });
+  }, { core: true });
   await step('Reopen real native window restores editable graph and actual per-clip GPU output', async () => {
     await launch(project); await waitState('clips 2');
     await click('Nodes workspace'); await selectClip('red.mp4');
@@ -453,7 +461,7 @@ try {
     await selectClip('red.mp4'); await waitNodeCount(4); await snapshot('19-reopened-red-grade', 'dim-green');
     assert.deepEqual(await save(), savedData, 'Save/reopen must preserve the complete document');
     await close();
-  });
+  }, { core: true });
   let correctorId, correctorSaved;
   await step('Native Color Corrector creates a typed serial node and previews without saving transient values', async () => {
     await launch(project); await waitState('clips 2');
@@ -475,7 +483,7 @@ try {
     await click('UNDO'); await correctorValue(0); await snapshot('22-native-corrector-one-step-undo', 'green');
     await click('REDO'); await correctorValue(-2); await snapshot('23-native-corrector-redo', 'dim-green');
     assert.deepEqual(graphFor(graded, 'blue.mp4'), graphFor(originalData, 'blue.mp4'));
-  });
+  }, { core: true });
   await step('Native bypass, stage reset, cancellation and wheel drag retain one-gesture history', async () => {
     await client.click(await revealInspector('Corrector enabled', 'Checkbox')); await snapshot('24-native-corrector-bypass', 'green');
     assert.equal(correctorNode(await save(), correctorId).data.colorCorrector.enabled, false);
@@ -555,6 +563,7 @@ try {
     assert.deepEqual(await save(), correctorSaved, 'Pausing and cancelling must not change accepted clip parameters');
     await close();
   });
+  if (smoke) await close();
   report.passed = true;
 } catch (error) {
   report.error = error.stack;
@@ -573,7 +582,7 @@ try {
   await writeFile(join(output, 'result.json'), JSON.stringify(report, null, 2));
   await writeHtmlReport(output, report, {
     ...report,
-    caseDefinitions: report.steps.map(step => ({ id: step.name, title: step.name, description: 'Real native Slint graph/Inspector interactions, saved project assertions and decoded GPU screenshot pixels', screenshotPrefixes: [] })),
+    caseDefinitions: report.caseDefinitions,
   });
   console.log(`[video-editor-nodes] Evidence: ${output}`);
 }

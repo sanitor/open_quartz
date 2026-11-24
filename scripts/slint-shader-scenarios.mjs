@@ -70,7 +70,7 @@ function rendererPixels(png, preview, windowProperties, width, height) {
  * every graph edge and transport action is genuine MCP pointer input. This
  * suite does not claim that loading a project tests the shader creation menu.
  */
-export async function runShaderScenarios({ endpoint, outputDir, restart, signal, onProgress, timeoutMs = 15_000 } = {}) {
+export async function runShaderScenarios({ endpoint, outputDir, restart, signal, onProgress, smoke = false, timeoutMs = 15_000 } = {}) {
   assert.ok(endpoint && outputDir, 'endpoint and outputDir are required');
   assert.equal(typeof restart, 'function', 'restart({project}) is required');
   const directory = resolve(outputDir);
@@ -197,17 +197,19 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
   try {
     abort();
     const catalogPath = new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url);
-    const catalog = JSON.parse(await readFile(catalogPath, 'utf8')).groups.flatMap((group) => group.items.map((item) => ({ ...item, category: group.category })));
-    assert.equal(catalog.length, 34, 'Update the explicit E2E catalog coverage contract when catalog entries change');
+    const groups = JSON.parse(await readFile(catalogPath, 'utf8')).groups;
+    const allEntries = groups.flatMap(group => group.items.map(item => ({ ...item, category: group.category })));
+    assert.equal(allEntries.length, 34, 'Update the explicit E2E catalog coverage contract when catalog entries change');
+    const catalog = smoke ? groups.map(group => ({ ...group.items[0], category: group.category })) : allEntries;
     report.caseDefinitions = catalog.map((entry) => ({
       id: `shader-${entry.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-$/, '')}`,
       title: `${entry.category} · ${entry.label}`, description: '真实图片输入、原生连接和独立 GPU 像素验证', screenshotPrefixes: [],
     }));
     publish();
-    const prepared = await prepareShaderFixtures(directory);
-    assert.equal(prepared.length, catalog.length, 'The full shader catalog must produce one fixture per entry');
+    const prepared = await prepareShaderFixtures(directory, { labels: smoke ? new Set(catalog.map(entry => entry.label)) : undefined });
+    assert.equal(prepared.length, catalog.length, 'The selected shader catalog must produce one fixture per entry');
     assert.equal(new Set(prepared.map((entry) => entry.id)).size, prepared.length, 'Duplicate catalog case IDs');
-    assert.deepEqual(prepared.map((entry) => entry.label).sort(), catalog.map((entry) => entry.label).sort(), 'Fixture coverage must equal the complete canonical catalog, including both custom entries');
+    assert.deepEqual(prepared.map((entry) => entry.label).sort(), catalog.map((entry) => entry.label).sort(), 'Fixture coverage must equal the selected canonical catalog');
     const cases = prepared.map((entry) => {
       const identity = catalog.find((item) => item.label === entry.label);
       assert.equal(entry.category, identity.category, `Catalog category differs for ${entry.label}`);
@@ -215,7 +217,7 @@ export async function runShaderScenarios({ endpoint, outputDir, restart, signal,
     });
     caseDefinitions = cases.map((entry) => ({ id: entry.id, title: entry.title, description: entry.description, screenshotPrefixes: [entry.id] }));
     report.caseDefinitions = caseDefinitions;
-    report.catalogCoverage = { expected: catalog.length, prepared: cases.length, ids: cases.map((entry) => entry.id), origin: 'crates/open_quartz/src/project/shader_catalog.json + prepareShaderFixtures metadata', labels: cases.map((entry) => entry.label) };
+    report.catalogCoverage = { expected: cases.length, catalogSize: allEntries.length, prepared: prepared.length, ids: cases.map((entry) => entry.id), origin: 'crates/open_quartz/src/project/shader_catalog.json + prepareShaderFixtures metadata', labels: cases.map((entry) => entry.label) };
     publish();
     for (const [index, entry] of cases.entries()) {
       abort();

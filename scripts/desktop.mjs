@@ -8,8 +8,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
-if (!['dev', 'build', 'prepare', 'test', 'test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference', 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode) || (!['dev', 'dev-ui'].includes(mode) && appArgs.length)) {
-  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui | test-ui-shaders | test-inference | test-ui-inference | test-inference-performance | build-ui');
+const uiModes = ['test-ui', 'test-ui-shaders', 'test-ui-corrector', 'test-inference', 'test-ui-inference'];
+const smoke = appArgs.length === 1 && appArgs[0] === '--smoke';
+if (!['dev', 'build', 'prepare', 'test', ...uiModes, 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode)
+    || (appArgs.length && !['dev', 'dev-ui'].includes(mode) && !(smoke && uiModes.includes(mode)))) {
+  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui|test-ui-shaders|test-ui-corrector|test-inference|test-ui-inference [--smoke] | test-inference-performance | build-ui');
 }
 const platform = process.platform;
 const arch = process.arch;
@@ -319,8 +322,9 @@ const env = nativeEnv();
 let inferenceReferenceFailure;
 if (['test-inference', 'test-ui-inference', 'test-inference-performance'].includes(mode)) {
   if (platform !== 'darwin') throw new Error('The seven-model resident E2E suite requires hardware Metal and VideoToolbox on macOS; CPU fallback is forbidden');
-  const output = resolve(env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || join(root, 'test-results', 'inference-e2e'));
+  const output = resolve(env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || join(root, 'test-results', smoke ? 'inference-e2e-smoke' : 'inference-e2e'));
   env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT = output;
+  env.OPEN_QUARTZ_INFERENCE_E2E_MODEL = smoke ? 'u2netp' : '';
   if (!env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST) {
     await run(process.execPath, ['scripts/prepare-inference-e2e.mjs', '--output-dir', output], { env });
     env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST = join(output, 'manifest.json');
@@ -349,14 +353,18 @@ if (mode === 'prepare') {
     await copyRequired(join(helperRuntime, 'open-quartz-screensaver-stub.exe'), join(runtime, 'open-quartz-screensaver-stub.exe'));
   }
   const release = mode === 'build';
-  const automation = ['test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference', 'dev-ui', 'build-ui'].includes(mode);
+  const automation = uiModes.includes(mode) || ['dev-ui', 'build-ui'].includes(mode);
   await run('cargo', ['build', '--locked', '--manifest-path', manifest, ...(release ? ['--release'] : []), ...(automation ? ['--features', 'ui-automation'] : [])], { env });
   const directory = join(target, release ? 'release' : 'debug');
   const binary = join(directory, exe);
   await installRuntime(directory);
   if (release) await packageDesktop(binary);
-  else if (['test-ui', 'test-ui-shaders', 'test-inference', 'test-ui-inference'].includes(mode)) await run(process.execPath,
-    ['scripts/slint-ui-test.mjs', binary, ...(mode === 'test-ui-shaders' ? ['--shaders'] : ['test-inference', 'test-ui-inference'].includes(mode) ? ['--inference'] : [])], { env });
+  else if (uiModes.includes(mode)) {
+    const suite = mode === 'test-ui-shaders' ? '--shaders' : mode === 'test-ui-corrector' ? '--corrector'
+      : ['test-inference', 'test-ui-inference'].includes(mode) ? '--inference' : null;
+    await run(process.execPath, ['scripts/slint-ui-test.mjs', binary,
+      ...(suite ? [suite] : []), ...(smoke ? ['--smoke'] : [])], { env });
+  }
   else if (mode === 'build-ui') console.log(`[desktop] UI automation binary: ${binary}`);
   else await run(binary, appArgs, { env: automation ? { ...env, SLINT_MCP_PORT: env.SLINT_MCP_PORT || '8080' } : env });
 }

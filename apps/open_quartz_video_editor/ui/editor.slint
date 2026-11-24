@@ -623,7 +623,7 @@ export component EditorWindow inherits Window {
                         if root.library_tab == "media": VerticalLayout {
                             spacing: 0px;
                             HorizontalLayout { height: 38px; padding-left: 12px; padding-right: 8px; cross-axis-alignment: center; Text { text: "Media library"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } } }
-                            LineEdit { text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
+                            LineEdit { accessible-label: "Search media"; text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
                             HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "Project media"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                             ScrollView {
                                 horizontal-stretch: 1; vertical-stretch: 1;
@@ -826,7 +826,7 @@ export component EditorWindow inherits Window {
                         }
                         if !root.nodes_open: VerticalLayout {
                             HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip properties"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
-                            ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
+                            clip_properties := ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
                                 Text { text: root.selected_clip_name; color: root.text; font-size: 12px; font-weight: 600; wrap: word-wrap; }
                                 Text { text: "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 TimingField { label: "Timeline start"; value: root.selected_clip_start; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("start", value); } }
@@ -887,6 +887,7 @@ export component EditorWindow inherits Window {
                                 Text { x: 5px; y: 4px; width: 90px; height: 20px; text: root.ruler_label(parent.frame); color: root.secondary; font-size: 12px; vertical-alignment: center; }
                             }
                             TouchArea {
+                                accessible-role: button; accessible-label: "Seek timeline ruler";
                                 clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round(((self.mouse-x - timeline_scroll.content-x) / 1px - 10) / max(0.0001, root.timeline_zoom)))); }
                             }
                             Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px + timeline_scroll.content-x; width: 2px; height: parent.height; background: #ff525b; }

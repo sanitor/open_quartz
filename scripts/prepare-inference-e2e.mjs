@@ -89,7 +89,7 @@ async function prepareModel(entry, pin, directory, { signal, offline }) {
   assert.equal(new URL(pin.url).protocol, 'https:', `${entry.id}: pinned download must use HTTPS`);
   const destination = join(directory, `${entry.id}.onnx`);
   return publishFile(destination, pin, async (temporary) => {
-    for (const cache of [applicationModelDirectory(), '/tmp/open-quartz-all-models']) {
+    for (const cache of [join(defaultOutput, 'models'), applicationModelDirectory(), '/tmp/open-quartz-all-models']) {
       const candidate = join(cache, `${entry.id}.onnx`);
       if (!(await exists(candidate))) continue;
       await verify(candidate, pin, signal);
@@ -125,7 +125,9 @@ export async function prepareInferenceE2e(outputDir = defaultOutput, { signal, o
   await mkdir(join(output, 'models'), { recursive: true });
   await mkdir(join(output, 'fixtures'), { recursive: true });
   const models = [];
-  for (const entry of catalog) {
+  const selectedModel = process.env.OPEN_QUARTZ_INFERENCE_E2E_MODEL;
+  assert.ok(!selectedModel || ids.includes(selectedModel), 'Smoke model must belong to the canonical catalog');
+  for (const entry of catalog.filter(entry => !selectedModel || entry.id === selectedModel)) {
     const pin = lock.models[entry.id];
     const path = await prepareModel(entry, pin, join(output, 'models'), { signal, offline });
     models.push({ id: entry.id, path, sha256: pin.sha256 });

@@ -119,7 +119,7 @@ export function bluePixelStats(png, preview, windowProperties) {
  * restart({project}) must stop/relaunch the app and resolve to its HTTP MCP URL.
  * On failure result.json/failure-tree.json/failure.png are attempted, then thrown.
  */
-export async function runScenarios({ endpoint, outputDir, projectPath, requireGpu = true, restart, dragTolerance = 3, timeoutMs = 15_000, signal, onProgress } = {}) {
+export async function runScenarios({ endpoint, outputDir, projectPath, requireGpu = true, restart, dragTolerance = 3, timeoutMs = 15_000, signal, onProgress, smoke = false } = {}) {
   assert.ok(endpoint && outputDir && projectPath, 'endpoint, outputDir and projectPath are required');
   assert.equal(typeof restart, 'function', 'restart({project}) is required for persistence verification');
   const directory = resolve(outputDir);
@@ -127,17 +127,28 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
   await mkdir(directory, { recursive: true });
   const report = { passed: false, startedAt: new Date().toISOString(), endpoint, projectPath: project, requireGpu, steps: [], screenshots: [], dragTolerance };
   report.interactions = { menusToolbarPorts: 'MCP click_element pointer input', nodeSelection: 'MCP invoke_accessibility_action Default_', nodeMovement: 'MCP drag_element pointer input', editing: 'MCP set_element_value accessibility input' };
+  const coreCases = new Set([
+    'default-empty-start-stopped', 'platform-window-controls', 'open-empty-project-stopped',
+    'menu-add-default-editable-shader-stopped', 'zoom-out-then-drag', 'zoom-in-then-drag',
+    'fit-then-drag', 'undo-redo-node-drag', 'edit-shader-label-and-source',
+    'menu-add-renderer-connect-stopped', 'play-real-renderer-preview', 'stop-playback',
+    'save-project-through-file-menu', 'restart-same-project-retains-graph-parameters-stopped',
+    'auto-size-playback-time-renderer-fps',
+  ]);
+  assert.ok([...coreCases].every(id => UI_CASES.some(entry => entry.id === id)), 'Unknown Desktop smoke case');
+  report.caseDefinitions = UI_CASES.filter(entry => !smoke || coreCases.has(entry.id));
   onProgress?.(report);
   let client;
   let savedGraph;
   const checkpoint = async (name, action) => {
-    const caseIndex = UI_CASES.findIndex((entry) => entry.id === name);
+    if (smoke && !coreCases.has(name)) return;
+    const caseIndex = report.caseDefinitions.findIndex((entry) => entry.id === name);
     assert.ok(caseIndex >= 0, `Missing case description: ${name}`);
-    const step = { name, title: UI_CASES[caseIndex].title, startedAt: new Date().toISOString() };
+    const step = { name, title: report.caseDefinitions[caseIndex].title, startedAt: new Date().toISOString() };
     const firstScreenshot = report.screenshots.length;
     report.steps.push(step);
     onProgress?.(report);
-    console.log(`[slint-ui] ${caseIndex + 1}/${UI_CASES.length} 开始：${step.title}`);
+    console.log(`[slint-ui] ${caseIndex + 1}/${report.caseDefinitions.length} 开始：${step.title}`);
     try { signal?.throwIfAborted(); step.details = await action(); signal?.throwIfAborted(); step.passed = true; }
     catch (error) {
       if (!signal?.aborted) step.passed = false;
@@ -649,6 +660,7 @@ export async function runScenarios({ endpoint, outputDir, projectPath, requireGp
       await stopped(2, 1);
       return { first, advancing, paused, retained, replacement, pixels: { verified: true, oracle: 'Dynamic GPU channel progression, frozen Pause ROI, explicit red graph replacement' } };
     });
+    assert.deepEqual(report.steps.map(step => step.name), report.caseDefinitions.map(entry => entry.id));
     report.passed = true;
     return report;
   } catch (error) {

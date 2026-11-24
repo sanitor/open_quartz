@@ -31,7 +31,7 @@ fn inference_e2e_production() {
         let ort = std::env::var("ORT_DYLIB_PATH").expect("driver must explicitly disable ORT in production process");
         assert!(!Path::new(&ort).is_file(), "production proof requires unavailable ORT_DYLIB_PATH");
         assert!(open_quartz::media::native::find_ffmpeg().is_ok(), "real video runtime prerequisite");
-        for model in &catalog {
+        for model in &selected_catalog() {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_model(model, &manifest, &root, &mut report)
             }));
@@ -67,7 +67,7 @@ fn inference_e2e_reference() {
             if let Err(error) = result { case["referenceError"] = json!(panic_text(&error)); }
         }
         let cases = report["cases"].as_array().unwrap();
-        for model in inference_models() {
+        for model in selected_catalog() {
             for input in ["image", "alternateImage", "constantImage", "video", "video-updated"] {
                 assert!(cases.iter().any(|c| c["modelId"] == model.id && c["input"] == input && c["referencePassed"] == true),
                     "missing successful independent reference: {} {input}", model.id);
@@ -92,13 +92,27 @@ fn output_root() -> PathBuf {
     std::fs::create_dir_all(&root).unwrap();
     root
 }
+fn selected_catalog() -> Vec<InferenceModelDescriptor> {
+    let model = std::env::var("OPEN_QUARTZ_INFERENCE_E2E_MODEL").unwrap_or_default();
+    let mut catalog = inference_models();
+    if !model.is_empty() {
+        catalog.retain(|entry| entry.id == model);
+        assert_eq!(catalog.len(), 1, "unknown smoke model {model}");
+    }
+    catalog
+}
 fn manifest() -> Value {
     let path = PathBuf::from(std::env::var("OPEN_QUARTZ_INFERENCE_E2E_MANIFEST").expect("pinned manifest required"));
     assert!(path.is_absolute() && path.is_file(), "missing absolute manifest: {}", path.display());
     let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(value["schemaVersion"], 1);
     assert_eq!(serde_json::from_value::<Vec<InferenceModelDescriptor>>(value["catalog"].clone()).unwrap(), inference_models());
-    assert_eq!(value["models"].as_array().unwrap().len(), inference_models().len());
+    let model_ids = |models: &[Value]| models.iter().map(|model| model["id"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected: std::collections::BTreeSet<_> = selected_catalog().into_iter().map(|model| model.id).collect();
+    let models = value["models"].as_array().unwrap();
+    assert_eq!(models.len(), expected.len());
+    assert_eq!(model_ids(models), expected, "manifest fixtures must match the selected model scope");
     for model in value["models"].as_array().unwrap() {
         let path = Path::new(model["path"].as_str().unwrap());
         assert!(path.is_absolute() && path.is_file(), "missing model {}", path.display());

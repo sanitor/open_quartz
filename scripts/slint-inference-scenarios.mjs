@@ -122,7 +122,7 @@ function assertDisplayedContent(image) {
  * tested graph edges are pointer-created, and Load/transport/Save are real UI.
  * Production execution must finish first; independent numeric status is gated separately.
  */
-export async function runInferenceScenarios({ endpoint, outputDir, projectPath, restart, signal, onProgress, timeoutMs = 60_000 } = {}) {
+export async function runInferenceScenarios({ endpoint, outputDir, projectPath, restart, signal, onProgress, smoke = false, timeoutMs = 60_000 } = {}) {
   assert.ok(endpoint && outputDir, 'endpoint and outputDir are required');
   assert.equal(typeof restart, 'function', 'restart({project}) is required');
   const directory = resolve(outputDir);
@@ -292,7 +292,7 @@ export async function runInferenceScenarios({ endpoint, outputDir, projectPath, 
     report.steps.push(prerequisite);
     caseDefinitions = [{ id: prerequisite.name, title: prerequisite.title, description: 'Fail closed on missing manifest, model, fixture, GPU or any production model result; numerical parity remains a separate mandatory gate', screenshotPrefixes: [prerequisite.name] }];
     report.caseDefinitions = caseDefinitions; publish();
-    let manifest, production, productionPath;
+    let manifest, production, productionPath, cases;
     try {
       await phase(prerequisite, 'manifest-and-production', async () => {
         const manifestPath = process.env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST;
@@ -303,7 +303,11 @@ export async function runInferenceScenarios({ endpoint, outputDir, projectPath, 
         assert.equal(manifest.schemaVersion, 1);
         assert.equal(manifest.catalog.length, 7, 'Explicit complete seven-model acceptance requires exactly seven canonical catalog descriptors');
         assert.equal(new Set(manifest.catalog.map((model) => model.id)).size, manifest.catalog.length, 'Duplicate canonical model identity');
-        assert.deepEqual(manifest.models.map((model) => model.id).sort(), manifest.catalog.map((model) => model.id).sort(), 'Manifest model artifacts must exactly cover the Rust catalog');
+        const selectedModel = smoke && process.env.OPEN_QUARTZ_INFERENCE_E2E_MODEL;
+        assert.ok(!smoke || selectedModel, 'Inference smoke requires an explicit representative model');
+        cases = manifest.catalog.filter(model => !smoke || model.id === selectedModel);
+        assert.equal(cases.length, smoke ? 1 : manifest.catalog.length);
+        assert.deepEqual(manifest.models.map((model) => model.id).sort(), cases.map((model) => model.id).sort(), 'Manifest model artifacts must exactly match the suite scope');
         for (const model of manifest.models) {
           assert.ok(isAbsolute(model.path), `Absolute model path required: ${model.id}`);
           assert.match(model.sha256, /^[a-f0-9]{64}$/);
@@ -317,9 +321,9 @@ export async function runInferenceScenarios({ endpoint, outputDir, projectPath, 
         assert.ok(manifest.fixtures.video.frameCount > 1, 'Video fixture must contain multiple content frames');
         productionPath = join(productionRoot, 'production.json');
         production = JSON.parse(await readFile(productionPath, 'utf8'));
-        assert.equal(production.productionPassed, true, 'Complete seven-model production execution must pass before UI display diagnostics');
+        assert.equal(production.productionPassed, true, 'Production execution for the selected model scope must pass before UI display diagnostics');
         report.independentReferencePassed = production.passed === true && production.referencePending === false;
-        for (const entry of manifest.catalog) {
+        for (const entry of cases) {
           assert.match(entry.id, /^[a-z0-9-]+$/, 'Catalog ID must be an artifact-safe identity');
           for (const lane of ['image', 'video']) {
             const matches = production.cases.filter((item) => item.modelId === entry.id && item.input === lane);
@@ -337,11 +341,11 @@ export async function runInferenceScenarios({ endpoint, outputDir, projectPath, 
     } catch (error) { await failure(prerequisite, error); throw error; }
     finally { await finishStep(prerequisite); }
 
-    caseDefinitions = [...caseDefinitions, ...manifest.catalog.flatMap((entry) => ['image', 'video'].map((lane) => ({ id: `inference-${entry.id}-${lane}`, title: `${entry.label} · ${lane}`, description: 'Real catalog menu, typed texture connections, local Load, Renderer screenshot, Pause/Resume, unload/reload, Save/reopen/reload', screenshotPrefixes: [`inference-${entry.id}-${lane}`] })))];
+    caseDefinitions = [...caseDefinitions, ...cases.flatMap((entry) => ['image', 'video'].map((lane) => ({ id: `inference-${entry.id}-${lane}`, title: `${entry.label} · ${lane}`, description: 'Real catalog menu, typed texture connections, local Load, Renderer screenshot, Pause/Resume, unload/reload, Save/reopen/reload', screenshotPrefixes: [`inference-${entry.id}-${lane}`] })))];
     report.caseDefinitions = caseDefinitions;
-    report.catalogCoverage = { source: 'Prepared manifest.catalog exported by Rust inference_models()', expectedModels: manifest.catalog.length, modelIds: manifest.catalog.map((entry) => entry.id), lanes: ['image', 'video'], expectedCases: manifest.catalog.length * 2 };
+    report.catalogCoverage = { source: 'Prepared manifest.catalog exported by Rust inference_models()', expectedModels: cases.length, modelIds: cases.map((entry) => entry.id), lanes: ['image', 'video'], expectedCases: cases.length * 2 };
     publish();
-    for (const entry of manifest.catalog) {
+    for (const entry of cases) {
       const model = manifest.models.find((item) => item.id === entry.id);
       const output = entry.expectedIO.outputs.filter((item) => item.dataType === 'sampler2D');
       const input = entry.expectedIO.inputs.filter((item) => item.dataType === 'sampler2D');

@@ -9,11 +9,16 @@ import { SlintUiClient } from './slint-ui-client.mjs';
 import { decodePng } from './slint-ui-scenarios.mjs';
 import { writeHtmlReport } from './slint-ui-report.mjs';
 
-const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
-const binary=resolve(process.argv[2] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
+const args = process.argv.slice(2);
+const smoke = args.includes('--smoke');
+const positional = args.filter(arg => arg !== '--smoke');
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke]');
+const tier = smoke ? 'smoke' : 'full';
+const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
+const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
 await mkdir(output,{recursive:true});
-const report={passed:false,steps:[],screenshots:[],launches:[]};
+const report={passed:false,tier,steps:[],screenshots:[],launches:[],caseDefinitions:[]};
 const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
 let child,client,exited,stdout='',stderr='';
 const project=join(output,'edit.oqvideo.json');
@@ -31,13 +36,16 @@ async function fileAction(action,path,submit){await click(action);await client.s
 const timeline=async name=>(await client.byLabel(name,{role:'Button'})).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await client.byLabel(name,{role:'Button'})).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
-async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:r<5&&g<5&&b<5)hits++;}return hits>=890;}
+async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
-async function step(name,run){const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
+async function step(name, run, { core = false } = {}) {
+  if (smoke && !core) return;
+  report.caseDefinitions.push({ id: name, title: name, description: 'Native UI actions and observable results', screenshotPrefixes: [] });
+  const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
 function generate(name,color,duration=3,fps=30,size='320x180'){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=${fps}`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
 const red=generate('red.mp4','red'),blue=generate('blue.mp4','blue');
 try{
- await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await snapshot('01-empty');});
+ await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await snapshot('01-empty');}, { core: true });
  await step('Frameless window controls follow configuration and maximize/restore',async()=>{
   const labels=['Close window','Minimize window','Maximize window'];
   const controls=await Promise.all(labels.map(label=>client.find({label,role:'Button'})));
@@ -49,23 +57,34 @@ try{
   const ordered=controls.toSorted((a,b)=>a.absolutePosition.x-b.absolutePosition.x).map(control=>control.accessibleLabel);
   assert.deepEqual(ordered,process.platform==='darwin'?labels:[labels[1],labels[2],labels[0]]);
   await click('Maximize window');
-  await client.waitFor(async()=>{const window=await client.windowProperties();return window.size.width>before.size.width||window.size.height>before.size.height;},{description:'native window grows when maximized'});
+  const maximized = await client.waitFor(async () => {
+    const window = await client.windowProperties();
+    const restore = await client.byLabel('Restore window', { role: 'Button' });
+    return restore.length === 1 && (window.size.width > before.size.width || window.size.height > before.size.height) && window.size;
+  }, { description: 'native window grows and exposes Restore' });
+  // The OS window geometry can update before the animation finishes and is
+  // ready for another command.
+  await delay(350);
   await click('Restore window');
-  await client.waitFor(async()=>{const window=await client.windowProperties();return window.size.width===before.size.width&&window.size.height===before.size.height;},{description:'native window restores its original size'});
+  await client.waitFor(async () => {
+    const { size } = await client.windowProperties();
+    const maximize = await client.byLabel('Maximize window', { role: 'Button' });
+    return maximize.length === 1 && (size.width < maximized.width || size.height < maximized.height);
+  }, { description: 'native window returns to its resizable size' });
   await snapshot('01-window-controls');
- });
- await step('Sequence settings',async()=>{await click('SEQUENCE');for(const [label,value]of [['Sequence width','640'],['Sequence height','360'],['FPS numerator','30'],['FPS denominator','1']])await client.setValue(await client.find({label,role:'TextInput'}),value);await click('Apply settings');await snapshot('02-sequence');});
- await step('Import red on hardware and place clip',async()=>{await fileAction('IMPORT',red,'Import media');await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('03-red-media','red');await click('ADD CLIP');await waitState('clips 1');});
- await step('Import blue and verify exact adjacent placement via media plus',async()=>{await fileAction('IMPORT',blue,'Import media');await waitState('assets 2');await waitState('source PTS 0 ns · CPU image bytes 0');await client.click(await assetCard('red.mp4'));await client.click(await assetCard('blue.mp4'));await client.waitFor(async()=>previewHasColor(await client.screenshot(),'blue'),{description:'selected blue media preview'});await snapshot('04-blue-media','blue');await click('Add blue.mp4 to timeline');await waitState('clips 2');for(let n=0;n<6;n++)await click('ZOOM OUT');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames; duration 90'));});
- await step('Move with one undo/redo; black gap',async()=>{const item=(await timeline('blue.mp4'))[0];await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+40,y:item.absolutePosition.y+item.size.height/2});await client.waitFor(async()=> (await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'),{description:'clip move'});await click('UNDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames'));await click('REDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));await waitState('source PTS gap ns');await snapshot('05-gap','black');});
- await step('Trim both edges with actual gestures',async()=>{for(const [edge,delta,expected]of [['start',40,'start 10 frames; duration 80'],['end',-40,'start 10 frames; duration 70']]){const item=await client.find({label:`Trim ${edge} of red.mp4`,role:'Button'});await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+delta,y:item.absolutePosition.y+item.size.height/2});await client.waitFor(async()=> (await timeline('red.mp4'))[0].accessibleDescription.includes(expected),{description:`trim ${edge}`});}});
- await step('Split at frame45, lift and undo',async()=>{await client.click((await timeline('red.mp4'))[0]);for(let n=0;n<35;n++)await click('NEXT');await waitState('playhead 45 frames');await click('SPLIT');await waitState('clips 3');assert.deepEqual((await timeline('red.mp4')).map(i=>i.accessibleDescription),['Timeline start 10 frames; duration 35 frames','Timeline start 45 frames; duration 35 frames']);await click('DELETE');await waitState('clips 2');await click('UNDO');await waitState('clips 3');await snapshot('06-split');});
+ }, { core: true });
+ await step('Sequence settings',async()=>{await click('SEQUENCE');for(const [label,value]of [['Sequence width','640'],['Sequence height','360'],['FPS numerator','30'],['FPS denominator','1']])await client.setValue(await client.find({label,role:'TextInput'}),value);await click('Apply settings');await snapshot('02-sequence');}, { core: true });
+ await step('Import red on hardware and place clip',async()=>{await fileAction('IMPORT',red,'Import media');await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('03-red-media','red');await click('ADD CLIP');await waitState('clips 1');}, { core: true });
+ await step('Import blue and verify exact adjacent placement via media plus',async()=>{await fileAction('IMPORT',blue,'Import media');await waitState('assets 2');await waitState('source PTS 0 ns · CPU image bytes 0');await client.click(await assetCard('red.mp4'));await client.click(await assetCard('blue.mp4'));await client.waitFor(async()=>previewHasColor(await client.screenshot(),'blue'),{description:'selected blue media preview'});await snapshot('04-blue-media','blue');await click('Add blue.mp4 to timeline');await waitState('clips 2');for(let n=0;n<6;n++)await click('ZOOM OUT');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames; duration 90'));}, { core: true });
+ await step('Move with one undo/redo; black gap',async()=>{const item=(await timeline('blue.mp4'))[0];await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+40,y:item.absolutePosition.y+item.size.height/2});await client.waitFor(async()=> (await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'),{description:'clip move'});await click('UNDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 90 frames'));await click('REDO');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));await waitState('source PTS gap ns');await snapshot('05-gap','black');}, { core: true });
+ await step('Trim both edges with actual gestures',async()=>{for(const [edge,delta,expected]of [['start',40,'start 10 frames; duration 80'],['end',-40,'start 10 frames; duration 70']]){const item=await client.find({label:`Trim ${edge} of red.mp4`,role:'Button'});await client.drag(item,{x:item.absolutePosition.x+item.size.width/2+delta,y:item.absolutePosition.y+item.size.height/2});await client.waitFor(async()=> (await timeline('red.mp4'))[0].accessibleDescription.includes(expected),{description:`trim ${edge}`});}}, { core: true });
+ await step('Split at frame45, lift and undo',async()=>{await client.click((await timeline('red.mp4'))[0]);for(let n=0;n<35;n++)await click('NEXT');await waitState('playhead 45 frames');await click('SPLIT');await waitState('clips 3');assert.deepEqual((await timeline('red.mp4')).map(i=>i.accessibleDescription),['Timeline start 10 frames; duration 35 frames','Timeline start 45 frames; duration 35 frames']);await click('DELETE');await waitState('clips 2');await click('UNDO');await waitState('clips 3');await snapshot('06-split');}, { core: true });
  await step('Inspector overlap rejection leaves clip unchanged',async()=>{await client.click((await timeline('blue.mp4'))[0]);await client.waitFor(async()=> (await client.find({label:'Timeline start',role:'TextInput'})).accessibleValue==='100',{description:'selected blue clip timing is published'});const input=await client.find({label:'Timeline start',role:'TextInput'});await client.click(input);await client.setValue(input,'20');await client.key('\n');await waitState('overlaps');assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));});
  await step('Cancel active drag with Escape',async()=>{const item=(await timeline('blue.mp4'))[0];const moving=client.drag(item,{x:item.absolutePosition.x+item.size.width/2+160,y:item.absolutePosition.y+item.size.height/2});await delay(120);await client.key('\u001b');await moving;assert((await timeline('blue.mp4'))[0].accessibleDescription.includes('start 100 frames'));});
- await step('Play and pause real GPU video',async()=>{await client.click((await timeline('blue.mp4'))[0]);await click('PLAY');await client.waitFor(async()=>/playhead 1[1-7]\d frames/.test(await state()),{description:'video playback'});await click('PAUSE');await snapshot('07-playing-paused','blue');const paused=await state();await delay(200);assert.equal((await state()).match(/playhead (\d+)/)[1],paused.match(/playhead (\d+)/)[1]);});
- await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.tracks.flatMap(track => track.clips).map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.tracks.flatMap(track => track.clips)[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();});
- await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));});
- await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();});
+ await step('Play and pause real GPU video',async()=>{await client.click((await timeline('blue.mp4'))[0]);await click('PLAY');await client.waitFor(async()=>/playhead 1[1-7]\d frames/.test(await state()),{description:'video playback'});await click('PAUSE');await snapshot('07-playing-paused','blue');const paused=await state();await delay(200);assert.equal((await state()).match(/playhead (\d+)/)[1],paused.match(/playhead (\d+)/)[1]);}, { core: true });
+ await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.tracks.flatMap(track => track.clips).map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.tracks.flatMap(track => track.clips)[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();}, { core: true });
+ await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));}, { core: true });
+ await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();}, { core: true });
  await step('Long media plus preserves full duration beyond GPU texture limits',async()=>{
   const longMedia=generate('long.mp4','red',30);
   const longProject=join(output,'long.oqvideo.json');
@@ -138,7 +157,7 @@ try{
    await waitState('source PTS Video 2 0, Video 1 0');
    assert((await item('foreground.mp4')).absolutePosition.y < base.absolutePosition.y);
    await expectColor('red');
- });
+ }, { core: true });
  await step('Viewer grips resize and drag the overlay with one undo per gesture', async () => {
    await click('TRANSFORM');
    const resize = await client.find({ label: 'Resize bottom right', role: 'Button' });
@@ -164,7 +183,7 @@ try{
      { description: 'redo restores the preview move' });
    await click('TRANSFORM');
    await snapshot('14-picture-in-picture');
- });
+ }, { core: true });
  await step('Drag a track header to reorder, hide and undo without moving clip timing', async () => {
    const top = await grip('Video 2');
    const lower = await grip('Video 1');
@@ -175,7 +194,7 @@ try{
    await click('UNDO'); await expectColor('blue');
    await click('UNDO'); await expectColor('red');
    assert((await item('foreground.mp4')).accessibleDescription.includes('Timeline start 0 frames'));
- });
+ }, { core: true });
  await step('Cross-track drag keeps clip identity and a locked target rejects drops', async () => {
    await click('ADD TRACK');
    const upper = await grip('Video 3');
@@ -202,7 +221,142 @@ try{
    await expectColor('red');
    await snapshot('15-multitrack-reopened');
    await close();
+ }, { core: true });
+ const findInput = label => client.find({ label, role: 'TextInput' });
+ const enter = async (input, value) => {
+   await client.click(input);
+   await client.setValue(input, String(value));
+   await client.key('\n');
+ };
+ const clipControl = async (label, role = 'TextInput') => {
+   const viewport = await client.find({ id: 'EditorWindow::clip_properties' });
+   const scroll = deltaY => client.value('dispatch_pointer_scroll', {
+     windowHandle: client.windowId, position: center(viewport), deltaX: 0, deltaY,
+   });
+   await scroll(2000);
+   for (let attempt = 0; attempt < 12; attempt++) {
+     let control;
+     try {
+       [control] = await client.byLabel(label, { role, visible: false });
+     } catch (error) {
+       if (!/destroyed|stale/i.test(error.message)) throw error;
+       await delay(80);
+       continue;
+     }
+     const bounds = viewport.absolutePosition.y;
+     if (control) {
+       const y = center(control).y;
+       if (y > bounds + 4 && y < bounds + viewport.size.height - 4) return control;
+       await scroll(bounds + viewport.size.height / 2 - y);
+     } else {
+       await scroll(-140);
+     }
+     await delay(80);
+   }
+   throw new Error(`Could not scroll clip Inspector to ${label}`);
+ };
+ await step('Track names, button reordering, deletion and explicit show update the editor', async () => {
+   await launch(multiProject); await waitState('clips 2');
+   await enter(await findInput('Name of Video 2'), 'Spare');
+   await client.waitFor(async () => (await client.byLabel('Reorder Spare', { role: 'Button' })).length === 1,
+     { description: 'renamed track head' });
+   await click('Move Spare up');
+   assert(center(await grip('Spare')).y < center(await grip('Video 3')).y);
+   await click('Move Spare down');
+   assert(center(await grip('Spare')).y > center(await grip('Video 3')).y);
+   await client.click(await grip('Spare'));
+   await client.key('\u0012', 'Press'); // Alt / Option
+   await client.key('\u0010', 'Press'); // Shift
+   try {
+     await client.key('\uf700'); // Up
+     assert(center(await grip('Spare')).y < center(await grip('Video 3')).y);
+     await client.key('\uf701'); // Down
+     assert(center(await grip('Spare')).y > center(await grip('Video 3')).y);
+   } finally {
+     await client.key('\u0010', 'Release');
+     await client.key('\u0012', 'Release');
+   }
+   await click('Delete empty Video 3'); await waitState('remove clips before deleting');
+   await click('Delete empty Spare');
+   await client.waitFor(async () => (await client.byLabel('Reorder Spare', { role: 'Button' })).length === 0,
+     { description: 'empty track removed' });
+   await click('Hide Video 3'); await expectColor('blue');
+   await click('Show Video 3'); await expectColor('red');
+   await click('SAVE'); await waitState('Project saved');
+   const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
+   assert.deepEqual(data.tracks.map(track => track.name), ['Video 3', 'Video 1']);
+   await close();
  });
+ await step('Monitor picking, rotation, transform properties, and reset reach actual output', async () => {
+   await launch(multiProject); await waitState('clips 2'); await expectColor('red');
+   const monitor = await client.find({ label: 'Video preview', role: 'Image' });
+   await client.click(monitor);
+   await client.waitFor(async () => (await client.byLabel('Timeline start', { role: 'TextInput' }))[0]?.accessibleValue === '0',
+     { description: 'monitor picks the active foreground clip' });
+   await click('TRANSFORM');
+   const rotation = await client.find({ label: 'Rotate clip', role: 'Button' });
+   const start = center(rotation);
+   await client.drag(rotation, { x: start.x + 60, y: start.y + 9 });
+   assert(Math.abs(Number((await clipControl('Rotation (°)')).accessibleValue)) > 5,
+     'Rotating via the monitor updates the Inspector');
+   await client.click(await clipControl('Reset', 'Button'));
+   assert.equal(Number((await clipControl('Rotation (°)')).accessibleValue), 0);
+   assert.equal(Number((await clipControl('Scale')).accessibleValue), 1);
+   await enter(await clipControl('Opacity (%)'), 50);
+   await expectColor('blend');
+   for (const [label, value] of [['Position X (px)', 30], ['Position Y (px)', -20], ['Scale', 0.9], ['Rotation (°)', 12], ['Exposure (EV)', -0.5]]) {
+     await enter(await clipControl(label), value);
+     assert(Math.abs(Number((await clipControl(label)).accessibleValue) - value) < 0.01, `${label} committed`);
+   }
+   await click('SAVE'); await waitState('Project saved');
+   const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
+   const transform = data.tracks[0].clips[0].transform;
+   for (const [key, value] of Object.entries({ x: 30/1920, y: -20/1080, scale: 0.9, rotation: 12, opacity: 0.5, exposure: -0.5 })) {
+     assert(Math.abs(transform[key] - value) < 1e-6, `${key} persisted on the picked foreground`);
+   }
+   await click('Lock Video 3');
+   assert.equal(Boolean((await clipControl('Opacity (%)')).accessibleEnabled), false);
+   assert.equal((await client.byLabel('Rotate clip', { role: 'Button' })).length, 0);
+   await click('Unlock Video 3');
+   assert.equal(Boolean((await clipControl('Opacity (%)')).accessibleEnabled), true);
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ }, { core: true });
+ await step('Project rename, library search, ruler seek and Inspector timing are observable', async () => {
+   await launch(multiProject); await waitState('clips 2');
+   await enter(await findInput('Project name'), 'Multitrack interaction coverage');
+   await waitState('Project Multitrack interaction coverage');
+   const search = await findInput('Search media');
+   await client.click(search); await client.setValue(search, 'foreground');
+   await client.waitFor(async () => (await client.byLabel('Add background.mp4 to timeline', { role: 'Button' })).length === 0,
+     { description: 'nonmatching library asset is filtered' });
+   assert.equal((await client.byLabel('Add foreground.mp4 to timeline', { role: 'Button' })).length, 1);
+   await client.setValue(search, '');
+   await client.waitFor(async () => (await client.byLabel('Add background.mp4 to timeline', { role: 'Button' })).length === 1,
+     { description: 'clearing search restores library assets' });
+   await click('FIT TIMELINE');
+   await click('Seek timeline ruler');
+   await client.waitFor(async () => /playhead [1-9]\d* frames/.test(await state()), { description: 'ruler updates the playhead' });
+   const soughtFrame = Number(/playhead (\d+) frames/.exec(await state())[1]);
+   await click('PREVIOUS');
+   await waitState(`playhead ${soughtFrame - 1} frames`);
+   await client.click(await item('foreground.mp4'));
+   await enter(await clipControl('Timeline end'), 100);
+   assert((await item('foreground.mp4')).accessibleDescription.includes('duration 100 frames'));
+   await enter(await clipControl('Timeline start'), 5);
+   assert((await item('foreground.mp4')).accessibleDescription.includes('start 5 frames'));
+   const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
+   const clip = data.tracks[0].clips[0], asset = data.assets.find(asset => asset.id === clip.asset_id);
+   const ticksPerSecond = asset.time_base.denominator / asset.time_base.numerator;
+   await enter(await clipControl('Source in'), asset.start_pts + ticksPerSecond / 2);
+   await enter(await clipControl('Source out'), asset.start_pts + ticksPerSecond * 2);
+   assert((await item('foreground.mp4')).accessibleDescription.includes('duration 45 frames'));
+   await click('SAVE'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(multiProject, 'utf8')).data;
+   assert.equal(saved.name, 'Multitrack interaction coverage');
+   assert.equal(saved.tracks[0].clips[0].source_in_pts, asset.start_pts + ticksPerSecond / 2);
+   await close();
+ }, { core: true });
  report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
-}finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.steps.map(step=>({id:step.name,title:step.name,description:'Real native UI interaction and observable project/GPU result',screenshotPrefixes:[]}))});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}
+}finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.caseDefinitions});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}

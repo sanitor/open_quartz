@@ -71,6 +71,18 @@ npm run test:sdk-coverage
 `inspect_model` 仅源自省。`resident_compare` 在 Apple M4 Pro Metal 的 GPU 生成 8×8 source（无 COPY_DST）上执行完整 SR3，输出 24×24 对显式 ORT CPU reference max/mean byte error 0/0，host image bytes 0、六 dispatch、scratch 26,292,224 B、weights 238,628 B；wrong-device submit 前拒绝、三槽饱和与 released-lease 复用已观察。首 completion wall 69.494292 ms 包含诊断 copy 和首次 pipeline compilation，不是 GPU 时间或稳态吞吐。命令和数字只属于显式诊断，不让 CPU/reference 或 readback 进入生产。旧 coreml_compare 仍为 reference example。
 
 图标源为 `apps/open_quartz_slint/icons/`；准备生成的运行库、媒体 SDK、许可证和对应源码在 `apps/open_quartz_slint/runtime/`，不再使用 `src-tauri/` 或 `public/`。`.scr` stub 从 `target/screensaver-stub/` 构建后暂存到 app runtime。macOS numeric bundle version 来自 `package.json`。Shader 唯一源为 `crates/open_quartz/src/project/shader_catalog.json`，原生 catalog 与 Shader automation 共用；根 `tests/fixtures/` 保留原生图像/Shader fixtures。以上是可运行命令与路径，不是本次已通过的检查记录。
+### 交互 E2E 覆盖
+
+仓库的[测试规则](../AGENTS.md#测试规则)要求每项用户交互都有 E2E 用例。冒烟套件选取各项功能的核心用例，全量套件运行全部用例。
+
+| 命令 | 范围 |
+|---|---|
+| `npm run test:e2e:smoke` | Desktop 原生交互的核心流程、每个 Shader 类别一个用例、Color Corrector 核心流程、Video Editor Edit 和 Nodes 核心用例、U²Net-P 图像与视频推理 |
+| `npm run test:e2e:full` | 全部 Desktop 交互、Shader、Corrector、Video Editor Edit 和 Nodes 用例，以及七个推理模型的完整生产、CPU 数值对照与原生窗口回归 |
+
+两个入口均在具备 Metal 和 VideoToolbox 的 macOS 主机运行。单独检查可用 `npm run test:desktop:ui:smoke` 或 `npm run test:video-editor:ui:smoke`，现有不加 `--smoke` 的应用命令继续执行各自的全量用例。冒烟与全量复用同一套用例实现。新用例默认进入全量，核心用例显式加入冒烟。推理冒烟只准备并执行选中的模型，产物默认写到 `test-results/inference-e2e-smoke/`。
+
+
 ### 七模型推理 E2E 回归
 
 `test:desktop:inference` 是显式 macOS Metal / VideoToolbox 硬件任务。模型目录由 `inference_e2e_catalog` 从 Rust `inference_models()` 导出；`tests/fixtures/inference/assets.json` 固定七份原始 ONNX 和全部样本的 SHA-256、大小、来源与许可证说明。NASA 公有领域人像及固定 H.264 视频随仓提交；视频含红/蓝标记与镜像人像两个稳定帧组，不使用私有用户媒体。准备完成后测试只访问固定本地路径；缺文件、哈希不符或硬件不可用均失败，不跳过或退回 CPU。已有缓存可执行 `npm run prepare:inference -- --offline`。

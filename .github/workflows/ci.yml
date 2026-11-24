@@ -102,7 +102,9 @@ jobs:
         if: always()
         with:
           name: native-video-editor-evidence
-          path: test-results/phase6/
+          path: |
+            test-results/phase6/
+            test-results/clip-pipeline/
           if-no-files-found: error
 
   slint-app:
@@ -162,6 +164,10 @@ jobs:
       - name: Test all catalog shaders with image fixtures (macOS)
         if: runner.os == 'macOS'
         run: npm run test:desktop:shaders
+
+      - name: Test native Color Corrector (macOS)
+        if: runner.os == 'macOS'
+        run: npm run test:desktop:corrector
 
       - name: Build desktop UI automation (Windows compile coverage)
         if: runner.os == 'Windows'

@@ -87,9 +87,12 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 ```sh
 npm run test:video-editor
+npm run test:video-editor:ui:smoke
 npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
+
+`npm run test:video-editor:ui:smoke` executes the shared Edit and Nodes cases marked as core. The full UI and coverage commands execute every case in both suites.
 
 `npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. The Rust behavior suite includes worker clock/prefill, exact seek supersession, gap/cut final-frame retirement, hysteresis and full-extent budget arithmetic. This change did not run the coverage gate; historical coverage results are not a new pass claim.
 

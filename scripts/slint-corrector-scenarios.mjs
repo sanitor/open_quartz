@@ -4,8 +4,15 @@ import { join } from 'node:path';
 import { createClient } from './slint-ui-client.mjs';
 import { decodePng, parseStatus } from './slint-ui-scenarios.mjs';
 
-export async function runCorrectorScenarios({ endpoint, outputDir, projectPath, restart, signal, onProgress }) {
-  const report = { suite: 'corrector', passed: false, steps: [], screenshots: [], caseDefinitions: [] };
+export async function runCorrectorScenarios({ endpoint, outputDir, projectPath, restart, signal, onProgress, smoke = false }) {
+  const cases = [
+    ['native-corrector-factory-connect', 'Create and connect the native Color Corrector'],
+    ['native-corrector-exposure-bypass-history', 'Exposure, stage bypass and undo/redo update native pixels'],
+    ['native-corrector-cancel-tabs-wheel-roundtrip', 'Cancel a draft, navigate palettes, drag a wheel and reopen'],
+  ];
+  const caseDefinitions = (smoke ? cases.slice(0, 2) : cases)
+    .map(([id, title]) => ({ id, title, description: title, screenshotPrefixes: [] }));
+  const report = { suite: 'corrector', passed: false, steps: [], screenshots: [], caseDefinitions };
   let client = await createClient(endpoint, { signal }); await client.useWindow();
   let scrollTool;
   const button = label => client.find({ label, role: 'Button' });
@@ -39,8 +46,9 @@ export async function runCorrectorScenarios({ endpoint, outputDir, projectPath, 
   const edit = async value => { const input = await numeric(); await client.click(input); await client.setValue(input, String(value)); await client.key('\n'); await settle(); };
   const saved = async () => { await click('FILE ▾'); await click('SAVE'); await client.waitFor(async () => /Saved /.test((await state())['IO status'] || ''), { description: 'saved accepted typed config' }); return JSON.parse(await readFile(projectPath, 'utf8')); };
   const step = async (id, action) => {
-    report.caseDefinitions.push({ id, title: id, description: 'Real native input and shared GPU pixel oracle', screenshotPrefixes: [] });
-    const entry = { name: id, title: id }; report.steps.push(entry); onProgress?.(report);
+    const definition = caseDefinitions.find(entry => entry.id === id);
+    assert.ok(definition, `Unexpected Corrector case ${id}`);
+    const entry = { name: id, title: definition.title }; report.steps.push(entry); onProgress?.(report);
     try { entry.details = await action(); entry.passed = true; } catch (error) { entry.passed = false; throw error; }
   };
   async function gray(name, expected) {
@@ -101,7 +109,7 @@ export async function runCorrectorScenarios({ endpoint, outputDir, projectPath, 
       await client.click(await reveal('Primaries enabled', 'Checkbox')); await settle();
       return { expected, oracle: 'independent sRGB decode → linear exposure ×2 → sRGB encode' };
     });
-    await step('native-corrector-cancel-tabs-wheel-roundtrip', async () => {
+    if (!smoke) await step('native-corrector-cancel-tabs-wheel-roundtrip', async () => {
       const input = await numeric(); await client.click(input); await client.setValue(input, '2');
       await click('Cancel Corrector gesture'); await settle(); assert.equal(Number((await numeric()).accessibleValue), 1);
       await click('Corrector palette HDR Zones'); await click('Corrector palette Primaries');
@@ -116,6 +124,7 @@ export async function runCorrectorScenarios({ endpoint, outputDir, projectPath, 
       await select(correctorLabel); assert.equal(Number((await numeric()).accessibleValue), 1);
       return { persisted: config };
     });
+    assert.deepEqual(report.steps.map(step => step.name), caseDefinitions.map(entry => entry.id));
     report.passed = true; return report;
   } catch (error) {
     report.error = error.stack || String(error);

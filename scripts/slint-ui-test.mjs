@@ -21,11 +21,12 @@ async function availablePort() {
   return port;
 }
 
-export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTPUT_DIR, suite = 'interaction' } = {}) {
+export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTPUT_DIR, suite = 'interaction', smoke = false } = {}) {
   if (!['interaction', 'shaders', 'inference', 'corrector'].includes(suite)) throw new Error(`Unknown UI suite: ${suite}`);
+  const tier = smoke ? 'smoke' : 'full';
   const directory = resolve(outputDir || (suite === 'inference'
     ? join(process.env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || 'test-results/inference-e2e', `ui-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)
-    : join('test-results', 'slint-ui', `${suite}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)));
+    : join('test-results', 'slint-ui', `${suite}-${tier}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`)));
   await mkdir(directory, { recursive: true });
   const projectPath = join(directory, 'ui-roundtrip.quartz.json');
   await writeFile(projectPath, JSON.stringify({
@@ -127,7 +128,7 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
   let scenarioReport;
   if (suite === 'shaders') {
     const catalog = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../crates/open_quartz/src/project/shader_catalog.json', import.meta.url), 'utf8'));
-    scenarioReport = { suite, caseDefinitions: catalog.groups.flatMap((group) => group.items.map((item) => ({
+    scenarioReport = { suite, caseDefinitions: catalog.groups.flatMap((group) => (smoke ? group.items.slice(0, 1) : group.items).map((item) => ({
       id: `shader-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-$/, '')}`,
       title: `${group.category} · ${item.label}`, description: '真实图片输入、原生连接和 GPU 预览验证', screenshotPrefixes: [],
     }))), steps: [], screenshots: [] };
@@ -139,7 +140,7 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
       scenarioReport = { suite, caseDefinitions: [
         { id: 'inference-prerequisites', title: 'Pinned artifacts and complete production execution', description: '固定模型、样本和硬件前提', screenshotPrefixes: [] },
-        ...manifest.catalog.flatMap((model) => ['image', 'video'].map((lane) => ({
+        ...manifest.catalog.filter(model => !smoke || model.id === process.env.OPEN_QUARTZ_INFERENCE_E2E_MODEL).flatMap((model) => ['image', 'video'].map((lane) => ({
           id: `inference-${model.id}-${lane}`, title: `${model.label} · ${lane}`, description: '模型加载、Renderer 显示及生命周期', screenshotPrefixes: [],
         }))),
       ], steps: [], screenshots: [] };
@@ -149,7 +150,7 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
       : suite === 'corrector' ? (await import('./slint-corrector-scenarios.mjs')).runCorrectorScenarios : runScenarios;
     await Promise.race([restart(), lifecycleFailure]);
     const scenarios = await Promise.race([
-      execute({ endpoint, outputDir: directory, projectPath, requireGpu: true, restart, signal,
+      execute({ endpoint, outputDir: directory, projectPath, requireGpu: true, restart, signal, smoke,
         onProgress: (progress) => { scenarioReport = progress; } }),
       lifecycleFailure,
     ]);
@@ -165,12 +166,12 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
       await new Promise((accept) => closing.log.end(accept));
       if (shutdown?.code !== 0 || shutdown?.signal) throw new Error(`Normal window close failed: ${JSON.stringify(shutdown)}`);
     } finally { clearTimeout(closeDeadline); }
-    report = { passed: true, suite, startedAt, finishedAt: new Date().toISOString(), launches, scenarios,
+    report = { passed: true, suite, tier, startedAt, finishedAt: new Date().toISOString(), launches, scenarios,
       shutdown: { event: 'CloseRequested', injection: 'ui-automation stdin → event loop', ...shutdown } };
     console.log(`[slint-ui] PASS\n[slint-ui] Screenshots and report: ${directory}`);
     return report;
   } catch (error) {
-    report = { passed: false, suite, startedAt, finishedAt: new Date().toISOString(), launches,
+    report = { passed: false, suite, tier, startedAt, finishedAt: new Date().toISOString(), launches,
       scenarios: error.scenarioResult || scenarioReport, error: error.stack || String(error) };
     console.error(`[slint-ui] FAIL: ${error.message}\n[slint-ui] Diagnostics: ${directory}`);
     throw error;
@@ -189,8 +190,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [binary, ...args] = process.argv.slice(2);
   if (args.filter(arg => ['--shaders', '--inference', '--corrector'].includes(arg)).length > 1) throw new Error('Select only one UI suite');
   const suite = args.includes('--inference') ? 'inference' : args.includes('--shaders') ? 'shaders' : args.includes('--corrector') ? 'corrector' : 'interaction';
-  const remaining = args.filter((arg) => !['--shaders', '--inference', '--corrector'].includes(arg));
-  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders | --inference | --corrector]');
-  try { await runUiTests(binary, { outputDir: remaining[0], suite }); }
+  const smoke = args.includes('--smoke');
+  const remaining = args.filter((arg) => !['--shaders', '--inference', '--corrector', '--smoke'].includes(arg));
+  if (!binary || remaining.length > 1 || remaining.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/slint-ui-test.mjs <automation-enabled-binary> [output-directory] [--shaders | --inference | --corrector] [--smoke]');
+  try { await runUiTests(binary, { outputDir: remaining[0], suite, smoke }); }
   catch (error) { console.error(error.stack || String(error)); process.exitCode ||= 1; }
 }
