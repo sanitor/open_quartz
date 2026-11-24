@@ -1,6 +1,7 @@
 use crate::{audio_rate::RateReader, document::ProjectData};
 use oq_media::{MediaError, StereoSample, MAX_AUDIO_BLOCK};
 use std::collections::{BTreeSet, HashMap};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -23,7 +24,11 @@ pub struct AudioMix {
 }
 
 impl AudioMix {
-    pub fn new(project: &ProjectData, cancel: Arc<AtomicBool>) -> Result<Option<Self>, String> {
+    pub fn new(
+        project: &ProjectData,
+        cancel: Arc<AtomicBool>,
+        samples: Option<&Range<u64>>,
+    ) -> Result<Option<Self>, String> {
         if !project
             .audio_tracks
             .iter()
@@ -40,6 +45,12 @@ impl AudioMix {
                 if clip.gain == 0.0 {
                     continue;
                 }
+                let interval = clip.interval(project)?;
+                if samples.is_some_and(|range| {
+                    range.is_empty() || interval.start >= range.end || interval.end <= range.start
+                }) {
+                    continue;
+                }
                 let asset = project
                     .assets
                     .iter()
@@ -53,7 +64,6 @@ impl AudioMix {
                     .as_ref()
                     .ok_or("Audio stream is missing")?
                     .stream;
-                let interval = clip.interval(project)?;
                 clips.push(MixClip {
                     start: interval.start,
                     end: interval.end,

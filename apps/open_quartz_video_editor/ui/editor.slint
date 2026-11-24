@@ -322,6 +322,8 @@ export component EditorWindow inherits Window {
     in-out property <float> timeline_zoom: 16;
     in-out property <string> search_query;
     in-out property <string> file_path;
+    in-out property <string> export_start_frame;
+    in-out property <string> export_end_frame;
     in-out property <string> file_dialog_kind;
     in-out property <bool> file_dialog_open: false;
     in property <string> selected_clip_scale: "1.0";
@@ -1157,14 +1159,30 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 680px; height: 264px; background: root.panel;
+                width: 680px; height: root.file_dialog_kind == "export" ? 318px : 264px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
                     Text { text: root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
-                    if root.file_dialog_kind == "export": Text { text: "Entire sequence · H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Choose a new file"; color: root.secondary; font-size: 11px; }
+                    if root.file_dialog_kind == "export": Text {
+                        text: "H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
+                        color: root.secondary; font-size: 11px;
+                    }
+                    if root.file_dialog_kind == "export": HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Start frame"; color: root.secondary; font-size: 12px; }
+                            LineEdit { text <=> root.export_start_frame; accessible-label: "Export start frame"; }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "End frame (exclusive)"; color: root.secondary; font-size: 12px; }
+                            LineEdit { text <=> root.export_end_frame; accessible-label: "Export end frame (exclusive)"; }
+                        }
+                    }
                     HorizontalLayout {
                         spacing: 10px;
                         LineEdit {

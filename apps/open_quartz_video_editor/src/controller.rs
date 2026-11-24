@@ -5,6 +5,7 @@ use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFo
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
@@ -639,6 +640,10 @@ impl Controller {
         self.pause();
         if let Some(window) = self.window.upgrade() {
             window.set_file_dialog_kind(kind.into());
+            if kind == "export" {
+                window.set_export_start_frame("0".into());
+                window.set_export_end_frame(self.document.duration_frames().to_string().into());
+            }
             window.set_file_path(if kind == "save-as" {
                 self.document
                     .path()
@@ -706,14 +711,8 @@ impl Controller {
         if self.busy {
             return;
         }
-        if kind == "export" && (!path.is_absolute()
-            || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4")))
-        {
-            if let Some(window) = self.window.upgrade() {
-                window.set_file_path(path.to_string_lossy().as_ref().into());
-                window.set_file_dialog_open(true);
-            }
-            self.status("Enter an absolute output path ending in .mp4");
+        if kind == "export" {
+            self.submit_export(path);
             return;
         }
         if path.as_os_str().is_empty() {
@@ -747,7 +746,6 @@ impl Controller {
                     Err(error) => self.status(error),
                 }
             }
-            "export" => self.start_export(path),
             "relink" => {
                 let Some(id) = self.selected_asset.clone() else {
                     self.status("Select a media asset to relink");
@@ -989,7 +987,33 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
-    fn start_export(&mut self, path: PathBuf) {
+    fn submit_export(&mut self, path: PathBuf) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let range = if !path.is_absolute()
+            || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+        {
+            Err("Enter an absolute output path ending in .mp4".into())
+        } else {
+            export_frames(
+                window.get_export_start_frame().as_str(),
+                window.get_export_end_frame().as_str(),
+                self.document.duration_frames(),
+            )
+        };
+        match range {
+            Ok(frames) => {
+                window.set_file_dialog_open(false);
+                self.start_export(path, frames);
+            }
+            Err(error) => {
+                window.set_file_path(path.to_string_lossy().as_ref().into());
+                window.set_file_dialog_open(true);
+                self.status(error);
+            }
+        }
+    }
+
+    fn start_export(&mut self, path: PathBuf, frames: Range<u64>) {
         #[cfg(target_os = "macos")]
         {
             if self.export.is_some() {
@@ -997,7 +1021,7 @@ impl Controller {
             }
             let result = self.preview.export_device().and_then(|render| {
                 crate::preview::export::ExportTask::start(
-                    render, self.document.data.clone(), self.document.revision, path,
+                    render, self.document.data.clone(), self.document.revision, path, frames,
                 )
             });
             match result {
@@ -1013,7 +1037,7 @@ impl Controller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            drop(path);
+            let _ = (path, frames);
             self.status("MP4 export requires macOS VideoToolbox");
         }
     }
@@ -1648,6 +1672,17 @@ fn reconcile<T: Clone + 'static>(
         model.remove(model.row_count() - 1);
     }
 }
+fn export_frames(start: &str, end: &str, duration: u64) -> Result<Range<u64>, String> {
+    let parse = |value: &str| {
+        value.trim().parse::<u64>().map_err(|_| "Export frame values must be non-negative integers")
+    };
+    let (start, end) = (parse(start)?, parse(end)?);
+    if start >= end || end > duration {
+        return Err(format!("Export range must satisfy 0 ≤ start < end ≤ {duration}"));
+    }
+    Ok(start..end)
+}
+
 fn asset_details(asset: &MediaAsset) -> String {
     if asset.still {
         return format!("{} × {} · Still image", asset.width, asset.height);

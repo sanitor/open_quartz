@@ -46,7 +46,7 @@ pub struct AudioPlayback {
 impl AudioPlayback {
     pub fn start(project: &ProjectData, start_frame: u64) -> Result<Option<Self>, String> {
         let cancel = Arc::new(AtomicBool::new(false));
-        let Some(mix) = AudioMix::new(project, cancel.clone())? else {
+        let Some(mix) = AudioMix::new(project, cancel.clone(), None)? else {
             return Ok(None);
         };
         if mix.sources().next().is_none() {

@@ -149,10 +149,13 @@ pub fn sequence_request(
     Ok(request)
 }
 
-fn sequence_region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, duration: u64) -> Result<(PreviewRequest, u64), String> {
-    let end = project.tracks.iter().filter(|track| track.visible)
-        .filter_map(|track| track.next_video_boundary(frame)).min().unwrap_or(duration);
-    Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?, end))
+fn sequence_region_end(project: &ProjectData, frame: u64, end: u64) -> u64 {
+    project.tracks.iter().filter(|track| track.visible)
+        .filter_map(|track| track.next_video_boundary(frame)).min().unwrap_or(end).min(end)
+}
+fn sequence_region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, end: u64) -> Result<(PreviewRequest, u64), String> {
+    Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?,
+        sequence_region_end(project, frame, end)))
 }
 fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut times = BTreeMap::new();

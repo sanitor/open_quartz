@@ -1,12 +1,13 @@
 use super::{
-    configure, playback, sequence_region, sequence_source_times, FramePipeline,
-    PlaybackCapabilities, PreviewConfiguration, PreviewRequest, ProjectData, RenderDevice,
-    OUTPUT_ID,
+    configure, playback, sequence_region, sequence_region_end, sequence_source_times,
+    FramePipeline, PlaybackCapabilities, PreviewConfiguration, PreviewRequest, ProjectData,
+    RenderDevice, OUTPUT_ID,
 };
 use open_quartz::execution::{ExportConfig, ExportJob, ExportPhase, ExportSequence};
 use open_quartz::rendering::InputInterpretation;
 use oq_media::{EncoderConfig, RationalTimeBase};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,7 @@ impl ExportTask {
         project: ProjectData,
         revision: u64,
         path: PathBuf,
+        frames: Range<u64>,
     ) -> Result<Self, String> {
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(("Preparing MP4 export…".into(), false)));
@@ -38,6 +40,7 @@ impl ExportTask {
                     project,
                     revision,
                     &path,
+                    frames,
                     &worker_cancel,
                     &worker_progress,
                 );
@@ -81,15 +84,14 @@ impl Drop for ExportTask {
 struct Sequence {
     project: ProjectData,
     revision: u64,
-    duration: u64,
+    end: u64,
     configured: Option<PreviewConfiguration>,
     request: Option<PreviewRequest>,
 }
 
 impl ExportSequence for Sequence {
     fn prepare_region(&mut self, pipeline: &mut FramePipeline, frame: u64) -> Result<u64, String> {
-        let (request, end) =
-            sequence_region(&self.project, 0, self.revision, frame, self.duration)?;
+        let (request, end) = sequence_region(&self.project, 0, self.revision, frame, self.end)?;
         playback::configure_limits(pipeline, &request, self.project.fps)?;
         configure(pipeline, &mut self.configured, &request)?;
         self.request = Some(request);
@@ -105,23 +107,40 @@ impl ExportSequence for Sequence {
     }
 }
 
+fn video_source_ids<'a>(
+    project: &'a ProjectData,
+    frames: &Range<u64>,
+    cancel: &AtomicBool,
+) -> BTreeSet<&'a str> {
+    let mut ids = BTreeSet::new();
+    let mut frame = frames.start;
+    while frame < frames.end && !cancel.load(Ordering::Acquire) {
+        // The region planner includes both inputs before and after a dissolve cut.
+        ids.extend(project.video_inputs(frame).filter_map(|input| {
+            input
+                .clip
+                .title
+                .is_none()
+                .then_some(input.clip.asset_id.as_str())
+        }));
+        frame = sequence_region_end(project, frame, frames.end);
+    }
+    ids
+}
+
 fn run(
     render: RenderDevice,
     project: ProjectData,
     revision: u64,
     path: &Path,
+    frames: Range<u64>,
     cancel: &Arc<AtomicBool>,
     progress: &Mutex<(String, bool)>,
 ) -> Result<bool, String> {
-    let duration = project.duration_frames();
-    let source_ids: BTreeSet<_> = project
-        .tracks
-        .iter()
-        .filter(|track| track.visible)
-        .flat_map(|track| &track.clips)
-        .filter(|clip| clip.title.is_none())
-        .map(|clip| clip.asset_id.as_str())
-        .collect();
+    let source_ids = video_source_ids(&project, &frames, cancel);
+    if cancel.load(Ordering::Acquire) {
+        return Ok(false);
+    }
     let mut sources = BTreeSet::new();
     for asset in project
         .assets
@@ -133,21 +152,35 @@ fn run(
         }
         sources.insert(PathBuf::from(&asset.path));
     }
-    let audio = crate::audio_mix::AudioMix::new(&project, cancel.clone())?;
+    let samples =
+        project.fps.frame_to_sample(frames.start)?..project.fps.frame_to_sample(frames.end)?;
+    let audio = crate::audio_mix::AudioMix::new(&project, cancel.clone(), Some(&samples))?;
     if let Some(audio) = &audio {
         sources.extend(audio.sources().cloned());
     }
     let audio = audio.map(|mut audio| -> oq_media::AudioRender {
-        Box::new(move |start, block| audio.render(start, block))
+        Box::new(move |start, block| {
+            let start = samples
+                .start
+                .checked_add(start)
+                .ok_or("Export audio offset overflow")?;
+            // The encoder rounds the output duration independently. If that yields
+            // an extra sample, pad it instead of reading past the selected end.
+            let count = samples.end.saturating_sub(start).min(block.len() as u64) as usize;
+            let (selected, padding) = block.split_at_mut(count);
+            padding.fill([0.0; 2]);
+            audio.render(start, selected)
+        })
     });
     let sources: Vec<_> = sources.into_iter().collect();
     if cancel.load(Ordering::Acquire) {
         return Ok(false);
     }
+    let end = frames.end;
     let config = ExportConfig {
         output: path.into(),
         output_node_id: OUTPUT_ID.into(),
-        frames: 0..duration,
+        frames,
         encoder: EncoderConfig {
             width: project.width,
             height: project.height,
@@ -168,7 +201,7 @@ fn run(
     let sequence = Sequence {
         project,
         revision,
-        duration,
+        end,
         configured: None,
         request: None,
     };

@@ -375,6 +375,105 @@ try{
    await snapshot('17-audio-mix');
    await close();
  }, { core: true });
+ const rangeProject = join(output, 'range-seed.oqvideo.json');
+ const rangeStart = () => client.find({ label: 'Export start frame', role: 'TextInput' });
+ const rangeEnd = () => client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' });
+ const exportRange = async (path, start, end) => {
+   await click('EXPORT');
+   await client.setValue(await rangeStart(), String(start));
+   await client.setValue(await rangeEnd(), String(end));
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Export MP4');
+ };
+ await step('Export a nonzero frame range with matching AAC and a zero-based output clock', async () => {
+   const fixture = JSON.parse(await readFile(audioProject, 'utf8'));
+   const videoFixture = JSON.parse(await readFile(exportProject, 'utf8')).data;
+   const blueAsset = videoFixture.assets.find(asset => asset.name === 'background.mp4');
+   const blueTrack = videoFixture.tracks.find(track => track.clips.some(clip => clip.asset_id === blueAsset.id));
+   const blueClip = blueTrack.clips[0];
+   const [base] = fixture.data.tracks;
+   fixture.data.assets.push(blueAsset);
+   fixture.data.tracks = [
+     { ...blueTrack, id: 'range-upper', clips: [{ ...blueClip, timeline_start: 18, duration: 4 }] },
+     base,
+   ];
+   fixture.data.width = 320;
+   fixture.data.height = 180;
+   const wav = fixture.data.audio_tracks.flatMap(track => track.clips)
+     .find(clip => clip.placement.kind === 'independent');
+   wav.placement.start = 32000;
+   await writeFile(rangeProject, JSON.stringify(fixture));
+
+   await launch(rangeProject); await waitState('clips 2');
+   const path = join(output, 'sequence-range.mp4');
+   await exportRange(path, 12, 26); await waitState('Export complete');
+   assert((await state()).includes('playhead 0 frames'), 'export range did not seek or trim the project');
+   const stride = 320 * 180 * 3;
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 18 });
+   assert.equal(pixels.length, stride * 14, 'the exclusive end produces exactly fourteen frames');
+   for (let index = 0; index < 14; index++) {
+     const pixel = index * stride + (90 * 320 + 160) * 3;
+     const [r,g,b] = pixels.subarray(pixel, pixel + 3);
+     const blue = index >= 6 && index < 10;
+     assert(blue ? b > 225 && g < 25 && r < 25 : r > 225 && g < 25 && b < 25,
+       `frame ${index} samples absolute sequence frame ${12 + index}, got RGB ${r},${g},${b}`);
+   }
+   const timestamps = spawnSync(ffmpeg, ['-hide_banner', '-i', path, '-an', '-vf', 'showinfo', '-f', 'null', '-'],
+     { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(timestamps.status, 0, timestamps.stderr);
+   assert.match(timestamps.stderr, /n:\s*0\s+pts:\s*0\s+pts_time:0(?:\s|$)/);
+   const samples = pcm(path);
+   assert(samples.length / 2 >= 22400 && samples.length / 2 < 23424, 'AAC matches the export range with at most an AAC tail block');
+   assert(amplitude(samples, 0.03, 440) > 0.04, 'the linked tone is already playing at the range start');
+   assert(amplitude(samples, 0.03, 880) < 0.006, 'the independent WAV does not start before its range-relative onset');
+   assert(amplitude(samples, 0.34, 880) > 0.04, 'the independent WAV starts at the correct offset in the output');
+   await close();
+ }, { core: true });
+ await step('Reject invalid export frames and preserve drafts until cancellation', async () => {
+   await launch(rangeProject); await waitState('clips 2');
+   await click('EXPORT');
+   assert.equal((await rangeStart()).accessibleValue, '0');
+   const duration = Number((await rangeEnd()).accessibleValue);
+   assert.equal(duration, 110);
+   const path = join(output, 'invalid-range.mp4');
+   const filesBefore = (await readdir(output)).sort();
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await client.setValue(await rangeStart(), 'bad');
+   await click('Export MP4'); await waitState('Export frame values must be non-negative integers');
+   assert.equal((await rangeStart()).accessibleValue, 'bad');
+   await client.setValue(await rangeStart(), '22');
+   await client.setValue(await rangeEnd(), '22');
+   await click('Export MP4'); await waitState('Export range must satisfy');
+   assert.equal((await rangeEnd()).accessibleValue, '22');
+   await client.setValue(await rangeEnd(), String(duration + 1));
+   await click('Export MP4'); await waitState('Export range must satisfy');
+   assert.equal((await rangeEnd()).accessibleValue, String(duration + 1));
+   assert.deepEqual((await readdir(output)).sort(), filesBefore);
+   await click('Cancel');
+   await click('EXPORT');
+   assert.equal((await rangeStart()).accessibleValue, '0');
+   assert.equal((await rangeEnd()).accessibleValue, String(duration));
+   await click('Cancel');
+   await close();
+ });
+ await step('Ignore audio sources wholly outside the export range', async () => {
+   const fixture = JSON.parse(await readFile(rangeProject, 'utf8'));
+   fixture.data.assets.find(asset => asset.name === 'independent-tone.wav').path = 'missing-scheduled-audio.wav';
+   const seed = join(output, 'range-offline-audio.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   const cutoff = join(output, 'range-before-missing-audio.mp4');
+   await exportRange(cutoff, 12, 20); await waitState('Export complete');
+   const samples = pcm(cutoff);
+   assert(amplitude(samples, 0.03, 440) > 0.04);
+   assert(amplitude(samples, 0.03, 880) < 0.006);
+   const filesBefore = (await readdir(output)).sort();
+   await exportRange(join(output, 'range-missing-audio.mp4'), 12, 21);
+   await waitState('Export failed · Audio media offline');
+   assert.deepEqual((await readdir(output)).sort(), filesBefore);
+   await close();
+ });
  const findInput = label => client.find({ label, role: 'TextInput' });
  const enter = async (input, value) => {
    await client.click(input);
@@ -788,6 +887,40 @@ try{
    assert.deepEqual(await positions('foreground.mp4'), [[0, 6]]);
    assert.deepEqual(await positions('background.mp4'), [[6, 6]]);
    await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
+ await step('Only require visual inputs used by the range, including the incoming side of a dissolve', async () => {
+   const fixture = JSON.parse(await readFile(join(output, 'dissolve-seed.oqvideo.json'), 'utf8'));
+   const [track] = fixture.data.tracks;
+   const [left, right] = track.clips;
+   track.dissolves = [{ outgoing: left.id, incoming: right.id, frames: 4 }];
+   const transition = join(output, 'range-dissolve-seed.oqvideo.json');
+   await writeFile(transition, JSON.stringify(fixture));
+   await launch(transition); await waitState('clips 2');
+   const clipped = join(output, 'range-dissolve.mp4');
+   await exportRange(clipped, 5, 7); await waitState('Export complete');
+   const frames = path => mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const stride = 320 * 180 * 3;
+   const blended = frames(clipped);
+   assert.equal(blended.length, 2 * stride);
+   for (const [i, expected] of [[0, [225, 0, 137]], [1, [188, 0, 188]]]) {
+     const index = i * stride + (90 * 320 + 160) * 3;
+     const pixel = blended.subarray(index, index + 3);
+     assert(expected.every((channel, j) => Math.abs(pixel[j] - channel) < 22),
+       `frame ${5 + i} retains its dissolve phase, got ${[...pixel]}`);
+   }
+   await close();
+   fixture.data.assets.find(asset => asset.id === right.asset_id).path = 'missing-dissolve-incoming.mp4';
+   const seed = join(output, 'range-offline-dissolve.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   const cutoff = join(output, 'range-before-dissolve.mp4');
+   await exportRange(cutoff, 1, 4); await waitState('Export complete');
+   assert.equal(frames(cutoff).length, 3 * stride);
+   const filesBefore = (await readdir(output)).sort();
+   await exportRange(join(output, 'range-in-dissolve.mp4'), 4, 5);
+   await waitState('Export failed · Media offline');
+   assert.deepEqual((await readdir(output)).sort(), filesBefore);
    await close();
  });
  const titleProject = join(output, 'title.oqvideo.json');
