@@ -77,6 +77,8 @@ pub struct Controller {
     export: Option<crate::preview::export::ExportTask>,
     #[cfg(target_os = "macos")]
     audio: Option<crate::audio_output::AudioPlayback>,
+    #[cfg(target_os = "macos")]
+    waveforms: crate::audio_waveform::Waveforms,
     pipeline_editor: PipelineEditor,
 }
 impl Controller {
@@ -133,6 +135,8 @@ impl Controller {
             export: None,
             #[cfg(target_os = "macos")]
             audio: None,
+            #[cfg(target_os = "macos")]
+            waveforms: Default::default(),
             pipeline_editor: PipelineEditor::default(),
         }));
         window.set_project_status(description.into());
@@ -288,6 +292,20 @@ impl Controller {
                     controller.refresh();
                 } else {
                     let result = controller.document.edit_audio_clip(&id, &action, &value);
+                    controller.finish_edit(result);
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_audio_clip_gesture(move |id, kind, delta| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if let Some((_, revision)) = controller.timeline_capture.take().filter(|(clip, _)| clip == id.as_str()) {
+                    let result = controller.document.audio_gesture(&id, &kind, delta, revision);
+                    if result.is_ok() {
+                        controller.selected_clip = None;
+                        controller.selected_audio = Some(id.to_string());
+                    }
                     controller.finish_edit(result);
                 }
             }
@@ -787,6 +805,16 @@ impl Controller {
         self.add_asset_from_card(&asset);
     }
     fn split(&mut self) {
+        if let Some(id) = self.selected_audio.clone() {
+            match self.document.split_audio(&id, self.playhead) {
+                Ok(right) => {
+                    self.selected_audio = Some(right);
+                    self.changed();
+                }
+                Err(error) => self.status(error),
+            }
+            return;
+        }
         let Some(id) = self.selected_clip.clone() else {
             self.status("Select a timeline clip to split");
             return;
@@ -1044,6 +1072,12 @@ impl Controller {
 
     fn tick(&mut self) {
         #[cfg(target_os = "macos")]
+        if self.waveforms.poll(&self.document.data) {
+            if let Some(window) = self.window.upgrade() {
+                self.refresh_audio(&window);
+            }
+        }
+        #[cfg(target_os = "macos")]
         if let Some(error) = self.audio.as_ref().and_then(|audio| audio.error()) {
             self.pause();
             self.status(error);
@@ -1180,6 +1214,8 @@ impl Controller {
                             Ok(())
                         })
                     });
+                    #[cfg(target_os = "macos")]
+                    if result.is_ok() { self.waveforms.invalidate(&id); }
                     self.finish_edit(result);
                 }
                 _ => {}
@@ -1358,6 +1394,10 @@ impl Controller {
                     .map_or("Missing media", |asset| asset.name.as_str());
                 let selected = self.selected_audio.as_ref() == Some(&clip.id);
                 let linked = matches!(clip.placement, document::AudioPlacement::Linked { .. });
+                #[cfg(target_os = "macos")]
+                let waveform = self.waveforms.path(&clip.asset_id, interval).unwrap_or_default();
+                #[cfg(not(target_os = "macos"))]
+                let waveform = String::new();
                 rows.push(AudioClipRow {
                     id: clip.id.clone().into(), lane: lane as i32, name: asset_name.into(),
                     start: (interval.start as f64 * scale) as f32,
@@ -1365,7 +1405,10 @@ impl Controller {
                     description: format!("{} samples to {}{}{}", interval.start, interval.end,
                         if interval.speed_percent == document::normal_speed() { String::new() } else { format!(" · {}% speed", interval.speed_percent) },
                         if linked { " · linked video" } else { "" }).into(),
-                    selected, muted: track.muted,
+                    selected, muted: track.muted, editable: !linked && !track.locked,
+                    waveform: waveform.into(),
+                    fade_in: (clip.fade_in as f64 * scale) as f32,
+                    fade_out: (clip.fade_out as f64 * scale) as f32,
                 });
                 if selected { selection = Some((clip, asset_name, interval, track.locked, linked)); }
             }
@@ -1379,6 +1422,8 @@ impl Controller {
             window.set_audio_clip_source(interval.source.to_string().into());
             window.set_audio_clip_gain((clip.gain * 100.0).round().to_string().into());
             window.set_audio_clip_speed(interval.speed_percent.to_string().into());
+            window.set_audio_fade_in(clip.fade_in.to_string().into());
+            window.set_audio_fade_out(clip.fade_out.to_string().into());
             window.set_audio_clip_locked(locked);
             window.set_audio_clip_linked(linked);
         } else {
@@ -1386,6 +1431,8 @@ impl Controller {
         }
     }
     fn refresh(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.waveforms.request_scan();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -1598,6 +1645,8 @@ impl Controller {
         }
     }
     fn clear_images(&mut self) {
+        #[cfg(target_os = "macos")]
+        { self.waveforms = Default::default(); }
         self.monitor_gesture = None;
         self.timeline_capture = None;
         self.displayed_ticket = None;
@@ -1785,6 +1834,8 @@ mod native_dialog_tests {
             export: None,
             #[cfg(target_os = "macos")]
             audio: None,
+            #[cfg(target_os = "macos")]
+            waveforms: Default::default(),
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,

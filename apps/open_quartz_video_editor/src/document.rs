@@ -22,8 +22,8 @@ pub use transition::DissolveSide;
 mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
-pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 10;
+pub use audio::{AudioAsset, AudioInterval, AudioPlacement, SAMPLE_RATE};
+const SCHEMA_VERSION: u32 = 11;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 

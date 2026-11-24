@@ -24,7 +24,7 @@ component NodeEffectTile inherits Rectangle {
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool }
 export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, gain: string }
-export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool }
+export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
 export struct DissolveRow { lane: int, start: float, duration: float, description: string }
@@ -104,6 +104,110 @@ component ClipGestureArea inherits TouchArea {
     moved => {
         if self.pressed && self.armed {
             root.preview(Math.round((self.absolute-position.x + self.mouse-x - self.origin_x + self.origin_scroll - root.scroll_x) / 1px / max(0.0001, root.zoom)), self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+        }
+    }
+}
+
+component AudioTimelineClip inherits Rectangle {
+    in property <AudioClipRow> item;
+    in property <int> video_lanes;
+    in property <float> zoom;
+    in property <int> cancel_token;
+    in property <length> scroll_x;
+    callback capture();
+    callback clicked();
+    callback cancelled();
+    callback gesture(string, int);
+    callback autoscroll(length, length);
+    private property <string> mode;
+    private property <int> delta;
+    function bounded(mode: string, value: int) -> int {
+        if mode == "fade-in" { return max(Math.ceil(-root.item.fade_in), value); }
+        if mode == "fade-out" { return min(Math.floor(root.item.fade_out), value); }
+        if mode == "trim-start" { return clamp(value, Math.ceil(-root.item.start), max(0, Math.ceil(root.item.duration) - 1)); }
+        if mode == "trim-end" { return max(value, min(0, 1 - Math.ceil(root.item.duration))); }
+        return max(Math.ceil(-root.item.start), value);
+    }
+    private property <bool> fade_handles: root.item.editable && root.item.selected && root.width >= 56px;
+    function fade_x(edge: int) -> length {
+        let fade = edge == 0 ? root.item.fade_in : root.item.fade_out;
+        return clamp(edge == 0 ? 14px + fade * root.zoom * 1px : root.width - 30px - fade * root.zoom * 1px, 9px, root.width - 25px);
+    }
+    function body_mode(x: length, y: length) -> string {
+        if root.fade_handles && y >= 3px && y < 19px {
+            if x >= root.fade_x(0) && x < root.fade_x(0) + 16px { return "fade-in"; }
+            if x >= root.fade_x(1) && x < root.fade_x(1) + 16px { return "fade-out"; }
+        }
+        return "move";
+    }
+    function begin(mode: string) {
+        if root.item.editable {
+            root.mode = mode;
+            root.capture();
+        }
+    }
+    function update(value: int, x: length, y: length) {
+        if root.mode != "" {
+            root.autoscroll(x, y);
+            root.delta = root.bounded(root.mode, value);
+        }
+    }
+    function finish(value: int) {
+        let kind = root.mode;
+        let delta = root.bounded(kind, value);
+        root.mode = "";
+        root.delta = 0;
+        if kind != "" && delta != 0 { root.gesture(kind, delta); }
+        else { root.cancelled(); root.clicked(); }
+    }
+    function cancel() {
+        root.mode = "";
+        root.delta = 0;
+        root.cancelled();
+    }
+    x: 10px + (root.item.start + (root.mode == "move" || root.mode == "trim-start" ? root.delta : 0)) * root.zoom * 1px;
+    y: (root.video_lanes + root.item.lane) * 84px + 7px;
+    width: max(2px, (root.item.duration + (root.mode == "trim-end" ? root.delta : root.mode == "trim-start" ? -root.delta : 0)) * root.zoom * 1px);
+    height: 69px; border-radius: 4px;
+    background: root.item.muted ? #384647 : root.item.selected || root.mode != "" ? #27756b : #254e49;
+    Text { x: 8px; y: 7px; width: max(0px, parent.width - 16px); text: root.item.name; color: #e9f9f6; font-size: 11px; overflow: elide; }
+    if root.item.waveform != "": Rectangle {
+        x: 8px; y: 26px; width: max(0px, parent.width - 16px); height: 39px;
+        accessible-role: image;
+        accessible-label: "Waveform " + root.item.name;
+        Path { width: parent.width; height: parent.height; viewbox-width: 128; viewbox-height: 40;
+            commands: root.item.waveform; stroke: #83e6d1; stroke-width: 1px; }
+    }
+    ClipGestureArea {
+        width: parent.width; height: parent.height;
+        zoom: root.zoom; scroll_x: root.scroll_x; cancel_token: root.cancel_token;
+        accessible-role: button; accessible-label: "Audio clip " + root.item.name;
+        accessible-description: root.item.description;
+        began => { root.begin(root.body_mode(self.mouse-x, self.mouse-y)); }
+        preview(value, x, y) => { root.update(value, x, y); }
+        finished(value, x, y) => { root.finish(value); }
+        cancelled => { root.cancel(); }
+    }
+    for edge in (root.item.editable ? 2 : 0): ClipGestureArea {
+        x: edge == 0 ? 0px : parent.width - self.width;
+        width: min(8px, parent.width / 3); height: parent.height;
+        zoom: root.zoom; scroll_x: root.scroll_x; cancel_token: root.cancel_token;
+        mouse-cursor: ew-resize;
+        accessible-role: button;
+        accessible-label: "Trim audio " + (edge == 0 ? "start" : "end") + " of " + root.item.name;
+        began => { root.begin(edge == 0 ? "trim-start" : "trim-end"); }
+        preview(value, x, y) => { root.update(value, x, y); }
+        finished(value, x, y) => { root.finish(value); }
+        cancelled => { root.cancel(); }
+    }
+    for edge in (root.fade_handles ? 2 : 0): Rectangle {
+        x: root.fade_x(edge); y: 3px; width: 16px; height: 16px;
+        accessible-role: button;
+        accessible-label: (edge == 0 ? "Audio fade in " : "Audio fade out ") + root.item.name;
+        Rectangle {
+            x: 3px + (root.mode == (edge == 0 ? "fade-in" : "fade-out") ? root.delta * root.zoom * 1px : 0px);
+            y: 3px; width: 9px; height: 9px; border-radius: 2px;
+            background: #83e6d1; border-width: 1px; border-color: #284c45;
         }
     }
 }
@@ -270,6 +374,8 @@ export component EditorWindow inherits Window {
     in property <string> audio_clip_end;
     in property <string> audio_clip_source;
     in property <string> audio_clip_gain;
+    in property <string> audio_fade_in;
+    in property <string> audio_fade_out;
     in property <string> audio_clip_speed: "100";
     in property <bool> audio_clip_linked;
     in property <bool> audio_clip_locked;
@@ -412,6 +518,7 @@ export component EditorWindow inherits Window {
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
+    callback audio_clip_gesture(string, string, int);
     callback reorder_track(string, string, bool);
     callback asset_place(string, string, int);
     callback monitor_gesture(string, string, float, float, float);
@@ -873,6 +980,8 @@ export component EditorWindow inherits Window {
                                 TimingField { label: "Audio end"; value: root.audio_clip_end; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "end", value); } }
                                 TimingField { label: "Audio source in"; value: root.audio_clip_source; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "source", value); } }
                                 TimingField { label: "Audio clip gain (%)"; value: root.audio_clip_gain; enabled: !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "gain", value); } }
+                                if !root.audio_clip_linked: TimingField { label: "Audio fade in (samples)"; value: root.audio_fade_in; enabled: !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "fade-in", value); } }
+                                if !root.audio_clip_linked: TimingField { label: "Audio fade out (samples)"; value: root.audio_fade_out; enabled: !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "fade-out", value); } }
                                 if root.audio_clip_linked: Button { text: "Unlink audio"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "unlink", ""); } }
                                 if !root.audio_clip_linked: Button { text: "Delete audio clip"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "delete", ""); } }
                                 Rectangle { vertical-stretch: 1; }
@@ -948,7 +1057,7 @@ export component EditorWindow inherits Window {
                         Button { text: "Import SRT"; clicked => { editor_focus.focus(); root.project_action("import-srt"); } }
                         Button { text: "Insert"; enabled: root.can_place_visual; clicked => { editor_focus.focus(); root.project_action("insert"); } }
                         Button { text: "Overwrite"; enabled: root.can_place_visual; clicked => { editor_focus.focus(); root.project_action("overwrite"); } }
-                        ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.split_clip(); } }
+                        ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != "" || (root.audio_clip_id != "" && !root.audio_clip_locked && !root.audio_clip_linked); clicked => { editor_focus.focus(); root.split_clip(); } }
                         ToolButton { label: "DELETE"; glyph: "⌫"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.lift_clip(); } }
                         Button { text: "Ripple delete"; enabled: root.selected_clip_writable; clicked => { editor_focus.focus(); root.project_action("ripple-delete"); } }
                         Rectangle { width: 1px; height: 20px; background: root.border; }
@@ -1087,18 +1196,14 @@ export component EditorWindow inherits Window {
                                     snapped_delta(kind, delta, track) => { return root.clip_snap(clip.id, kind, delta, track, root.timeline_zoom); }
                                     autoscroll(x, y) => { root.edge_scroll(x, y, true); }
                                 }
-                                for clip in root.audio_clips: Rectangle {
-                                    x: 10px + clip.start * root.timeline_zoom * 1px;
-                                    y: (root.tracks.length + clip.lane) * 84px + 7px;
-                                    width: max(2px, clip.duration * root.timeline_zoom * 1px);
-                                    height: 69px; border-radius: 4px; clip: true;
-                                    background: clip.muted ? #384647 : clip.selected ? #27756b : #254e49;
-                                    Text { x: 8px; y: 9px; text: clip.name; color: root.text; font-size: 11px; }
-                                    TouchArea {
-                                        accessible-role: button; accessible-label: "Audio clip " + clip.name;
-                                        accessible-description: clip.description;
-                                        clicked => { editor_focus.focus(); root.audio_clip_action(clip.id, "select", ""); }
-                                    }
+                                for clip in root.audio_clips: AudioTimelineClip {
+                                    item: clip; video_lanes: root.tracks.length;
+                                    zoom: root.timeline_zoom; scroll_x: timeline_scroll.content-x; cancel_token: root.cancel_token;
+                                    capture => { editor_focus.focus(); root.timeline_capture(clip.id); }
+                                    clicked => { editor_focus.focus(); root.audio_clip_action(clip.id, "select", ""); }
+                                    cancelled => { root.timeline_capture(""); }
+                                    gesture(kind, delta) => { root.audio_clip_gesture(clip.id, kind, delta); }
+                                    autoscroll(x, y) => { root.edge_scroll(x, y, false); }
                                 }
                                 for dissolve in root.dissolves: Rectangle {
                                     x: 10px + dissolve.start * root.timeline_zoom * 1px;

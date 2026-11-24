@@ -32,9 +32,22 @@ pub struct AudioClip {
     pub id: String,
     pub asset_id: String,
     pub gain: f32,
+    #[serde(default, skip_serializing_if = "zero_samples")]
+    pub fade_in: u64,
+    #[serde(default, skip_serializing_if = "zero_samples")]
+    pub fade_out: u64,
     #[serde(default = "normal_speed", skip_serializing_if = "is_normal_speed")]
     pub speed_percent: u16,
     pub placement: AudioPlacement,
+}
+
+fn zero_samples(value: &u64) -> bool {
+    *value == 0
+}
+
+fn limit_fades(clip: &mut AudioClip, duration: u64) {
+    clip.fade_in = clip.fade_in.min(duration);
+    clip.fade_out = clip.fade_out.min(duration);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -187,7 +200,11 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
                 return Err("Invalid audio clip or missing source".into());
             }
             if let AudioPlacement::Linked { video_id } = &clip.placement {
-                if clip.speed_percent != normal_speed() || !links.insert(video_id) {
+                if clip.speed_percent != normal_speed()
+                    || clip.fade_in != 0
+                    || clip.fade_out != 0
+                    || !links.insert(video_id)
+                {
                     return Err("Invalid or duplicate linked audio".into());
                 }
             }
@@ -202,6 +219,9 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
                 .is_none()
             {
                 return Err("Invalid audio clip range".into());
+            }
+            if clip.fade_in > range.end - range.start || clip.fade_out > range.end - range.start {
+                return Err("Audio fade exceeds the clip duration".into());
             }
             data.fps.sample_to_frame_ceil(range.end)?;
             intervals.push(range);
@@ -225,6 +245,8 @@ impl ProjectData {
             id: new_id("audio-clip", revision),
             asset_id: asset_id.into(),
             gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
             speed_percent: normal_speed(),
             placement,
         };
@@ -292,24 +314,30 @@ pub(super) fn validate_locked_links(old: &ProjectData, new: &ProjectData) -> Res
     Ok(())
 }
 
+impl ProjectData {
+    fn writable_audio(&self, id: &str) -> Result<(usize, usize), String> {
+        for (lane, track) in self.audio_tracks.iter().enumerate() {
+            if let Some(index) = track.clips.iter().position(|clip| clip.id == id) {
+                if track.locked {
+                    return Err(format!("{} is locked", track.name));
+                }
+                return Ok((lane, index));
+            }
+        }
+        Err("Audio clip is missing".into())
+    }
+}
+
+fn trim_audio_source(source: i64, previous: u64, start: u64, speed: u16) -> Result<i64, String> {
+    let delta = (i128::from(start) - i128::from(previous)) * i128::from(speed);
+    i64::try_from(i128::from(source) + (delta + 50).div_euclid(100))
+        .map_err(|_| "Audio source range overflow".into())
+}
+
 impl EditorDocument {
     pub fn edit_audio_clip(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
         self.transact(|data| {
-            let (lane, index) = data
-                .audio_tracks
-                .iter()
-                .enumerate()
-                .find_map(|(i, track)| {
-                    track
-                        .clips
-                        .iter()
-                        .position(|clip| clip.id == id)
-                        .map(|j| (i, j))
-                })
-                .ok_or("Audio clip is missing")?;
-            if data.audio_tracks[lane].locked {
-                return Err(format!("{} is locked", data.audio_tracks[lane].name));
-            }
+            let (lane, index) = data.writable_audio(id)?;
             let interval = data.audio_tracks[lane].clips[index].interval(data)?;
             let clips = &mut data.audio_tracks[lane].clips;
             let clip = &mut clips[index];
@@ -335,6 +363,20 @@ impl EditorDocument {
                 "delete" if matches!(clip.placement, AudioPlacement::Independent { .. }) => {
                     clips.remove(index);
                 }
+                "fade-in" | "fade-out" => {
+                    if matches!(clip.placement, AudioPlacement::Linked { .. }) {
+                        return Err("Unlink audio to edit its fades".into());
+                    }
+                    let samples = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| "Enter a non-negative fade length in samples")?;
+                    if action == "fade-in" {
+                        clip.fade_in = samples;
+                    } else {
+                        clip.fade_out = samples;
+                    }
+                }
                 "start" | "end" | "source" => {
                     let AudioPlacement::Independent {
                         start,
@@ -357,6 +399,8 @@ impl EditorDocument {
                                 .parse()
                                 .map_err(|_| "Enter a non-negative sequence sample")?;
                             *duration = end.checked_sub(*start).ok_or("End must follow start")?;
+                            let length = *duration;
+                            limit_fades(clip, length);
                         }
                         _ => {
                             *source = value
@@ -370,6 +414,104 @@ impl EditorDocument {
             }
             Ok(())
         })
+    }
+
+    pub fn audio_gesture(
+        &mut self,
+        id: &str,
+        kind: &str,
+        delta: i32,
+        revision: u64,
+    ) -> Result<(), String> {
+        self.transact_at(revision, |data| {
+            let (lane, index) = data.writable_audio(id)?;
+            let amount = data.fps.frame_to_sample(u64::from(delta.unsigned_abs()))?;
+            let shift = |value: u64| {
+                if delta < 0 {
+                    value.saturating_sub(amount)
+                } else {
+                    value.saturating_add(amount)
+                }
+            };
+            let clip = &mut data.audio_tracks[lane].clips[index];
+            let AudioPlacement::Independent {
+                start,
+                duration,
+                source,
+            } = &mut clip.placement
+            else {
+                return Err("Unlink audio to edit it independently".into());
+            };
+            let end = start
+                .checked_add(*duration)
+                .ok_or("Audio timeline range overflow")?;
+            match kind {
+                "fade-in" => clip.fade_in = shift(clip.fade_in).min(*duration),
+                "fade-out" => {
+                    clip.fade_out = if delta < 0 {
+                        clip.fade_out.saturating_add(amount).min(*duration)
+                    } else {
+                        clip.fade_out.saturating_sub(amount)
+                    };
+                }
+                "move" => *start = shift(*start),
+                "trim-start" => {
+                    let position = shift(*start);
+                    *duration = end.checked_sub(position).ok_or("End must follow start")?;
+                    *source = trim_audio_source(*source, *start, position, clip.speed_percent)?;
+                    *start = position;
+                }
+                "trim-end" => {
+                    *duration = shift(end)
+                        .checked_sub(*start)
+                        .ok_or("End must follow start")?
+                }
+                _ => return Err("Unknown audio gesture".into()),
+            }
+            let length = *duration;
+            limit_fades(clip, length);
+            Ok(())
+        })
+    }
+
+    pub fn split_audio(&mut self, id: &str, frame: u64) -> Result<String, String> {
+        let right_id = new_id("audio-clip", self.revision);
+        self.transact(|data| {
+            let (lane, index) = data.writable_audio(id)?;
+            let split = data.fps.frame_to_sample(frame)?;
+            let clips = &mut data.audio_tracks[lane].clips;
+            let left = &mut clips[index];
+            let mut right = left.clone();
+            let AudioPlacement::Independent {
+                start,
+                duration,
+                source,
+            } = &mut left.placement
+            else {
+                return Err("Unlink audio to edit it independently".into());
+            };
+            let end = start
+                .checked_add(*duration)
+                .ok_or("Audio timeline range overflow")?;
+            if split <= *start || split >= end {
+                return Err("Split point must be inside the selected audio clip".into());
+            }
+            right.id = right_id.clone();
+            right.placement = AudioPlacement::Independent {
+                start: split,
+                duration: end - split,
+                source: trim_audio_source(*source, *start, split, left.speed_percent)?,
+            };
+            *duration = split - *start;
+            let left_length = *duration;
+            left.fade_out = 0;
+            right.fade_in = 0;
+            limit_fades(left, left_length);
+            limit_fades(&mut right, end - split);
+            clips.insert(index + 1, right);
+            Ok(())
+        })?;
+        Ok(right_id)
     }
 
     pub fn place_audio(&mut self, asset_id: &str, frame: u64) -> Result<(), String> {

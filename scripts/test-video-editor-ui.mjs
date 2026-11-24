@@ -31,7 +31,13 @@ async function launch(path){
 }
 async function close(){await click('Close window');const exit=await Promise.race([exited,delay(10000).then(()=>{throw Error('Window did not close normally');})]);assert.deepEqual(exit,{code:0,signal:null});report.launches.push(exit);await writeFile(join(output,`application-${report.launches.length}.log`),stdout+stderr);child=undefined;}
 const state=async()=> (await client.properties(client.rootHandle)).accessibleDescription;
-async function click(label,last=false){const items=await client.byLabel(label,{role:'Button'});assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
+async function buttons(label) {
+  return client.waitFor(async () => {
+    try { return await client.byLabel(label, { role: 'Button' }); }
+    catch (error) { if (!/destroyed|stale/i.test(error.message)) throw error; }
+  }, { description: `stable controls for ${label}` });
+}
+async function click(label,last=false){const items=await buttons(label);assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
 async function fileAction(action,path,submit){await click(action);await client.setValue(await client.find({label:'File path',role:'TextInput'}),path);await click(submit,true);}
 const timeline=async name=>(await client.byLabel(name,{role:'Button'})).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await client.byLabel(name,{role:'Button'})).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
@@ -209,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 10);
+   assert.equal(data.schema_version, 11);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -375,6 +381,106 @@ try{
    await snapshot('17-audio-mix');
    await close();
  }, { core: true });
+ const audioGestureProject = join(output, 'audio-gesture.oqvideo.json');
+ const audioMediaName = 'independent-tone.wav';
+ const audioMoveHandle = () => client.waitFor(async () => {
+   try { return (await client.byLabel('Audio clip ' + audioMediaName, { role: 'Button' }))[0]; }
+   catch (error) { if (!/destroyed|stale/i.test(error.message)) throw error; }
+ }, { description: 'independent audio timeline item' });
+ const audioLaneScroll = async () => {
+   const view = await client.find({ id: 'EditorWindow::timeline_scroll' });
+   await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId, deltaX: 0, deltaY: -170, position: center(view) });
+ };
+ const dragAudio = async (element, pixels) => {
+   const from = center(element);
+   await client.drag(element, { x: from.x + pixels, y: from.y });
+ };
+ const audioRange = async (start, end) => client.waitFor(async () => {
+   const description = (await audioMoveHandle()).accessibleDescription;
+   return description === `${start} samples to ${end}`;
+ }, { description: `audio range ${start} through ${end}` });
+ await step('Edit the waveform on the audio timeline and export the same fades', async () => {
+   const fixture = JSON.parse(await readFile(audioProject, 'utf8'));
+   fixture.data.width = 320;
+   fixture.data.height = 180;
+   fixture.data.audio_tracks[0].muted = true;
+   fixture.data.audio_tracks[1].clips[0].placement.duration = 48000;
+   const seed = join(output, 'audio-gesture-seed.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('audio clips 2');
+   await audioLaneScroll();
+   await client.waitFor(async () => (await client.byLabel('Waveform ' + audioMediaName, { role: 'Image' })).length === 1,
+     { description: 'decoded waveform is visible on the audio clip' });
+   await snapshot('17-audio-waveform');
+   const px = (await audioMoveHandle()).size.width / 30;
+   await dragAudio(await audioMoveHandle(), 3 * px); await audioRange(4800, 52800);
+   const trim = edge => client.find({ label: `Trim audio ${edge} of ${audioMediaName}`, role: 'Button' });
+   await dragAudio(await trim('start'), 3 * px); await audioRange(9600, 52800);
+   await dragAudio(await trim('end'), -3 * px); await audioRange(9600, 48000);
+
+   const fade = side => client.find({ label: `Audio fade ${side} ${audioMediaName}`, role: 'Button' });
+   await dragAudio(await fade('in'), 6 * px);
+   const field = label => client.find({ label, role: 'TextInput', visible: false });
+   await client.waitFor(async () => (await field('Audio fade in (samples)')).accessibleValue === '9600',
+     { description: 'fade-in handle writes a 9600-sample ramp' });
+   await dragAudio(await fade('out'), -6 * px);
+   await client.waitFor(async () => (await field('Audio fade out (samples)')).accessibleValue === '9600',
+     { description: 'fade-out handle writes a 9600-sample ramp' });
+   await click('UNDO');
+   await client.waitFor(async () => (await field('Audio fade out (samples)')).accessibleValue === '0',
+     { description: 'undo removes one fade gesture' });
+   await click('REDO');
+   await client.waitFor(async () => (await field('Audio fade out (samples)')).accessibleValue === '9600',
+     { description: 'redo preserves the fade duration' });
+
+   await fileAction('SAVE AS', audioGestureProject, 'Save project'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(audioGestureProject, 'utf8')).data.audio_tracks[1].clips[0];
+   assert.deepEqual(saved.placement, { kind: 'independent', start: 9600, duration: 38400, source: 4800 });
+   assert.deepEqual([saved.fade_in, saved.fade_out], [9600, 9600]);
+   const path = join(output, 'audio-waveform-edits.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const samples = pcm(path);
+   const middle = amplitude(samples, .5, 880);
+   assert(middle > .07, 'the middle of the clip plays at full gain');
+   assert(amplitude(samples, .06, 880) < .002, 'silence before the moved and trimmed start');
+   assert(amplitude(samples, .2, 880) < middle * .45, 'fade in reduces the opening amplitude');
+   assert(amplitude(samples, .894, 880) < middle * .45, 'fade out reduces the closing amplitude');
+   assert(amplitude(samples, 1.04, 880) < .002, 'silence after the trimmed end');
+   await close();
+ }, { core: true });
+ await step('Split an independent audio clip and protect linked and locked clips from gestures', async () => {
+   await launch(audioGestureProject); await waitState('audio clips 2');
+   await audioLaneScroll();
+   const clip = await audioMoveHandle();
+   const [next] = await buttons('NEXT');
+   await client.click(clip);
+   const numericFade = await client.waitFor(async () => {
+     try { return (await client.byLabel('Audio fade in (samples)', { role: 'TextInput' }))[0]; }
+     catch (error) { if (!/destroyed|stale/i.test(error.message)) throw error; }
+   }, { description: 'audio properties after selection' });
+   await client.click(numericFade); await client.setValue(numericFade, '8000'); await client.key('\n');
+   await client.waitFor(async () => (await client.properties(numericFade.handle)).accessibleValue === '8000',
+     { description: 'sample-precise fade field' });
+   await click('UNDO');
+   await client.waitFor(async () => (await client.properties(numericFade.handle)).accessibleValue === '9600',
+     { description: 'undo restores the typed fade' });
+   const zoom = clip.size.width / 24;
+   for (let i = 0; i < 15; i++) await client.click(next);
+   await waitState('playhead 15 frames');
+   await click('SPLIT'); await waitState('audio clips 3');
+   const rows = await buttons('Audio clip ' + audioMediaName);
+   assert.deepEqual(rows.map(row => row.accessibleDescription), ['9600 samples to 24000', '24000 samples to 48000']);
+   await click('UNDO'); await audioRange(9600, 48000);
+   await click('Lock Audio 2');
+   await dragAudio(await audioMoveHandle(), zoom * 4); await audioRange(9600, 48000);
+   assert.equal((await buttons('Trim audio start of ' + audioMediaName)).length, 0);
+   await click('Unlock Audio 2');
+   const linked = await audioClip('linked-tone.mp4');
+   await dragAudio(linked, zoom * 4);
+   assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('0 samples to 144000'));
+   assert.equal((await buttons('Trim audio start of linked-tone.mp4')).length, 0);
+   await close();
+ });
  const rangeProject = join(output, 'range-seed.oqvideo.json');
  const rangeStart = () => client.find({ label: 'Export start frame', role: 'TextInput' });
  const rangeEnd = () => client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' });

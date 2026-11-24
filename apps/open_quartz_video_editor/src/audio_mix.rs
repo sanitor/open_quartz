@@ -14,6 +14,8 @@ struct MixClip {
     path: PathBuf,
     stream: usize,
     gain: f32,
+    fade_in: u64,
+    fade_out: u64,
 }
 
 pub struct AudioMix {
@@ -72,6 +74,8 @@ impl AudioMix {
                     path: PathBuf::from(&asset.path),
                     stream,
                     gain: track.gain * clip.gain,
+                    fade_in: clip.fade_in,
+                    fade_out: clip.fade_out,
                 });
             }
         }
@@ -122,13 +126,26 @@ impl AudioMix {
             let scratch = &mut self.scratch[..len];
             reader.render(clip.source, from - clip.start, scratch)?;
             let destination = (from - start) as usize;
-            for (sum, sample) in output[destination..destination + len]
+            for (index, (sum, sample)) in output[destination..destination + len]
                 .iter_mut()
                 .zip(scratch)
+                .enumerate()
             {
+                let at = from + index as u64;
+                let fade_in = if clip.fade_in > 0 {
+                    ((at - clip.start) as f64 / clip.fade_in as f64).min(1.0)
+                } else {
+                    1.0
+                };
+                let fade_out = if clip.fade_out > 0 {
+                    ((clip.end - 1 - at) as f64 / clip.fade_out as f64).min(1.0)
+                } else {
+                    1.0
+                };
+                let gain = clip.gain * (fade_in * fade_out) as f32;
                 for channel in 0..2 {
                     if sample[channel].is_finite() {
-                        sum[channel] += sample[channel] * clip.gain;
+                        sum[channel] += sample[channel] * gain;
                     }
                 }
             }

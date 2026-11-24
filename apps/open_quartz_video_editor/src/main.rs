@@ -4,6 +4,8 @@ mod audio_mix;
 #[cfg(target_os = "macos")]
 mod audio_rate;
 #[cfg(target_os = "macos")]
+mod audio_waveform;
+#[cfg(target_os = "macos")]
 mod audio_output;
 mod document;
 mod media;
