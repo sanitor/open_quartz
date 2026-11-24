@@ -13,9 +13,9 @@ mod timing;
 #[path = "document_animation.rs"]
 mod animation;
 pub use animation::OpacityKey;
-pub use timing::Placement;
+pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -117,6 +117,11 @@ pub struct Clip {
     pub asset_id: String,
     pub timeline_start: u64,
     pub duration: u64,
+    #[serde(default = "normal_speed", skip_serializing_if = "is_normal_speed")]
+    pub speed_percent: u16,
+    /// Retains the unconsumed source fraction when the result is rounded down to whole frames.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub source_span_remainder: u16,
     pub source_in_pts: i64,
     /// Exact fractional source tick, always in [0, 1); retained across splits and trims.
     #[serde(default)]
@@ -128,6 +133,8 @@ pub struct Clip {
     pub opacity_keys: Vec<OpacityKey>,
     pub pipeline: ClipPipeline,
 }
+pub(super) fn is_normal_speed(value: &u16) -> bool { *value == normal_speed() }
+fn is_zero(value: &u16) -> bool { *value == 0 }
 impl Clip {
     pub fn timeline_end(&self) -> Result<u64, String> {
         self.timeline_start
@@ -364,6 +371,8 @@ impl EditorDocument {
             asset_id: asset.id,
             timeline_start: start,
             duration,
+            speed_percent: normal_speed(),
+            source_span_remainder: 0,
             source_in_pts: source_in,
             source_subtick_numerator: 0,
             source_subtick_denominator: 1,
@@ -497,7 +506,7 @@ impl EditorDocument {
             if new_end <= start {
                 return Err("Right trim must leave at least one frame".into());
             }
-            data.tracks[track].clips[index].duration = new_end - start;
+            data.tracks[track].clips[index].resize_right(new_end - start);
             Ok(())
         })
     }
@@ -518,7 +527,7 @@ impl EditorDocument {
                 clip.source_subtick_denominator = 1;
             }
             clip.timeline_start = timeline_start;
-            clip.duration = duration;
+            clip.resize_right(duration);
             clip.source_in_pts = source_in_pts;
             data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
@@ -821,6 +830,9 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }
+            if !valid_speed(clip.speed_percent) || clip.source_span_remainder >= clip.speed_percent {
+                return Err("Invalid clip speed or source span".into());
+            }
             if clip.source_subtick_denominator == 0
                 || clip.source_subtick_numerator >= clip.source_subtick_denominator
             {
@@ -846,8 +858,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             let media_end = origin
                 .checked_add(duration)
                 .ok_or("Media timestamp range overflow")?;
-            let (source_end, remainder, _) =
-                shifted_source(clip, i128::from(clip.duration), data.fps, asset.time_base)?;
+            let (source_end, remainder, _) = clip.source_out(data.fps, asset.time_base)?;
             if clip.source_in_pts < origin
                 || source_end > media_end
                 || (source_end == media_end && remainder != 0)
@@ -906,6 +917,15 @@ fn shifted_source(
     fps: Rational,
     time_base: Rational,
 ) -> Result<(i64, u64, u64), String> {
+    let units = frames.checked_mul(i128::from(clip.speed_percent)).ok_or("Source timestamp overflow")?;
+    shifted_source_units(clip, units, fps, time_base)
+}
+fn shifted_source_units(
+    clip: &Clip,
+    units: i128,
+    fps: Rational,
+    time_base: Rational,
+) -> Result<(i64, u64, u64), String> {
     Rational::new(fps.numerator, fps.denominator)?;
     Rational::new(time_base.numerator, time_base.denominator)?;
     if clip.source_subtick_denominator == 0
@@ -913,16 +933,18 @@ fn shifted_source(
     {
         return Err("Invalid fractional source in-point".into());
     }
-    let frame_den = i128::from(fps.numerator) * i128::from(time_base.numerator);
+    let mut frame_den = i128::from(fps.numerator) * i128::from(time_base.numerator) * 100;
+    let mut frame_num = units.checked_mul(i128::from(fps.denominator))
+        .and_then(|n| n.checked_mul(i128::from(time_base.denominator)))
+        .ok_or("Source timestamp overflow")?;
+    let divisor = gcd128(frame_num.rem_euclid(frame_den), frame_den);
+    frame_num /= divisor;
+    frame_den /= divisor;
     let old_den = i128::from(clip.source_subtick_denominator);
     let common = gcd128(frame_den, old_den);
     let denominator = old_den
         .checked_mul(frame_den / common)
         .ok_or("Source timestamp denominator overflow")?;
-    let frame_num = frames
-        .checked_mul(i128::from(fps.denominator))
-        .and_then(|v| v.checked_mul(i128::from(time_base.denominator)))
-        .ok_or("Source timestamp overflow")?;
     let numerator = frame_num
         .checked_mul(old_den / common)
         .and_then(|v| {
@@ -1094,6 +1116,27 @@ mod tests {
         assert_eq!(fps.frames_to_ns(30000).unwrap(), 1_001_000_000_000);
         assert_eq!(fps.ns_to_frames_floor(1_001_000_000_000).unwrap(), 30000);
         assert!(Rational::new(0, 1).is_err());
+    }
+    #[test]
+    fn retime_preserves_source_span_and_split_samples_across_rate_rounding() {
+        let mut doc = project();
+        insert_asset(&mut doc, Path::new("movie.mp4"));
+        let id = doc.add_clip("asset-1").unwrap();
+        doc.set_speed(&id, 400).unwrap();
+        let clip = doc.clip(&id).unwrap();
+        let asset = doc.asset("asset-1").unwrap();
+        assert_eq!((clip.duration, clip.source_span_remainder), (22, 200));
+        assert_eq!(clip.source_out(doc.data.fps, asset.time_base), Ok((9090, 0, 1)));
+        assert_eq!(doc.data.clip_source_time(clip, 1), Ok(133_333_333));
+        doc.set_speed(&id, 100).unwrap();
+        assert_eq!(doc.clip(&id).unwrap().duration, 90);
+        doc.set_speed(&id, 125).unwrap();
+        let tail = doc.split(&id, 1).unwrap();
+        let clip = doc.clip(&tail).unwrap();
+        assert_eq!((clip.source_in_pts, clip.source_subtick_numerator, clip.source_subtick_denominator), (9001, 1, 4));
+        assert_eq!(clip.speed_percent, 125);
+        assert_eq!(doc.data.clip_source_time(clip, 1), Ok(41_666_666));
+        assert_eq!(clip.source_out(doc.data.fps, doc.asset("asset-1").unwrap().time_base), Ok((9090, 0, 1)));
     }
     #[test]
     fn overwrite_only_replaces_the_target_interval_across_multiple_clips() {

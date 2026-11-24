@@ -274,6 +274,14 @@ impl AudioReader {
             return Err("Invalid PCM request range".into());
         }
         output.fill([0.0; 2]);
+        if self.cancel.load(Ordering::Acquire) {
+            return Err(MediaError::time(crate::ErrorKind::Cancelled, "Audio read cancelled"));
+        }
+        if let Some(end) = self.info.duration_pts.and_then(|duration| self.info.start_pts.checked_add(duration)) {
+            if range.start >= audio_sample(end, self.info.time_base)? {
+                return Ok(());
+            }
+        }
         if self.next_request.is_some_and(|next| next != range.start)
             || self.next_request.is_none()
                 && range.start
@@ -450,6 +458,8 @@ mod tests {
         assert_eq!(block[7], [0.5, 0.0]);
         reader.read(48000..48008, &mut block).unwrap();
         assert_eq!(block[2], [0.0, -0.5]);
+        reader.read(192000..192008, &mut block).unwrap();
+        assert_eq!(block, [[0.0; 2]; 8]);
         reader.read(0..8, &mut block).unwrap();
         assert_eq!(block[3], [0.5, 0.0]);
         cancel.store(true, Ordering::Release);

@@ -1,4 +1,7 @@
-use super::{advance_source, new_id, AudioPlacement, EditorDocument, ProjectData};
+use super::{
+    advance_source, new_id, shifted_source_units, AudioPlacement, Clip, EditorDocument,
+    ProjectData, Rational,
+};
 use std::{collections::HashSet, ops::Range};
 
 #[derive(Clone, Copy)]
@@ -6,6 +9,68 @@ pub enum Placement {
     EmptySpace(Option<u64>),
     Insert(u64),
     Overwrite(u64),
+}
+
+pub const fn normal_speed() -> u16 {
+    100
+}
+
+pub fn valid_speed(percent: u16) -> bool {
+    (25..=400).contains(&percent)
+}
+
+impl Clip {
+    // A unit is one hundredth of a source frame at the sequence frame rate.
+    fn source_span_units(&self) -> i128 {
+        i128::from(self.duration) * i128::from(self.speed_percent)
+            + i128::from(self.source_span_remainder)
+    }
+
+    pub(super) fn resize_right(&mut self, duration: u64) {
+        if self.duration != duration {
+            self.duration = duration;
+            self.source_span_remainder = 0;
+        }
+    }
+
+    pub fn source_out(
+        &self,
+        fps: Rational,
+        time_base: Rational,
+    ) -> Result<(i64, u64, u64), String> {
+        shifted_source_units(self, self.source_span_units(), fps, time_base)
+    }
+
+    pub fn frames_until_source_out(
+        &self,
+        out: i64,
+        fps: Rational,
+        time_base: Rational,
+    ) -> Result<u64, String> {
+        if out == self.source_out(fps, time_base)?.0 {
+            return Ok(self.duration);
+        }
+        let fraction = i128::from(self.source_subtick_denominator);
+        let ticks = (i128::from(out) - i128::from(self.source_in_pts))
+            .checked_mul(fraction)
+            .and_then(|ticks| ticks.checked_sub(i128::from(self.source_subtick_numerator)))
+            .ok_or("Source out overflow")?;
+        if ticks <= 0 {
+            return Err("Source out must follow source in".into());
+        }
+        let numerator = ticks
+            .checked_mul(i128::from(time_base.numerator))
+            .and_then(|value| value.checked_mul(i128::from(fps.numerator) * 100))
+            .ok_or("Source out overflow")?;
+        let denominator = fraction
+            .checked_mul(
+                i128::from(time_base.denominator)
+                    * i128::from(fps.denominator)
+                    * i128::from(self.speed_percent),
+            )
+            .ok_or("Source out overflow")?;
+        u64::try_from(numerator / denominator).map_err(|_| "Source out overflow".into())
+    }
 }
 
 impl ProjectData {
@@ -55,7 +120,7 @@ impl ProjectData {
         clips.insert(index + 1, right);
         self.trim_video_start(track, index + 1, at)?;
         let left = &mut self.tracks[track].clips[index];
-        left.duration = at - left.timeline_start;
+        left.resize_right(at - left.timeline_start);
         self.split_link(revision, &original_id, right_id.clone());
         Ok(right_id)
     }
@@ -126,6 +191,27 @@ impl ProjectData {
 }
 
 impl EditorDocument {
+    pub fn set_speed(&mut self, clip_id: &str, percent: u16) -> Result<(), String> {
+        if !valid_speed(percent) {
+            return Err("Speed must be a whole percentage from 25 to 400".into());
+        }
+        self.transact(|data| {
+            let (track, index) = data.writable_clip(clip_id)?;
+            let clip = &mut data.tracks[track].clips[index];
+            let span = clip.source_span_units();
+            let rate = i128::from(percent);
+            let duration =
+                u64::try_from(span / rate).map_err(|_| "Retimed clip exceeds timeline range")?;
+            if duration == 0 {
+                return Err("This speed would leave less than one sequence frame".into());
+            }
+            clip.duration = duration;
+            clip.speed_percent = percent;
+            clip.source_span_remainder = (span % rate) as u16;
+            Ok(())
+        })
+    }
+
     pub fn ripple_delete(&mut self, clip_id: &str) -> Result<(), String> {
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
@@ -165,7 +251,7 @@ impl EditorDocument {
                 return Err("Roll must leave at least one frame on each side".into());
             }
             data.trim_video_start(track, index + 1, frame)?;
-            data.tracks[track].clips[index].duration = frame - start;
+            data.tracks[track].clips[index].resize_right(frame - start);
             Ok(())
         })
     }

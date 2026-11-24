@@ -16,6 +16,7 @@ fn document() -> EditorDocument {
     });
     data.tracks[0].clips.push(Clip {
         id: "clip-1".into(), asset_id: "asset-1".into(), timeline_start: 0, duration: 60,
+        speed_percent: normal_speed(), source_span_remainder: 0,
         source_in_pts: 9000, source_subtick_numerator: 1, source_subtick_denominator: 3,
         transform: ClipTransform::default(), opacity_keys: Vec::new(), pipeline: ClipPipeline::default(),
     });
@@ -117,14 +118,14 @@ fn schema_one_migrates_to_explicit_pipeline_in_default_track() {
     write_project(&path, &legacy);
     let mut migrated = EditorDocument::open(path.clone()).unwrap();
     assert_eq!(migrated.data, original.data);
-    assert_eq!(migrated.data.schema_version, 5);
+    assert_eq!(migrated.data.schema_version, 6);
     assert_eq!(migrated.clip("clip-1").unwrap().pipeline, ClipPipeline::default());
     assert!(!migrated.is_dirty());
     assert!(!migrated.can_undo());
     migrated.save().unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(saved["schema_version"], 5);
-    assert_eq!(saved["data"]["schema_version"], 5);
+    assert_eq!(saved["schema_version"], 6);
+    assert_eq!(saved["data"]["schema_version"], 6);
     assert!(saved["data"]["tracks"][0]["clips"][0].get("pipeline").is_some());
     assert_eq!(EditorDocument::open(path.clone()).unwrap().data, migrated.data);
     let object = legacy["data"]["clips"][0].as_object_mut().unwrap();

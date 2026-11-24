@@ -1,5 +1,5 @@
-use crate::document::ProjectData;
-use oq_media::{AudioReader, MediaError, StereoSample, MAX_AUDIO_BLOCK};
+use crate::{audio_rate::RateReader, document::ProjectData};
+use oq_media::{MediaError, StereoSample, MAX_AUDIO_BLOCK};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -9,6 +9,7 @@ struct MixClip {
     start: u64,
     end: u64,
     source: i64,
+    speed_percent: u16,
     path: PathBuf,
     stream: usize,
     gain: f32,
@@ -16,7 +17,7 @@ struct MixClip {
 
 pub struct AudioMix {
     clips: Vec<MixClip>,
-    readers: HashMap<usize, AudioReader>,
+    readers: HashMap<usize, RateReader>,
     cancel: Arc<AtomicBool>,
     scratch: Vec<StereoSample>,
 }
@@ -57,6 +58,7 @@ impl AudioMix {
                     start: interval.start,
                     end: interval.end,
                     source: interval.source,
+                    speed_percent: interval.speed_percent,
                     path: PathBuf::from(&asset.path),
                     stream,
                     gain: track.gain * clip.gain,
@@ -99,22 +101,16 @@ impl AudioMix {
             }
             let reader = match self.readers.entry(index) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
-                    AudioReader::open(&clip.path, clip.stream, self.cancel.clone())?,
-                ),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(RateReader::open(
+                    &clip.path,
+                    clip.stream,
+                    clip.speed_percent,
+                    self.cancel.clone(),
+                )?),
             };
-            let source = clip
-                .source
-                .checked_add(
-                    i64::try_from(from - clip.start).map_err(|_| "Audio source offset overflow")?,
-                )
-                .ok_or("Audio source offset overflow")?;
             let len = (to - from) as usize;
-            let source_end = source
-                .checked_add(len as i64)
-                .ok_or("Audio source offset overflow")?;
             let scratch = &mut self.scratch[..len];
-            reader.read(source..source_end, scratch)?;
+            reader.render(clip.source, from - clip.start, scratch)?;
             let destination = (from - start) as usize;
             for (sum, sample) in output[destination..destination + len]
                 .iter_mut()

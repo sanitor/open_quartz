@@ -36,7 +36,7 @@ async function fileAction(action,path,submit){await click(action);await client.s
 const timeline=async name=>(await client.byLabel(name,{role:'Button'})).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await client.byLabel(name,{role:'Button'})).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
-async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:r<5&&g<5&&b<5)hits++;}return hits>=890;}
+async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
 async function step(name, run, { core = false } = {}) {
   if (smoke && !core) return;
@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 5);
+   assert.equal(data.schema_version, 6);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -595,6 +595,117 @@ try{
    await click('NEXT'); await waitState('playhead 1 frames');
    await click('SPLIT'); await waitState('clips 3');
    await expectColor('blend');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
+ const speedName = 'retime-source.mp4';
+ const speedProject = join(output, 'retime.oqvideo.json');
+ const goToSpeed = async value => enter(await clipControl('Speed (%)'), value);
+ const expectRateDuration = async duration => client.waitFor(async () =>
+   (await positions(speedName)).some(([start, length]) => start === 0 && length === duration),
+ { description: `first retimed clip has ${duration} frames` });
+ await step('Change clip speed and keep retimed video and linked audio synchronized in MP4', async () => {
+   const source = join(output, speedName);
+   mediaCommand(['-f', 'lavfi', '-i', 'color=c=red:s=320x180:r=30:d=1',
+     '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=30:d=1',
+     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2',
+     '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0,scale=in_color_matrix=bt601:out_color_matrix=bt709[v]',
+     '-map', '[v]', '-map', '2:a:0', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+     '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-c:a', 'aac', '-y', source]);
+   await launch(); await waitState('assets 0; clips 0');
+   await click('SEQUENCE');
+   await client.setValue(await findInput('Sequence width'), '320');
+   await client.setValue(await findInput('Sequence height'), '180');
+   await click('Apply settings');
+   await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+   await click('ADD CLIP'); await waitState('clips 1');
+   await goToSpeed(200); await expectRateDuration(30);
+   assert((await audioClip(speedName)).accessibleDescription.startsWith('0 samples to 48000'));
+   await click('UNDO'); await expectRateDuration(60);
+   await click('REDO'); await expectRateDuration(30);
+   await expectColor('red');
+   await click('PLAY'); await waitAudio();
+   await waitState('playhead 29 frames');
+   await expectColor('blue');
+   await client.waitFor(async () => !(await state()).includes('Audio output'), { description: 'retimed audio reaches the end' });
+   await fileAction('SAVE AS', speedProject, 'Save project'); await waitState('Project saved');
+   const { data } = JSON.parse(await readFile(speedProject, 'utf8'));
+   assert.equal(data.tracks[0].clips[0].speed_percent, 200);
+   const exported = join(output, 'retimed-fast.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const audio = pcm(exported);
+   assert(audio.length / 2 >= 48000 && audio.length / 2 < 49024);
+   assert(amplitude(audio, 0.1, 880) > 0.04);
+   assert(amplitude(audio, 0.1, 440) < 0.008);
+   const video = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     { maxBuffer: 8 * 1024 * 1024 });
+   const stride = 320 * 180 * 3;
+   assert.equal(video.length, stride * 30);
+   for (let frame = 0; frame < 30; frame++) {
+     const offset = frame * stride + (90 * 320 + 160) * 3;
+     assert(video[offset + (frame < 15 ? 0 : 2)] > 220, `wrong source frame at ${frame}`);
+     assert(video[offset + (frame < 15 ? 2 : 0)] < 30);
+   }
+   await close();
+ }, { core: true });
+ await step('Retime rejects overlap and a locked audio link, and unlink preserves slowed audio', async () => {
+   await launch(speedProject); await waitState('clips 1; playhead 0 frames');
+   await click('ADD CLIP'); await waitState('assets 1; clips 2');
+   await click('FIT TIMELINE');
+   await client.click((await timeline(speedName))[0]);
+   await goToSpeed(50);
+   await waitState('Video track clips cannot overlap');
+   assert.deepEqual(await positions(speedName), [[0, 30], [30, 60]]);
+   await click('Lock Audio 1');
+   await goToSpeed(400);
+   await waitState('Audio 1 is locked');
+   assert.deepEqual(await positions(speedName), [[0, 30], [30, 60]]);
+   await click('Unlock Audio 1');
+   await client.click((await timeline(speedName))[1]);
+   await waitState('playhead 30 frames');
+   await click('DELETE'); await waitState('assets 1; clips 1');
+   await client.click(await item(speedName));
+   await goToSpeed(400); await expectRateDuration(15);
+   await click('PLAY'); await waitState('playhead 14 frames');
+   await expectColor('blue');
+   await client.waitFor(async () => !(await state()).includes('Audio output'), { description: '4x playback drains' });
+   await goToSpeed(50); await expectRateDuration(120);
+   assert((await audioClip(speedName)).accessibleDescription.startsWith('0 samples to 192000'));
+   await client.click(await audioClip(speedName));
+   await client.waitFor(async () => (await client.byLabel('Unlink audio', { role: 'Button' }))[0],
+     { description: 'selected audio clip exposes Unlink' });
+   await click('Unlink audio');
+   await client.click(await item(speedName));
+   await client.waitFor(async () => (await client.query({ id: 'EditorWindow::clip_properties' }))[0],
+     { description: 'video inspector is selected again after unlinking' });
+   await goToSpeed(100); await expectRateDuration(60);
+   assert.equal((await audioClip(speedName)).accessibleDescription, '0 samples to 192000 · 50% speed');
+   const exported = join(output, 'retimed-unlinked.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const audio = pcm(exported);
+   assert(audio.length / 2 >= 192000 && audio.length / 2 < 193024);
+   assert(amplitude(audio, 2.5, 220) > 0.04);
+   assert(amplitude(audio, 2.5, 440) < 0.008);
+   await fileAction('SAVE AS', join(output, 'retimed-unlinked.oqvideo.json'), 'Save project'); await waitState('Project saved');
+   await close();
+ });
+ await step('Opacity keyframes continue to follow the source after changing clip speed', async () => {
+   const seed = join(output, 'retimed-opacity.oqvideo.json');
+   await writeFile(seed, await readFile(keyProject));
+   await launch(seed);
+   await waitState('clips 3');
+   await click('FIT TIMELINE');
+   const tail = (await timeline('foreground.mp4')).find(node => node.accessibleDescription.includes('start 1 frames'));
+   assert(tail);
+   await client.click(tail);
+   await goToSpeed(50);
+   await client.waitFor(async () => (await positions('foreground.mp4')).some(([start, length]) => start === 1 && length === 4),
+     { description: 'second animated clip now spans four sequence frames' });
+   await expectColor('blend');
+   await click('NEXT'); await waitState('playhead 2 frames');
+   await expectColor('three-quarter');
+   await click('NEXT'); await waitState('playhead 3 frames');
+   await expectColor('red');
    await click('SAVE'); await waitState('Project saved');
    await close();
  });

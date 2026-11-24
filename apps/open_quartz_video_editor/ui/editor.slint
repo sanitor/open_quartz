@@ -269,6 +269,7 @@ export component EditorWindow inherits Window {
     in property <string> audio_clip_end;
     in property <string> audio_clip_source;
     in property <string> audio_clip_gain;
+    in property <string> audio_clip_speed: "100";
     in property <bool> audio_clip_linked;
     in property <bool> audio_clip_locked;
     in property <string> monitor_status;
@@ -302,6 +303,7 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_start: "0";
     in property <string> selected_clip_duration: "0";
     in property <string> selected_clip_end: "0";
+    in property <string> selected_clip_speed: "100";
     in property <bool> can_place_video;
     in property <bool> can_roll_end;
     in property <string> selected_clip_source_in: "0";
@@ -853,6 +855,7 @@ export component EditorWindow inherits Window {
                             HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip properties"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
                             if root.audio_clip_id != "": ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
                                 Text { text: root.audio_clip_name; color: root.text; wrap: word-wrap; }
+                                if root.audio_clip_speed != "100": Text { text: root.audio_clip_speed + "% speed"; color: root.secondary; font-size: 11px; }
                                 Text { text: "Audio timing uses 48 kHz samples. End is exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 TimingField { label: "Audio start"; value: root.audio_clip_start; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "start", value); } }
                                 TimingField { label: "Audio end"; value: root.audio_clip_end; enabled: !root.audio_clip_linked && !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "end", value); } }
@@ -869,6 +872,7 @@ export component EditorWindow inherits Window {
                                 TimingField { label: "Timeline end"; value: root.selected_clip_end; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("end", value); } }
                                 TimingField { label: "Source in"; value: root.selected_clip_source_in; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_in", value); } }
                                 TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_out", value); } }
+                                if root.selected_clip_id != "": TimingField { label: "Speed (%)"; value: root.selected_clip_speed; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("speed", value); } }
                                 if root.can_roll_end: TimingField { label: "Roll cut (frame)"; value: root.selected_clip_end; committed(value) => { root.clip_timing_changed("roll", value); } }
                                 Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 12px; }
                                 if root.selected_clip_id != "": VerticalLayout {

@@ -32,6 +32,8 @@ pub struct AudioClip {
     pub id: String,
     pub asset_id: String,
     pub gain: f32,
+    #[serde(default = "normal_speed", skip_serializing_if = "is_normal_speed")]
+    pub speed_percent: u16,
     pub placement: AudioPlacement,
 }
 
@@ -53,6 +55,7 @@ pub struct AudioInterval {
     pub start: u64,
     pub end: u64,
     pub source: i64,
+    pub speed_percent: u16,
 }
 
 impl MediaAsset {
@@ -119,6 +122,7 @@ impl AudioClip {
                     .checked_add(*duration)
                     .ok_or("Audio timeline range overflow")?,
                 source: *source,
+                speed_percent: self.speed_percent,
             }),
             AudioPlacement::Linked { video_id } => {
                 let (track, index) = data.clip_position(video_id)?;
@@ -137,6 +141,7 @@ impl AudioClip {
                         clip.source_subtick_denominator,
                         asset.time_base,
                     )?,
+                    speed_percent: clip.speed_percent,
                 })
             }
         }
@@ -179,6 +184,7 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
             if clip.id.is_empty()
                 || !clips.insert(&clip.id)
                 || !valid_gain(clip.gain)
+                || !valid_speed(clip.speed_percent)
                 || !data
                     .assets
                     .iter()
@@ -187,16 +193,19 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
                 return Err("Invalid audio clip or missing source".into());
             }
             if let AudioPlacement::Linked { video_id } = &clip.placement {
-                if !links.insert(video_id) {
-                    return Err("Video clip already has linked audio".into());
+                if clip.speed_percent != normal_speed() || !links.insert(video_id) {
+                    return Err("Invalid or duplicate linked audio".into());
                 }
             }
             let range = clip.interval(data)?;
             if range.end <= range.start
-                || i64::try_from(range.end - range.start)
-                    .ok()
-                    .and_then(|len| range.source.checked_add(len))
-                    .is_none()
+                || i64::try_from(
+                    (u128::from(range.end - range.start) * u128::from(range.speed_percent))
+                        .div_ceil(100),
+                )
+                .ok()
+                .and_then(|len| range.source.checked_add(len))
+                .is_none()
             {
                 return Err("Invalid audio clip range".into());
             }
@@ -222,6 +231,7 @@ impl ProjectData {
             id: new_id("audio-clip", revision),
             asset_id: asset_id.into(),
             gain: 1.0,
+            speed_percent: normal_speed(),
             placement,
         };
         let range = clip.interval(self)?;
@@ -311,6 +321,7 @@ impl EditorDocument {
             let clip = &mut clips[index];
             match action {
                 "unlink" => {
+                    clip.speed_percent = interval.speed_percent;
                     clip.placement = AudioPlacement::Independent {
                         start: interval.start,
                         duration: interval.end - interval.start,

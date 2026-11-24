@@ -866,6 +866,9 @@ impl Controller {
             "roll" => self.document.roll_end(
                 &id, value.trim().parse().map_err(|_| "Cut frame must be a non-negative integer")?,
             ),
+            "speed" => self.document.set_speed(
+                &id, value.trim().parse().map_err(|_| "Speed must be a whole percentage from 25 to 400")?,
+            ),
             "source_in" | "source-in" => self.document.set_timing(
                 &id,
                 clip.timeline_start,
@@ -882,18 +885,7 @@ impl Controller {
                     .document
                     .asset(&clip.asset_id)
                     .ok_or("Media is missing")?;
-                let ticks = out
-                    .checked_sub(clip.source_in_pts)
-                    .ok_or("Source range overflow")?;
-                if ticks <= 0 {
-                    return Err("Source out must follow source in".into());
-                }
-                let ns = (ticks as u128) * (asset.time_base.numerator as u128) * 1_000_000_000
-                    / (asset.time_base.denominator as u128);
-                let duration =
-                    self.document.data.fps.ns_to_frames_floor(
-                        u64::try_from(ns).map_err(|_| "Source out overflow")?,
-                    )?;
+                let duration = clip.frames_until_source_out(out, self.document.data.fps, asset.time_base)?;
                 self.document
                     .set_timing(&id, clip.timeline_start, duration, clip.source_in_pts)
             }
@@ -1327,7 +1319,9 @@ impl Controller {
                     id: clip.id.clone().into(), lane: lane as i32, name: asset_name.into(),
                     start: (interval.start as f64 * scale) as f32,
                     duration: ((interval.end - interval.start) as f64 * scale) as f32,
-                    description: format!("{} samples to {}{}", interval.start, interval.end, if linked { " · linked video" } else { "" }).into(),
+                    description: format!("{} samples to {}{}{}", interval.start, interval.end,
+                        if interval.speed_percent == document::normal_speed() { String::new() } else { format!(" · {}% speed", interval.speed_percent) },
+                        if linked { " · linked video" } else { "" }).into(),
                     selected, muted: track.muted,
                 });
                 if selected { selection = Some((clip, asset_name, interval, track.locked, linked)); }
@@ -1341,6 +1335,7 @@ impl Controller {
             window.set_audio_clip_end(interval.end.to_string().into());
             window.set_audio_clip_source(interval.source.to_string().into());
             window.set_audio_clip_gain((clip.gain * 100.0).round().to_string().into());
+            window.set_audio_clip_speed(interval.speed_percent.to_string().into());
             window.set_audio_clip_locked(locked);
             window.set_audio_clip_linked(linked);
         } else {
@@ -1504,19 +1499,14 @@ impl Controller {
             );
             window.set_selected_clip_start(clip.timeline_start.to_string().into());
             window.set_selected_clip_duration(clip.duration.to_string().into());
+            window.set_selected_clip_speed(clip.speed_percent.to_string().into());
             window.set_selected_clip_end(clip.timeline_end().unwrap_or(0).to_string().into());
             window.set_selected_clip_source_in(clip.source_in_pts.to_string().into());
             let out = self
                 .document
                 .asset(&clip.asset_id)
-                .map(|asset| {
-                    clip.source_in_pts as i128
-                        + clip.duration as i128
-                            * self.document.data.fps.denominator as i128
-                            * asset.time_base.denominator as i128
-                            / self.document.data.fps.numerator as i128
-                            / asset.time_base.numerator as i128
-                })
+                .and_then(|asset| clip.source_out(self.document.data.fps, asset.time_base).ok())
+                .map(|(ticks, _, _)| ticks)
                 .unwrap_or(0);
             window.set_selected_clip_source_out(out.to_string().into());
         } else {

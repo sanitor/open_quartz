@@ -38,6 +38,7 @@ pub struct PreviewLayer {
     pub source_ns: u64,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
+    speed_percent: u16,
     opacity: Option<OpacityAnimation>,
 }
 
@@ -70,6 +71,7 @@ pub fn sequence_request(
             transform: transform_override.filter(|(id, _)| *id == clip.id)
                 .map_or(clip.transform, |(_, value)| value),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
+            speed_percent: clip.speed_percent,
             opacity,
         });
     }
@@ -78,8 +80,11 @@ pub fn sequence_request(
         asset: None, source_ns: project.fps.frames_to_ns(frame)?, transform: ClipTransform::default(),
         pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
+    // Retimed clips use the sequence clock for window admission and a
+    // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
         if project.tracks.len() == 1 && layer.opacity.is_none()
+            && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
             let layer = layers.pop().expect("one preview layer");
             request.asset = Some(layer.asset);

@@ -2,16 +2,17 @@ use open_quartz::project::{Edge, Graph, NodeFactoryRequest};
 
 use super::{OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
 
-fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64) -> String {
+fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, speed_percent: u16) -> String {
+    let timeline_scale = 100.0 / f64::from(speed_percent);
     let seconds = |source_ns: u64| {
-        (i128::from(animation.timeline_start_ns) - i128::from(origin)
-            + i128::from(source_ns) - i128::from(animation.source_in_ns)) as f64 / 1_000_000_000.0
+        ((i128::from(animation.timeline_start_ns) - i128::from(origin)) as f64
+            + (i128::from(source_ns) - i128::from(animation.source_in_ns)) as f64 * timeline_scale) / 1_000_000_000.0
     };
     let mut shader = format!("fn animated_alpha{index}() -> f32 {{\n");
     for pair in animation.keys.windows(2) {
         let left = pair[0];
         let right = pair[1];
-        let span = (right.source_ns - left.source_ns) as f64 / 1_000_000_000.0;
+        let span = (right.source_ns - left.source_ns) as f64 * timeline_scale / 1_000_000_000.0;
         shader.push_str(&format!(
             "if (iTime < {:.9e}) {{ return mix({:.9e}, {:.9e}, clamp((iTime - ({:.9e})) / {:.9e}, 0.0, 1.0)); }}\n",
             seconds(right.source_ns), left.opacity, right.opacity, seconds(left.source_ns), span,
@@ -101,7 +102,7 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
         );
         let alpha = match &layer.opacity {
             Some(animation) => {
-                animation_code.push_str(&opacity_function(index, animation, origin));
+                animation_code.push_str(&opacity_function(index, animation, origin, layer.speed_percent));
                 format!("animated_alpha{index}()")
             }
             None => format!("placement{index}.w"),
