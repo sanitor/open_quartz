@@ -58,7 +58,7 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
         inputs.push((namespace(&edge.source), namespace(&edge.source_handle)));
         for node in clip.nodes.iter().filter(|node| node.id != OUTPUT_ID) {
             let mut node = node.clone();
-            if node.id == SOURCE_ID && matches!(layer.source, LayerSource::Title(_)) {
+            if node.id == SOURCE_ID && !matches!(layer.source, LayerSource::Video { .. }) {
                 node.data.input_mode = Some(InputMode::Image);
             }
             node.id = namespace(&node.id);
@@ -121,7 +121,7 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
                 }
             }
         };
-        let alpha = if matches!(layer.source, LayerSource::Title(_)) { format!("({alpha}) * sample.a") } else { alpha };
+        let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), placement{index}, blend{index});\n\

@@ -33,6 +33,19 @@ impl Clip {
         }
     }
 
+    pub(super) fn validate_sequence_timing(&self) -> Result<(), String> {
+        if self.speed_percent != normal_speed()
+            || self.source_span_remainder != 0
+            || self.source_in_pts != 0
+            || self.source_subtick_numerator != 0
+            || self.source_subtick_denominator != 1
+            || !self.opacity_keys.is_empty()
+        {
+            return Err("Titles and still images use sequence timing".into());
+        }
+        Ok(())
+    }
+
     pub fn source_out(
         &self,
         fps: Rational,
@@ -86,18 +99,19 @@ impl ProjectData {
             return Err("Left trim must leave at least one frame".into());
         }
         if clip.title.is_none() {
-            let time_base = self
+            let asset = self
                 .assets
                 .iter()
                 .find(|asset| asset.id == clip.asset_id)
-                .ok_or("Clip media is missing")?
-                .time_base;
-            advance_source(
-                clip,
-                i128::from(start) - i128::from(clip.timeline_start),
-                self.fps,
-                time_base,
-            )?;
+                .ok_or("Clip media is missing")?;
+            if !asset.still {
+                advance_source(
+                    clip,
+                    i128::from(start) - i128::from(clip.timeline_start),
+                    self.fps,
+                    asset.time_base,
+                )?;
+            }
         }
         clip.timeline_start = start;
         clip.duration = end - start;

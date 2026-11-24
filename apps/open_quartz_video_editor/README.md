@@ -39,11 +39,12 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Timeline Editing
 
-- **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频，以及带明确时长的 AAC 或 PCM 音频。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
+- **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频，带明确时长的 AAC 或 PCM 音频，以及 SDR PNG / JPEG 图片。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
+- PNG 和 JPEG 可在素材库预览，放入时间线时默认持续三秒。可修剪、分割和变换，也可参与叠化。PNG 保留透明度，JPEG 按 EXIF 方向显示。预览和 MP4 导出使用同一套合成规则。
 - **ADD CLIP** / 素材旁的 **+**：将选定素材放入目标轨道的可用空隙。普通移动保留其他片段的时间。同轨重叠时拒绝放置，跨轨重叠按轨道顺序合成。
-- **Insert** 在播放头插入选中的视频素材，切开跨过播放头的片段并将本轨后续内容后移。**Overwrite** 用素材替换本轨对应区间，两侧剩余内容和其他切点保留。
+- **Insert** 在播放头插入选中的视频或图片素材，切开跨过播放头的片段并将本轨后续内容后移。**Overwrite** 用素材替换本轨对应区间，两侧剩余内容和其他切点保留。
 - **Ripple delete** 删除选中的视频片段，并将本轨后续片段前移相同帧数。相邻视频片段可在前一个片段的 Inspector 中用 **Roll cut (frame)** 调整共同切点。两端外边界保持原位。上述命令联动链接音频，各自占一个撤销步骤。
-- 选中同轨相邻片段中的前一个，在 Inspector 的 **Dissolve (frames)** 输入叠化帧数。叠化跨过切点，时间线上会标出实际范围。两侧源素材都需要留有余量，输入 **0** 可移除。视频叠化期间音频保持原切点。
+- 选中同轨相邻片段中的前一个，在 Inspector 的 **Dissolve (frames)** 输入叠化帧数。叠化跨过切点，时间线上会标出实际范围。视频一侧需要留有源素材余量，图片可在过渡区持续显示。输入 **0** 可移除。视频叠化期间音频保持原切点。
 - **Add title** 在播放头创建默认三秒的标题，并放在新的顶层 **Titles** 轨道。选中片段后可在 Inspector 中修改 **Title text** 和 **Title size (%)**。字号按画布高度计算，文字居中并自动换行。标题可用现有的时间线剪辑和 **Transform** 控件调整，并在预览和 MP4 导出中按轨道顺序透明叠加。
 - **Add subtitle** 在播放头创建字幕，使用独立的 **Subtitles** 轨道。字幕首选时长为两秒，遇到下一段字幕会在其起点结束。在 Inspector 编辑多行文字后点击 **Apply subtitle text**，并用现有时间线控件调整字幕范围。**Import SRT** 按文件时间戳导入 UTF-8 纯文本 SRT，整次导入可撤销。字幕在画面底部显示白字和深色底板，并烧录进 MP4。
 - **Speed (%)** 在 Inspector 中设置视频片段的恒定正向速度，范围为 25%–400%。片段起点保持原位，片段长度和链接音频随后调整。变速后的音高随速度变化。减速扩展遇到同轨冲突或锁定的链接音频时，整次编辑被拒绝。保存、预览和导出沿用同一源时间映射。
@@ -56,7 +57,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Nodes Workspace — Phase 7
 
-Select **Nodes** with an active video clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor. Project saving includes each clip pipeline inside its track. Opening schema 1 migrates each clip to a direct source→output pipeline.
+Select **Nodes** with an active video or still image clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor. Project saving includes each clip pipeline inside its track. Opening schema 1 migrates each clip to a direct source→output pipeline.
 
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.

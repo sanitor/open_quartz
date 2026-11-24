@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 9);
+   assert.equal(data.schema_version, 10);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1036,6 +1036,131 @@ try{
    await client.click(addSubtitle); await waitState('Subtitles is locked');
    assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
    await click('UNDO');
+   await close();
+ });
+ const stillProject = join(output, 'stills.oqvideo.json');
+ const importMedia = path => fileAction('IMPORT', path, 'Import media');
+ const overlay = join(output, 'overlay.png');
+ const makeOverlay = () => {
+   const rgba = Buffer.alloc(160 * 90 * 4);
+   for (let y = 29; y < 61; y++) {
+     for (let x = 45; x < 145; x++) {
+       const at = (y * 160 + x) * 4;
+       if (x < 115 || x >= 120) {
+         rgba[at] = 255;
+         rgba[at + 3] = x < 115 ? 255 : 128;
+       }
+     }
+   }
+   mediaCommand(['-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', '160x90', '-i', '-', '-frames:v', '1',
+     '-c:v', 'png', '-threads', '1', '-y', overlay], { input: rgba });
+ };
+ await step('Import and trim a transparent PNG over video, reopen it and decode the exact output', async () => {
+   const seed = join(output, 'subtitle-seed.oqvideo.json');
+   makeOverlay();
+   await launch(seed); await waitState('clips 1');
+   await importMedia(overlay); await waitState('assets 3');
+   const card = await assetCard('overlay.png');
+   assert(card.accessibleDescription.includes('160 × 90 · Still image'));
+   await expectColor('red');
+   await click('ADD TRACK');
+   await click('Add overlay.png to timeline'); await waitState('clips 2');
+   assert.deepEqual(await positions('overlay.png'), [[0, 90]]);
+   await titleField('Timeline start', 2);
+   await titleField('Timeline end', 6);
+   assert.deepEqual(await positions('overlay.png'), [[2, 4]]);
+   assert.equal((await client.byLabel('Speed (%)', { role: 'TextInput' })).length, 0);
+   await client.click(await item('overlay.png')); await expectColor('red');
+   await snapshot('21-still-overlay');
+   await titleField('Opacity (%)', 0);
+   await expectColor('blue');
+   await click('UNDO'); await expectColor('red');
+   await fileAction('SAVE AS', stillProject, 'Save project'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(stillProject, 'utf8')).data;
+   const still = saved.assets.find(asset => asset.name === 'overlay.png');
+   assert.equal(still.still, true);
+   assert.equal(still.duration_pts, null);
+   assert.equal(still.path, 'overlay.png');
+   assert.equal(saved.audio_tracks, undefined);
+   await close();
+
+   await launch(stillProject); await waitState('clips 2');
+   await expectColor('blue');
+   await client.click(await item('overlay.png')); await expectColor('red');
+   await click('PREVIOUS'); await waitState('playhead 1 frames');
+   await click('PLAY'); await waitState('playhead 9 frames');
+   await expectColor('blue');
+   const exported = join(output, 'still-overlay.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24',
+     '-f', 'rawvideo', '-'], { maxBuffer: 4 * 1024 * 1024 });
+   const stride = 320 * 180 * 3;
+   assert.equal(pixels.length, stride * 10);
+   const read = (frame, x, y) => pixels.subarray(frame * stride + (y * 320 + x) * 3,
+     frame * stride + (y * 320 + x) * 3 + 3);
+   const compare = (pixel, expected) => expected.every((value, channel) => Math.abs(pixel[channel] - value) < 23);
+   for (let frame = 0; frame < 10; frame++) {
+     const visible = frame >= 2 && frame < 6;
+     const middle = read(frame, 160, 90);
+     const translucent = read(frame, 264, 90);
+     assert(compare(middle, visible ? [255, 0, 0] : [0, 0, 255]),
+       `frame ${frame} center RGB is ${[...middle]}`);
+     assert(compare(translucent, visible ? [188, 0, 187] : [0, 0, 255]),
+       `frame ${frame} partially transparent patch RGB is ${[...translucent]}`);
+     assert(compare(read(frame, 22, 22), [0, 0, 255]), `frame ${frame} preserves the lower layer`);
+   }
+   await close();
+ }, { core: true });
+ await step('Reject a corrupt still and relink an image by its original content', async () => {
+   const moved = join(output, 'moved-overlay.asset');
+   await rename(overlay, moved);
+   await launch(stillProject); await waitState('clips 2');
+   const card = await assetCard('overlay.png');
+   assert(card.accessibleDescription.endsWith('; offline'));
+   await client.click(card);
+   await waitState('Media offline');
+   await fileAction('RELINK', moved, 'Relink media');
+   await client.waitFor(async () => (await assetCard('overlay.png')).accessibleDescription.endsWith('; online'),
+     { description: 'the matching relocated image is online' });
+   await client.click(await assetCard('overlay.png'));
+   await expectColor('red');
+   const broken = join(output, 'broken.png');
+   await writeFile(broken, 'damaged bytes');
+   await importMedia(broken); await waitState('Cannot decode still image');
+   assert.equal((await client.byLabel('broken.png', { role: 'Button' })).length, 0);
+   await fileAction('SAVE AS', join(output, 'relinked-still.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   await close();
+   await writeFile(overlay, await readFile(moved));
+ });
+ await step('Use a rotated JPEG for overwrite and dissolve between two stills', async () => {
+   const jpeg = join(output, 'rotated.jpg');
+   const encoded = mediaCommand(['-f', 'lavfi', '-i', 'color=c=blue:s=160x90', '-frames:v', '1',
+     '-c:v', 'mjpeg', '-threads', '1', '-f', 'mjpeg', '-']);
+   const exif = Buffer.from('ffe1002245786966000049492a0008000000010012010300010000000600000000000000', 'hex');
+   await writeFile(jpeg, Buffer.concat([encoded.subarray(0, 2), exif, encoded.subarray(2)]));
+   await launch();
+   await importMedia(jpeg); await waitState('assets 1');
+   assert((await assetCard('rotated.jpg')).accessibleDescription.includes('90 × 160 · Still image'));
+   await expectColor('blue');
+   await click('Insert'); await waitState('clips 1');
+   await titleField('Timeline end', 8);
+   await client.click(await item('rotated.jpg'));
+   await click('NEXT'); await click('NEXT'); await click('NEXT'); await click('NEXT');
+   await waitState('playhead 4 frames');
+   await importMedia(overlay); await waitState('assets 2');
+   await expectColor('red');
+   await click('Overwrite'); await waitState('clips 2');
+   assert.deepEqual(await positions('rotated.jpg'), [[0, 4]]);
+   assert.deepEqual(await positions('overlay.png'), [[4, 90]]);
+   await titleField('Timeline end', 8);
+   await client.click(await item('rotated.jpg'));
+   await dissolveField(4); await expectDissolve(2, 5);
+   for (let i = 0; i < 4; i++) await click('NEXT');
+   await waitState('playhead 4 frames');
+   await expectColor('blend');
+   await fileAction('SAVE AS', join(output, 'still-dissolve.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
    await close();
  });
  await step('Track names, button reordering, deletion and explicit show update the editor', async () => {

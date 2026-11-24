@@ -58,12 +58,6 @@ pub struct AudioInterval {
     pub speed_percent: u16,
 }
 
-impl MediaAsset {
-    pub fn has_video(&self) -> bool {
-        self.width != 0 && self.height != 0
-    }
-}
-
 impl Rational {
     pub fn frame_to_sample(self, frame: u64) -> Result<u64, String> {
         Rational::new(self.numerator, self.denominator)?;
@@ -167,8 +161,8 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
                 return Err("Invalid audio source metadata".into());
             }
         }
-        if !asset.has_video() && (asset.width != 0 || asset.height != 0 || asset.audio.is_none()) {
-            return Err("Asset requires valid video or audio metadata".into());
+        if !asset.has_visual() && (asset.width != 0 || asset.height != 0 || asset.audio.is_none()) {
+            return Err("Asset requires valid visual or audio metadata".into());
         }
     }
     for track in &data.audio_tracks {

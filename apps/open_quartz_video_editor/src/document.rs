@@ -23,7 +23,7 @@ mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 10;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -81,6 +81,8 @@ pub struct MediaAsset {
     pub path: String,
     pub fingerprint: String,
     pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub still: bool,
     pub width: u32,
     pub height: u32,
     pub duration_pts: Option<i64>,
@@ -92,6 +94,16 @@ pub struct MediaAsset {
     pub audio: Option<AudioAsset>,
     pub online: bool,
 }
+impl MediaAsset {
+    pub fn has_visual(&self) -> bool {
+        self.width != 0 && self.height != 0
+    }
+
+    pub fn has_video(&self) -> bool {
+        self.has_visual() && !self.still
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ClipTransform {
@@ -354,10 +366,10 @@ impl EditorDocument {
     }
 
     pub fn place_clip(&mut self, asset_id: &str, track: &str, start: Option<u64>) -> Result<String, String> {
-        self.place_video(asset_id, track, Placement::EmptySpace(start))
+        self.place_visual(asset_id, track, Placement::EmptySpace(start))
     }
 
-    pub fn place_video(&mut self, asset_id: &str, track: &str, placement: Placement) -> Result<String, String> {
+    pub fn place_visual(&mut self, asset_id: &str, track: &str, placement: Placement) -> Result<String, String> {
         let track = self.data.track_index(track)?;
         self.data.tracks[track].require_unlocked()?;
         if self.data.tracks[track].subtitles {
@@ -367,11 +379,13 @@ impl EditorDocument {
             .asset(asset_id)
             .cloned()
             .ok_or("Media asset does not exist")?;
-        if !asset.has_video() { return Err("Select a video asset".into()); }
-        let ticks = asset
-            .duration_pts
-            .ok_or("Exact placement requires a known video duration")?;
-        let duration = duration_frames(ticks, asset.time_base, self.data.fps)?;
+        if !asset.has_visual() { return Err("Select an image or video asset".into()); }
+        let duration = if asset.still {
+            self.data.fps.ns_to_frames_floor(3_000_000_000)?.max(1)
+        } else {
+            let ticks = asset.duration_pts.ok_or("Exact placement requires a known video duration")?;
+            duration_frames(ticks, asset.time_base, self.data.fps)?
+        };
         if duration == 0 {
             return Err("Media is shorter than one sequence frame".into());
         }
@@ -380,9 +394,11 @@ impl EditorDocument {
             Placement::EmptySpace(Some(frame)) | Placement::Insert(frame) | Placement::Overwrite(frame) => frame,
         };
         let id = new_id("clip", self.revision);
-        let source_in = asset
-            .start_pts
-            .ok_or("Precise placement requires a known source presentation timestamp")?;
+        let source_in = if asset.still {
+            0
+        } else {
+            asset.start_pts.ok_or("Precise placement requires a known source presentation timestamp")?
+        };
         let has_audio = asset.audio.is_some();
         let revision = self.revision;
         let clip = Clip {
@@ -819,6 +835,10 @@ fn validate(data: &ProjectData) -> Result<(), String> {
         if let Some(fps) = asset.fps {
             Rational::new(fps.numerator, fps.denominator)?;
         }
+        if asset.still && (!asset.has_visual() || asset.start_pts.is_some() || asset.duration_pts.is_some()
+            || asset.fps.is_some() || asset.has_audio || asset.audio.is_some()) {
+            return Err("Invalid still image asset metadata".into());
+        }
         if asset.duration_pts.is_some_and(|duration| duration <= 0) {
             return Err("Media duration must be positive".into());
         }
@@ -867,16 +887,9 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             }
             if let Some(title) = &clip.title {
                 title.validate()?;
-                if !clip.asset_id.is_empty()
-                    || clip.speed_percent != normal_speed()
-                    || clip.source_span_remainder != 0
-                    || clip.source_in_pts != 0
-                    || clip.source_subtick_numerator != 0
-                    || clip.source_subtick_denominator != 1
-                    || !clip.opacity_keys.is_empty()
-                    || clip.pipeline != ClipPipeline::default()
-                {
-                    return Err("Title clips use sequence timing and a generated image".into());
+                clip.validate_sequence_timing()?;
+                if !clip.asset_id.is_empty() || clip.pipeline != ClipPipeline::default() {
+                    return Err("Title clips use a generated image".into());
                 }
             } else {
                 let asset = data
@@ -884,22 +897,26 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                     .iter()
                     .find(|asset| asset.id == clip.asset_id)
                     .ok_or("Clip references a missing media asset")?;
-                if !asset.has_video() { return Err("Video clip references an audio-only asset".into()); }
-                let origin = asset
-                    .start_pts
-                    .ok_or("Precise placement requires a known source presentation timestamp")?;
-                let duration = asset
-                    .duration_pts
-                    .ok_or("Exact placement requires a known video duration")?;
-                let media_end = origin
-                    .checked_add(duration)
-                    .ok_or("Media timestamp range overflow")?;
-                let (source_end, remainder, _) = clip.source_out(data.fps, asset.time_base)?;
-                if clip.source_in_pts < origin
-                    || source_end > media_end
-                    || (source_end == media_end && remainder != 0)
-                {
-                    return Err("Clip source range extends outside media presentation duration".into());
+                if asset.still {
+                    clip.validate_sequence_timing()?;
+                } else {
+                    if !asset.has_visual() { return Err("Video clip references an audio-only asset".into()); }
+                    let origin = asset
+                        .start_pts
+                        .ok_or("Precise placement requires a known source presentation timestamp")?;
+                    let duration = asset
+                        .duration_pts
+                        .ok_or("Exact placement requires a known video duration")?;
+                    let media_end = origin
+                        .checked_add(duration)
+                        .ok_or("Media timestamp range overflow")?;
+                    let (source_end, remainder, _) = clip.source_out(data.fps, asset.time_base)?;
+                    if clip.source_in_pts < origin
+                        || source_end > media_end
+                        || (source_end == media_end && remainder != 0)
+                    {
+                        return Err("Clip source range extends outside media presentation duration".into());
+                    }
                 }
             }
             let transform = clip.transform;
@@ -1121,12 +1138,41 @@ pub fn new_id(kind: &str, revision: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn still_image_edits_only_affect_sequence_time() {
+        let mut doc = EditorDocument::default();
+        let mut still = asset(Path::new("photo.png"));
+        still.still = true;
+        still.duration_pts = None;
+        still.start_pts = None;
+        still.fps = None;
+        still.has_audio = false;
+        still.audio = None;
+        let asset_id = still.id.clone();
+        doc.add_asset(still).unwrap();
+        let clip_id = doc.add_clip(&asset_id).unwrap();
+        assert_eq!(doc.clip(&clip_id).unwrap().duration, 90);
+        doc.trim_left(&clip_id, 12).unwrap();
+        doc.trim_right(&clip_id, 102).unwrap();
+        let right = doc.split(&clip_id, 50).unwrap();
+        for (id, start, end) in [(&clip_id, 12, 50), (&right, 50, 102)] {
+            let clip = doc.clip(id).unwrap();
+            assert_eq!(clip.timeline_start, start);
+            assert_eq!(clip.timeline_end(), Ok(end));
+            assert_eq!(clip.asset_id, asset_id);
+            assert_eq!(clip.source_in_pts, 0);
+        }
+        assert!(doc.set_speed(&right, 200).is_err());
+        assert_eq!(doc.clip(&right).unwrap().duration, 52);
+    }
+
     fn asset(path: &Path) -> MediaAsset {
         MediaAsset {
             id: "asset-1".into(),
             name: "clip.mp4".into(),
             path: path.to_string_lossy().into_owned(),
             fingerprint: "sum".into(),
+            still: false,
             size_bytes: 1,
             width: 64,
             height: 64,
@@ -1252,7 +1298,7 @@ mod tests {
         let second = doc.place_clip("asset-1", DEFAULT_TRACK, Some(90)).unwrap();
         let snapshot = doc.data.clone();
 
-        let replacement = doc.place_video("asset-1", DEFAULT_TRACK, Placement::Overwrite(45)).unwrap();
+        let replacement = doc.place_visual("asset-1", DEFAULT_TRACK, Placement::Overwrite(45)).unwrap();
         let lane = &doc.data.tracks[doc.data.track_index(DEFAULT_TRACK).unwrap()];
         assert_eq!(lane.clips.len(), 3);
         assert_eq!(lane.clips[0].id, first);

@@ -1,17 +1,40 @@
-use crate::document::{fingerprint, new_id, AudioAsset, MediaAsset, Rational};
+use crate::document::{fingerprint, new_id, MediaAsset, Rational};
+#[cfg(target_os = "macos")]
+use crate::document::AudioAsset;
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbaImage};
 use std::path::{Path, PathBuf};
 
-/// Preparation-only metadata and first-frame capability check, never software pixels.
+const MAX_STILL_EDGE: u32 = 8192;
+
+/// Validate the first video frame on hardware or decode a still image for import.
 pub fn probe(path: &Path) -> Result<MediaAsset, String> {
+    let canonical = path.canonicalize().map_err(|error| format!("Cannot access media: {error}"))?;
+    let metadata = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Select a regular local media file".into());
+    }
+    if still_format(&canonical).is_some() {
+        let image = decode_still(&canonical)?;
+        return Ok(MediaAsset {
+            id: new_id("asset", 0),
+            name: canonical.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            path: canonical.to_string_lossy().into_owned(),
+            fingerprint: fingerprint(&canonical)?,
+            size_bytes: metadata.len(),
+            still: true,
+            width: image.width(),
+            height: image.height(),
+            duration_pts: None,
+            start_pts: None,
+            time_base: Rational::new(1, 1)?,
+            fps: None,
+            has_audio: false,
+            audio: None,
+            online: true,
+        });
+    }
     #[cfg(target_os = "macos")]
     {
-        let canonical = path
-            .canonicalize()
-            .map_err(|error| format!("Cannot access media: {error}"))?;
-        if !canonical.is_file() {
-            return Err("Select a regular local media file".into());
-        }
-        let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
         let streams = oq_media::probe_audio(&canonical).map_err(|error| error.to_string())?;
         let audio = streams.audio.map(audio_asset).transpose()?;
         let name = canonical.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -23,7 +46,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             }
             return Ok(MediaAsset {
                 id: new_id("asset", 0), name, path, fingerprint: fingerprint(&canonical)?,
-                size_bytes: metadata.len(), width: 0, height: 0, duration_pts: audio.duration_pts,
+                size_bytes: metadata.len(), still: false, width: 0, height: 0, duration_pts: audio.duration_pts,
                 start_pts: Some(audio.start_pts), time_base: audio.time_base, fps: None,
                 has_audio: true, audio: Some(audio), online: true,
             });
@@ -31,7 +54,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
         let info = session.source_info().clone();
         if !matches!(info.codec.as_str(), "h264" | "hevc") {
-            return Err("This editor currently supports H.264 and HEVC video only".into());
+            return Err("Supported visual files are PNG, JPEG, H.264 and HEVC".into());
         }
         if !info.seekable
             || info.start_pts.is_none()
@@ -57,6 +80,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             path,
             fingerprint: fingerprint(&canonical)?,
             size_bytes: metadata.len(),
+            still: false,
             width: frame.frame.frame.width(),
             height: frame.frame.frame.height(),
             duration_pts: info.duration_pts,
@@ -79,6 +103,35 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 .into(),
         )
     }
+}
+
+fn still_format(path: &Path) -> Option<ImageFormat> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some(ImageFormat::Png),
+        "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+        _ => None,
+    }
+}
+
+pub(crate) fn decode_still(path: &Path) -> Result<RgbaImage, String> {
+    let decode_error = |error| format!("Cannot decode still image: {error}");
+    let mut reader = ImageReader::open(path)
+        .and_then(ImageReader::with_guessed_format)
+        .map_err(|error| error.to_string())?;
+    if !matches!(reader.format(), Some(ImageFormat::Png | ImageFormat::Jpeg)) {
+        return Err("Cannot decode still image. Select a PNG or JPEG file".into());
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_STILL_EDGE);
+    limits.max_image_height = Some(MAX_STILL_EDGE);
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(decode_error)?;
+    let (width, height) = decoder.dimensions();
+    limits.check_dimensions(width, height).map_err(decode_error)?;
+    let orientation = decoder.orientation().map_err(decode_error)?;
+    let mut image = DynamicImage::from_decoder(decoder).map_err(decode_error)?;
+    image.apply_orientation(orientation);
+    Ok(image.into_rgba8())
 }
 
 #[cfg(target_os = "macos")]

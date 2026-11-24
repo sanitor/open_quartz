@@ -116,11 +116,23 @@ pub(super) fn configuration(request: &PreviewRequest) -> Result<PreviewConfigura
         }
         sources.insert(node, (asset.path.clone(), asset.fingerprint.clone()));
     }
-    let titles = request.layers.iter().filter_map(|layer| match &layer.source {
-        LayerSource::Title(title) => Some((composition::source_id(&layer.clip_id), (title.clone(), request.width, request.height))),
-        _ => None,
-    }).collect();
-    Ok(PreviewConfiguration { sources, titles, graph: graph(request)? })
+    let mut images = BTreeMap::new();
+    for layer in &request.layers {
+        let image = match &layer.source {
+            LayerSource::Video { .. } => continue,
+            LayerSource::Title(title) => StaticImage::Title {
+                title: title.clone(), width: request.width, height: request.height,
+            },
+            LayerSource::Still(asset) => {
+                if !asset.online {
+                    return Err(format!("{} Media offline: {} — use Relink", layer.track_name, asset.name));
+                }
+                StaticImage::File(asset.clone())
+            }
+        };
+        images.insert(composition::source_id(&layer.clip_id), image);
+    }
+    Ok(PreviewConfiguration { sources, images, graph: graph(request)? })
 }
 
 pub(super) fn prepare_region(
@@ -132,12 +144,22 @@ pub(super) fn prepare_region(
     let (limits, _) = request_limits(request, Rational::new(30, 1)?)?;
     prepared.configure_video_prefetch_limits(limits.max_surfaces, limits.max_bytes / 2)?;
     let mut opened = 0;
-    for (node, image) in &key.titles {
-        let previous = configured.as_ref().and_then(|previous| previous.titles.get(node));
-        if previous != Some(image) {
-            let (title, width, height) = image;
-            let rgba = crate::title_raster::rasterize(title, *width, *height)?;
-            prepared.stage_image(node, &rgba, *width, *height)?;
+    for (node, image) in &key.images {
+        let previous = configured.as_ref().and_then(|previous| previous.images.get(node));
+        if previous == Some(image) { continue; }
+        match image {
+            StaticImage::Title { title, width, height } => {
+                let rgba = crate::title_raster::rasterize(title, *width, *height)?;
+                prepared.stage_image(node, &rgba, *width, *height)?;
+            }
+            StaticImage::File(asset) => {
+                validate_dimensions(pipeline, asset.width, asset.height)?;
+                let rgba = crate::media::decode_still(std::path::Path::new(&asset.path))?;
+                if rgba.dimensions() != (asset.width, asset.height) {
+                    return Err(format!("{} dimensions changed since import", asset.name));
+                }
+                prepared.stage_image(node, rgba.as_raw(), asset.width, asset.height)?;
+            }
         }
     }
     for (node, (path, _)) in &key.sources {

@@ -46,6 +46,7 @@ pub struct PreviewLayer {
 enum LayerSource {
     Video { asset: MediaAsset, source_ns: u64 },
     Title(Title),
+    Still(MediaAsset),
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +63,24 @@ struct OpacityAnimation {
     source_in_ns: u64,
 }
 
+pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, width: u32, height: u32) -> PreviewRequest {
+    let mut request = PreviewRequest {
+        ticket, revision, frame, width, height, source_ns: 0, asset: None,
+        transform: ClipTransform::default(), pipeline: ClipPipeline::default(), layers: Vec::new(),
+    };
+    if asset.still {
+        request.layers.push(PreviewLayer {
+            clip_id: asset.id.clone(), track_name: String::new(), track_id: asset.id.clone(),
+            source: LayerSource::Still(asset), transform: request.transform,
+            pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
+            opacity: None, dissolve: None,
+        });
+    } else if asset.has_video() {
+        request.asset = Some(asset);
+    }
+    request
+}
+
 pub fn sequence_request(
     project: &ProjectData, ticket: u64, revision: u64, frame: u64,
     mut pipeline_override: impl FnMut(&str) -> Option<ClipPipeline>,
@@ -75,7 +94,11 @@ pub fn sequence_request(
         } else {
             let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
                 .ok_or_else(|| format!("{}: missing clip media", track.name))?;
-            LayerSource::Video { asset: asset.clone(), source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)? }
+            if asset.still {
+                LayerSource::Still(asset.clone())
+            } else {
+                LayerSource::Video { asset: asset.clone(), source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)? }
+            }
         };
         let opacity = if clip.opacity_keys.is_empty() { None } else {
             Some(OpacityAnimation {
@@ -137,6 +160,7 @@ fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame:
         let clip = input.clip;
         if clip.title.is_some() { continue; }
         let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
+        if asset.still { continue; }
         let source_ns = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
         if request.asset.is_some() {
             times.insert(SOURCE_ID.into(), source_ns);
@@ -442,9 +466,15 @@ fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
 }
 
 #[derive(PartialEq)]
+enum StaticImage {
+    Title { title: Title, width: u32, height: u32 },
+    File(MediaAsset),
+}
+
+#[derive(PartialEq)]
 struct PreviewConfiguration {
     sources: BTreeMap<String, (String, String)>,
-    titles: BTreeMap<String, (Title, u32, u32)>,
+    images: BTreeMap<String, StaticImage>,
     graph: open_quartz::Graph,
 }
 

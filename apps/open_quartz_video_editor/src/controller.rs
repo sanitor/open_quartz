@@ -1,5 +1,5 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
-use crate::preview::{sequence_request, PlaybackRequest, PreviewBridge, PreviewRequest};
+use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
@@ -414,7 +414,7 @@ impl Controller {
             self.status("Selected media is offline and cannot be placed on the timeline");
             return;
         }
-        if self.document.asset(id).is_some_and(|asset| !asset.has_video()) {
+        if self.document.asset(id).is_some_and(|asset| !asset.has_visual()) {
             let result = self.document.place_audio(id, start.unwrap_or(self.playhead));
             self.finish_edit(result);
             return;
@@ -441,13 +441,13 @@ impl Controller {
 
     fn place_at_playhead(&mut self, insert: bool) {
         let Some(asset) = self.selected_asset.clone() else { return };
-        if !self.document.asset(&asset).is_some_and(|asset| asset.online && asset.has_video()) {
+        if !self.document.asset(&asset).is_some_and(|asset| asset.online && asset.has_visual()) {
             return;
         }
         self.pause();
         let track = self.selected_track.clone();
         let placement = if insert { Placement::Insert(self.playhead) } else { Placement::Overwrite(self.playhead) };
-        match self.document.place_video(&asset, &track, placement) {
+        match self.document.place_visual(&asset, &track, placement) {
             Ok(clip) => self.focus_placed_clip(Some(&asset), &track, clip),
             Err(error) => self.status(error),
         }
@@ -497,7 +497,7 @@ impl Controller {
         self.busy = true;
         let generation = self.generation;
         let sender = self.io_send.clone();
-        self.status("Importing · hardware decode and source validation…");
+        self.status("Importing and validating media…");
         std::thread::spawn(move || {
             let _ = sender.send(IoResult::Import(generation, crate::media::probe(&path)));
         });
@@ -670,7 +670,7 @@ impl Controller {
         let weak_window = state.window.clone();
         let selected = run_reentrant_native_dialog(state, || match kind {
             "import" => rfd::FileDialog::new()
-                .add_filter("Video and audio", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac"])
+                .add_filter("Supported media", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac", "png", "jpg", "jpeg"])
                 .pick_file(),
             "srt" => rfd::FileDialog::new()
                 .add_filter("SubRip subtitles", &["srt"])
@@ -977,12 +977,8 @@ impl Controller {
         let plan = if self.asset_preview {
             self.selected_asset.as_ref().and_then(|id| self.document.asset(id)).cloned()
                 .ok_or_else(|| "Select a media asset".to_owned())
-                .map(|asset| PreviewRequest {
-                    ticket: self.ticket, revision: self.document.revision, frame: self.playhead,
-                    source_ns: 0, width: self.document.data.width, height: self.document.data.height,
-                    asset: asset.has_video().then_some(asset), transform: ClipTransform::default(), pipeline: Default::default(),
-                    layers: Vec::new(),
-                })
+                .map(|asset| asset_request(asset, self.ticket, self.document.revision, self.playhead,
+                    self.document.data.width, self.document.data.height))
         } else {
             sequence_request(&self.document.data, self.ticket, self.document.revision, self.playhead,
                 |id| self.pipeline_preview_for(id),
@@ -1215,7 +1211,7 @@ impl Controller {
                             }
                         }
                         let thumbnail_asset = if self.asset_preview {
-                            self.selected_asset.as_ref().filter(|id| self.document.asset(id).is_some_and(MediaAsset::has_video)).cloned()
+                            self.selected_asset.as_ref().filter(|id| self.document.asset(id).is_some_and(MediaAsset::has_visual)).cloned()
                         } else {
                             let mut active = self.document.data.active_clips(update.frame);
                             active.next().filter(|(_, clip)| clip.title.is_none() && clip.transform == ClipTransform::default()
@@ -1434,9 +1430,9 @@ impl Controller {
             },
         );
         let tracks = &self.document.data.tracks;
-        window.set_can_place_video(tracks.iter().any(|track| track.id == self.selected_track && !track.subtitles)
+        window.set_can_place_visual(tracks.iter().any(|track| track.id == self.selected_track && !track.subtitles)
             && self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
-            .is_some_and(|asset| asset.online && asset.has_video()));
+            .is_some_and(|asset| asset.online && asset.has_visual()));
         window.set_can_roll_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_roll_end(id)));
         window.set_can_dissolve_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_dissolve_end(id)));
         let dissolves: Vec<_> = tracks.iter().enumerate().flat_map(|(lane, track)| {
@@ -1480,6 +1476,7 @@ impl Controller {
                         if text.subtitle { text.text.lines().next().unwrap_or_default() } else { &text.text }
                     }).or_else(|| asset.map(|a| a.name.as_str())).unwrap_or("Missing").into(),
                     is_subtitle: track.subtitles,
+                    is_still: asset.is_some_and(|asset| asset.still),
                     is_title: title.is_some(),
                     start: clip.timeline_start.min(i32::MAX as u64) as i32,
                     duration: clip.duration.min(i32::MAX as u64) as i32,
@@ -1503,6 +1500,7 @@ impl Controller {
                     && a.locked == b.locked
                     && a.is_title == b.is_title
                     && a.is_subtitle == b.is_subtitle
+                    && a.is_still == b.is_still
                     && a.asset_name == b.asset_name
                     && a.start == b.start
                     && a.duration == b.duration
@@ -1524,7 +1522,7 @@ impl Controller {
         } else {
             window.set_selected_asset_name("No media selected".into());
             window.set_selected_asset_details(
-                "Import local H.264 / HEVC SDR video · video only".into(),
+                "Import video, audio, PNG or JPEG".into(),
             );
         }
         if let Some(clip) = self
@@ -1534,6 +1532,7 @@ impl Controller {
         {
             window.set_selected_clip_id(clip.id.clone().into());
             window.set_selected_clip_is_title(clip.title.is_some());
+            window.set_selected_clip_is_still(self.document.asset(&clip.asset_id).is_some_and(|asset| asset.still));
             window.set_selected_clip_is_subtitle(clip.title.as_ref().is_some_and(|text| text.subtitle));
             if let Some(title) = &clip.title {
                 window.set_selected_title_text(title.text.as_str().into());
@@ -1562,6 +1561,7 @@ impl Controller {
             window.set_selected_clip_source_out(out.to_string().into());
         } else {
             window.set_selected_clip_is_title(false);
+            window.set_selected_clip_is_still(false);
             window.set_selected_clip_is_subtitle(false);
             window.set_selected_clip_id("".into());
             window.set_selected_clip_name("No clip selected".into());
@@ -1649,6 +1649,9 @@ fn reconcile<T: Clone + 'static>(
     }
 }
 fn asset_details(asset: &MediaAsset) -> String {
+    if asset.still {
+        return format!("{} × {} · Still image", asset.width, asset.height);
+    }
     let audio = asset.audio.as_ref().map(|audio| format!("{} · {} Hz · {} ch", audio.codec.to_uppercase(), audio.rate, audio.channels));
     if !asset.has_video() {
         return audio.unwrap_or_default();

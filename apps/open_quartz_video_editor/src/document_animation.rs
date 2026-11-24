@@ -54,6 +54,9 @@ impl ProjectData {
             .iter()
             .find(|asset| asset.id == clip.asset_id)
             .ok_or("Clip media is missing")?;
+        if asset.still {
+            return Err("Still images use sequence timing".into());
+        }
         source_time_ns(asset, clip, frame, self.fps)
     }
 }

@@ -9,7 +9,7 @@ fn document() -> EditorDocument {
     data.id = "pipeline-project".into();
     data.assets.push(MediaAsset {
         id: "asset-1".into(), name: "movie.mp4".into(), path: "/offline/movie.mp4".into(),
-        fingerprint: "offline-fingerprint".into(), size_bytes: 1, width: 64, height: 64,
+        fingerprint: "offline-fingerprint".into(), still: false, size_bytes: 1, width: 64, height: 64,
         duration_pts: Some(90), start_pts: Some(9000),
         time_base: Rational { numerator: 1, denominator: 30 },
         fps: Some(Rational { numerator: 30, denominator: 1 }), has_audio: false, audio: None, online: false,
@@ -118,14 +118,14 @@ fn schema_one_migrates_to_explicit_pipeline_in_default_track() {
     write_project(&path, &legacy);
     let mut migrated = EditorDocument::open(path.clone()).unwrap();
     assert_eq!(migrated.data, original.data);
-    assert_eq!(migrated.data.schema_version, 9);
+    assert_eq!(migrated.data.schema_version, 10);
     assert_eq!(migrated.clip("clip-1").unwrap().pipeline, ClipPipeline::default());
     assert!(!migrated.is_dirty());
     assert!(!migrated.can_undo());
     migrated.save().unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(saved["schema_version"], 9);
-    assert_eq!(saved["data"]["schema_version"], 9);
+    assert_eq!(saved["schema_version"], 10);
+    assert_eq!(saved["data"]["schema_version"], 10);
     assert!(saved["data"]["tracks"][0]["clips"][0].get("pipeline").is_some());
     assert_eq!(EditorDocument::open(path.clone()).unwrap().data, migrated.data);
     let object = legacy["data"]["clips"][0].as_object_mut().unwrap();

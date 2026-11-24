@@ -13,6 +13,7 @@ description = "Native non-destructive video editor for OpenQuartz"
 ui-automation = ["slint/mcp"]
 
 [dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
 cosmic-text = { version = "=0.18.2", default-features = false, features = ["std", "swash"] }
 open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video"] }
 slint_code_editor = { path = "../../crates/slint_code_editor" }

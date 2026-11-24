@@ -315,7 +315,7 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4');
     await waitNodeCount(2); await snapshot('01-nodes-default-red', 'red');
     originalData = await save(true);
-    assert.equal(originalData.schema_version, 9);
+    assert.equal(originalData.schema_version, 10);
     assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
   }, { core: true });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {
@@ -562,6 +562,28 @@ try {
     await client.activate(await revealInspector('Cancel Corrector gesture', 'Button'));
     await correctorValue(-2);
     assert.deepEqual(await save(), correctorSaved, 'Pausing and cancelling must not change accepted clip parameters');
+    await close();
+  });
+  await step('The same clip graph applies an effect to a still image and survives reopening', async () => {
+    const image = join(output, 'red-still.png');
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x180',
+      '-frames:v', '1', '-c:v', 'png', '-threads', '1', '-y', image],
+    { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
+    await launch();
+    await fileAction('IMPORT', image, 'Import media'); await waitState('assets 1');
+    await waitColor('red');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red-still.png');
+    await waitNodeCount(2);
+    await selectNode('video');
+    await addEffect('Invert');
+    await waitNodeCount(3); await snapshot('28-still-inverted', 'cyan');
+    const saved = join(output, 'still-pipeline.oqvideo.json');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    await close();
+    await launch(saved); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red-still.png');
+    await waitNodeCount(3); await waitColor('cyan');
     await close();
   });
   if (smoke) await close();

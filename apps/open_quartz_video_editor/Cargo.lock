@@ -3587,6 +3587,7 @@ name = "open_quartz_video_editor"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "image",
  "naga",
  "open_quartz",
  "oq-media",

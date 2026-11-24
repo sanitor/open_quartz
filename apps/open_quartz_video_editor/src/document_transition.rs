@@ -208,7 +208,7 @@ pub(super) fn validate_dissolves(data: &ProjectData, track: &VideoTrack) -> Resu
             })
             .ok_or("A dissolve needs adjacent clips on the same track")?;
         if left.title.is_some() || right.title.is_some() {
-            return Err("A dissolve needs two video clips".into());
+            return Err("A dissolve needs two video or still image clips".into());
         }
         if item.frames < 2 {
             return Err("Dissolve must span at least two frames".into());
@@ -223,29 +223,28 @@ pub(super) fn validate_dissolves(data: &ProjectData, track: &VideoTrack) -> Resu
         if data.fps.frames_to_ns(range.start)? == data.fps.frames_to_ns(range.end)? {
             return Err("Dissolve time range is too short".into());
         }
-        let step = |clip: &Clip, frame: u64| {
-            let asset = data
-                .assets
-                .iter()
-                .find(|asset| asset.id == clip.asset_id)
-                .ok_or("Clip media is missing")?;
-            let offset = i128::from(frame) - i128::from(clip.timeline_start);
-            Ok::<_, String>((
-                asset,
-                shifted_source(clip, offset, data.fps, asset.time_base)?,
-            ))
+        let source = |clip: &Clip| {
+            data.assets.iter().find(|asset| asset.id == clip.asset_id)
+                .ok_or("Clip media is missing")
         };
-        let (asset, (head, _, _)) = step(right, range.start)?;
-        if head < asset.start_pts.ok_or("Unknown incoming source origin")? {
-            return Err("Not enough source before the incoming clip for this dissolve".into());
+        let incoming = source(right)?;
+        if !incoming.still {
+            let offset = i128::from(range.start) - i128::from(right.timeline_start);
+            let (head, _, _) = shifted_source(right, offset, data.fps, incoming.time_base)?;
+            if head < incoming.start_pts.ok_or("Unknown incoming source origin")? {
+                return Err("Not enough source before the incoming clip for this dissolve".into());
+            }
         }
-        let (asset, (tail, fraction, _)) = step(left, range.end)?;
-        let media_end = asset
-            .start_pts
-            .and_then(|start| start.checked_add(asset.duration_pts?))
-            .ok_or("Unknown outgoing source end")?;
-        if tail > media_end || (tail == media_end && fraction != 0) {
-            return Err("Not enough source after the outgoing clip for this dissolve".into());
+        let outgoing = source(left)?;
+        if !outgoing.still {
+            let offset = i128::from(range.end) - i128::from(left.timeline_start);
+            let (tail, fraction, _) = shifted_source(left, offset, data.fps, outgoing.time_base)?;
+            let media_end = outgoing.start_pts
+                .and_then(|start| start.checked_add(outgoing.duration_pts?))
+                .ok_or("Unknown outgoing source end")?;
+            if tail > media_end || (tail == media_end && fraction != 0) {
+                return Err("Not enough source after the outgoing clip for this dissolve".into());
+            }
         }
         ranges.push(range);
     }
