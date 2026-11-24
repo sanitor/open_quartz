@@ -53,6 +53,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 右侧 **Timeline start / Timeline end** 用序列帧；**Source in / Source out** 用原始 stream ticks。结束点为半开边界；输入后按 Enter 提交。分割和修剪保留有理数源入点，不逐次截断到整数源帧。
 - **UNDO / REDO**；**SEQUENCE** 设置固定画布和有理数帧率（如 30000/1001）。改名在顶部名称输入框中按 Enter。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
+- 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。
 - 选中视频片段并把播放头移到片段内，即可在 Inspector 的 **Opacity (%)** 下用 **Add opacity keyframe** 添加透明度关键帧。曲线启用后，修改透明度会在当前帧新增或更新关键帧。**Remove opacity keyframe** 删除当前关键帧。相邻关键帧之间线性插值，曲线两端保持端点值。
 
 ## Nodes Workspace — Phase 7

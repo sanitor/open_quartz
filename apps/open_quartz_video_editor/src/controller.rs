@@ -20,6 +20,7 @@ use pipeline_editor::{PipelineCommand, PipelineEditor};
 enum IoResult {
     Import(u64, Result<MediaAsset, String>),
     Open(u64, Result<EditorDocument, String>),
+    Recover(u64, Option<PathBuf>, Result<EditorDocument, String>),
     Relink(u64, String, PathBuf, Result<(), String>),
 }
 enum UiCommand {
@@ -72,6 +73,7 @@ pub struct Controller {
     audio_clip_model: Rc<VecModel<AudioClipRow>>,
     timer: slint::Timer,
     deferred_refresh: bool,
+    recovery: crate::document_recovery::Recovery,
     busy: bool,
     #[cfg(target_os = "macos")]
     export: Option<crate::preview::export::ExportTask>,
@@ -130,6 +132,7 @@ impl Controller {
             audio_clip_model,
             timer: slint::Timer::default(),
             deferred_refresh: false,
+            recovery: crate::document_recovery::Recovery::new(),
             busy: false,
             #[cfg(target_os = "macos")]
             export: None,
@@ -554,6 +557,7 @@ impl Controller {
                     self.pause();
                     self.generation += 1;
                     self.busy = false;
+                    self.recovery.reset_current();
                     self.document = EditorDocument::default();
                     self.selected_asset = None;
                     self.selected_clip = None;
@@ -563,12 +567,32 @@ impl Controller {
                     self.changed();
                 }
             }
+            "recover-autosave" => {
+                if let Some(path) = self.recovery.offer().map(PathBuf::from) {
+                    self.begin_recovery(path, true);
+                }
+            }
+            "recover-previous" => {
+                if let Some(path) = self.document.path().map(document::previous_project_path) {
+                    self.begin_recovery(path, false);
+                }
+            }
+            "discard-autosave" => {
+                match self.recovery.discard_offer() {
+                    Ok(()) => {
+                        self.refresh_recovery();
+                        self.status("Recovery snapshot discarded");
+                    }
+                    Err(error) => self.status(error),
+                }
+            }
             "open" => self.path_dialog("open"),
             "save" => {
                 if self.document.path().is_some() {
                     let result = self.document.save();
                     match result {
                         Ok(()) => {
+                            self.recovery.saved();
                             self.refresh();
                             self.status("Project saved");
                         }
@@ -758,6 +782,7 @@ impl Controller {
                 let result = self.document.save_as(path);
                 match result {
                     Ok(()) => {
+                        self.recovery.saved();
                         self.refresh();
                         self.status("Project saved");
                     }
@@ -1041,6 +1066,41 @@ impl Controller {
         }
     }
 
+    fn begin_recovery(&mut self, path: PathBuf, autosave: bool) {
+        if self.busy || !self.confirm_discard() { return; }
+        self.pause();
+        self.busy = true;
+        self.generation += 1;
+        let generation = self.generation;
+        let sender = self.io_send.clone();
+        self.status("Opening recovery snapshot…");
+        std::thread::spawn(move || {
+            let result = EditorDocument::open_as_recovery(path.clone());
+            let _ = sender.send(IoResult::Recover(generation, autosave.then_some(path), result));
+        });
+    }
+
+    fn refresh_recovery(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_recovery_available(self.recovery.offer().is_some());
+            window.set_previous_available(self.document.path()
+                .map(document::previous_project_path).is_some_and(|path| path.is_file()));
+        }
+    }
+
+    fn install_opened_document(&mut self, document: EditorDocument) {
+        self.clear_images();
+        self.document = document;
+        self.playhead = 0;
+        self.selected_clip = None;
+        self.selected_audio = None;
+        self.selected_asset = self.document.data.assets.first().map(|asset| asset.id.clone());
+        self.asset_preview = false;
+        self.requested = None;
+        self.refresh();
+        self.request_preview();
+    }
+
     fn start_export(&mut self, path: PathBuf, frames: Range<u64>) {
         #[cfg(target_os = "macos")]
         {
@@ -1071,6 +1131,16 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        if !self.busy {
+            if let Some(result) = self.recovery.poll(&self.document) {
+                if let Some(window) = self.window.upgrade() {
+                    window.set_recovery_status(match result {
+                        Ok(()) => "Recovery snapshot saved".into(),
+                        Err(error) => format!("Recovery snapshot failed. {error}").into(),
+                    });
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         if self.waveforms.poll(&self.document.data) {
             if let Some(window) = self.window.upgrade() {
@@ -1180,18 +1250,21 @@ impl Controller {
                     self.busy = false;
                     match result {
                         Ok(document) => {
-                            self.clear_images();
-                            self.document = document;
-                            self.playhead = 0;
-                            self.selected_clip = None;
-                            self.selected_audio = None;
-                            self.selected_asset =
-                                self.document.data.assets.first().map(|a| a.id.clone());
-                            self.asset_preview = false;
-                            self.requested = None;
-                            self.refresh();
-                            self.request_preview();
+                            self.recovery.reset_current();
+                            self.install_opened_document(document);
                             self.status("Project opened");
+                        }
+                        Err(error) => self.status(error),
+                    }
+                }
+                IoResult::Recover(generation, source, result) if generation == self.generation => {
+                    self.busy = false;
+                    match result {
+                        Ok(document) => {
+                            if let Some(path) = source { self.recovery.mark_restored(path); }
+                            else { self.recovery.reset_current(); }
+                            self.install_opened_document(document);
+                            self.status("Recovered an editable copy");
                         }
                         Err(error) => self.status(error),
                     }
@@ -1436,6 +1509,10 @@ impl Controller {
         let Some(window) = self.window.upgrade() else {
             return;
         };
+        self.refresh_recovery();
+        if !self.document.is_dirty() {
+            window.set_recovery_status("".into());
+        }
         window.set_project_name(self.document.data.name.clone().into());
         window.set_project_path(
             self.document
@@ -1665,6 +1742,7 @@ impl Controller {
     }
     pub fn shutdown(&mut self) {
         self.timer.stop();
+        self.recovery.reset_current();
         #[cfg(target_os = "macos")]
         self.audio.take();
         self.clear_images();
@@ -1830,6 +1908,7 @@ mod native_dialog_tests {
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
+            recovery: crate::document_recovery::Recovery::new(),
             #[cfg(target_os = "macos")]
             export: None,
             #[cfg(target_os = "macos")]

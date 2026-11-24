@@ -23,13 +23,13 @@ const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r))
 let child,client,exited,stdout='',stderr='';
 const project=join(output,'edit.oqvideo.json');
 async function launch(path){
-  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1'},stdio:['pipe','pipe','pipe']});
+  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1',OPEN_QUARTZ_EDITOR_RECOVERY_DIR:join(output,'recovery')},stdio:['pipe','pipe','pipe']});
   child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);
   exited=new Promise((accept,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>accept({code,signal}));});
   client=new SlintUiClient(`http://127.0.0.1:${port}/mcp`);
   await client.waitFor(async()=>{try{await client.init();await client.useWindow();return true;}catch{return false;}},{description:'native editor window'});
 }
-async function close(){await click('Close window');const exit=await Promise.race([exited,delay(10000).then(()=>{throw Error('Window did not close normally');})]);assert.deepEqual(exit,{code:0,signal:null});report.launches.push(exit);await writeFile(join(output,`application-${report.launches.length}.log`),stdout+stderr);child=undefined;}
+async function close(){await client.activate((await buttons('Close window'))[0]);const exit=await Promise.race([exited,delay(10000).then(()=>{throw Error('Window did not close normally');})]);assert.deepEqual(exit,{code:0,signal:null});report.launches.push(exit);await writeFile(join(output,`application-${report.launches.length}.log`),stdout+stderr);child=undefined;}
 const state=async()=> (await client.properties(client.rootHandle)).accessibleDescription;
 async function buttons(label) {
   return client.waitFor(async () => {
@@ -1400,6 +1400,55 @@ try{
    await expectColor('blend');
    await fileAction('SAVE AS', join(output, 'still-dissolve.oqvideo.json'), 'Save project');
    await waitState('Project saved');
+   await close();
+ });
+ const recoveryFiles = async () => (await readdir(join(output, 'recovery')))
+   .filter(name => name.endsWith('.recovery.oqvideo.json'));
+ const abruptExit = async () => {
+   child.kill('SIGKILL');
+   assert.deepEqual(await exited, { code: null, signal: 'SIGKILL' });
+   child = undefined;
+ };
+ await step('Recover an unsaved edit after killing the native editor', async () => {
+   await launch(); await waitState('clips 0');
+   await click('Add title'); await waitState('clips 1');
+   await waitState('Recovery snapshot saved');
+   assert.equal((await recoveryFiles()).length, 1);
+   await abruptExit();
+
+   await launch(); await waitState('clips 0');
+   await click('Recover autosave');
+   await waitState('Recovered an editable copy');
+   assert((await state()).includes('clips 1'));
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   const saved = join(output, 'recovered.oqvideo.json');
+   await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+   assert.deepEqual(await recoveryFiles(), []);
+   await close();
+
+   await launch(saved); await waitState('clips 1');
+   assert.deepEqual(await positions('Title'), [[0, 90]]);
+   await close();
+ }, { core: true });
+ await step('Open the previous saved version as a copy and discard a separate autosave', async () => {
+   const path = join(output, 'recover-history.oqvideo.json');
+   await launch(); await waitState('clips 0');
+   await click('Add title'); await waitState('clips 1');
+   await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+   await click('Add title'); await waitState('clips 2');
+   await click('SAVE'); await waitState('Project saved');
+   await click('Previous version'); await waitState('Recovered an editable copy');
+   assert((await state()).includes('clips 1'));
+   const saved = JSON.parse(await readFile(path, 'utf8'));
+   assert.equal(saved.data.tracks.flatMap(track => track.clips).length, 2);
+   await waitState('Recovery snapshot saved');
+   await abruptExit();
+
+   await launch(path); await waitState('clips 2');
+   await click('Discard autosave'); await waitState('Recovery snapshot discarded');
+   assert.deepEqual(await recoveryFiles(), []);
+   assert.equal((await buttons('Recover autosave')).length, 0);
+   assert((await state()).includes('clips 2'));
    await close();
  });
  await step('Track names, button reordering, deletion and explicit show update the editor', async () => {

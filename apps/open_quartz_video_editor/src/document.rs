@@ -704,29 +704,12 @@ impl EditorDocument {
             data: snapshot,
         })
         .map_err(|error| error.to_string())?;
-        let temp = parent.join(format!(
-            ".{}.{}.tmp",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            new_id("save", self.revision)
-        ));
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .map_err(|error| format!("Cannot reserve project save temporary: {error}"))?;
-            if let Err(error) = file.write_all(&serialized).and_then(|_| file.sync_all()) {
-                let _ = fs::remove_file(&temp);
-                return Err(format!("Cannot write project: {error}"));
+        if let Ok(previous) = fs::read(&path) {
+            if previous != serialized && decode_project_file(&previous).is_ok() {
+                write_project_atomic(&previous_project_path(&path), &previous, self.revision)?;
             }
         }
-        if let Err(error) = fs::rename(&temp, &path) {
-            let _ = fs::remove_file(&temp);
-            return Err(format!("Cannot commit project: {error}"));
-        }
-        if let Ok(dir) = File::open(&parent) {
-            let _ = dir.sync_all();
-        }
+        write_project_atomic(&path, &serialized, self.revision)?;
         self.path = Some(path);
         self.saved_revision = self.revision;
         self.saved_data = self.data.clone();
@@ -738,6 +721,18 @@ impl EditorDocument {
             .clone()
             .ok_or("Project has not been saved; use Save As")?;
         self.save_as(path)
+    }
+    pub(crate) fn write_recovery(data: ProjectData, path: &Path) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&ProjectFile { schema_version: SCHEMA_VERSION, data })
+            .map_err(|error| error.to_string())?;
+        write_project_atomic(path, &bytes, 0)
+    }
+
+    pub fn open_as_recovery(path: PathBuf) -> Result<Self, String> {
+        let mut document = Self::open(path)?;
+        document.path = None;
+        document.saved_data = ProjectData::default();
+        Ok(document)
     }
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let path = path
@@ -770,6 +765,40 @@ impl EditorDocument {
         project.saved_revision = 0;
         Ok(project)
     }
+}
+
+pub fn previous_project_path(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name = name.strip_suffix(".oqvideo.json").unwrap_or(&name);
+    path.with_file_name(format!(".{name}.previous.oqvideo.json"))
+}
+
+fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64) -> Result<(), String> {
+    let parent = path.parent().ok_or("Project directory is missing")?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        new_id("save", revision)
+    ));
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| format!("Cannot reserve project save temporary: {error}"))?;
+        if let Err(error) = file.write_all(serialized).and_then(|_| file.sync_all()) {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("Cannot write project: {error}"));
+        }
+    }
+    if let Err(error) = fs::rename(&temp, &path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Cannot commit project: {error}"));
+    }
+    if let Ok(dir) = File::open(&parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {

@@ -8,6 +8,7 @@ mod audio_waveform;
 #[cfg(target_os = "macos")]
 mod audio_output;
 mod document;
+mod document_recovery;
 mod media;
 mod preview;
 mod title_raster;
