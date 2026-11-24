@@ -41,15 +41,18 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 - **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频，以及带明确时长的 AAC 或 PCM 音频。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
 - **ADD CLIP** / 素材旁的 **+**：将选定素材放入目标轨道的可用空隙。普通移动保留其他片段的时间。同轨重叠时拒绝放置，跨轨重叠按轨道顺序合成。
+- **Insert** 在播放头插入选中的视频素材，切开跨过播放头的片段并将本轨后续内容后移。**Overwrite** 用素材替换本轨对应区间，两侧剩余内容和其他切点保留。
+- **Ripple delete** 删除选中的视频片段，并将本轨后续片段前移相同帧数。相邻视频片段可在前一个片段的 Inspector 中用 **Roll cut (frame)** 调整共同切点。两端外边界保持原位。上述命令联动链接音频，各自占一个撤销步骤。
 - 时间线上拖动片段移动；拖两侧边缘修剪。**一次松手只有一个历史条目；Esc 取消拖动草稿**。
 - 点击标尺定位，**PREVIOUS / NEXT** 逐序列帧步进，**SPLIT** 在播放头处分割，**DELETE** 为 lift 删除，保留空隙。空隙真实渲染不透明黑色。
 - 右侧 **Timeline start / Timeline end** 用序列帧；**Source in / Source out** 用原始 stream ticks。结束点为半开边界；输入后按 Enter 提交。分割和修剪保留有理数源入点，不逐次截断到整数源帧。
 - **UNDO / REDO**；**SEQUENCE** 设置固定画布和有理数帧率（如 30000/1001）。改名在顶部名称输入框中按 Enter。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
+- 选中视频片段并把播放头移到片段内，即可在 Inspector 的 **Opacity (%)** 下用 **Add opacity keyframe** 添加透明度关键帧。曲线启用后，修改透明度会在当前帧新增或更新关键帧。**Remove opacity keyframe** 删除当前关键帧。相邻关键帧之间线性插值，曲线两端保持端点值。
 
 ## Nodes Workspace — Phase 7
 
-Select **Nodes** with an active video clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor. Project saving includes each clip pipeline inside its track in schema 4. Opening schema 1 migrates each clip to a direct source→output pipeline.
+Select **Nodes** with an active video clip to edit its independent static pipeline. The workspace reuses OpenQuartz's graph canvas, Inspector, WGSL editor and GPU executor. Project saving includes each clip pipeline inside its track. Opening schema 1 migrates each clip to a direct source→output pipeline.
 
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.
@@ -77,7 +80,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 4，已有视频片段维持原来的声音状态。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 5，已有片段维持声音状态和静态透明度。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。
 

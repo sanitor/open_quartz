@@ -8,8 +8,14 @@ use std::path::{Path, PathBuf};
 
 #[path = "document_audio.rs"]
 mod audio;
+#[path = "document_timing.rs"]
+mod timing;
+#[path = "document_animation.rs"]
+mod animation;
+pub use animation::OpacityKey;
+pub use timing::Placement;
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -118,6 +124,8 @@ pub struct Clip {
     #[serde(default = "one")]
     pub source_subtick_denominator: u64,
     pub transform: ClipTransform,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opacity_keys: Vec<OpacityKey>,
     pub pipeline: ClipPipeline,
 }
 impl Clip {
@@ -323,12 +331,17 @@ impl EditorDocument {
     }
 
     pub fn place_clip(&mut self, asset_id: &str, track: &str, start: Option<u64>) -> Result<String, String> {
+        self.place_video(asset_id, track, Placement::EmptySpace(start))
+    }
+
+    pub fn place_video(&mut self, asset_id: &str, track: &str, placement: Placement) -> Result<String, String> {
         let track = self.data.track_index(track)?;
         self.data.tracks[track].require_unlocked()?;
         let asset = self
             .asset(asset_id)
             .cloned()
             .ok_or("Media asset does not exist")?;
+        if !asset.has_video() { return Err("Select a video asset".into()); }
         let ticks = asset
             .duration_pts
             .ok_or("Exact placement requires a known video duration")?;
@@ -336,9 +349,9 @@ impl EditorDocument {
         if duration == 0 {
             return Err("Media is shorter than one sequence frame".into());
         }
-        let start = match start {
-            Some(start) => start,
-            None => first_gap(&self.data.tracks[track].clips, duration)?,
+        let start = match placement {
+            Placement::EmptySpace(None) => first_gap(&self.data.tracks[track].clips, duration)?,
+            Placement::EmptySpace(Some(frame)) | Placement::Insert(frame) | Placement::Overwrite(frame) => frame,
         };
         let id = new_id("clip", self.revision);
         let source_in = asset
@@ -355,9 +368,15 @@ impl EditorDocument {
             source_subtick_numerator: 0,
             source_subtick_denominator: 1,
             transform: ClipTransform::default(),
+            opacity_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
         };
         self.transact(|data| {
+            match placement {
+                Placement::EmptySpace(_) => {}
+                Placement::Insert(frame) => data.insert_space(track, frame, duration, revision)?,
+                Placement::Overwrite(frame) => data.clear_range(track, frame, clip.timeline_end()?, revision)?,
+            }
             data.tracks[track].clips.push(clip);
             data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             if has_audio { data.link_audio(revision, asset_id, id.clone())?; }
@@ -367,39 +386,18 @@ impl EditorDocument {
     }
     pub fn split(&mut self, clip_id: &str, at: u64) -> Result<String, String> {
         let revision = self.revision;
-        let right_id = new_id("clip", revision);
+        let mut result = None;
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
-            let mut right = data.tracks[track].clips[index].clone();
-            let end = right.timeline_end()?;
-            if at <= right.timeline_start || at >= end {
-                return Err("Split point must be inside the selected clip".into());
-            }
-            let left_duration = at - right.timeline_start;
-            let time_base = data
-                .assets
-                .iter()
-                .find(|asset| asset.id == right.asset_id)
-                .ok_or("Clip media is missing")?
-                .time_base;
-            advance_source(&mut right, i128::from(left_duration), data.fps, time_base)?;
-            right.id = right_id.clone();
-            right.timeline_start = at;
-            right.duration = end - at;
-            data.tracks[track].clips[index].duration = left_duration;
-            data.tracks[track].clips.insert(index + 1, right);
-            data.split_link(revision, clip_id, right_id.clone());
+            result = Some(data.split_video(track, index, at, revision)?);
             Ok(())
         })?;
-        Ok(right_id)
+        Ok(result.expect("successful split returns its right clip"))
     }
     pub fn lift(&mut self, clip_id: &str) -> Result<(), String> {
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
-            data.tracks[track].clips.remove(index);
-            for lane in &mut data.audio_tracks {
-                lane.clips.retain(|clip| !matches!(&clip.placement, AudioPlacement::Linked { video_id } if video_id == clip_id));
-            }
+            data.remove_video(track, index..index + 1);
             Ok(())
         })
     }
@@ -486,24 +484,7 @@ impl EditorDocument {
     pub fn trim_left(&mut self, clip_id: &str, new_start: u64) -> Result<(), String> {
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
-            let old = data.tracks[track].clips[index].clone();
-            let end = old.timeline_end()?;
-            if new_start >= end {
-                return Err("Left trim must leave at least one frame".into());
-            }
-            let asset = data
-                .assets
-                .iter()
-                .find(|asset| asset.id == old.asset_id)
-                .ok_or("Clip media is missing")?;
-            advance_source(
-                &mut data.tracks[track].clips[index],
-                i128::from(new_start) - i128::from(old.timeline_start),
-                data.fps,
-                asset.time_base,
-            )?;
-            data.tracks[track].clips[index].timeline_start = new_start;
-            data.tracks[track].clips[index].duration = end - new_start;
+            data.trim_video_start(track, index, new_start)?;
             data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
             Ok(())
         })
@@ -833,6 +814,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 return Err("Missing or duplicate clip ID".into());
             }
             clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
+            clip.validate_opacity_keys()?;
             if !asset_ids.contains(clip.asset_id.as_str()) {
                 return Err("Clip references a missing media asset".into());
             }
@@ -1112,6 +1094,31 @@ mod tests {
         assert_eq!(fps.frames_to_ns(30000).unwrap(), 1_001_000_000_000);
         assert_eq!(fps.ns_to_frames_floor(1_001_000_000_000).unwrap(), 30000);
         assert!(Rational::new(0, 1).is_err());
+    }
+    #[test]
+    fn overwrite_only_replaces_the_target_interval_across_multiple_clips() {
+        let mut doc = project();
+        insert_asset(&mut doc, Path::new("movie.mp4"));
+        let overlay = doc.add_track(DEFAULT_TRACK).unwrap();
+        let other = doc.place_clip("asset-1", &overlay, Some(0)).unwrap();
+        let first = doc.place_clip("asset-1", DEFAULT_TRACK, Some(0)).unwrap();
+        let second = doc.place_clip("asset-1", DEFAULT_TRACK, Some(90)).unwrap();
+        let snapshot = doc.data.clone();
+
+        let replacement = doc.place_video("asset-1", DEFAULT_TRACK, Placement::Overwrite(45)).unwrap();
+        let lane = &doc.data.tracks[doc.data.track_index(DEFAULT_TRACK).unwrap()];
+        assert_eq!(lane.clips.len(), 3);
+        assert_eq!(lane.clips[0].id, first);
+        assert_eq!(lane.clips[0].timeline_end(), Ok(45));
+        assert_eq!(lane.clips[1].id, replacement);
+        assert_eq!(lane.clips[1].timeline_end(), Ok(135));
+        assert_eq!(lane.clips[2].timeline_start, 135);
+        assert_eq!(lane.clips[2].source_in_pts, 9045);
+        assert_eq!(lane.clips[2].duration, 45);
+        assert!(doc.clip(&second).is_none());
+        assert_eq!(doc.clip(&other), snapshot.tracks[0].clips.first());
+        assert!(doc.undo());
+        assert_eq!(doc.data, snapshot);
     }
     #[test]
     fn split_preserves_total_duration_source_in_and_half_open_frame_ownership() {

@@ -1,6 +1,26 @@
 use open_quartz::project::{Edge, Graph, NodeFactoryRequest};
 
-use super::{PreviewRequest, OUTPUT_ID, SOURCE_ID};
+use super::{OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
+
+fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64) -> String {
+    let seconds = |source_ns: u64| {
+        (i128::from(animation.timeline_start_ns) - i128::from(origin)
+            + i128::from(source_ns) - i128::from(animation.source_in_ns)) as f64 / 1_000_000_000.0
+    };
+    let mut shader = format!("fn animated_alpha{index}() -> f32 {{\n");
+    for pair in animation.keys.windows(2) {
+        let left = pair[0];
+        let right = pair[1];
+        let span = (right.source_ns - left.source_ns) as f64 / 1_000_000_000.0;
+        shader.push_str(&format!(
+            "if (iTime < {:.9e}) {{ return mix({:.9e}, {:.9e}, clamp((iTime - ({:.9e})) / {:.9e}, 0.0, 1.0)); }}\n",
+            seconds(right.source_ns), left.opacity, right.opacity, seconds(left.source_ns), span,
+        ));
+    }
+    let last = animation.keys.last().expect("animation has at least one key");
+    shader.push_str(&format!("return {:.9e};\n}}\n", last.opacity));
+    shader
+}
 
 pub(super) fn source_id(clip: &str) -> String {
     format!("{}:{clip}/{SOURCE_ID}", clip.len())
@@ -12,12 +32,17 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
     let mut result = Graph::default();
     let mut bindings = String::new();
     let mut draws = String::new();
+    let mut animation_code = String::new();
     let mut parameters = serde_json::Map::new();
     let mut inputs = Vec::new();
     // Keep shader and port order stable when tracks are reordered. A frame's
     // uniforms select the draw order, independently of source bindings.
     let mut slots: Vec<_> = request.layers.iter().collect();
     slots.sort_by_key(|layer| layer.clip_id.as_str());
+    let origin = request.animation_origin_ns();
+    if slots.iter().any(|layer| layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
+        bindings.push_str(&format!("@group(0) @binding({}) var<uniform> iTime:f32;\n", slots.len() * 4));
+    }
     for (index, layer) in slots.iter().enumerate() {
         let clip = layer.pipeline.graph();
         let namespace = |id: &str| format!("{}:{}/{id}", layer.clip_id.len(), layer.clip_id);
@@ -74,18 +99,26 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
             format!("blend{index}"),
             serde_json::json!([cos, sin, 2.0f32.powf(t.exposure), order]),
         );
+        let alpha = match &layer.opacity {
+            Some(animation) => {
+                animation_code.push_str(&opacity_function(index, animation, origin));
+                format!("animated_alpha{index}()")
+            }
+            None => format!("placement{index}.w"),
+        };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), placement{index}, blend{index});\n\
                 let rgb = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0).rgb;\n\
                 if (all(p >= vec2f(0.0)) && all(p <= vec2f(1.0))) {{\n\
-                    let alpha = placement{index}.w;\n\
+                    let alpha = {alpha};\n\
                     result = linear(clamp(rgb * blend{index}.z, vec3f(0.0), vec3f(1.0))) * alpha + result * (1.0 - alpha);\n\
                 }}\n\
             }}\n"
         ));
     }
     let code = format!("{bindings}
+{animation_code}
 const canvas = vec2f({}.0, {}.0);
 fn source_uv(uv:vec2f, size:vec2f, placement:vec4f, blend:vec4f) -> vec2f {{
     let local = (uv - vec2f(0.5) - placement.xy) * canvas;

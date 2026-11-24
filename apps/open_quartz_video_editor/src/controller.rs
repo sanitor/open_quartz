@@ -1,4 +1,4 @@
-use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Rational};
+use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{sequence_request, PlaybackRequest, PreviewBridge, PreviewRequest};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, EditorWindow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
@@ -420,19 +420,35 @@ impl Controller {
             return;
         }
         match self.document.place_clip(id, track, start) {
-            Ok(clip_id) => {
-                let start = self.document.clip(&clip_id).expect("inserted clip exists").timeline_start;
-                self.pause();
-                self.playhead = start;
-                self.selected_track = track.to_owned();
-                self.selected_asset = Some(id.to_owned());
-                self.selected_clip = Some(clip_id);
-                self.selected_audio = None;
-                self.asset_preview = false;
-                self.requested = None;
-                self.deferred_refresh = true;
-                self.status("Clip added · unsaved changes");
-            }
+            Ok(clip_id) => self.focus_placed_clip(id, track, clip_id),
+            Err(error) => self.status(error),
+        }
+    }
+
+    fn focus_placed_clip(&mut self, asset: &str, track: &str, clip_id: String) {
+        let start = self.document.clip(&clip_id).expect("placed clip exists").timeline_start;
+        self.pause();
+        self.playhead = start;
+        self.selected_track = track.to_owned();
+        self.selected_asset = Some(asset.to_owned());
+        self.selected_clip = Some(clip_id);
+        self.selected_audio = None;
+        self.asset_preview = false;
+        self.requested = None;
+        self.deferred_refresh = true;
+        self.status("Clip added · unsaved changes");
+    }
+
+    fn place_at_playhead(&mut self, insert: bool) {
+        let Some(asset) = self.selected_asset.clone() else { return };
+        if !self.document.asset(&asset).is_some_and(|asset| asset.online && asset.has_video()) {
+            return;
+        }
+        self.pause();
+        let track = self.selected_track.clone();
+        let placement = if insert { Placement::Insert(self.playhead) } else { Placement::Overwrite(self.playhead) };
+        match self.document.place_video(&asset, &track, placement) {
+            Ok(clip) => self.focus_placed_clip(&asset, &track, clip),
             Err(error) => self.status(error),
         }
     }
@@ -560,7 +576,29 @@ impl Controller {
                 self.changed();
             }
             "split" => self.split(),
+            "add-opacity-key" | "remove-opacity-key" => {
+                self.pause();
+                if let Some(id) = self.selected_clip.clone() {
+                    let result = if action == "add-opacity-key" {
+                        self.document.set_opacity_key(&id, self.playhead, None)
+                    } else {
+                        self.document.remove_opacity_key(&id, self.playhead)
+                    };
+                    self.finish_edit(result);
+                }
+            }
             "delete" => self.lift(),
+            "insert" => self.place_at_playhead(true),
+            "overwrite" => self.place_at_playhead(false),
+            "ripple-delete" => {
+                if let Some(id) = self.selected_clip.clone() {
+                    self.pause();
+                    let start = self.document.clip(&id).map(|clip| clip.timeline_start);
+                    let result = self.document.ripple_delete(&id);
+                    if let (Ok(()), Some(start)) = (&result, start) { self.playhead = start; }
+                    self.finish_edit(result);
+                }
+            }
             "play" => {
                 if self.playing {
                     self.pause();
@@ -824,6 +862,9 @@ impl Controller {
                 value
                     .parse()
                     .map_err(|_| "End frame must be a non-negative integer")?,
+            ),
+            "roll" => self.document.roll_end(
+                &id, value.trim().parse().map_err(|_| "Cut frame must be a non-negative integer")?,
             ),
             "source_in" | "source-in" => self.document.set_timing(
                 &id,
@@ -1375,6 +1416,9 @@ impl Controller {
             },
         );
         let tracks = &self.document.data.tracks;
+        window.set_can_place_video(self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
+            .is_some_and(|asset| asset.online && asset.has_video()));
+        window.set_can_roll_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_roll_end(id)));
         if !tracks.iter().any(|track| track.id == self.selected_track) {
             self.selected_track = tracks[0].id.clone();
         }

@@ -222,7 +222,8 @@ component TimingField inherits VerticalLayout {
     callback committed(string);
     spacing: 4px;
     Text { text: root.label; color: #939ba2; font-size: 12px; }
-    LineEdit { accessible-label: root.label; enabled: root.enabled; text: root.value; placeholder-text: "Enter value"; accepted(value) => { root.committed(value); } }
+    changed value => { field.text = root.value; }
+    field := LineEdit { accessible-label: root.label; enabled: root.enabled; text: root.value; placeholder-text: "Enter value"; accepted(value) => { root.committed(value); } }
 }
 
 component TrackButton inherits Rectangle {
@@ -279,6 +280,9 @@ export component EditorWindow inherits Window {
     in property <bool> selected_clip_writable;
     in property <string> selected_clip_rotation;
     in property <string> selected_clip_opacity;
+    in property <bool> opacity_editable;
+    in property <bool> opacity_key_enabled;
+    in property <bool> on_opacity_key;
     private property <int> reorder_marker: -1;
     in property <int> selected_frame: 0;
     in property <int> sequence_duration: 0;
@@ -298,6 +302,8 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_start: "0";
     in property <string> selected_clip_duration: "0";
     in property <string> selected_clip_end: "0";
+    in property <bool> can_place_video;
+    in property <bool> can_roll_end;
     in property <string> selected_clip_source_in: "0";
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
@@ -863,6 +869,7 @@ export component EditorWindow inherits Window {
                                 TimingField { label: "Timeline end"; value: root.selected_clip_end; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("end", value); } }
                                 TimingField { label: "Source in"; value: root.selected_clip_source_in; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_in", value); } }
                                 TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_out", value); } }
+                                if root.can_roll_end: TimingField { label: "Roll cut (frame)"; value: root.selected_clip_end; committed(value) => { root.clip_timing_changed("roll", value); } }
                                 Text { text: "Duration  " + root.selected_clip_duration + " frames"; color: root.secondary; font-size: 12px; }
                                 if root.selected_clip_id != "": VerticalLayout {
                                     spacing: 8px;
@@ -875,7 +882,8 @@ export component EditorWindow inherits Window {
                                     TimingField { label: "Position Y (px)"; value: root.selected_clip_y; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("y", value); } }
                                     TimingField { label: "Scale"; value: root.selected_clip_scale; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("scale", value); } }
                                     TimingField { label: "Rotation (°)"; value: root.selected_clip_rotation; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("rotation", value); } }
-                                    TimingField { label: "Opacity (%)"; value: root.selected_clip_opacity; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("opacity", value); } }
+                                    TimingField { label: "Opacity (%)"; value: root.selected_clip_opacity; enabled: root.opacity_editable; committed(value) => { root.transform_field("opacity", value); } }
+                                    Button { text: root.on_opacity_key ? "Remove opacity keyframe" : "Add opacity keyframe"; enabled: root.opacity_key_enabled; clicked => { root.project_action(root.on_opacity_key ? "remove-opacity-key" : "add-opacity-key"); } }
                                     TimingField { label: "Exposure (EV)"; value: root.selected_clip_exposure; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("exposure", value); } }
                                 }
 
@@ -897,8 +905,11 @@ export component EditorWindow inherits Window {
                         ToolButton { label: "ADD TRACK"; glyph: "≡+"; clicked => { editor_focus.focus(); root.track_action("", "add", ""); } }
                         Rectangle { horizontal-stretch: 1; }
                         ToolButton { label: "ADD CLIP"; glyph: "+"; active: root.assets.length > 0; clicked => { editor_focus.focus(); root.add_to_timeline(); } }
+                        Button { text: "Insert"; enabled: root.can_place_video; clicked => { editor_focus.focus(); root.project_action("insert"); } }
+                        Button { text: "Overwrite"; enabled: root.can_place_video; clicked => { editor_focus.focus(); root.project_action("overwrite"); } }
                         ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.split_clip(); } }
                         ToolButton { label: "DELETE"; glyph: "⌫"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.lift_clip(); } }
+                        Button { text: "Ripple delete"; enabled: root.selected_clip_writable; clicked => { editor_focus.focus(); root.project_action("ripple-delete"); } }
                         Rectangle { width: 1px; height: 20px; background: root.border; }
                         ToolButton { label: "FIT TIMELINE"; glyph: "fit"; tooltip-text: "Fit entire sequence"; active: root.sequence_duration > 0; clicked => { root.fit_timeline(); } }
                         ToolButton { label: "ZOOM OUT"; glyph: "−"; active: root.timeline_zoom > 0.0001; clicked => { root.set_zoom(root.timeline_zoom > 4 ? root.timeline_zoom - 2 : root.timeline_zoom / 2); } }

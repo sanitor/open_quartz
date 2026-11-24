@@ -255,6 +255,9 @@ impl Controller {
         let draft = self.monitor_gesture.as_ref();
         let mut overlay = MonitorBox::default();
         let mut writable = false;
+        let mut key_enabled = false;
+        let mut on_key = false;
+        let mut opacity_editable = false;
         if let Some(clip) = selected {
             let transform = draft.map_or(clip.transform, |draft| draft.value);
             let track = self
@@ -262,6 +265,10 @@ impl Controller {
                 .clip_track(&clip.id)
                 .expect("selected clip has a track");
             writable = !track.locked;
+            let source_ns = self.document.data.clip_source_time(clip, self.playhead).ok();
+            key_enabled = writable && source_ns.is_some() && !self.playing;
+            on_key = source_ns.is_some_and(|ns| clip.opacity_keys.binary_search_by_key(&ns, |key| key.source_ns).is_ok());
+            opacity_editable = writable && (clip.opacity_keys.is_empty() || key_enabled);
             if track.visible
                 && track
                     .clip_at(self.playhead)
@@ -277,10 +284,14 @@ impl Controller {
             window.set_selected_clip_y(format(transform.y * self.document.data.height as f32));
             window.set_selected_clip_scale(format(transform.scale));
             window.set_selected_clip_rotation(format(transform.rotation));
-            window.set_selected_clip_opacity(format(transform.opacity * 100.0));
+            let opacity = source_ns.map_or(transform.opacity, |ns| clip.opacity_at(ns));
+            window.set_selected_clip_opacity(format(opacity * 100.0));
             window.set_selected_clip_exposure(format(transform.exposure));
         }
         window.set_selected_clip_writable(writable);
+        window.set_opacity_key_enabled(key_enabled);
+        window.set_on_opacity_key(on_key);
+        window.set_opacity_editable(opacity_editable);
         window.set_monitor_box(overlay);
     }
 
@@ -343,7 +354,8 @@ impl Controller {
                             .data
                             .active_clips(self.playhead)
                             .find_map(|(_, clip)| {
-                                (clip.transform.opacity > 0.0
+                                (self.document.data.clip_source_time(clip, self.playhead)
+                                    .map_or(clip.transform.opacity, |ns| clip.opacity_at(ns)) > 0.0
                                     && self
                                         .geometry(clip, clip.transform)
                                         .is_some_and(|g| g.contains(point)))
@@ -413,6 +425,7 @@ impl Controller {
         };
         let id = clip.id.clone();
         let mut transform = clip.transform;
+        let animated = !clip.opacity_keys.is_empty();
         let result = (|| {
             if field == "reset" {
                 transform = ClipTransform::default();
@@ -428,6 +441,7 @@ impl Controller {
                     "y" => transform.y = value / self.document.data.height as f32,
                     "scale" => transform.scale = value,
                     "rotation" => transform.rotation = value,
+                    "opacity" if animated => return self.document.set_opacity_key(&id, self.playhead, Some(value / 100.0)),
                     "opacity" => transform.opacity = value / 100.0,
                     "exposure" => transform.exposure = value,
                     _ => return Err("Unknown transform field".into()),

@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 4);
+   assert.equal(data.schema_version, 5);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -381,6 +381,72 @@ try{
    await client.setValue(input, String(value));
    await client.key('\n');
  };
+ const timingProject = join(output, 'timing.oqvideo.json');
+ const outgoing = 'timing-blue.mp4';
+ const incoming = 'linked-tone.mp4';
+ const positions = async (name) => (await timeline(name)).map(clip => {
+   const [, start, duration] = /Timeline start (\d+) frames; duration (\d+) frames/.exec(clip.accessibleDescription);
+   return [Number(start), Number(duration)];
+ }).sort(([start], [other]) => start - other);
+ await step('Insert, ripple delete, overwrite and roll the cut on the native timeline', async () => {
+   const short = generate(outgoing, 'blue', 0.5);
+   await launch(audioProject);
+   await waitState('audio clips 2');
+   await fileAction('IMPORT', short, 'Import media');
+   await waitState('assets 3');
+   await click('NEXT'); await waitState('playhead 1 frames');
+   await click('Insert');
+   await waitState('assets 3; clips 3');
+   await click('FIT TIMELINE');
+   assert.deepEqual(await positions(incoming), [[0, 1], [16, 89]]);
+   assert.deepEqual(await positions(outgoing), [[1, 15]]);
+   await waitState('audio clips 3');
+   await expectColor('blue');
+
+   await click('Ripple delete'); await waitState('assets 3; clips 2');
+   assert.deepEqual(await positions(incoming), [[0, 1], [1, 89]]);
+   await expectColor('red');
+   await click('UNDO'); await waitState('assets 3; clips 3');
+   await click('UNDO'); await waitState('assets 3; clips 1');
+   assert.deepEqual(await positions(incoming), [[0, 90]]);
+
+   await click('Overwrite'); await waitState('assets 3; clips 3');
+   assert.deepEqual(await positions(incoming), [[0, 1], [16, 74]]);
+   assert.deepEqual(await positions(outgoing), [[1, 15]]);
+   await enter(await findInput('Roll cut (frame)'), 15);
+   assert.deepEqual(await positions(outgoing), [[1, 14]]);
+   assert.deepEqual(await positions(incoming), [[0, 1], [15, 75]]);
+
+   await fileAction('SAVE AS', timingProject, 'Save project'); await waitState('Project saved');
+   const { data } = JSON.parse(await readFile(timingProject, 'utf8'));
+   const asset = data.assets.find(asset => asset.name === incoming);
+   const tail = data.tracks[0].clips.at(-1);
+   assert.equal(tail.source_in_pts, asset.start_pts + asset.time_base.denominator / asset.time_base.numerator / 2);
+   assert.deepEqual(data.audio_tracks[0].clips.map(clip => clip.placement.video_id).sort(),
+     [data.tracks[0].clips[0].id, tail.id].sort());
+   assert.deepEqual(data.audio_tracks[1].clips[0].placement,
+     { kind: 'independent', start: 0, duration: 144000, source: 0 });
+   await close();
+ }, { core: true });
+ await step('Roll rejects locked linked audio and insufficient source handles atomically', async () => {
+   await launch(timingProject); await waitState('assets 3; clips 3');
+   await click('FIT TIMELINE');
+   await click('Lock Audio 1');
+   await client.click(await item(outgoing));
+   const roll = () => client.waitFor(async () => (await client.byLabel('Roll cut (frame)', { role: 'TextInput' }))[0],
+     { description: 'selected outgoing clip exposes its roll cut' });
+   await enter(await roll(), 16);
+   await waitState('Audio 1 is locked');
+   assert.deepEqual(await positions(outgoing), [[1, 14]]);
+   assert.deepEqual(await positions(incoming), [[0, 1], [15, 75]]);
+   await click('Unlock Audio 1');
+   await enter(await roll(), 17);
+   await waitState('Clip source range extends outside media presentation duration');
+   assert.deepEqual(await positions(outgoing), [[1, 14]]);
+   assert.deepEqual(await positions(incoming), [[0, 1], [15, 75]]);
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
  await step('Audio gain, mute and linked trim persist and affect the rendered mix', async () => {
    await launch(audioProject); await waitState('clips 1');
    await click('Lock Audio 1');
@@ -474,6 +540,64 @@ try{
    }
    throw new Error(`Could not scroll clip Inspector to ${label}`);
  };
+ const keyProject = join(output, 'opacity.oqvideo.json');
+ await step('Animate opacity with the same interpolation in scrubbing, playback and MP4', async () => {
+   const fixture = JSON.parse(await readFile(multiProject, 'utf8'));
+   Object.assign(fixture.data, { width: 320, height: 180 });
+   for (const clip of fixture.data.tracks.flatMap(track => track.clips)) {
+     const asset = fixture.data.assets.find(asset => asset.id === clip.asset_id);
+     Object.assign(clip, { timeline_start: 0, duration: 3, source_in_pts: asset.start_pts,
+       source_subtick_numerator: 0, source_subtick_denominator: 1 });
+     Object.assign(clip.transform, { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, exposure: 0 });
+   }
+   const seed = join(output, 'opacity-seed.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   await click('FIT TIMELINE');
+   await client.click(await item('foreground.mp4'));
+   await enter(await clipControl('Opacity (%)'), 0);
+   await expectColor('blue');
+   await client.click(await clipControl('Add opacity keyframe', 'Button'));
+   await clipControl('Remove opacity keyframe', 'Button');
+   await click('NEXT'); await click('NEXT'); await waitState('playhead 2 frames');
+   await enter(await clipControl('Opacity (%)'), 100);
+   await expectColor('red');
+   await click('PREVIOUS'); await waitState('playhead 1 frames');
+   await expectColor('blend');
+   assert.equal(Number((await clipControl('Opacity (%)')).accessibleValue), 50);
+   await click('PREVIOUS'); await waitState('playhead 0 frames');
+   await click('PLAY'); await waitState('playhead 2 frames');
+   await expectColor('red');
+   await fileAction('SAVE AS', keyProject, 'Save project'); await waitState('Project saved');
+   const { data } = JSON.parse(await readFile(keyProject, 'utf8'));
+   assert.deepEqual(data.tracks[0].clips[0].opacity_keys, [
+     { source_ns: 0, opacity: 0 }, { source_ns: 66666666, opacity: 1 },
+   ]);
+   const exportPath = join(output, 'opacity.mp4');
+   await fileAction('EXPORT', exportPath, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', exportPath, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const stride = 320 * 180 * 3;
+   assert.equal(pixels.length, stride * 3);
+   for (const [frame, color] of [[0, [0, 0, 255]], [1, [188, 0, 188]], [2, [255, 0, 0]]]) {
+     const offset = frame * stride + (90 * 320 + 160) * 3;
+     assert(color.every((expected, channel) => Math.abs(pixels[offset + channel] - expected) < 22));
+   }
+   await close();
+ }, { core: true });
+ await step('Remove an opacity keyframe, undo and preserve the curve across a split', async () => {
+   await launch(keyProject); await waitState('clips 2');
+   await click('FIT TIMELINE');
+   await client.click(await item('foreground.mp4'));
+   await expectColor('blue');
+   await client.click(await clipControl('Remove opacity keyframe', 'Button'));
+   await expectColor('red');
+   await click('UNDO'); await expectColor('blue');
+   await click('NEXT'); await waitState('playhead 1 frames');
+   await click('SPLIT'); await waitState('clips 3');
+   await expectColor('blend');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ });
  await step('Track names, button reordering, deletion and explicit show update the editor', async () => {
    await launch(multiProject); await waitState('clips 2');
    await enter(await findInput('Name of Video 2'), 'Spare');

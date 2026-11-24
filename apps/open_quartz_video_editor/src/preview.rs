@@ -19,7 +19,8 @@ pub struct PreviewRequest {
     pub ticket: u64,
     pub revision: u64,
     pub frame: u64,
-    // The single-source viewer uses media time. Layered requests use sequence time.
+    // The graph clock uses media time for single-source preview and an
+    // animation-relative sequence time when the composite evaluates keys.
     pub source_ns: u64,
     pub width: u32,
     pub height: u32,
@@ -37,6 +38,14 @@ pub struct PreviewLayer {
     pub source_ns: u64,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
+    opacity: Option<OpacityAnimation>,
+}
+
+#[derive(Clone)]
+struct OpacityAnimation {
+    keys: Vec<document::OpacityKey>,
+    timeline_start_ns: u64,
+    source_in_ns: u64,
 }
 
 pub fn sequence_request(
@@ -48,12 +57,20 @@ pub fn sequence_request(
     for (track, clip) in project.active_clips(frame) {
         let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
             .ok_or_else(|| format!("{}: missing clip media", track.name))?;
+        let opacity = if clip.opacity_keys.is_empty() { None } else {
+            Some(OpacityAnimation {
+                keys: clip.opacity_keys.clone(),
+                timeline_start_ns: project.fps.frames_to_ns(clip.timeline_start)?,
+                source_in_ns: document::source_time_ns(asset, clip, clip.timeline_start, project.fps)?,
+            })
+        };
         layers.push(PreviewLayer {
             clip_id: clip.id.clone(), track_name: track.name.clone(), asset: asset.clone(),
             source_ns: document::source_time_ns(asset, clip, frame, project.fps)?,
             transform: transform_override.filter(|(id, _)| *id == clip.id)
                 .map_or(clip.transform, |(_, value)| value),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
+            opacity,
         });
     }
     let mut request = PreviewRequest {
@@ -62,7 +79,8 @@ pub fn sequence_request(
         pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
     if let [layer] = layers.as_slice() {
-        if project.tracks.len() == 1 && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
+        if project.tracks.len() == 1 && layer.opacity.is_none()
+            && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
             let layer = layers.pop().expect("one preview layer");
             request.asset = Some(layer.asset);
             request.source_ns = layer.source_ns;
@@ -72,6 +90,7 @@ pub fn sequence_request(
         }
     }
     request.layers = layers;
+    request.source_ns -= request.animation_origin_ns();
     Ok(request)
 }
 
@@ -94,11 +113,19 @@ fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame:
         }
         times.insert(composition::source_id(&clip.id), source_ns);
     }
-    let timeline_ns = if times.is_empty() { 0 } else { project.fps.frames_to_ns(frame)? };
+    let timeline_ns = if times.is_empty() { 0 } else {
+        project.fps.frames_to_ns(frame)?.checked_sub(request.animation_origin_ns())
+            .ok_or("Frame precedes its animation origin")?
+    };
     Ok((timeline_ns, times))
 }
 
 impl PreviewRequest {
+    fn animation_origin_ns(&self) -> u64 {
+        self.layers.iter().filter_map(|layer| layer.opacity.as_ref())
+            .map(|animation| animation.timeline_start_ns).max().unwrap_or(0)
+    }
+
     fn sources(&self) -> impl Iterator<Item = (String, &MediaAsset, u64)> {
         self.asset.iter().map(|asset| (SOURCE_ID.into(), asset, self.source_ns))
             .chain(self.layers.iter().map(|layer| {
