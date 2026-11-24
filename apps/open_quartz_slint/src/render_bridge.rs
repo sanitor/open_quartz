@@ -455,7 +455,6 @@ fn render_worker(
     let mut graph_has_rendered = false;
     let mut source_preview_nodes = std::collections::BTreeSet::<String>::new();
     let mut stopped = true;
-    let mut ready_to_start = false;
     let mut playback_requested = false;
     let mut preview_renderer: Option<String> = None;
     let mut preview_nodes = Vec::<String>::new();
@@ -598,7 +597,6 @@ fn render_worker(
                 running = false;
                 render_failed = false;
                 stopped = false;
-                ready_to_start = !play;
                 playback_requested = play;
                 if !preview { publish_metrics(&updates, generation, meter.suspend(Instant::now(), true)); }
                 pending_video_previews = next_video_previews;
@@ -623,7 +621,13 @@ fn render_worker(
                     if graph.nodes().is_empty() || !playback_requested {
                         return Ok(false);
                     }
-                    if !preview { host.start_playback()?; }
+                    if !preview {
+                        if host.frame_state() == open_quartz::evaluation::EngineState::Paused {
+                            host.resume()?;
+                        } else {
+                            host.start_playback()?;
+                        }
+                    }
                     Ok(true)
                 })();
                 match result {
@@ -776,7 +780,7 @@ fn render_worker(
                         }
                         host.start_playback()
                     })(),
-                    _ if ready_to_start => host.start_playback(),
+                    _ if host.frame_state() == open_quartz::evaluation::EngineState::Ready => host.start_playback(),
                     _ => host.resume(),
                 };
                 match result {
@@ -788,7 +792,6 @@ fn render_worker(
                         }
                         if action == "play" {
                             stopped = false;
-                            ready_to_start = false;
                         }
                         first_frame = true;
                         publish_status(&updates, generation, format!("Playback: {action}"), false);
