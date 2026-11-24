@@ -39,7 +39,7 @@ async function buttons(label) {
 }
 async function click(label,last=false){const items=await buttons(label);assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
 async function fileAction(action,path,submit){await click(action);await client.setValue(await client.find({label:'File path',role:'TextInput'}),path);await click(submit,true);}
-const timeline=async name=>(await client.byLabel(name,{role:'Button'})).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
+const timeline=async name=>(await buttons(name)).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await client.byLabel(name,{role:'Button'})).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
 async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 11);
+   assert.equal(data.schema_version, 12);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1402,6 +1402,94 @@ try{
    await waitState('Project saved');
    await close();
  });
+ const timelineToolsProject = join(output, 'timeline-tools.oqvideo.json');
+ const shiftSelect = async name => client.click(await item(name), { modifiers: { shift: true } });
+ await step('Move and delete a multi-track selection in one undo step, and navigate a named marker', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const [upper, , lower] = fixture.data.tracks;
+   Object.assign(upper.clips[0], { timeline_start: 7, duration: 6 });
+   Object.assign(upper.clips[1], { timeline_start: 16, duration: 6 });
+   Object.assign(lower.clips[0], { timeline_start: 4, duration: 6 });
+   fixture.data.tracks = [upper, lower];
+   await writeFile(timelineToolsProject, JSON.stringify(fixture));
+   await launch(timelineToolsProject); await waitState('clips 3');
+   await client.click(await item('foreground.mp4')); await waitState('playhead 7 frames');
+   await shiftSelect('background.mp4'); await waitState('2 selected');
+   const first = await item('foreground.mp4');
+   const px = first.size.width / 6;
+   await client.drag(first, { x: center(first).x + 2 * px, y: center(first).y });
+   assert.deepEqual(await positions('foreground.mp4'), [[9, 6], [16, 6]]);
+   assert.deepEqual(await positions('background.mp4'), [[6, 6]]);
+   await click('UNDO');
+   assert.deepEqual(await positions('foreground.mp4'), [[7, 6], [16, 6]]);
+   assert.deepEqual(await positions('background.mp4'), [[4, 6]]);
+   await click('DELETE'); await waitState('clips 1');
+   assert.deepEqual(await positions('foreground.mp4'), [[16, 6]]);
+   assert.deepEqual(await positions('background.mp4'), []);
+   await click('UNDO'); await waitState('clips 3');
+
+   await client.click(await item('foreground.mp4')); await waitState('playhead 7 frames');
+   await click('Add marker');
+   await enter(await findInput('Marker name'), 'Cutaway');
+   await client.waitFor(async () => (await buttons('Go to Cutaway')).length === 1,
+     { description: 'ruler shows the renamed marker' });
+   await click('PREVIOUS'); await waitState('playhead 6 frames');
+   await click('Go to Cutaway'); await waitState('playhead 7 frames');
+   await fileAction('SAVE AS', join(output, 'timeline-marker.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   await close();
+ }, { core: true });
+ await step('Reject a conflicting group move and reopen and remove a saved timeline marker', async () => {
+   await launch(join(output, 'timeline-marker.oqvideo.json')); await waitState('clips 3');
+   await click('Go to Cutaway'); await waitState('playhead 7 frames');
+   assert.equal((await findInput('Marker name')).accessibleValue, 'Cutaway');
+   await click('Remove marker');
+   assert.equal((await buttons('Go to Cutaway')).length, 0);
+   await click('UNDO'); assert.equal((await buttons('Go to Cutaway')).length, 1);
+   await client.click(await item('foreground.mp4')); await waitState('playhead 7 frames');
+   await shiftSelect('background.mp4'); await waitState('2 selected');
+   const first = await item('foreground.mp4');
+   await client.drag(first, { x: center(first).x + first.size.width, y: center(first).y });
+   await waitState('Video track clips cannot overlap');
+   assert.deepEqual(await positions('foreground.mp4'), [[7, 6], [16, 6]]);
+   assert.deepEqual(await positions('background.mp4'), [[4, 6]]);
+   await close();
+ });
+ await step('Slip changes source samples and Slide shifts both neighboring cuts', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const track = fixture.data.tracks.find(track => track.clips.some(clip =>
+     fixture.data.assets.find(asset => asset.id === clip.asset_id)?.name === 'background.mp4'));
+   const reference = track.clips[0];
+   const asset = fixture.data.assets.find(asset => asset.id === reference.asset_id);
+   const second = asset.time_base.denominator / asset.time_base.numerator;
+   track.clips = [0, 1, 2].map(index => ({
+     ...reference, id: `slip-${index}`, timeline_start: index * 10, duration: 10,
+     source_in_pts: asset.start_pts + index * second,
+   }));
+   fixture.data.tracks = [track];
+   const seed = join(output, 'slip-slide.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 3');
+   const middle = () => client.waitFor(async () => (await timeline('background.mp4'))[1],
+     { description: 'middle source clip' });
+   await client.click(await middle());
+   await click('SLIP');
+   let clip = await middle();
+   const px = clip.size.width / 10;
+   await client.drag(clip, { x: center(clip).x + 2 * px, y: center(clip).y });
+   assert.deepEqual(await positions('background.mp4'), [[0, 10], [10, 10], [20, 10]]);
+   assert.equal(Number((await clipControl('Source in')).accessibleValue), asset.start_pts + second + second * 2 / 30);
+   await click('SLIDE');
+   clip = await middle();
+   await client.drag(clip, { x: center(clip).x + 2 * px, y: center(clip).y });
+   assert.deepEqual(await positions('background.mp4'), [[0, 12], [12, 10], [22, 8]]);
+   assert.equal(Number((await clipControl('Source in')).accessibleValue), asset.start_pts + second + second * 2 / 30);
+   await click('UNDO');
+   assert.deepEqual(await positions('background.mp4'), [[0, 10], [10, 10], [20, 10]]);
+   await click('UNDO');
+   assert.equal(Number((await clipControl('Source in')).accessibleValue), asset.start_pts + second);
+   await close();
+ }, { core: true });
  const recoveryFiles = async () => (await readdir(join(output, 'recovery')))
    .filter(name => name.endsWith('.recovery.oqvideo.json'));
  const abruptExit = async () => {

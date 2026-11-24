@@ -27,6 +27,7 @@ export struct AudioTrackRow { id: string, name: string, muted: bool, locked: boo
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
+export struct MarkerRow { frame: int, name: string }
 export struct DissolveRow { lane: int, start: float, duration: float, description: string }
 
 
@@ -74,6 +75,7 @@ component AssetCard inherits Rectangle {
 // Capture absolute pointer coordinates so moving the preview under the pointer
 // cannot feed its own displacement back into the gesture. Only release commits.
 component ClipGestureArea inherits TouchArea {
+    out property <bool> additive;
     in property <float> zoom: 16;
     in property <int> cancel_token;
     callback began();
@@ -91,6 +93,7 @@ component ClipGestureArea inherits TouchArea {
             root.cancelled();
         } else if event.button == PointerEventButton.left {
             if event.kind == PointerEventKind.down {
+                self.additive = event.modifiers.shift;
                 self.origin_x = self.absolute-position.x + self.mouse-x;
                 self.origin_scroll = root.scroll_x;
                 self.armed = true;
@@ -216,7 +219,12 @@ component TimelineClip inherits Rectangle {
     in property <ClipRow> item;
     in property <float> zoom: 16;
     in property <int> cancel_token;
-    callback clicked();
+    callback clicked(bool);
+    in property <string> edit_mode;
+    in property <bool> part_of_group;
+    in property <int> group_delta;
+    callback group_preview(int);
+    private property <bool> additive;
     callback focused();
     callback cancelled();
     callback gesture(string, int, string);
@@ -230,16 +238,18 @@ component TimelineClip inherits Rectangle {
     private property <int> lane: root.item.lane;
     private property <string> error: "";
     function clear_drag() {
+        if root.part_of_group && root.gesture_kind == "move" { root.group_preview(0); }
         root.gesture_kind = "";
         root.delta = 0;
         root.lane = root.item.lane;
         root.error = "";
     }
     function update_move(value: int, y: length) {
-        root.lane = root.target_lane(y);
+        root.lane = root.part_of_group ? root.item.lane : root.target_lane(y);
         let track = root.lane_id(root.lane);
         root.delta = root.bounded_delta("move", root.snapped_delta("move", value, track));
-        root.error = track == "" ? "Drop onto a video track" : root.drop_error(track, root.delta);
+        if root.part_of_group { root.group_preview(root.delta); }
+        root.error = root.part_of_group ? "" : track == "" ? "Drop onto a video track" : root.drop_error(track, root.delta);
     }
     private property <string> gesture_kind: "";
     private property <int> delta: 0;
@@ -254,9 +264,9 @@ component TimelineClip inherits Rectangle {
         let changed = result != 0 || track != root.item.track;
         root.clear_drag();
         if changed { root.gesture(kind, result, track); }
-        else { root.cancelled(); root.clicked(); }
+        else { root.cancelled(); root.clicked(root.additive); }
     }
-    x: 10px + (root.item.x + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta * root.zoom : 0)) * 1px;
+    x: 10px + (root.item.x + (root.gesture_kind == "move" || root.gesture_kind == "slide" || root.gesture_kind == "trim-start" ? root.delta : root.part_of_group ? root.group_delta : 0) * root.zoom) * 1px;
     y: 8px + (root.gesture_kind == "move" && root.lane >= 0 ? root.lane : root.item.lane) * root.lane_height;
     width: max(2px, (root.item.width + (root.gesture_kind == "trim-end" ? root.delta * root.zoom : root.gesture_kind == "trim-start" ? -root.delta * root.zoom : 0)) * 1px);
     height: 72px;
@@ -274,7 +284,11 @@ component TimelineClip inherits Rectangle {
         clip: true;
         if root.item.has_thumbnail: Image { x: 5px; y: 21px; width: min(78px, max(0px, parent.width - 10px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
         Text { x: 7px; y: 3px; width: max(0px, parent.width - 14px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 12px; font-weight: 600; overflow: elide; }
-        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + (root.item.is_subtitle ? "f subtitle" : root.item.is_title ? "f title" : root.item.is_still ? "f still image" : "f source clip"); color: #c0dbd6; font-size: 11px; }
+        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "slide" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + (root.item.is_subtitle ? "f subtitle" : root.item.is_title ? "f title" : root.item.is_still ? "f still image" : "f source clip"); color: #c0dbd6; font-size: 11px; }
+    }
+    if root.gesture_kind == "slip" && root.delta != 0: Text {
+        x: 9px; y: 48px; width: max(0px, parent.width - 18px); height: 20px;
+        color: #a0f4e5; font-size: 11px; text: "Source offset " + root.delta + "f"; overflow: elide;
     }
     if root.error != "": Text {
         x: 9px; y: 48px; width: max(0px, parent.width - 18px); height: 20px;
@@ -284,13 +298,26 @@ component TimelineClip inherits Rectangle {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         scroll_x: root.scroll_x;
         zoom: root.zoom; cancel_token: root.cancel_token;
-        began => { root.focused(); root.gesture_kind = "move"; root.delta = 0; root.lane = root.item.lane; }
+        began => {
+            root.focused(); root.additive = self.additive;
+            root.gesture_kind = root.edit_mode == "" ? "move" : root.edit_mode;
+            root.delta = 0; root.lane = root.item.lane;
+        }
         preview(value, x, y) => {
-            if !root.item.locked { root.autoscroll(x, y); root.update_move(value, y); }
+            if !root.item.locked {
+                root.autoscroll(x, y);
+                if root.gesture_kind == "move" { root.update_move(value, y); }
+                else { root.delta = value; }
+            }
         }
         finished(value, x, y) => {
-            if root.item.locked || (value == 0 && root.target_lane(y) == root.item.lane && root.delta == 0) {
-                root.clear_drag(); root.cancelled(); root.clicked();
+            if root.gesture_kind == "slip" || root.gesture_kind == "slide" {
+                let kind = root.gesture_kind;
+                root.clear_drag();
+                if !root.item.locked && value != 0 { root.gesture(kind, value, root.item.track); }
+                else { root.cancelled(); root.clicked(root.additive); }
+            } else if root.item.locked || (value == 0 && root.target_lane(y) == root.item.lane && root.delta == 0) {
+                root.clear_drag(); root.cancelled(); root.clicked(root.additive);
             } else { root.update_move(value, y); root.finish("move", root.delta); }
         }
         cancelled => { if root.gesture_kind != "" { root.clear_drag(); root.cancelled(); } }
@@ -303,7 +330,7 @@ component TimelineClip inherits Rectangle {
         accessible-role: button;
         accessible-label: "Trim start of " + root.item.asset_name;
         enabled: !root.item.locked; scroll_x: root.scroll_x;
-        began => { root.focused(); root.gesture_kind = "trim-start"; root.delta = 0; }
+        began => { root.focused(); root.additive = false; root.gesture_kind = "trim-start"; root.delta = 0; }
         preview(value, x, y) => { root.autoscroll(x, y); root.delta = root.bounded_delta("trim-start", root.snapped_delta("trim-start", value, root.item.track)); }
         finished(value, x, y) => { root.finish("trim-start", value == 0 ? 0 : root.snapped_delta("trim-start", value, root.item.track)); }
         cancelled => { root.gesture_kind = ""; root.delta = 0; }
@@ -313,7 +340,7 @@ component TimelineClip inherits Rectangle {
         accessible-role: button;
         accessible-label: "Trim end of " + root.item.asset_name;
         enabled: !root.item.locked; scroll_x: root.scroll_x;
-        began => { root.focused(); root.gesture_kind = "trim-end"; root.delta = 0; }
+        began => { root.focused(); root.additive = false; root.gesture_kind = "trim-end"; root.delta = 0; }
         preview(value, x, y) => { root.autoscroll(x, y); root.delta = root.bounded_delta("trim-end", root.snapped_delta("trim-end", value, root.item.track)); }
         finished(value, x, y) => { root.finish("trim-end", value == 0 ? 0 : root.snapped_delta("trim-end", value, root.item.track)); }
         cancelled => { root.gesture_kind = ""; root.delta = 0; }
@@ -356,7 +383,7 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status);
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "");
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
@@ -510,6 +537,14 @@ export component EditorWindow inherits Window {
     callback pipeline_corrector_event(string, string, string, string);
     callback project_action(string);
     callback import_media(); callback asset_select(string); callback add_to_timeline();
+    in property <int> selection_size;
+    private property <int> group_preview_delta;
+    in property <[MarkerRow]> markers;
+    in property <bool> marker_here;
+    in property <string> marker_name;
+    private property <string> timeline_edit_mode;
+    callback marker_name_changed(string);
+    callback clip_select_more(string);
     callback clip_select(string); callback split_clip(); callback lift_clip();
     callback trim_clip(string, int); callback undo(); callback redo();
     callback playback(string); callback step_frame(int); callback zoom_changed(float);
@@ -1072,7 +1107,13 @@ export component EditorWindow inherits Window {
                     }
                     HorizontalLayout {
                         height: 44px; spacing: 0px;
-                        Rectangle { width: 112px; background: #1b1e21; }
+                        Rectangle { width: 112px; background: #1b1e21;
+                            HorizontalLayout {
+                                padding: 3px; spacing: 4px;
+                                ToolButton { label: "SLIP"; glyph: "⇄"; tooltip-text: "Slip the source interval"; selected: root.timeline_edit_mode == "slip"; clicked => { editor_focus.focus(); root.timeline_edit_mode = self.selected ? "" : "slip"; } }
+                                ToolButton { label: "SLIDE"; glyph: "↔"; tooltip-text: "Slide between adjacent clips"; selected: root.timeline_edit_mode == "slide"; clicked => { editor_focus.focus(); root.timeline_edit_mode = self.selected ? "" : "slide"; } }
+                            }
+                        }
                         Rectangle {
                             horizontal-stretch: 1; background: #131517; clip: true;
                             for tick in Math.ceil(timeline_scroll.visible-width / 1px / max(0.0001, root.timeline_zoom) / root.ruler_step) + 2: Rectangle {
@@ -1084,6 +1125,16 @@ export component EditorWindow inherits Window {
                             TouchArea {
                                 accessible-role: button; accessible-label: "Seek timeline ruler";
                                 clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round(((self.mouse-x - timeline_scroll.content-x) / 1px - 10) / max(0.0001, root.timeline_zoom)))); }
+                            }
+                            for marker in root.markers: Rectangle {
+                                x: 4px + marker.frame * root.timeline_zoom * 1px + timeline_scroll.content-x;
+                                y: 32px; width: 13px; height: 12px;
+                                background: #d1a453; border-radius: 2px;
+                                TouchArea {
+                                    accessible-role: button; accessible-label: "Go to " + marker.name;
+                                    accessible-description: "Timeline marker at frame " + marker.frame;
+                                    clicked => { editor_focus.focus(); root.seek_frame(marker.frame); }
+                                }
                             }
                             Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px + timeline_scroll.content-x; width: 2px; height: parent.height; background: #ff525b; }
                             Rectangle { x: 6px + root.selected_frame * root.timeline_zoom * 1px + timeline_scroll.content-x; y: 1px; width: 10px; height: 10px; border-radius: 2px; background: #ff525b; }
@@ -1192,7 +1243,11 @@ export component EditorWindow inherits Window {
                                     item: clip; zoom: root.timeline_zoom; cancel_token: root.cancel_token; scroll_x: timeline_scroll.content-x;
                                     focused => { editor_focus.focus(); root.timeline_capture(clip.id); }
                                     cancelled => { root.timeline_capture(""); }
-                                    clicked => { root.clip_select(clip.id); }
+                                    edit_mode: root.nodes_open ? "" : root.timeline_edit_mode;
+                                    part_of_group: root.selection_size > 1 && clip.selected;
+                                    group_delta: root.group_preview_delta;
+                                    group_preview(delta) => { root.group_preview_delta = delta; }
+                                    clicked(additive) => { if additive && !root.nodes_open { root.clip_select_more(clip.id); } else { root.clip_select(clip.id); } }
                                     gesture(kind, delta, track) => { root.clip_gesture(clip.id, kind, delta, track); }
                                     target_lane(y) => { return root.target_lane(y); }
                                     lane_id(lane) => { return root.lane_id(lane); }
@@ -1223,7 +1278,10 @@ export component EditorWindow inherits Window {
                             }
                         }
                     }
-                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " video · " + root.audio_clips.length + " audio · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.audio_level; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
+                    Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " video · " + root.audio_clips.length + " audio · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } if root.selection_size > 1: Text { text: root.selection_size + " selected"; color: root.accent; font-size: 11px; vertical-alignment: center; }
+                        if root.marker_here: LineEdit { width: 156px; text: root.marker_name; accessible-label: "Marker name"; accepted(value) => { root.marker_name_changed(value); } }
+                        Button { text: root.marker_here ? "Remove marker" : "Add marker"; enabled: root.sequence_duration > 0; clicked => { editor_focus.focus(); root.project_action("toggle-marker"); } }
+                        Text { text: root.audio_level; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
                 }
             }
             if root.recovery_available: HorizontalLayout {

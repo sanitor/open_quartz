@@ -151,6 +151,7 @@ impl Controller {
     }
     pub(super) fn pipeline_command(&mut self, command: PipelineCommand) {
         if let PipelineCommand::Workspace(open)=command {
+            self.extra_selection.clear();
             if !open { self.discard_pipeline_corrector(); }
             if open {
                 let id=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()))

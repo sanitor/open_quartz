@@ -1,10 +1,10 @@
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
-use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, TrackRow};
+use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ enum UiCommand {
     SelectAsset(String),
     AddAsset(String),
     AddSelectedAsset,
-    SelectClip(String),
+    SelectClip(String, bool),
     Pipeline(PipelineCommand),
     Gesture {
         clip_id: String,
@@ -55,6 +55,7 @@ pub struct Controller {
     selected_asset: Option<String>,
     selected_clip: Option<String>,
     selected_audio: Option<String>,
+    extra_selection: BTreeSet<String>,
     selected_track: String,
     monitor_gesture: Option<MonitorGesture>,
     timeline_capture: Option<(String, u64)>,
@@ -114,6 +115,7 @@ impl Controller {
             selected_asset: None,
             selected_clip: None,
             selected_audio: None,
+            extra_selection: BTreeSet::new(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
             timeline_capture: None,
@@ -189,7 +191,20 @@ impl Controller {
         });
         let clip_sender = this.borrow().ui_send.clone();
         window.on_clip_select(move |clip_id| {
-            let _ = clip_sender.send(UiCommand::SelectClip(clip_id.to_string()));
+            let _ = clip_sender.send(UiCommand::SelectClip(clip_id.to_string(), false));
+        });
+        let selection_sender = this.borrow().ui_send.clone();
+        window.on_clip_select_more(move |clip_id| {
+            let _ = selection_sender.send(UiCommand::SelectClip(clip_id.to_string(), true));
+        });
+        let weak = Rc::downgrade(this);
+        window.on_marker_name_changed(move |name| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let frame = controller.playhead;
+                let result = controller.document.set_marker(frame, "name", &name);
+                controller.finish_edit(result);
+            }
         });
         let weak = Rc::downgrade(this);
         window.on_split_clip(move || {
@@ -291,6 +306,7 @@ impl Controller {
                 let mut controller = controller.borrow_mut();
                 if action == "select" {
                     controller.selected_clip = None;
+                    controller.extra_selection.clear();
                     controller.selected_audio = Some(id.to_string());
                     controller.refresh();
                 } else {
@@ -307,6 +323,7 @@ impl Controller {
                     let result = controller.document.audio_gesture(&id, &kind, delta, revision);
                     if result.is_ok() {
                         controller.selected_clip = None;
+                        controller.extra_selection.clear();
                         controller.selected_audio = Some(id.to_string());
                     }
                     controller.finish_edit(result);
@@ -420,7 +437,10 @@ impl Controller {
         self.playhead = self.playhead.min(self.document.duration_frames().saturating_sub(1));
         self.asset_preview = false;
         self.requested = None;
-        if self.selected_clip.as_ref().is_some_and(|id| self.document.clip(id).is_none()) { self.selected_clip = None; }
+        self.extra_selection.retain(|id| self.document.clip(id).is_some());
+        if self.selected_clip.as_ref().is_some_and(|id| self.document.clip(id).is_none()) {
+            self.selected_clip = self.extra_selection.pop_first();
+        }
         if self.selected_audio.as_ref().is_some_and(|id| !self.document.data.audio_tracks.iter().any(|track| track.clips.iter().any(|clip| &clip.id == id))) {
             self.selected_audio = None;
         }
@@ -453,6 +473,7 @@ impl Controller {
         self.playhead = start;
         self.selected_track = track.to_owned();
         self.selected_asset = asset.map(str::to_owned);
+        self.extra_selection.clear();
         self.selected_clip = Some(clip_id);
         self.selected_audio = None;
         self.asset_preview = false;
@@ -561,6 +582,7 @@ impl Controller {
                     self.document = EditorDocument::default();
                     self.selected_asset = None;
                     self.selected_clip = None;
+                    self.extra_selection.clear();
                     self.selected_audio = None;
                     self.playhead = 0;
                     self.clear_images();
@@ -626,6 +648,10 @@ impl Controller {
             "redo" => {
                 self.document.redo();
                 self.changed();
+            }
+            "toggle-marker" => {
+                let result = self.document.set_marker(self.playhead, "toggle", "");
+                self.finish_edit(result);
             }
             "split" => self.split(),
             "add-opacity-key" | "remove-opacity-key" => {
@@ -846,6 +872,7 @@ impl Controller {
         };
         match self.document.split(&id, self.playhead) {
             Ok(right) => {
+                self.extra_selection.clear();
                 self.selected_clip = Some(right);
                 self.changed();
             }
@@ -856,13 +883,19 @@ impl Controller {
         let Some(id) = self.selected_clip.clone() else {
             return;
         };
-        let result = self.document.lift(&id);
+        let result = if self.extra_selection.is_empty() {
+            self.document.lift(&id)
+        } else {
+            let mut ids = self.extra_selection.clone();
+            ids.insert(id);
+            self.document.lift_selected(&ids)
+        };
         self.finish_edit(result);
     }
     fn snap_clip(&self, id: &str, kind: &str, delta: i32, track: &str, zoom: f32) -> i32 {
         let Some(clip) = self.document.clip(id) else { return delta; };
         let Some(track) = self.document.data.tracks.iter().find(|item| item.id == track) else { return delta; };
-        if delta == 0 || zoom <= 0.0 { return delta; }
+        if delta == 0 || zoom <= 0.0 || (kind == "move" && !self.extra_selection.is_empty() && self.in_selection(id)) { return delta; }
         let end = clip.timeline_end().unwrap_or(clip.timeline_start);
         let start = i128::from(clip.timeline_start);
         let end = i128::from(end);
@@ -887,14 +920,58 @@ impl Controller {
         best.and_then(|correction| i32::try_from(i128::from(delta) + correction).ok()).unwrap_or(delta)
     }
 
+    fn in_selection(&self, id: &str) -> bool {
+        self.selected_clip.as_deref() == Some(id) || self.extra_selection.contains(id)
+    }
+
+    fn toggle_selection(&mut self, id: String) {
+        if self.extra_selection.remove(&id) {
+            self.refresh();
+            return;
+        }
+        if self.selected_clip.as_ref() == Some(&id) {
+            self.selected_clip = self.extra_selection.pop_first();
+        } else {
+            if let Some(previous) = self.selected_clip.replace(id) {
+                self.extra_selection.insert(previous);
+            }
+            self.selected_audio = None;
+            self.asset_preview = false;
+            self.requested = None;
+            self.request_preview();
+        }
+        if let Some(id) = &self.selected_clip {
+            self.selected_track = self.document.clip_track(id).map_or_else(|| document::DEFAULT_TRACK.into(), |track| track.id.clone());
+        }
+        self.selected_asset = self.selected_clip.as_deref().and_then(|id| self.document.clip(id))
+            .filter(|clip| clip.title.is_none()).map(|clip| clip.asset_id.clone());
+        self.refresh();
+    }
+
     fn gesture(&mut self, id: &str, kind: &str, delta: i32, track: &str) {
         let Some(clip) = self.document.clip(id).cloned() else {
             return;
         };
+        let group_move = kind == "move" && !self.extra_selection.is_empty() && self.in_selection(id);
+        if group_move {
+            let mut ids = self.extra_selection.clone();
+            ids.insert(id.to_owned());
+            ids.extend(self.selected_clip.iter().cloned());
+            let result = if self.document.clip_track(id).is_some_and(|lane| lane.id == track) {
+                self.document.move_selected(&ids, delta)
+            } else {
+                Err("Drag the selection horizontally to keep each clip on its track".into())
+            };
+            self.finish_edit(result);
+            return;
+        }
+        self.extra_selection.clear();
         self.selected_clip = Some(id.to_owned());
         self.selected_audio = None;
         self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
         let result = match kind {
+            "slip" => self.document.slip_clip(id, delta),
+            "slide" => self.document.slide_clip(id, delta),
             "move" => self.document.move_clip_to(
                 id, track, clip.timeline_start.saturating_add_signed(i64::from(delta)),
             ),
@@ -1093,6 +1170,7 @@ impl Controller {
         self.document = document;
         self.playhead = 0;
         self.selected_clip = None;
+        self.extra_selection.clear();
         self.selected_audio = None;
         self.selected_asset = self.document.data.assets.first().map(|asset| asset.id.clone());
         self.asset_preview = false;
@@ -1180,6 +1258,7 @@ impl Controller {
                 UiCommand::SelectAsset(id) => {
                     self.selected_asset = Some(id);
                     self.selected_clip = None;
+                    self.extra_selection.clear();
                     self.selected_audio = None;
                     self.asset_preview = true;
                     self.requested = None;
@@ -1189,8 +1268,13 @@ impl Controller {
                 }
                 UiCommand::AddAsset(id) => self.add_asset_from_card(&id),
                 UiCommand::AddSelectedAsset => self.add_clip(),
-                UiCommand::SelectClip(id) => {
+                UiCommand::SelectClip(id, additive) => {
                     if let Some(clip) = self.document.clip(&id).cloned() {
+                        if additive {
+                            self.toggle_selection(id);
+                            continue;
+                        }
+                        self.extra_selection.clear();
                         if let Some(track) = self.document.clip_track(&id) { self.selected_track = track.id.clone(); }
                         self.selected_clip = Some(id);
                         self.selected_audio = None;
@@ -1235,6 +1319,7 @@ impl Controller {
                                     self.selected_asset = Some(id);
                                     self.asset_preview = true;
                                     self.selected_clip = None;
+                                    self.extra_selection.clear();
                                     self.selected_audio = None;
                                     self.requested = None;
                                     self.refresh();
@@ -1444,6 +1529,9 @@ impl Controller {
     }
     fn refresh_time(&self) {
         if let Some(window) = self.window.upgrade() {
+            let marker = self.document.data.markers.iter().find(|marker| marker.frame == self.playhead);
+            window.set_marker_here(marker.is_some());
+            window.set_marker_name(marker.map_or("", |marker| marker.name.as_str()).into());
             window.set_selected_frame(self.playhead.min(i32::MAX as u64) as i32);
             window.set_timecode(timecode(self.playhead, self.document.data.fps).into());
             window.set_playing(self.playing);
@@ -1521,6 +1609,13 @@ impl Controller {
                 .unwrap_or_else(|| "Not saved".into())
                 .into(),
         );
+        window.set_selection_size((self.extra_selection.len() + usize::from(self.selected_clip.is_some())) as i32);
+        let duration = self.document.duration_frames();
+        let markers = self.document.data.markers.iter().filter(|marker| marker.frame < duration)
+            .map(|marker| MarkerRow { frame: marker.frame as i32, name: marker.name.clone().into() }).collect::<Vec<_>>();
+        if window.get_markers().iter().ne(markers.iter().cloned()) {
+            window.set_markers(ModelRc::new(VecModel::from(markers)));
+        }
         window.set_can_undo(self.document.can_undo());
         window.set_can_redo(self.document.can_redo());
         self.refresh_audio(&window);
@@ -1630,7 +1725,7 @@ impl Controller {
                     duration: clip.duration.min(i32::MAX as u64) as i32,
                     x: clip.timeline_start as f32 * zoom,
                     width: clip.duration as f32 * zoom,
-                    selected: self.selected_clip.as_ref() == Some(&clip.id),
+                    selected: self.in_selection(&clip.id),
                     online: title.is_some() || asset.is_some_and(|a| a.online),
                     thumbnail: thumbnail.map(|t| t.image.clone()).unwrap_or_default(),
                     has_thumbnail: thumbnail.is_some(),
@@ -1903,6 +1998,7 @@ mod native_dialog_tests {
             io_send, io_receive, ui_send, ui_receive, generation: 0, ticket: 0,
             selected_asset: None, selected_clip: Some(first), asset_preview: false,
             selected_audio: None,
+            extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,
             displayed: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),

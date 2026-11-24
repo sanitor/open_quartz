@@ -23,7 +23,10 @@ mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioInterval, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
+#[path = "document_timeline_tools.rs"]
+mod timeline_tools;
+pub use timeline_tools::Marker;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -209,6 +212,8 @@ pub struct ProjectData {
     pub tracks: Vec<VideoTrack>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_tracks: Vec<audio::AudioTrack>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
 }
 impl Default for ProjectData {
     fn default() -> Self {
@@ -225,6 +230,7 @@ impl Default for ProjectData {
             assets: Vec::new(),
             tracks: vec![VideoTrack::new(DEFAULT_TRACK.into(), "Video 1".into())],
             audio_tracks: Vec::new(),
+            markers: Vec::new(),
         }
     }
 }
@@ -966,6 +972,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
         }
         transition::validate_dissolves(data, track)?;
     }
+    timeline_tools::validate_markers(&data.markers)?;
     audio::validate_audio(data)
 }
 fn first_gap(clips: &[Clip], duration: u64) -> Result<u64, String> {

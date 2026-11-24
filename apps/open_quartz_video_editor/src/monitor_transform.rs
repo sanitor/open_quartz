@@ -374,6 +374,7 @@ impl Controller {
                     .clip_track(&clip.id)
                     .expect("active clip has a track");
                 self.selected_track = track.id.clone();
+                self.extra_selection.clear();
                 self.selected_clip = Some(clip.id.clone());
                 self.selected_audio = None;
                 self.selected_asset = clip.title.is_none().then(|| clip.asset_id.clone());
