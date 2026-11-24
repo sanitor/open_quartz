@@ -62,7 +62,7 @@ impl Mp4Encoder {
     {
         validate(&config)?;
         let target = path.as_ref().to_path_buf();
-        if target.extension().is_none_or(|ext| ext != "mp4") {
+        if !target.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4")) {
             return Err("H.264 export target must have an .mp4 extension".into());
         }
         if target.exists() && !config.overwrite {

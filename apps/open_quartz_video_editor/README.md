@@ -54,7 +54,7 @@ Select **Nodes** with an active timeline clip to edit its independent static pip
 - Source/Output nodes are protected; add Color/Filter/Distortion/Blend image effects from the catalog, add a custom Shader, connect compatible ports and remove serial effects. Copy/paste reuses the original graph semantics.
 - Graph edits preflight on the shared GPU worker before one project-history commit. Shader syntax errors retain the editable draft and last valid frame; uniforms commit with Enter. Per-clip graphs stay isolated across clip switching and splitting.
 - The workspace follows a panel layout: **Media / Nodes** tabs share the left library; the Nodes tab shows grouped, two-column square effect tiles; node settings use the same right property sidebar as clip timing. The clip-instance strip stays above the graph, separate from the full timeline.
-- Current support: static single-image Shader, Constant and Math graphs. Inference, arbitrary resource nodes, arbitrary multi-source effects, time/feedback nodes, Gallery/versions, scopes, professional color management and video export UI are not implemented.
+- Current support: static single-image Shader, Constant, Math and ColorCorrector graphs. Inference, arbitrary resource nodes, arbitrary multi-source effects, time/feedback nodes, Gallery/versions, scopes and professional color management are not implemented.
 
 
 
@@ -79,7 +79,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。Schema 1/2 打开时迁移到单条视频轨，保存使用 Schema 3。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
-音频剪辑、转场、文本、代理和编辑器导出 UI 属于后续交付。核心 Phase 5 无窗口 H.264/MP4 能力独立可用。
+**EXPORT** 将整个序列导出为 8-bit SDR H.264/MP4，沿用工程的偶数画布尺寸和帧率。输入新的本地 `.mp4` 路径，导出按启动时的工程快照渲染全部帧，包括切点、黑色空隙、轨道可见性和片段效果。窗口底部显示进度，工具栏可取消。导出最终通过原子提交生成文件，已有路径会报错。当前导出只有视频。音频剪辑、转场、文本和代理属于后续交付。
 
 ## 验证
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,7 +45,7 @@ async function step(name, run, { core = false } = {}) {
 function generate(name,color,duration=3,fps=30,size='320x180'){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=${fps}`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
 const red=generate('red.mp4','red'),blue=generate('blue.mp4','blue');
 try{
- await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await snapshot('01-empty');}, { core: true });
+ await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await click('EXPORT');await waitState('Add media to the timeline before exporting');await snapshot('01-empty');}, { core: true });
  await step('Frameless window controls follow configuration and maximize/restore',async()=>{
   const labels=['Close window','Minimize window','Maximize window'];
   const controls=await Promise.all(labels.map(label=>client.find({label,role:'Button'})));
@@ -222,6 +222,93 @@ try{
    await snapshot('15-multitrack-reopened');
    await close();
  }, { core: true });
+ const exportProject = join(output, 'export.oqvideo.json');
+ const exported = join(output, 'sequence.mp4');
+ await step('Export the sequence and decode every frame across gaps, cuts and track overlaps', async () => {
+   const fixture = JSON.parse(await readFile(multiProject, 'utf8'));
+   const [foregroundTrack, , backgroundTrack] = fixture.data.tracks;
+   const [overlay] = foregroundTrack.clips;
+   Object.assign(fixture.data, { width: 320, height: 180 });
+   Object.assign(backgroundTrack.clips[0], { duration: 9 });
+   Object.assign(overlay, { timeline_start: 3, duration: 3 });
+   Object.assign(overlay.transform, { x: 0, y: 0, scale: 0.5 });
+   foregroundTrack.clips.push({
+     ...overlay, id: 'export-cut', timeline_start: 12, duration: 6,
+     transform: { ...overlay.transform, scale: 1 },
+   });
+   await writeFile(exportProject, JSON.stringify(fixture));
+   await launch(exportProject);
+   await waitState('clips 3');
+   await fileAction('EXPORT', exported, 'Export MP4');
+   await waitState('Export complete');
+   const ffmpegEnv = { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' };
+   const metadata = spawnSync(ffmpeg, ['-hide_banner', '-i', exported, '-map', '0:v:0', '-f', 'null', '-'],
+     { env: ffmpegEnv, encoding: 'utf8' });
+   assert.equal(metadata.status, 0, metadata.stderr);
+   assert.match(metadata.stderr, /Video: h264[^\n]*320x180[^\n]*30 fps/);
+   const width = 320, height = 180, stride = width * height * 3;
+   const pixels = execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', exported,
+     '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     { env: ffmpegEnv, maxBuffer: stride * 24 });
+   assert.equal(pixels.length, stride * 18, 'every sequence frame encoded once at canvas size');
+   const colors = { red: [255, 0, 0], blue: [0, 0, 255], black: [0, 0, 0] };
+   function check(frame, x, y, color) {
+     const start = frame * stride + (y * width + x) * 3;
+     const actual = [...pixels.subarray(start, start + 3)];
+     assert(actual.every((channel, index) => Math.abs(channel - colors[color][index]) < 26),
+       `frame ${frame} at ${x},${y} expected ${color}, got ${actual}`);
+   }
+   for (let frame = 0; frame < 18; frame++) {
+     check(frame, 160, 90, frame >= 12 || (frame >= 3 && frame < 6) ? 'red' : frame >= 9 ? 'black' : 'blue');
+     check(frame, 24, 24, frame >= 12 ? 'red' : frame >= 9 ? 'black' : 'blue');
+   }
+   await snapshot('16-export-complete');
+   await close();
+ }, { core: true });
+ await step('Export validates paths and preserves existing destinations', async () => {
+   await launch(exportProject);
+   await waitState('clips 3');
+   await fileAction('EXPORT', 'relative.mov', 'Export MP4');
+   await waitState('Enter an absolute output path ending in .mp4');
+   await click('Cancel');
+   assert.equal((await client.byLabel('Export MP4', { role: 'Button' })).length, 0);
+   const original = await readFile(exported);
+   await fileAction('EXPORT', exported, 'Export MP4');
+   await waitState('Export target already exists');
+   assert.deepEqual(await readFile(exported), original);
+   await close();
+ });
+ await step('Cancel an active export and wait for its output cleanup', async () => {
+   await launch(multiProject);
+   await waitState('clips 2');
+   const cancelled = join(output, 'cancelled.mp4');
+   const filesBefore = (await readdir(output)).sort();
+   await fileAction('EXPORT', cancelled, 'Export MP4');
+   await client.waitFor(async () => /Exporting MP4 · [1-9]\d* \/ 150 frames/.test(await state()),
+     { description: 'encoder has started accepting the sequence frames' });
+   await click('Close window');
+   await waitState('Wait for the export to finish or cancel it before closing');
+   await click('Cancel export');
+   await waitState('Export cancelled');
+   assert.deepEqual((await readdir(output)).sort(), filesBefore, 'no partial destination or temporary file survives');
+   await close();
+ });
+ await step('Export rejects offline media in a later region and leaves no output', async () => {
+   const missing = join(output, 'missing-export-source.mp4');
+   const offlineProject = join(output, 'offline-export.oqvideo.json');
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const source = fixture.data.tracks[0].clips[0].asset_id;
+   fixture.data.assets.find(asset => asset.id === source).path = missing;
+   await writeFile(offlineProject, JSON.stringify(fixture));
+   await launch(offlineProject);
+   await waitState('clips 3');
+   const destination = join(output, 'offline.mp4');
+   const filesBefore = (await readdir(output)).sort();
+   await fileAction('EXPORT', destination, 'Export MP4');
+   await waitState('Export failed · Media offline');
+   assert.deepEqual((await readdir(output)).sort(), filesBefore);
+   await close();
+ });
  const findInput = label => client.find({ label, role: 'TextInput' });
  const enter = async (input, value) => {
    await client.click(input);

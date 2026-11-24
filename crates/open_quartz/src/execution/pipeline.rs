@@ -30,7 +30,7 @@ use window::{FrameWindow, QueuedFrame};
 #[path = "export.rs"]
 mod export;
 #[cfg(all(target_os = "macos", feature = "native-video"))]
-pub use export::{ExportConfig, ExportJob, ExportPhase, ExportStageEvent, ExportStatus};
+pub use export::{ExportConfig, ExportJob, ExportPhase, ExportSequence, ExportStageEvent, ExportStatus};
 
 fn runtime_error(error: SdkError) -> String {
     error.to_json()

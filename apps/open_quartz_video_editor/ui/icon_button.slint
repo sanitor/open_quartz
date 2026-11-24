@@ -10,6 +10,7 @@ export component ToolButton inherits Rectangle {
         root.label == "OPEN" ? "Open" :
         root.label == "SAVE" ? "Save" :
         root.label == "SAVE AS" ? "Save as" :
+        root.label == "EXPORT" ? "Export sequence" :
         root.label == "RELINK" ? "Relink" :
         root.label == "IMPORT" ? "Import" :
         root.label == "SEQUENCE" ? "Sequence" :
@@ -60,6 +61,7 @@ export component ToolButton inherits Rectangle {
             root.glyph == "▣+" ? "M3 3H14 M3 3V21H21V14 M7 3V9H12 M7 21V14H13 M18 2V10 M14 6H22" :
             root.glyph == "↔" ? "M10 8L13 5A4 4 0 0 1 19 11L16 14 M14 16L11 19A4 4 0 0 1 5 13L8 10 M8 16L16 8" :
             root.glyph == "↓" ? "M12 3V17 M6 11L12 17L18 11 M4 21H20" :
+            root.glyph == "↑" ? "M12 17V3 M6 9L12 3L18 9 M4 21H20" :
             root.glyph == "⚙" ? "M9 3H15L16 6L19 7L22 10V14L19 17L16 18L15 21H9L8 18L5 17L2 14V10L5 7L8 6Z M16 12A4 4 0 1 1 8 12A4 4 0 1 1 16 12Z" :
             root.glyph == "|◀" ? "M4 4V20 M19 4L8 12L19 20Z" :
             root.glyph == "▶" ? "M7 4L20 12L7 20Z" :

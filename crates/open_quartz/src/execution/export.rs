@@ -9,7 +9,7 @@ use crate::resources::source_identity::SourceFileIdentity;
 use oq_media::{
     EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, Mp4Encoder,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,6 +69,15 @@ pub struct ExportStageEvent {
     pub bytes: u64,
 }
 
+/// Supplies consecutive regions of a frozen timeline to the offline renderer.
+pub trait ExportSequence: Send + Sync {
+    /// Install the idle region's graph and return its exclusive end frame.
+    fn prepare_region(&mut self, pipeline: &mut FramePipeline, frame: u64) -> Result<u64, String>;
+
+    /// Return graph time and the independent media times for all active video nodes.
+    fn source_times(&self, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String>;
+}
+
 /// Owns one frozen pipeline/session and a separate codec/file worker. `poll`
 /// progresses bounded work without waiting for codec, disk, or GPU completion.
 /// Drive it on the job's render owner, not an application UI callback.
@@ -79,6 +88,9 @@ pub struct ExportJob {
     encoder: Mp4Encoder,
     config: ExportConfig,
     identities: Vec<SourceFileIdentity>,
+    active_sources: Vec<SourceFileIdentity>,
+    sequence: Option<Box<dyn ExportSequence>>,
+    region_end: u64,
     frames: VecDeque<(u64, StableFrame)>,
     converted: VecDeque<(u64, ConvertedFrame)>,
     next_request: u64,
@@ -92,9 +104,32 @@ pub struct ExportJob {
 }
 
 impl ExportJob {
-    pub fn new(mut pipeline: FramePipeline, config: ExportConfig) -> Result<Self, String> {
-        if pipeline.has_in_flight() || !pipeline.has_graph() {
-            return Err("export requires a prepared, idle graph session".into());
+    pub fn new(pipeline: FramePipeline, config: ExportConfig) -> Result<Self, String> {
+        Self::start(pipeline, config, None, None)
+    }
+
+    /// Capture all timeline source identities before preparing the first region.
+    pub fn new_sequence(
+        pipeline: FramePipeline,
+        config: ExportConfig,
+        sequence: impl ExportSequence + 'static,
+        source_paths: &[PathBuf],
+    ) -> Result<Self, String> {
+        let identities = source_paths
+            .iter()
+            .map(|path| SourceFileIdentity::capture(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::start(pipeline, config, Some(Box::new(sequence)), Some(identities))
+    }
+
+    fn start(
+        mut pipeline: FramePipeline,
+        config: ExportConfig,
+        mut sequence: Option<Box<dyn ExportSequence>>,
+        identities: Option<Vec<SourceFileIdentity>>,
+    ) -> Result<Self, String> {
+        if pipeline.has_in_flight() {
+            return Err("export requires an idle graph session".into());
         }
         if config.frames.start >= config.frames.end {
             return Err("export frame range must be nonempty and half-open".into());
@@ -112,6 +147,87 @@ impl ExportJob {
         {
             return Err("export controls must be finite".into());
         }
+        let region_end = match &mut sequence {
+            Some(sequence) => sequence.prepare_region(&mut pipeline, config.frames.start)?,
+            None => config.frames.end,
+        };
+        if region_end <= config.frames.start {
+            return Err("export sequence region must advance".into());
+        }
+        let active_sources = Self::validate_graph(&pipeline, &config)?;
+        let identities = identities.unwrap_or_else(|| active_sources.clone());
+        Self::validate_region_sources(&identities, &active_sources)?;
+        for identity in &identities {
+            identity.validate()?;
+            if identity.is_target(&config.output)? {
+                return Err("export target must not replace its source material".into());
+            }
+        }
+        let epoch = pipeline.last_key.map_or(Ok(1), |(epoch, _)| {
+            epoch.checked_add(1).ok_or("export epoch overflow")
+        })?;
+        pipeline.pause_execution()?;
+        pipeline.discard_cancelled_completions();
+        pipeline.resume_execution()?;
+        let mut window = pipeline.window_config();
+        let period = sample_ns(1, config.encoder.time_base)?;
+        window.max_span_ns = period
+            .checked_mul(window.high_water as u64)
+            .ok_or("export window span overflow")?
+            .max(1);
+        pipeline.configure_window(window)?;
+        let mut converter = Nv12Converter::new(
+            pipeline.backend(),
+            config.encoder.queue_capacity,
+            window.max_bytes / 2,
+        )?;
+        converter.set_input_interpretation(config.input_interpretation);
+        // Reserve the downstream native working set before starting source work.
+        if !converter.prepare_surfaces(
+            config.encoder.width,
+            config.encoder.height,
+            config.encoder.queue_capacity,
+        )? {
+            return Err(
+                "shared frame budget cannot currently reserve the export encoder working set"
+                    .into(),
+            );
+        }
+        let encoder =
+            Mp4Encoder::open(&config.output, config.encoder.clone()).map_err(|e| e.to_string())?;
+        Ok(Self {
+            pipeline,
+            converter,
+            encoder,
+            config,
+            identities,
+            active_sources,
+            sequence,
+            region_end,
+            frames: VecDeque::with_capacity(window.high_water),
+            converted: VecDeque::with_capacity(window.high_water),
+            next_request: 0,
+            epoch,
+            drain_requested: false,
+            commit_requested: false,
+            pending_error: None,
+            status: ExportStatus {
+                phase: ExportPhase::Preparing,
+                total_frames: total,
+                rendered_frames: 0,
+                accepted_frames: 0,
+                report: None,
+                error: None,
+            },
+            trace_enabled: false,
+            events: VecDeque::new(),
+        })
+    }
+
+    fn validate_graph(
+        pipeline: &FramePipeline,
+        config: &ExportConfig,
+    ) -> Result<Vec<SourceFileIdentity>, String> {
         let plan = pipeline
             .session
             .execution_plan()
@@ -142,64 +258,7 @@ impl ExportJob {
                 "offline export requires precise local file sources with frozen identities".into(),
             );
         }
-        for identity in &identities {
-            identity.validate()?;
-            if identity.is_target(&config.output)? {
-                return Err("export target must not replace its source material".into());
-            }
-        }
-        let epoch = pipeline.last_key.map_or(Ok(1), |(epoch, _)| {
-            epoch.checked_add(1).ok_or("export epoch overflow")
-        })?;
-        pipeline.pause_execution()?;
-        pipeline.discard_cancelled_completions();
-        pipeline.resume_execution()?;
-        let mut window = pipeline.window_config();
-        let period = sample_ns(1, config.encoder.time_base)?;
-        window.max_span_ns = period
-            .checked_mul(window.high_water as u64)
-            .ok_or("export window span overflow")?
-            .max(1);
-        pipeline.configure_window(window)?;
-        let mut converter = Nv12Converter::new(
-            pipeline.backend(),
-            config.encoder.queue_capacity,
-            window.max_bytes / 2,
-        )?;
-        converter.set_input_interpretation(config.input_interpretation);
-        // Reserve the downstream native working set before starting source work.
-        if !converter.prepare_surfaces(width, height, config.encoder.queue_capacity)? {
-            return Err(
-                "shared frame budget cannot currently reserve the export encoder working set"
-                    .into(),
-            );
-        }
-        let encoder =
-            Mp4Encoder::open(&config.output, config.encoder.clone()).map_err(|e| e.to_string())?;
-        Ok(Self {
-            pipeline,
-            converter,
-            encoder,
-            config,
-            identities,
-            frames: VecDeque::with_capacity(window.high_water),
-            converted: VecDeque::with_capacity(window.high_water),
-            next_request: 0,
-            epoch,
-            drain_requested: false,
-            commit_requested: false,
-            pending_error: None,
-            status: ExportStatus {
-                phase: ExportPhase::Preparing,
-                total_frames: total,
-                rendered_frames: 0,
-                accepted_frames: 0,
-                report: None,
-                error: None,
-            },
-            trace_enabled: false,
-            events: VecDeque::new(),
-        })
+        Ok(identities)
     }
 
     pub fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
@@ -306,7 +365,9 @@ impl ExportJob {
             .device()
             .poll(wgpu::PollType::Poll)
             .map_err(|e| e.to_string())?;
-        self.validate_sources()?;
+        for source in &self.active_sources {
+            source.validate()?;
+        }
         if self.drain_requested {
             return Ok(());
         }
@@ -364,6 +425,9 @@ impl ExportJob {
                     .request_id
                     .checked_sub(1)
                     .ok_or("invalid export request identity")?;
+                if index != self.status.rendered_frames || completion.stamp.epoch != self.epoch {
+                    return Err("export completion is out of sequence".into());
+                }
                 match completion.outcome {
                     FrameOutcome::Submitted(frame) => {
                         if (frame.image.width, frame.image.height)
@@ -398,11 +462,31 @@ impl ExportJob {
                     .start
                     .checked_add(self.next_request)
                     .ok_or("export sequence-frame overflow")?;
-                let timeline_ns = sample_ns(sequence_frame, self.config.encoder.time_base)?;
-                let previous_timeline_ns = if self.next_request == 0 {
-                    timeline_ns
-                } else {
-                    sample_ns(sequence_frame - 1, self.config.encoder.time_base)?
+                if sequence_frame >= self.region_end {
+                    if self.pipeline.has_in_flight() {
+                        break;
+                    }
+                    self.advance_region(sequence_frame)?;
+                }
+                let (timeline_ns, previous_timeline_ns, source_times) = match &self.sequence {
+                    Some(sequence) => {
+                        let (time, times) = sequence.source_times(sequence_frame)?;
+                        let nodes = self.pipeline.videos.node_ids();
+                        if times.len() != nodes.len()
+                            || nodes.iter().any(|node| !times.contains_key(node))
+                        {
+                            return Err("export frame must specify the media time of every active video node".into());
+                        }
+                        (time, time, Some(times))
+                    }
+                    None => (
+                        sample_ns(sequence_frame, self.config.encoder.time_base)?,
+                        sample_ns(
+                            sequence_frame - u64::from(self.next_request != 0),
+                            self.config.encoder.time_base,
+                        )?,
+                        None,
+                    ),
                 };
                 let demand = FrameDemand {
                     request_id: self.next_request + 1,
@@ -426,7 +510,13 @@ impl ExportJob {
                         ],
                     },
                 };
-                match self.pipeline.submit_window(demand) {
+                let admission = match source_times {
+                    Some(times) => self
+                        .pipeline
+                        .submit_window_with_source_times(demand, &times),
+                    None => self.pipeline.submit_window(demand),
+                };
+                match admission {
                     FrameAdmission::Accepted => self.next_request += 1,
                     FrameAdmission::WouldBlock(_) => break,
                     FrameAdmission::Rejected { error, .. } => return Err(error),
@@ -443,6 +533,31 @@ impl ExportJob {
                 self.drain_requested = true;
                 self.status.phase = ExportPhase::Draining;
             }
+        }
+        Ok(())
+    }
+
+    fn advance_region(&mut self, frame: u64) -> Result<(), String> {
+        let sequence = self.sequence.as_mut().ok_or("missing export sequence")?;
+        self.region_end = sequence.prepare_region(&mut self.pipeline, frame)?;
+        if self.region_end <= frame {
+            return Err("export sequence region must advance".into());
+        }
+        self.active_sources = Self::validate_graph(&self.pipeline, &self.config)?;
+        Self::validate_region_sources(&self.identities, &self.active_sources)?;
+        self.epoch = self.epoch.checked_add(1).ok_or("export epoch overflow")?;
+        Ok(())
+    }
+
+    fn validate_region_sources(
+        frozen: &[SourceFileIdentity],
+        active: &[SourceFileIdentity],
+    ) -> Result<(), String> {
+        for source in active {
+            if !frozen.iter().any(|identity| identity.same_source(source)) {
+                return Err("Export region uses an undeclared or changed source".into());
+            }
+            source.validate()?;
         }
         Ok(())
     }

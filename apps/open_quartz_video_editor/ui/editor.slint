@@ -248,13 +248,15 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status;
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status);
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
     in-out property <string> project_path: "Not saved";
     in-out property <string> project_status: "Hardware GPU initializing";
     in-out property <string> io_status: "All changes saved";
+    in property <string> export_status;
+    in property <bool> export_active;
     in property <string> monitor_status;
     in property <[AssetRow]> assets;
     in property <[ClipRow]> clips;
@@ -602,6 +604,8 @@ export component EditorWindow inherits Window {
                     ToolButton { label: "OPEN"; glyph: "▱"; clicked => { root.project_action("open"); } }
                     ToolButton { label: "SAVE"; glyph: "▣"; clicked => { root.project_action("save"); } }
                     ToolButton { label: "SAVE AS"; glyph: "▣+"; clicked => { root.project_action("save-as"); } }
+                    if !root.export_active: ToolButton { label: "EXPORT"; glyph: "↑"; clicked => { root.project_action("export"); } }
+                    if root.export_active: Button { text: "Cancel export"; clicked => { root.project_action("cancel-export"); } }
                     ToolButton { label: "RELINK"; glyph: "↔"; clicked => { root.project_action("relink"); } }
                     ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
                     ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
@@ -997,7 +1001,7 @@ export component EditorWindow inherits Window {
                     Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " clips · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "Space play · ← / → step · ⌘/Ctrl+B split · Esc cancel"; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }
                 }
             }
-            Rectangle { height: 26px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.project_status; color: #939ba2; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #939ba2; font-size: 11px; vertical-alignment: center; } } }
+            Rectangle { height: 26px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 12px; Text { text: root.export_status == "" ? root.project_status : root.export_status; color: #939ba2; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #939ba2; font-size: 11px; vertical-alignment: center; } } }
         }
         if root.settings_open: Rectangle {
             width: parent.width; height: parent.height; background: #000000b0;
@@ -1044,14 +1048,15 @@ export component EditorWindow inherits Window {
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
+                    if root.file_dialog_kind == "export": Text { text: "Entire sequence · H.264 MP4 · Video only · Choose a new file"; color: root.secondary; font-size: 11px; }
                     HorizontalLayout {
                         spacing: 10px;
                         LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" || root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -1062,7 +1067,7 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Rectangle { horizontal-stretch: 1; }
                         Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
-                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

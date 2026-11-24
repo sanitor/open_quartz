@@ -69,6 +69,8 @@ pub struct Controller {
     timer: slint::Timer,
     deferred_refresh: bool,
     busy: bool,
+    #[cfg(target_os = "macos")]
+    export: Option<crate::preview::export::ExportTask>,
     pipeline_editor: PipelineEditor,
 }
 impl Controller {
@@ -114,6 +116,8 @@ impl Controller {
             timer: slint::Timer::default(),
             deferred_refresh: false,
             busy: false,
+            #[cfg(target_os = "macos")]
+            export: None,
             pipeline_editor: PipelineEditor::default(),
         }));
         window.set_project_status(description.into());
@@ -485,6 +489,21 @@ impl Controller {
                 }
             }
             "save-as" => self.save_as(),
+            "export" => {
+                if self.document.data.duration_frames() == 0 {
+                    self.status("Add media to the timeline before exporting");
+                } else if self.pipeline_has_drafts() {
+                    self.status("Apply or discard the pending node drafts before exporting");
+                } else {
+                    self.path_dialog("export");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            "cancel-export" => {
+                if let Some(export) = &self.export {
+                    export.cancel();
+                }
+            }
             "relink" => self.path_dialog("relink"),
             "undo" => {
                 self.document.undo();
@@ -533,6 +552,10 @@ impl Controller {
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Untitled.oqvideo.json".into())
                     .into()
+            } else if kind == "export" {
+                self.document.path().and_then(|path| path.parent())
+                    .map(|parent| parent.join("export.mp4").to_string_lossy().into_owned())
+                    .unwrap_or_default().into()
             } else {
                 "".into()
             });
@@ -562,6 +585,10 @@ impl Controller {
             "save-as" => rfd::FileDialog::new()
                 .set_file_name("Untitled.oqvideo.json")
                 .save_file(),
+            "export" => rfd::FileDialog::new()
+                .add_filter("MP4 video", &["mp4"])
+                .set_file_name("export.mp4")
+                .save_file(),
             "relink" => rfd::FileDialog::new()
                 .set_title("Relink original media")
                 .pick_file(),
@@ -581,6 +608,16 @@ impl Controller {
     }
     fn file_submit(&mut self, kind: &str, path: PathBuf) {
         if self.busy {
+            return;
+        }
+        if kind == "export" && (!path.is_absolute()
+            || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp4")))
+        {
+            if let Some(window) = self.window.upgrade() {
+                window.set_file_path(path.to_string_lossy().as_ref().into());
+                window.set_file_dialog_open(true);
+            }
+            self.status("Enter an absolute output path ending in .mp4");
             return;
         }
         if path.as_os_str().is_empty() {
@@ -607,6 +644,7 @@ impl Controller {
                     Err(error) => self.status(error),
                 }
             }
+            "export" => self.start_export(path),
             "relink" => {
                 let Some(id) = self.selected_asset.clone() else {
                     self.status("Select a media asset to relink");
@@ -842,7 +880,51 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
+    fn start_export(&mut self, path: PathBuf) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.export.is_some() {
+                return;
+            }
+            let result = self.preview.export_device().and_then(|render| {
+                crate::preview::export::ExportTask::start(
+                    render, self.document.data.clone(), self.document.revision, path,
+                )
+            });
+            match result {
+                Ok(task) => {
+                    if let Some(window) = self.window.upgrade() {
+                        window.set_export_status(task.progress().0.into());
+                        window.set_export_active(true);
+                    }
+                    self.export = Some(task);
+                }
+                Err(error) => self.status(error),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            drop(path);
+            self.status("MP4 export requires macOS VideoToolbox");
+        }
+    }
+
     fn tick(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(export) = &self.export {
+            let (status, finished) = export.progress();
+            if let Some(window) = self.window.upgrade() {
+                if window.get_export_status().as_str() != status {
+                    window.set_export_status(status.into());
+                }
+                if finished {
+                    window.set_export_active(false);
+                }
+            }
+            if finished {
+                self.export.take();
+            }
+        }
         while let Ok(command) = self.ui_receive.try_recv() {
             match command {
                 UiCommand::Pipeline(command) => self.pipeline_command(command),
@@ -1307,8 +1389,15 @@ impl Controller {
         self.timer.stop();
         self.clear_images();
         self.preview.shutdown();
+        #[cfg(target_os = "macos")]
+        self.export.take();
     }
     pub fn may_close(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.export.is_some() {
+            self.status("Wait for the export to finish or cancel it before closing");
+            return false;
+        }
         self.confirm_discard()
     }
 }
@@ -1445,6 +1534,8 @@ mod native_dialog_tests {
             displayed: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
+            #[cfg(target_os = "macos")]
+            export: None,
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,

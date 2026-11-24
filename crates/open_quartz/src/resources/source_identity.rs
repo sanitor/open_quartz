@@ -77,6 +77,11 @@ impl SourceFileIdentity {
 
         Ok(())
     }
+
+    pub(crate) fn same_source(&self, other: &Self) -> bool {
+        self.path == other.path && self.identity == other.identity
+    }
+
     pub(crate) fn is_target(&self, path: &Path) -> Result<bool, String> {
         let source = std::fs::canonicalize(&self.path).map_err(|e| e.to_string())?;
         if path.exists() {

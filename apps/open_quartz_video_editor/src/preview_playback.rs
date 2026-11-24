@@ -19,7 +19,7 @@ fn request_limits(request: &PreviewRequest, fps: Rational) -> Result<(FrameWindo
     });
     playback_limits(width, height, fps)
 }
-fn configure_limits(pipeline: &mut FramePipeline, request: &PreviewRequest, fps: Rational) -> Result<FrameWindowConfig, String> {
+pub(super) fn configure_limits(pipeline: &mut FramePipeline, request: &PreviewRequest, fps: Rational) -> Result<FrameWindowConfig, String> {
     let (window, mut stable) = request_limits(request, fps)?;
     // Extent changes preserve outstanding display/UI leases. Retained local
     // capacity is a bounded lifetime high-water, never an unlimited pool.
@@ -42,14 +42,6 @@ struct PlaybackSession {
     config: FrameWindowConfig, pending: VecDeque<FrameMetadata>, ready: VecDeque<ReadyFrame>,
     warm: Option<WarmRegion>, warm_error: Option<String>, refill: bool,
 }
-fn region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, duration: u64) -> Result<(PreviewRequest, u64), String> {
-    let end = project.tracks.iter().filter(|track| track.visible).flat_map(|track| {
-        let active_end = track.clip_at(frame).and_then(|clip| clip.timeline_end().ok());
-        let next = track.clips.partition_point(|clip| clip.timeline_start <= frame);
-        active_end.into_iter().chain(track.clips.get(next).map(|clip| clip.timeline_start))
-    }).min().unwrap_or(duration);
-    Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?, end))
-}
 impl PlaybackSession {
     fn new(command: PreviewCommand) -> Result<Self, String> {
         let (project, request, end, duration, fps) = match command {
@@ -61,7 +53,7 @@ impl PlaybackSession {
                 let duration = play.project.duration_frames();
                 if duration == 0 { return Err("Add media to the timeline first".into()); }
                 let frame = play.start_frame.min(duration - 1);
-                let (request, end) = region(&play.project, play.ticket, play.revision, frame, duration)?;
+                let (request, end) = sequence_region(&play.project, play.ticket, play.revision, frame, duration)?;
                 let fps = play.project.fps;
                 (Some(play.project), request, end, duration, fps)
             }
@@ -82,18 +74,7 @@ impl PlaybackSession {
             return Ok((self.request.source_ns, self.request.sources()
                 .map(|(node, _, time)| (node, time)).collect()));
         };
-        let mut times = BTreeMap::new();
-        for (_, clip) in project.active_clips(frame) {
-            let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
-            let source_ns = document::source_time_ns(asset, clip, frame, self.fps)?;
-            if self.request.asset.is_some() {
-                times.insert(SOURCE_ID.into(), source_ns);
-                return Ok((source_ns, times));
-            }
-            times.insert(composition::source_id(&clip.id), source_ns);
-        }
-        let timeline_ns = if times.is_empty() { 0 } else { self.fps.frames_to_ns(frame)? };
-        Ok((timeline_ns, times))
+        sequence_source_times(project, &self.request, frame)
     }
     fn occupancy(&self) -> usize { self.pending.len() + self.ready.len() }
     fn skip_to_position(&mut self, position: u64) -> u64 {
@@ -174,7 +155,7 @@ fn worker_step(pipeline: &mut FramePipeline, session: &mut PlaybackSession, conf
         && session.warm_error.is_none()
         && session.next_frame.saturating_add(session.config.high_water as u64) >= session.end {
         let result = (|| {
-            let (request, end) = region(session.project.as_ref().unwrap(), session.request.ticket,
+            let (request, end) = sequence_region(session.project.as_ref().unwrap(), session.request.ticket,
                 session.request.revision, session.end, session.duration)?;
             let previous_ns = session.source_times(session.end.saturating_sub(1))?.0;
             let continuous = request.source_ns.checked_sub(previous_ns)

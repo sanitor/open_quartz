@@ -309,6 +309,7 @@ try {
     await waitState('source PTS 0 ns · CPU image bytes 0');
     await click('ADD CLIP'); await waitState('clips 1');
     await fileAction('IMPORT', blue, 'Import media'); await waitState('assets 2');
+    await waitColor('blue');
     await click('Add blue.mp4 to timeline'); await waitState('clips 2');
     await click('FIT TIMELINE');
     await click('Nodes workspace'); await selectClip('red.mp4');

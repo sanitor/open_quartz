@@ -75,6 +75,29 @@ pub fn sequence_request(
     Ok(request)
 }
 
+fn sequence_region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, duration: u64) -> Result<(PreviewRequest, u64), String> {
+    let end = project.tracks.iter().filter(|track| track.visible).flat_map(|track| {
+        let active_end = track.clip_at(frame).and_then(|clip| clip.timeline_end().ok());
+        let next = track.clips.partition_point(|clip| clip.timeline_start <= frame);
+        active_end.into_iter().chain(track.clips.get(next).map(|clip| clip.timeline_start))
+    }).min().unwrap_or(duration);
+    Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?, end))
+}
+fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
+    let mut times = BTreeMap::new();
+    for (_, clip) in project.active_clips(frame) {
+        let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
+        let source_ns = document::source_time_ns(asset, clip, frame, project.fps)?;
+        if request.asset.is_some() {
+            times.insert(SOURCE_ID.into(), source_ns);
+            return Ok((source_ns, times));
+        }
+        times.insert(composition::source_id(&clip.id), source_ns);
+    }
+    let timeline_ns = if times.is_empty() { 0 } else { project.fps.frames_to_ns(frame)? };
+    Ok((timeline_ns, times))
+}
+
 impl PreviewRequest {
     fn sources(&self) -> impl Iterator<Item = (String, &MediaAsset, u64)> {
         self.asset.iter().map(|asset| (SOURCE_ID.into(), asset, self.source_ns))
@@ -162,6 +185,8 @@ pub struct PreviewBridge {
     delivered: Arc<AtomicU64>,
     coalesced: Arc<AtomicU64>,
     worker: Option<JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    render_info: open_quartz::rendering::RenderDeviceInfo,
     pub backend: Arc<open_quartz::rendering::GpuBackend>,
 }
 impl PreviewBridge {
@@ -227,6 +252,8 @@ impl PreviewBridge {
                 delivered,
                 coalesced,
                 worker: Some(worker),
+                #[cfg(target_os = "macos")]
+                render_info: info.clone(),
                 backend,
             },
             config,
@@ -235,6 +262,10 @@ impl PreviewBridge {
                 info.adapter_name, info.backend
             ),
         ))
+    }
+    #[cfg(target_os = "macos")]
+    pub fn export_device(&self) -> Result<RenderDevice, String> {
+        RenderDevice::offscreen_session(&self.backend, self.render_info.clone())
     }
     pub fn request(&self, request: PreviewRequest) -> Result<(), String> {
         self.command(PreviewCommand::Exact(request))
@@ -380,6 +411,10 @@ mod composition;
 #[path = "preview_playback.rs"]
 mod playback;
 use playback::run;
+
+#[cfg(target_os = "macos")]
+#[path = "sequence_export.rs"]
+pub(crate) mod export;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]
