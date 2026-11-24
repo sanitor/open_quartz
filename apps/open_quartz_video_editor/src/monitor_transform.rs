@@ -353,6 +353,9 @@ impl Controller {
                         self.document
                             .data
                             .active_clips(self.playhead)
+                            // Subtitle cues are selected on their track. Their transparent canvas
+                            // must not intercept clicks intended for the underlying video.
+                            .filter(|(track, _)| !track.subtitles)
                             .find_map(|(_, clip)| {
                                 (self.document.data.clip_source_time(clip, self.playhead)
                                     .map_or(clip.transform.opacity, |ns| clip.opacity_at(ns)) > 0.0

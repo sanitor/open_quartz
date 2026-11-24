@@ -1,10 +1,14 @@
-use super::{new_id, normal_speed, Clip, ClipPipeline, ClipTransform, EditorDocument, VideoTrack};
+use super::{
+    is_false, new_id, normal_speed, Clip, ClipPipeline, ClipTransform, EditorDocument, VideoTrack,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Title {
     pub text: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subtitle: bool,
     /// Font size as a percentage of the sequence canvas height.
     pub size_percent: u16,
 }
@@ -13,6 +17,7 @@ impl Default for Title {
     fn default() -> Self {
         Self {
             text: "Title".into(),
+            subtitle: false,
             size_percent: 10,
         }
     }
@@ -21,7 +26,12 @@ impl Default for Title {
 impl Title {
     pub fn validate(&self) -> Result<(), String> {
         if self.text.trim().is_empty() || self.text.chars().count() > 256 {
-            return Err("Title text must contain 1 to 256 characters".into());
+            return Err(if self.subtitle {
+                "Subtitle text must contain 1 to 256 characters"
+            } else {
+                "Title text must contain 1 to 256 characters"
+            }
+            .into());
         }
         if !(1..=30).contains(&self.size_percent) {
             return Err("Title size must be a percentage from 1 to 30".into());
@@ -38,21 +48,12 @@ impl EditorDocument {
         self.transact(|data| {
             let duration = data.fps.ns_to_frames_floor(3_000_000_000)?.max(1);
             let mut track = VideoTrack::new(track_id.clone(), "Titles".into());
-            track.clips.push(Clip {
-                id: clip_id.clone(),
-                asset_id: String::new(),
-                title: Some(Title::default()),
-                timeline_start: start,
+            track.clips.push(generated_clip(
+                clip_id.clone(),
+                start,
                 duration,
-                speed_percent: normal_speed(),
-                source_span_remainder: 0,
-                source_in_pts: 0,
-                source_subtick_numerator: 0,
-                source_subtick_denominator: 1,
-                transform: ClipTransform::default(),
-                opacity_keys: Vec::new(),
-                pipeline: ClipPipeline::default(),
-            });
+                Title::default(),
+            ));
             data.tracks.insert(0, track);
             Ok(())
         })?;
@@ -67,7 +68,7 @@ impl EditorDocument {
                 .as_mut()
                 .ok_or("Select a title clip")?;
             match field {
-                "title-text" => title.text = value.to_owned(),
+                "title-text" | "subtitle-text" => title.text = value.to_owned(),
                 "title-size" => {
                     title.size_percent = value
                         .trim()
@@ -78,5 +79,23 @@ impl EditorDocument {
             }
             Ok(())
         })
+    }
+}
+
+pub(super) fn generated_clip(id: String, start: u64, duration: u64, text: Title) -> Clip {
+    Clip {
+        id,
+        asset_id: String::new(),
+        title: Some(text),
+        timeline_start: start,
+        duration,
+        speed_percent: normal_speed(),
+        source_span_remainder: 0,
+        source_in_pts: 0,
+        source_subtick_numerator: 0,
+        source_subtick_denominator: 1,
+        transform: ClipTransform::default(),
+        opacity_keys: Vec::new(),
+        pipeline: ClipPipeline::default(),
     }
 }

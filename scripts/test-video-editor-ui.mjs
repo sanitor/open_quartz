@@ -209,7 +209,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 8);
+   assert.equal(data.schema_version, 9);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -793,12 +793,12 @@ try{
  const titleProject = join(output, 'title.oqvideo.json');
  const titleText = 'Quartz 标题';
  const titleField = async (label, value) => enter(await clipControl(label), value);
- const whitePixels = (pixels, width, channels, left, top, right, bottom) => {
+ const whitePixels = (pixels, width, channels, left, top, right, bottom, threshold = 225) => {
    let white = 0;
    for (let y = top; y < bottom; y++) {
      for (let x = left; x < right; x++) {
        const offset = (y * width + x) * channels;
-       if (pixels[offset] > 225 && pixels[offset + 1] > 225 && pixels[offset + 2] > 225) white++;
+       if (pixels[offset] > threshold && pixels[offset + 1] > threshold && pixels[offset + 2] > threshold) white++;
      }
    }
    return white;
@@ -919,6 +919,123 @@ try{
    assert.equal(image.length, 320 * 180 * 3);
    assert(whitePixels(image, 320, 3, 0, 0, 320, 180) > 40);
    assert(image.subarray(0, 3).every(channel => channel < 5));
+   await close();
+ });
+ const subtitleProject = join(output, 'subtitles.oqvideo.json');
+ const importSrt = path => fileAction('Import SRT', path, 'Import subtitles');
+ const expectSubtitle = async () => client.waitFor(async () => {
+   const preview = await client.find({ label: 'Video preview', role: 'Image' });
+   const window = await client.windowProperties();
+   const png = decodePng(await client.screenshot());
+   const sx = png.width * (window.scaleFactor || 1) / window.size.width;
+   const sy = png.height * (window.scaleFactor || 1) / window.size.height;
+   const fit = Math.min(preview.size.width / 320, preview.size.height / 180);
+   const { x, y } = center(preview);
+   return whitePixels(png.pixels, png.width, png.channels,
+     Math.floor((x - 100 * fit) * sx), Math.floor((y + 45 * fit) * sy),
+     Math.ceil((x + 100 * fit) * sx), Math.ceil((y + 79 * fit) * sy)) > 35;
+ }, { description: 'white subtitle glyphs near the bottom of the program preview' });
+ await step('Author and import multiline subtitles and burn in only their scheduled MP4 frames', async () => {
+   const fixture = JSON.parse(await readFile(join(output, 'title-seed.oqvideo.json'), 'utf8'));
+   fixture.data.tracks[0].clips[0].duration = 10;
+   const seed = join(output, 'subtitle-seed.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 1');
+   await click('NEXT'); await click('NEXT'); await waitState('playhead 2 frames');
+   await click('Add subtitle'); await waitState('clips 2');
+   assert.deepEqual(await positions('Subtitle'), [[2, 60]]);
+   const manual = 'Handwritten cue\n第二行';
+   await client.setValue(await clipControl('Subtitle text'), manual);
+   await client.click(await clipControl('Apply subtitle text', 'Button'));
+   await client.waitFor(async () => (await positions('Handwritten cue')).length === 1,
+     { description: 'applied text appears as the cue label' });
+   await titleField('Timeline end', 4);
+   assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
+   await expectSubtitle();
+   await snapshot('20-subtitle-overlay');
+   await client.click(await client.find({ label: 'Video preview', role: 'Image' }));
+   assert.equal((await clipControl('Timeline start')).accessibleValue, '0');
+   assert.equal((await clipControl('Timeline end')).accessibleValue, '10');
+
+   const source = join(output, 'subtitles.srt');
+   const firstImported = 'First SRT cue\n另一个段落';
+   await writeFile(source, '\uFEFF' + [
+     '1', '00:00:00,155 --> 00:00:00,221', ...firstImported.split('\n'), '',
+     '2', '00:00:00,221 --> 00:00:00,276', 'Second SRT cue', '',
+   ].join('\r\n'));
+   await importSrt(source); await waitState('Imported 2 subtitle cues');
+   assert.deepEqual(await positions('First SRT cue'), [[5, 2]]);
+   assert.deepEqual(await positions('Second SRT cue'), [[7, 2]]);
+   await click('UNDO'); await waitState('clips 2');
+   assert.deepEqual(await positions('First SRT cue'), []);
+   assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
+   await click('REDO'); await waitState('clips 4');
+   assert.deepEqual(await positions('Second SRT cue'), [[7, 2]]);
+
+   await fileAction('SAVE AS', subtitleProject, 'Save project'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(subtitleProject, 'utf8')).data;
+   const [track] = saved.tracks.filter(track => track.subtitles);
+   assert.equal(track.name, 'Subtitles');
+   assert.deepEqual(track.clips.map(clip => [clip.timeline_start, clip.duration, clip.title.text]),
+     [[2, 2, manual], [5, 2, firstImported], [7, 2, 'Second SRT cue']]);
+   await close();
+   await launch(subtitleProject); await waitState('clips 4');
+   await client.click(await item('First SRT cue'));
+   assert.equal((await clipControl('Subtitle text')).accessibleValue, firstImported);
+   await expectSubtitle();
+
+   const exported = join(output, 'burned-subtitles.mp4');
+   await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     { maxBuffer: 4 * 1024 * 1024 });
+   const stride = 320 * 180 * 3;
+   assert.equal(pixels.length, stride * 10);
+   for (let frame = 0; frame < 10; frame++) {
+     const image = pixels.subarray(frame * stride, (frame + 1) * stride);
+     const visible = [2, 3, 5, 6, 7, 8].includes(frame);
+     const white = whitePixels(image, 320, 3, 70, 135, 250, 172, 185);
+     assert(visible ? white > 60 : white === 0, `frame ${frame} has ${white} subtitle pixels`);
+     let darkened = 0;
+     for (let y = 135; y < 172; y++) {
+       for (let x = 70; x < 250; x++) {
+         const [r, g, b] = image.subarray((y * 320 + x) * 3, (y * 320 + x) * 3 + 3);
+         if (r < 25 && g < 25 && b > 85 && b < 175) darkened++;
+       }
+     }
+     assert(visible ? darkened > 250 : darkened === 0,
+       `frame ${frame} has ${darkened} pixels darkened by the subtitle backing`);
+     const [r, g, b] = image.subarray((90 * 320 + 160) * 3, (90 * 320 + 160) * 3 + 3);
+     assert(r < 25 && g < 25 && b > 220, `frame ${frame} preserves the video above the subtitle`);
+   }
+   await close();
+ }, { core: true });
+ await step('Reject invalid or conflicting subtitles without changing the edit', async () => {
+   await launch(subtitleProject); await waitState('clips 4');
+   const conflicting = join(output, 'conflicting.srt');
+   await writeFile(conflicting, [
+     '1', '00:00:00,034 --> 00:00:00,122', 'Conflict', '',
+     '2', '00:00:00,500 --> 00:00:00,700', 'Would otherwise fit',
+   ].join('\n'));
+   await importSrt(conflicting); await waitState('Imported subtitles overlap');
+   assert.deepEqual(await positions('Would otherwise fit'), []);
+   assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
+   const malformed = join(output, 'malformed.srt');
+   await writeFile(malformed, '1\n00:60:00,000 --> 00:60:03,000\nMalformed\n');
+   await importSrt(malformed); await waitState('Invalid timestamp or index in SRT cue 1');
+   assert.deepEqual(await positions('Malformed'), []);
+
+   const addSubtitle = await client.find({ label: 'Add subtitle', role: 'Button' });
+   await client.click(await item('Handwritten cue'));
+   assert.equal((await clipControl('Timeline start')).accessibleValue, '2');
+   await client.click(addSubtitle); await waitState('A subtitle already covers the playhead');
+   await client.setValue(await clipControl('Subtitle text'), '   ');
+   await client.click(await clipControl('Apply subtitle text', 'Button'));
+   await waitState('Subtitle text must contain 1 to 256 characters');
+   assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
+   await click('Lock Subtitles');
+   await client.click(addSubtitle); await waitState('Subtitles is locked');
+   assert.deepEqual(await positions('Handwritten cue'), [[2, 2]]);
+   await click('UNDO');
    await close();
  });
  await step('Track names, button reordering, deletion and explicit show update the editor', async () => {

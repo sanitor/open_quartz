@@ -525,6 +525,11 @@ impl Controller {
                 Ok((track, clip)) => self.focus_placed_clip(None, &track, clip),
                 Err(error) => self.status(error),
             },
+            "add-subtitle" => match self.document.add_subtitle(self.playhead) {
+                Ok((track, clip)) => self.focus_placed_clip(None, &track, clip),
+                Err(error) => self.status(error),
+            },
+            "import-srt" => self.path_dialog("srt"),
             "new" => {
                 if self.confirm_discard() {
                     self.pause();
@@ -667,6 +672,9 @@ impl Controller {
             "import" => rfd::FileDialog::new()
                 .add_filter("Video and audio", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac"])
                 .pick_file(),
+            "srt" => rfd::FileDialog::new()
+                .add_filter("SubRip subtitles", &["srt"])
+                .pick_file(),
             "open" => rfd::FileDialog::new()
                 .add_filter("Video project", &["json"])
                 .pick_file(),
@@ -717,6 +725,13 @@ impl Controller {
         }
         match kind {
             "import" => self.import_path(path),
+            "srt" => match self.document.import_subtitles(&path) {
+                Ok(count) => {
+                    self.changed();
+                    self.status(format!("Imported {count} subtitle cues"));
+                }
+                Err(error) => self.status(error),
+            },
             "open" => {
                 if self.confirm_discard() {
                     self.open_path(path);
@@ -855,7 +870,7 @@ impl Controller {
             return;
         };
         let result = (|| match field {
-            "title-text" | "title-size" => self.document.edit_title(&id, field, value),
+            "title-text" | "subtitle-text" | "title-size" => self.document.edit_title(&id, field, value),
             "start" => self.document.move_clip(
                 &id,
                 value
@@ -1419,7 +1434,8 @@ impl Controller {
             },
         );
         let tracks = &self.document.data.tracks;
-        window.set_can_place_video(self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
+        window.set_can_place_video(tracks.iter().any(|track| track.id == self.selected_track && !track.subtitles)
+            && self.selected_asset.as_ref().and_then(|id| self.document.asset(id))
             .is_some_and(|asset| asset.online && asset.has_video()));
         window.set_can_roll_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_roll_end(id)));
         window.set_can_dissolve_end(self.selected_clip.as_ref().is_some_and(|id| self.document.can_dissolve_end(id)));
@@ -1460,7 +1476,10 @@ impl Controller {
                     lane: lane as i32,
                     track: track.id.clone().into(),
                     locked: track.locked,
-                    asset_name: title.map(|t| t.text.as_str()).or_else(|| asset.map(|a| a.name.as_str())).unwrap_or("Missing").into(),
+                    asset_name: title.map(|text| {
+                        if text.subtitle { text.text.lines().next().unwrap_or_default() } else { &text.text }
+                    }).or_else(|| asset.map(|a| a.name.as_str())).unwrap_or("Missing").into(),
+                    is_subtitle: track.subtitles,
                     is_title: title.is_some(),
                     start: clip.timeline_start.min(i32::MAX as u64) as i32,
                     duration: clip.duration.min(i32::MAX as u64) as i32,
@@ -1483,6 +1502,7 @@ impl Controller {
                     && a.track == b.track
                     && a.locked == b.locked
                     && a.is_title == b.is_title
+                    && a.is_subtitle == b.is_subtitle
                     && a.asset_name == b.asset_name
                     && a.start == b.start
                     && a.duration == b.duration
@@ -1514,6 +1534,7 @@ impl Controller {
         {
             window.set_selected_clip_id(clip.id.clone().into());
             window.set_selected_clip_is_title(clip.title.is_some());
+            window.set_selected_clip_is_subtitle(clip.title.as_ref().is_some_and(|text| text.subtitle));
             if let Some(title) = &clip.title {
                 window.set_selected_title_text(title.text.as_str().into());
                 window.set_selected_title_size(title.size_percent.to_string().into());
@@ -1541,6 +1562,7 @@ impl Controller {
             window.set_selected_clip_source_out(out.to_string().into());
         } else {
             window.set_selected_clip_is_title(false);
+            window.set_selected_clip_is_subtitle(false);
             window.set_selected_clip_id("".into());
             window.set_selected_clip_name("No clip selected".into());
         }

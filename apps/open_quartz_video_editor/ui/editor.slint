@@ -1,4 +1,4 @@
-import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 import { ToolButton } from "icon_button.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
@@ -26,7 +26,7 @@ export struct TrackRow { id: string, name: string, selected: bool, visible: bool
 export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, gain: string }
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
-export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
+export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
 export struct DissolveRow { lane: int, start: float, duration: float, description: string }
 
 
@@ -170,7 +170,7 @@ component TimelineClip inherits Rectangle {
         clip: true;
         if root.item.has_thumbnail: Image { x: 5px; y: 21px; width: min(78px, max(0px, parent.width - 10px)); height: 43px; source: root.item.thumbnail; image-fit: cover; opacity: 0.8; }
         Text { x: 7px; y: 3px; width: max(0px, parent.width - 14px); height: 16px; text: root.item.asset_name; color: #effffb; font-size: 12px; font-weight: 600; overflow: elide; }
-        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + (root.item.is_title ? "f title" : "f source clip"); color: #c0dbd6; font-size: 11px; }
+        Text { x: root.item.has_thumbnail ? 88px : 7px; y: 28px; width: max(0px, parent.width - self.x - 7px); height: 32px; text: (root.item.start + (root.gesture_kind == "move" || root.gesture_kind == "trim-start" ? root.delta : 0)) + "f\n" + root.item.duration + (root.item.is_subtitle ? "f subtitle" : root.item.is_title ? "f title" : "f source clip"); color: #c0dbd6; font-size: 11px; }
     }
     if root.error != "": Text {
         x: 9px; y: 48px; width: max(0px, parent.width - 18px); height: 20px;
@@ -311,6 +311,7 @@ export component EditorWindow inherits Window {
     in property <bool> can_roll_end;
     in property <bool> can_dissolve_end;
     in property <bool> selected_clip_is_title;
+    in property <bool> selected_clip_is_subtitle;
     in property <string> selected_title_text;
     in property <string> selected_title_size;
     in property <string> selected_clip_source_in: "0";
@@ -877,8 +878,27 @@ export component EditorWindow inherits Window {
                                 Text { text: root.selected_clip_is_title ? "Timeline values are frames. The end is exclusive." : "Timeline values are frames; source values are original stream ticks. End/out are exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                                 TimingField { label: "Timeline start"; value: root.selected_clip_start; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("start", value); } }
                                 TimingField { label: "Timeline end"; value: root.selected_clip_end; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("end", value); } }
-                                if root.selected_clip_is_title: TimingField { label: "Title text"; value: root.selected_title_text; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("title-text", value); } }
-                                if root.selected_clip_is_title: TimingField { label: "Title size (%)"; value: root.selected_title_size; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("title-size", value); } }
+                                if root.selected_clip_is_title && !root.selected_clip_is_subtitle: TimingField { label: "Title text"; value: root.selected_title_text; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("title-text", value); } }
+                                if root.selected_clip_is_title && !root.selected_clip_is_subtitle: TimingField { label: "Title size (%)"; value: root.selected_title_size; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("title-size", value); } }
+                                if root.selected_clip_is_subtitle: VerticalLayout {
+                                    in property <string> cue_id: root.selected_clip_id;
+                                    in property <string> cue_text: root.selected_title_text;
+                                    spacing: 4px;
+                                    changed cue_id => { subtitle_text.text = self.cue_text; }
+                                    changed cue_text => { subtitle_text.text = self.cue_text; }
+                                    Text { text: "Subtitle text"; color: root.secondary; font-size: 12px; }
+                                    subtitle_text := TextEdit {
+                                        text: root.selected_title_text;
+                                        accessible-label: "Subtitle text";
+                                        height: 72px; wrap: word-wrap;
+                                        enabled: root.selected_clip_writable;
+                                    }
+                                    Button {
+                                        text: "Apply subtitle text";
+                                        enabled: root.selected_clip_writable && subtitle_text.text != root.selected_title_text;
+                                        clicked => { root.clip_timing_changed("subtitle-text", subtitle_text.text); }
+                                    }
+                                }
                                 if !root.selected_clip_is_title: TimingField { label: "Source in"; value: root.selected_clip_source_in; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_in", value); } }
                                 if !root.selected_clip_is_title: TimingField { label: "Source out"; value: root.selected_clip_source_out; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("source_out", value); } }
                                 if root.selected_clip_id != "" && !root.selected_clip_is_title: TimingField { label: "Speed (%)"; value: root.selected_clip_speed; enabled: root.selected_clip_writable; committed(value) => { root.clip_timing_changed("speed", value); } }
@@ -920,6 +940,8 @@ export component EditorWindow inherits Window {
                         Rectangle { horizontal-stretch: 1; }
                         ToolButton { label: "ADD CLIP"; glyph: "+"; active: root.assets.length > 0; clicked => { editor_focus.focus(); root.add_to_timeline(); } }
                         Button { text: "Add title"; clicked => { editor_focus.focus(); root.project_action("add-title"); } }
+                        Button { text: "Add subtitle"; clicked => { editor_focus.focus(); root.project_action("add-subtitle"); } }
+                        Button { text: "Import SRT"; clicked => { editor_focus.focus(); root.project_action("import-srt"); } }
                         Button { text: "Insert"; enabled: root.can_place_video; clicked => { editor_focus.focus(); root.project_action("insert"); } }
                         Button { text: "Overwrite"; enabled: root.can_place_video; clicked => { editor_focus.focus(); root.project_action("overwrite"); } }
                         ToolButton { label: "SPLIT"; glyph: "✂"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.split_clip(); } }
@@ -1138,7 +1160,7 @@ export component EditorWindow inherits Window {
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text { text: "Entire sequence · H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Choose a new file"; color: root.secondary; font-size: 11px; }
                     HorizontalLayout {
@@ -1146,7 +1168,7 @@ export component EditorWindow inherits Window {
                         LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" || root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" || root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -1157,7 +1179,7 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Rectangle { horizontal-stretch: 1; }
                         Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
-                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

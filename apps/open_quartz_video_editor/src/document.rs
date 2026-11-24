@@ -14,6 +14,8 @@ mod timing;
 mod transition;
 #[path = "document_title.rs"]
 mod title;
+#[path = "document_subtitle.rs"]
+mod subtitle;
 pub use title::Title;
 pub use transition::DissolveSide;
 #[path = "document_animation.rs"]
@@ -21,7 +23,7 @@ mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 pub use audio::{AudioAsset, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 pub const DEFAULT_TRACK: &str = "video-1";
 const HISTORY_LIMIT: usize = 100;
 
@@ -158,13 +160,16 @@ pub struct VideoTrack {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subtitles: bool,
     pub clips: Vec<Clip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dissolves: Vec<transition::Dissolve>,
 }
+fn is_false(value: &bool) -> bool { !value }
 impl VideoTrack {
     fn new(id: String, name: String) -> Self {
-        Self { id, name, visible: true, locked: false, clips: Vec::new(), dissolves: Vec::new() }
+        Self { id, name, visible: true, locked: false, subtitles: false, clips: Vec::new(), dissolves: Vec::new() }
     }
 
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
@@ -355,6 +360,9 @@ impl EditorDocument {
     pub fn place_video(&mut self, asset_id: &str, track: &str, placement: Placement) -> Result<String, String> {
         let track = self.data.track_index(track)?;
         self.data.tracks[track].require_unlocked()?;
+        if self.data.tracks[track].subtitles {
+            return Err("Select a video track to place media".into());
+        }
         let asset = self
             .asset(asset_id)
             .cloned()
@@ -430,6 +438,9 @@ impl EditorDocument {
         let (from, index) = self.data.writable_clip(clip_id)?;
         let lane = &self.data.tracks[self.data.track_index(track)?];
         lane.require_unlocked()?;
+        if lane.subtitles != self.data.tracks[from].subtitles {
+            return Err("Subtitle cues belong to the subtitle track".into());
+        }
         let end = start.checked_add(self.data.tracks[from].clips[index].duration)
             .ok_or("Clip end frame overflow")?;
         if lane.clips.iter().any(|clip| clip.id != clip_id
@@ -819,10 +830,14 @@ fn validate(data: &ProjectData) -> Result<(), String> {
     }
     let mut clip_ids = std::collections::HashSet::new();
     let mut tracks = std::collections::HashSet::new();
+    let mut has_subtitle_track = false;
     if data.tracks.is_empty() { return Err("A sequence needs at least one video track".into()); }
     for track in &data.tracks {
         if track.id.is_empty() || track.name.trim().is_empty() || !tracks.insert(&track.id) {
             return Err("Missing or duplicate video track ID or empty track name".into());
+        }
+        if track.subtitles && std::mem::replace(&mut has_subtitle_track, true) {
+            return Err("A sequence can have one subtitle track".into());
         }
         let mut previous_end = 0;
         for clip in &track.clips {
@@ -847,6 +862,9 @@ fn validate(data: &ProjectData) -> Result<(), String> {
                 return Err("Video track clips cannot overlap".into());
             }
             previous_end = end;
+            if track.subtitles != clip.title.as_ref().is_some_and(|title| title.subtitle) {
+                return Err("Subtitle cues belong to the subtitle track".into());
+            }
             if let Some(title) = &clip.title {
                 title.validate()?;
                 if !clip.asset_id.is_empty()
