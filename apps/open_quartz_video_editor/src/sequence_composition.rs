@@ -13,7 +13,7 @@ fn animated_function<Time: Copy, Value: Copy>(
         let (left, right) = (pair[0], pair[1]);
         let (start, end) = (seconds(left.time), seconds(right.time));
         let span = end - start;
-        let progress = left.curve.wgsl();
+        let progress = crate::animation_key::wgsl(left.curve);
         shader.push_str(&format!(
             "if (iTime < {end:.9e}) {{ let t = clamp((iTime - ({start:.9e})) / {span:.9e}, 0.0, 1.0); return mix({}, {}, {progress}); }}\n",
             format_value(left.value), format_value(right.value),
@@ -78,6 +78,18 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
         inputs.push((namespace(&edge.source), namespace(&edge.source_handle)));
         for node in clip.nodes.iter().filter(|node| node.id != OUTPUT_ID) {
             let mut node = node.clone();
+            if let Some(effects) = &layer.effects {
+                let start = (i128::from(effects.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
+                for animated in effects.keys.iter().filter(|entry| entry.node == node.id) {
+                    node.data.uniform_animations.insert(animated.parameter.clone(), animated.keys.iter().map(|key| {
+                        open_quartz::project::UniformAnimationKey {
+                            time: start + key.time as f64 * effects.seconds_per_frame,
+                            value: key.value,
+                            curve: key.curve,
+                        }
+                    }).collect());
+                }
+            }
             if node.id == SOURCE_ID && !matches!(layer.source, LayerSource::Video { .. }) {
                 node.data.input_mode = Some(InputMode::Image);
             }

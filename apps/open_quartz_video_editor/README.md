@@ -63,6 +63,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **Crop** 四个百分比字段裁切片段画面，保留原来的摆放位置。用 **Add transform keyframe** 在当前序列帧记录位置、缩放和旋转。建立关键帧后，在片段内改这些属性或拖预览手柄会更新当前位置的关键帧。在关键帧上可切换到下一帧的线性或缓入缓出插值，也可删除关键帧。
 - 选中片段后点击 **Show keyframes**，可在时间线下切换变换、透明度和裁切轨道。单击选择关键帧，Shift 点击增减选择。拖动已选关键帧会成组移动，**Copy / Paste / Delete keyframes** 支持批量操作，粘贴以播放头为起点。移动、粘贴和删除各占一个撤销步骤。
 - 选中一个有后继的关键帧，即可为这一段选择 **Hold、Linear、Smooth** 或 **Bezier**。选择 Bezier 后可拖动两个控制柄，调整时间与数值变化。每次松手提交一个可撤销编辑。
+- 关键帧轨也可选择已连接片段效果中的浮点参数。**Add effect keyframe** 捕获当前值，在 **Effect keyframe value** 输入数值可写入播放头处的关键帧；移除后可撤销。改动会同时用于播放和导出。
 - **Add crop keyframe** 可记录当前片段的四个裁切值。建立关键帧后，在片段内编辑裁切字段会更新对应帧，**Remove crop keyframe** 删除当前关键帧。裁切沿用片段时间，预览和导出都按相邻关键帧插值。
 - 选中视频片段并把播放头移到片段内，即可在 Inspector 的 **Opacity (%)** 下用 **Add opacity keyframe** 添加透明度关键帧。曲线启用后，修改透明度会在当前帧新增或更新关键帧。**Remove opacity keyframe** 删除当前关键帧。相邻关键帧之间线性插值，曲线两端保持端点值。
 
@@ -96,7 +97,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 16，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 17，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 

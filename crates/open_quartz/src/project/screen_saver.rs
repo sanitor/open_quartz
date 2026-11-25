@@ -129,6 +129,7 @@ fn screen_saver_resample_node(position: Position, width: u32, height: u32) -> Pr
                 description: None,
             }],
             uniforms: serde_json::Map::new(),
+            uniform_animations: Default::default(),
             input_data_type: None,
             input_mode: None,
             image_data_url: None,

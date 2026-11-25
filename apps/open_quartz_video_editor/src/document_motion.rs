@@ -1,12 +1,13 @@
 use super::*;
 use crate::animation_key::{Curve, Keyframe};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum MotionChannel {
     #[default]
     Transform,
     Opacity,
     Crop,
+    Effect { node: String, parameter: String },
 }
 
 impl MotionChannel {
@@ -25,6 +26,7 @@ pub enum MotionPoint {
     Transform(Keyframe<i64, Pose>),
     Opacity(Keyframe<u64, f32>),
     Crop(Keyframe<i64, Crop>),
+    Effect(Keyframe<i64, f32>),
 }
 
 impl MotionPoint {
@@ -33,6 +35,7 @@ impl MotionPoint {
             Self::Transform(key) => key.time.into(),
             Self::Opacity(key) => key.time.into(),
             Self::Crop(key) => key.time.into(),
+            Self::Effect(key) => key.time.into(),
         }
     }
 
@@ -41,6 +44,7 @@ impl MotionPoint {
             Self::Transform(key) => key.curve,
             Self::Opacity(key) => key.curve,
             Self::Crop(key) => key.curve,
+            Self::Effect(key) => key.curve,
         }
     }
 
@@ -49,6 +53,7 @@ impl MotionPoint {
             Self::Transform(key) => key.curve = curve,
             Self::Opacity(key) => key.curve = curve,
             Self::Crop(key) => key.curve = curve,
+            Self::Effect(key) => key.curve = curve,
         }
     }
 
@@ -60,6 +65,7 @@ impl MotionPoint {
             Self::Transform(key) => key.time = frame_offset()?,
             Self::Opacity(key) => key.time = data.clip_source_time(clip, frame)?,
             Self::Crop(key) => key.time = frame_offset()?,
+            Self::Effect(key) => key.time = frame_offset()?,
         }
         Ok(())
     }
@@ -94,15 +100,18 @@ impl MotionPoint {
 }
 
 impl Clip {
-    pub fn motion_keys(&self, channel: MotionChannel) -> Vec<MotionPoint> {
+    pub fn motion_keys(&self, channel: &MotionChannel) -> Vec<MotionPoint> {
         match channel {
             MotionChannel::Transform => self.spatial_keys.iter().copied().map(MotionPoint::Transform).collect(),
             MotionChannel::Opacity => self.opacity_keys.iter().copied().map(MotionPoint::Opacity).collect(),
             MotionChannel::Crop => self.crop_keys.iter().copied().map(MotionPoint::Crop).collect(),
+            MotionChannel::Effect { node, parameter } => self.effect_keys.iter()
+                .find(|item| &item.node == node && &item.parameter == parameter)
+                .map_or_else(Vec::new, |item| item.keys.iter().copied().map(MotionPoint::Effect).collect()),
         }
     }
 
-    fn replace_motion_keys(&mut self, channel: MotionChannel, points: Vec<MotionPoint>) {
+    fn replace_motion_keys(&mut self, channel: &MotionChannel, points: Vec<MotionPoint>) {
         match channel {
             MotionChannel::Transform => self.spatial_keys = points.into_iter().map(|point| match point {
                 MotionPoint::Transform(key) => key, _ => unreachable!("motion edit supplied another channel"),
@@ -113,13 +122,26 @@ impl Clip {
             MotionChannel::Crop => self.crop_keys = points.into_iter().map(|point| match point {
                 MotionPoint::Crop(key) => key, _ => unreachable!("motion edit supplied another channel"),
             }).collect(),
+            MotionChannel::Effect { node, parameter } => {
+                self.effect_keys.retain(|item| &item.node != node || &item.parameter != parameter);
+                if !points.is_empty() {
+                    self.effect_keys.push(EffectKeys {
+                        node: node.clone(),
+                        parameter: parameter.clone(),
+                        keys: points.into_iter().map(|point| match point {
+                            MotionPoint::Effect(key) => key,
+                            _ => unreachable!("motion edit supplied another channel"),
+                        }).collect(),
+                    });
+                }
+            }
         }
     }
 }
 
 impl EditorDocument {
     pub fn edit_motion_keys(
-        &mut self, id: &str, channel: MotionChannel, revision: u64,
+        &mut self, id: &str, channel: &MotionChannel, revision: u64,
         edit: impl FnOnce(&ProjectData, &Clip, &mut Vec<MotionPoint>) -> Result<(), String>,
     ) -> Result<(), String> {
         self.transact_at(revision, |data| {

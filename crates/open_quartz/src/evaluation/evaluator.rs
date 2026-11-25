@@ -278,7 +278,8 @@ impl GraphEvaluator {
                     && ["iTime", "iTimeDelta", "iFrame", "iMouse", "previousFrame"]
                         .iter()
                         .any(|name| node.data.shader_code.contains(name));
-            if is_dynamic_system || dynamic_shader || inputs.video_nodes.contains(&node.id) {
+            let animated_uniforms = node.data.uniform_animations.values().any(|keys| keys.len() > 1);
+            if is_dynamic_system || dynamic_shader || animated_uniforms || inputs.video_nodes.contains(&node.id) {
                 dynamic.push(node.id.clone());
             }
         }
@@ -303,6 +304,10 @@ impl GraphEvaluator {
             } else if let Some(source_id) = node_plan.upstream.get(name) {
                 self.upstream_scalar(source_id, inputs)
                     .unwrap_or_else(|| vec![0.0])
+            } else if let Some(value) = node.data.uniform_animations.get(name)
+                .and_then(|keys| crate::project::model::sample_uniform(keys, inputs.time))
+            {
+                vec![value]
             } else {
                 node.data
                     .uniforms

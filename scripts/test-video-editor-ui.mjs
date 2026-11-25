@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 16);
+   assert.equal(data.schema_version, 17);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1968,6 +1968,72 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Animate a shader scalar through keyframes in playback and export', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const [upper] = fixture.data.tracks;
+   const [clip] = upper.clips;
+   upper.clips = [clip];
+   clip.timeline_start = 0; clip.duration = 5; clip.transform.scale = 1;
+   fixture.data.tracks = [upper];
+   const graph = clip.pipeline.graph;
+   const [direct] = graph.edges;
+   graph.nodes.push({
+     id: 'tint', type: 'shader', position: { x: 220, y: 80 },
+     data: {
+       type: 'shader', label: 'Animated tint',
+       shaderCode: `
+@group(0) @binding(0) var image: texture_2d<f32>;
+@group(0) @binding(1) var imageSampler: sampler;
+@group(0) @binding(2) var<uniform> strength: f32;
+@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let original = textureSample(image, imageSampler, uv);
+  return vec4f(mix(vec3f(0.0, 0.0, 1.0), original.rgb, strength), original.a);
+}`,
+       inputs: [
+         { id: 'image', label: 'image', dataType: 'sampler2D', direction: 'input' },
+         { id: 'strength', label: 'strength', dataType: 'float', direction: 'input' },
+       ],
+       outputs: [{ id: 'fragColor', label: 'fragColor', dataType: 'vec4', direction: 'output' }],
+       uniforms: { strength: 1 },
+     },
+   });
+   graph.edges = [
+     { ...direct, id: 'tint-source', target: 'tint', targetHandle: 'image' },
+     { ...direct, id: 'tint-output', source: 'tint', sourceHandle: 'fragColor' },
+   ];
+   const seed = join(output, 'effect-animation.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 1');
+   await client.click(await item('foreground.mp4')); await expectColor('red');
+   await click('Show keyframes');
+   const channel = await client.find({ label: 'Animation property', role: 'Combobox' });
+   await client.click(channel);
+   for (let i = 0; i < 3; i++) await client.key('\uf701');
+   await client.key('\n');
+   await click('Add effect keyframe');
+   for (let i = 0; i < 4; i++) await click('NEXT');
+   await enter(await client.find({ label: 'Effect keyframe value', role: 'TextInput' }), 0);
+   await expectColor('blue');
+   for (let i = 0; i < 4; i++) await click('PREVIOUS');
+   await expectColor('red');
+   await click('PLAY'); await waitState('playhead 4 frames'); await expectColor('blue');
+   const path = join(output, 'effect-animated.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const center = frame => pixels.subarray((frame * 32 * 18 + 9 * 32 + 16) * 3,
+     (frame * 32 * 18 + 9 * 32 + 16) * 3 + 3);
+   assert(center(0)[0] > 200 && center(0)[2] < 25);
+   assert(center(4)[2] > 200 && center(4)[0] < 25);
+   assert(Math.abs(center(2)[0] - center(2)[2]) < 24 && center(2)[0] > 90);
+   await click('SAVE'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(seed, 'utf8')).data.tracks[0].clips[0];
+   assert.deepEqual(saved.effect_keys, [{ node: 'tint', parameter: 'strength',
+     keys: [{ time: 0, value: 1 }, { time: 4, value: 0 }] }]);
+   await click('Remove effect keyframe'); await expectColor('red');
+   await click('UNDO'); await expectColor('blue');
+   await close();
+ }, { core: true });
  await step('Migrate legacy animations and keyframe crop in the monitor and export', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.schema_version = 15; fixture.data.schema_version = 15;
@@ -2006,7 +2072,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 16);
+   assert.equal(saved.schema_version, 17);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

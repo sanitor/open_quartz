@@ -99,6 +99,9 @@ pub struct NodeData {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub uniforms: Map<String, Value>,
+    /// Runtime keyframes supplied by a host for this evaluated graph.
+    #[serde(skip)]
+    pub uniform_animations: BTreeMap<String, Vec<super::UniformAnimationKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +199,8 @@ struct NodeDataWire {
     inputs: Vec<Port>,
     outputs: Vec<Port>,
     uniforms: Map<String, Value>,
+    #[serde(skip)]
+    uniform_animations: BTreeMap<String, Vec<super::UniformAnimationKey>>,
     color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     input_data_type: Option<super::DataType>,
     input_mode: Option<InputMode>,
@@ -329,6 +334,7 @@ impl Default for NodeData {
             inputs: Vec::new(),
             outputs: Vec::new(),
             uniforms: Map::new(),
+            uniform_animations: BTreeMap::new(),
             color_corrector: None,
             input_data_type: None,
             input_mode: None,

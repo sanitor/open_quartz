@@ -13,6 +13,41 @@ pub(super) struct MotionEditor {
 }
 
 impl Controller {
+    pub(super) fn effect_key_action(&mut self, value: &str) {
+        let MotionChannel::Effect { node, parameter } = self.motion.channel.clone() else { return; };
+        let Some(id) = self.selected_clip.clone() else { return; };
+        let Some(clip) = self.document.clip(&id) else { return; };
+        let time = self.playhead.checked_sub(clip.timeline_start)
+            .filter(|time| *time < clip.duration).and_then(|time| i64::try_from(time).ok());
+        let Some(time) = time else {
+            self.status("Move inside the clip to animate an effect");
+            return;
+        };
+        let channel = self.motion.channel.clone();
+        let frame = self.playhead;
+        self.pause();
+        let result = self.document.edit_motion_keys(&id, &channel, self.document.revision, |_, clip, keys| {
+            let existing = keys.iter().position(|point| point.time() == i128::from(time));
+            if value.is_empty() && existing.is_some() {
+                keys.remove(existing.unwrap());
+                return Ok(());
+            }
+            let value = if value.is_empty() {
+                clip.effect_value_at(&node, &parameter, frame).ok_or("Effect parameter is missing")?
+            } else {
+                value.trim().parse::<f32>().map_err(|_| "Enter a finite effect value")?
+            };
+            if let Some(index) = existing {
+                let MotionPoint::Effect(key) = &mut keys[index] else { unreachable!(); };
+                key.value = value;
+            } else {
+                keys.push(MotionPoint::Effect(crate::animation_key::Keyframe { time, value, curve: Curve::Linear }));
+            }
+            Ok(())
+        });
+        self.finish_edit(result);
+    }
+
     fn selected_motion_curve(&self) -> Option<(usize, Curve)> {
         let clip = self.selected_clip.as_deref().and_then(|id| self.document.clip(id))?;
         if self.motion.clip.as_deref() != Some(clip.id.as_str())
@@ -21,7 +56,7 @@ impl Controller {
             return None;
         }
         let index = *self.motion.selection.first()?;
-        let keys = clip.motion_keys(self.motion.channel);
+        let keys = clip.motion_keys(&self.motion.channel);
         (index + 1 < keys.len()).then(|| (index, keys[index].curve()))
     }
 
@@ -39,7 +74,7 @@ impl Controller {
         let Some((index, _)) = self.selected_motion_curve() else { return; };
         let Some(id) = self.selected_clip.clone() else { return; };
         self.pause();
-        let result = self.document.edit_motion_keys(&id, self.motion.channel, self.motion.revision, |_, _, keys| {
+        let result = self.document.edit_motion_keys(&id, &self.motion.channel, self.motion.revision, |_, _, keys| {
             keys.get_mut(index).ok_or("Keyframe no longer exists")?.set_curve(curve);
             Ok(())
         });
@@ -57,8 +92,29 @@ impl Controller {
             window.set_motion_open(false);
             return;
         };
+        let effects = clip.effect_channels();
+        let labels: Vec<slint::SharedString> = ["Transform", "Opacity", "Crop"].into_iter()
+            .map(slint::SharedString::from).chain(effects.iter().map(|(_, _, label)| label.clone().into())).collect();
+        if window.get_motion_channels().iter().ne(labels.iter().cloned()) {
+            window.set_motion_channels(ModelRc::new(VecModel::from(labels)));
+        }
+        let effect = if let MotionChannel::Effect { node, parameter } = &self.motion.channel {
+            effects.iter().position(|(key_node, key_parameter, _)| node == key_node && parameter == key_parameter)
+                .and_then(|index| {
+                    let value = clip.effect_value_at(node, parameter, self.playhead)?;
+                    Some((index + 3, value))
+                })
+        } else { None };
+        window.set_motion_effect_visible(effect.is_some());
+        if let Some((index, value)) = effect {
+            window.set_motion_channel_index(index as i32);
+            window.set_motion_effect_value(value.to_string().into());
+            let key_here = clip.motion_keys(&self.motion.channel).into_iter()
+                .any(|point| point.frame(&self.document.data, clip) == Some(self.playhead));
+            window.set_motion_effect_key_here(key_here);
+        }
         let scoped = self.motion.clip.as_deref() == Some(clip.id.as_str()) && self.motion.revision == self.document.revision;
-        let rows: Vec<_> = clip.motion_keys(self.motion.channel).into_iter().enumerate().filter_map(|(index, key)| {
+        let rows: Vec<_> = clip.motion_keys(&self.motion.channel).into_iter().enumerate().filter_map(|(index, key)| {
             let frame = key.frame(&self.document.data, clip)?;
             Some(crate::MotionKeyRow {
                 index: index as i32,
@@ -73,7 +129,7 @@ impl Controller {
         window.set_motion_duration(clip.duration.min(i32::MAX as u64) as i32);
         window.set_motion_open(true);
         window.set_motion_has_selection(scoped && !self.motion.selection.is_empty());
-        window.set_motion_can_paste(self.motion.clipboard.as_ref().is_some_and(|(channel, _)| *channel == self.motion.channel));
+        window.set_motion_can_paste(self.motion.clipboard.as_ref().is_some_and(|(channel, _)| channel == &self.motion.channel));
         let curve = self.selected_motion_curve().map(|(_, curve)| curve);
         window.set_motion_has_curve(curve.is_some());
         if let Some(curve) = curve {
@@ -112,7 +168,12 @@ impl Controller {
             return;
         }
         if action == "channel" {
-            if let Some(channel) = MotionChannel::from_index(index) {
+            let channel = MotionChannel::from_index(index).or_else(|| {
+                let clip = self.selected_clip.as_deref().and_then(|id| self.document.clip(id))?;
+                let (node, parameter, _) = clip.effect_channels().into_iter().nth(usize::try_from(index - 3).ok()?)?;
+                Some(MotionChannel::Effect { node, parameter })
+            });
+            if let Some(channel) = channel {
                 self.motion.channel = channel;
                 self.motion.selection.clear();
                 self.refresh_motion();
@@ -138,10 +199,10 @@ impl Controller {
             return;
         }
 
-        let channel = self.motion.channel;
+        let channel = self.motion.channel.clone();
         if action == "copy" {
             if let Some(clip) = self.document.clip(&id) {
-                let mut points: Vec<_> = clip.motion_keys(channel).into_iter().enumerate()
+                let mut points: Vec<_> = clip.motion_keys(&channel).into_iter().enumerate()
                     .filter(|(index, _)| self.motion.selection.contains(index))
                     .filter_map(|(_, key)| Some((key.frame(&self.document.data, clip)?, key))).collect();
                 points.sort_by_key(|(frame, _)| *frame);
@@ -157,8 +218,8 @@ impl Controller {
         self.pause();
         let selected = &self.motion.selection;
         let playhead = self.playhead;
-        let clipboard = self.motion.clipboard.as_ref().filter(|(copied_channel, _)| *copied_channel == channel);
-        let result = self.document.edit_motion_keys(&id, channel, revision, |data, clip, points| {
+        let clipboard = self.motion.clipboard.as_ref().filter(|(copied_channel, _)| copied_channel == &channel);
+        let result = self.document.edit_motion_keys(&id, &channel, revision, |data, clip, points| {
             match action {
                 "move" => {
                     let index = index.ok_or("Select a keyframe to move")?;

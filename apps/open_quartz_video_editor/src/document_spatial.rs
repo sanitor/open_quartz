@@ -132,7 +132,8 @@ impl Clip {
     pub(super) fn preserve_spatial_keys_on_trim(&mut self, start: u64) -> Result<(), String> {
         let shift = i128::from(self.timeline_start) - i128::from(start);
         let times = self.spatial_keys.iter_mut().map(|key| &mut key.time)
-            .chain(self.crop_keys.iter_mut().map(|key| &mut key.time));
+            .chain(self.crop_keys.iter_mut().map(|key| &mut key.time))
+            .chain(self.effect_keys.iter_mut().flat_map(|entry| entry.keys.iter_mut()).map(|key| &mut key.time));
         for time in times {
             *time = i64::try_from(i128::from(*time) + shift)
                 .map_err(|_| "Animation keyframe position overflow")?;

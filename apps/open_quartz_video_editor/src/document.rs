@@ -28,7 +28,10 @@ pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAM
 #[path = "document_motion.rs"]
 mod motion;
 pub use motion::{MotionChannel, MotionPoint};
-const SCHEMA_VERSION: u32 = 16;
+#[path = "document_effect_motion.rs"]
+mod effect_motion;
+pub use effect_motion::EffectKeys;
+const SCHEMA_VERSION: u32 = 17;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -177,6 +180,8 @@ pub struct Clip {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spatial_keys: Vec<SpatialKey>,
     pub pipeline: ClipPipeline,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effect_keys: Vec<EffectKeys>,
 }
 pub(super) fn is_normal_speed(value: &u16) -> bool { *value == normal_speed() }
 fn is_zero(value: &u16) -> bool { *value == 0 }
@@ -415,6 +420,8 @@ impl EditorDocument {
         self.transact_at(expected_revision, |data| {
             let (track, index) = data.writable_clip(clip_id)?;
             let clip = &mut data.tracks[track].clips[index];
+            clip.effect_keys.retain(|animation| effect_motion::effect_uniform(
+                &pipeline, &animation.node, &animation.parameter).is_some());
             clip.pipeline = pipeline;
             Ok(())
         })
@@ -489,6 +496,7 @@ impl EditorDocument {
             crop_keys: Vec::new(),
             spatial_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
+            effect_keys: Vec::new(),
         };
         if source.start != 0 {
             advance_source(&mut clip, i128::from(source.start), self.data.fps, asset.time_base)?;
@@ -1020,6 +1028,7 @@ fn validate(data: &ProjectData) -> Result<(), String> {
             clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
             clip.validate_opacity_keys()?;
             clip.validate_spatial()?;
+            clip.validate_effect_animation()?;
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }

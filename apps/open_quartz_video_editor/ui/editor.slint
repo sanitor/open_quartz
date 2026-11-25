@@ -496,6 +496,11 @@ export component EditorWindow inherits Window {
     in property <bool> spatial_key_enabled;
     in property <bool> on_spatial_key;
     in property <bool> eased_spatial_key;
+    in property <[string]> motion_channels;
+    in property <bool> motion_effect_visible;
+    in property <bool> motion_effect_key_here;
+    in property <string> motion_effect_value;
+    callback motion_effect_key(string);
     in property <bool> motion_open;
     in property <bool> motion_has_curve;
     in-out property <int> motion_curve_index;
@@ -1454,11 +1459,11 @@ export component EditorWindow inherits Window {
                         }
                     }
                     if root.motion_open: VerticalLayout {
-                        height: root.motion_has_curve && root.motion_curve_index == 3 ? 169px : 104px; spacing: 4px; padding: 6px;
+                        height: 104px + (root.motion_has_curve && root.motion_curve_index == 3 ? 65px : 0px) + (root.motion_effect_visible ? 36px : 0px); spacing: 4px; padding: 6px;
                         HorizontalLayout {
                             spacing: 5px;
                             ComboBox {
-                                width: 126px; model: ["Transform", "Opacity", "Crop"];
+                                width: 126px; model: root.motion_channels;
                                 accessible-label: "Animation property";
                                 current-index <=> root.motion_channel_index;
                                 selected => { root.motion_action("channel", self.current-index, 0, false); }
@@ -1538,6 +1543,20 @@ export component EditorWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+                        if root.motion_effect_visible: HorizontalLayout {
+                            spacing: 5px;
+                            Button {
+                                text: root.motion_effect_key_here ? "Remove effect keyframe" : "Add effect keyframe";
+                                enabled: root.motion_writable;
+                                clicked => { root.motion_effect_key(""); }
+                            }
+                            LineEdit {
+                                width: 100px; accessible-label: "Effect keyframe value";
+                                text: root.motion_effect_value; enabled: root.motion_writable;
+                                accepted(value) => { root.motion_effect_key(value); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                         }
                         key_rail := Rectangle {
                             background: #22292d; border-radius: 4px; vertical-stretch: 1;
