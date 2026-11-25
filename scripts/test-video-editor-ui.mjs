@@ -2251,6 +2251,11 @@ try{
    assert(amplitude(pcm(path), 0.1, 880) > 0.02);
    await click('SAVE'); await waitState('Project saved'); await close();
    await launch(seed); await waitState('clips 1'); await expectColor('blue');
+   const selectNest = async () => client.click(await item('Picture and sound'));
+   const resizeGrip = () => client.waitFor(async () => (await buttons('Resize top left'))[0],
+     { description: 'the nested clip transform gripper' });
+   await selectNest(); await click('TRANSFORM');
+   const topBefore = (await resizeGrip()).absolutePosition.y;
    const chooseChild = async (label, key) => {
      const combo = () => client.find({ label: 'Active sequence', role: 'Combobox' });
      await client.click(await combo()); await client.key(key); await client.key('\n');
@@ -2259,10 +2264,14 @@ try{
    };
    await click('SEQUENCE'); await chooseChild('Picture and sound', '\uf700'); await waitState('clips 3');
    await click('Nest at playhead'); await waitState('cannot contain itself');
-   await click('Cancel');
+   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '640');
+   await click('Apply settings');
+   await waitState('Frame 0');
    await client.click(await item('background.mp4')); await click('DELETE'); await waitState('clips 2');
    await click('SEQUENCE'); await chooseChild('Sequence 1', '\uf701'); await click('Cancel');
    await waitState('clips 1'); await expectColor('black');
+   await selectNest();
+   assert((await resizeGrip()).absolutePosition.y > topBefore + 20, 'grips follow the resized child canvas');
    await click('SAVE'); await waitState('Project saved');
    await close();
  }, { core: true });

@@ -239,7 +239,10 @@ impl Controller {
             canvas
         } else {
             let asset = self.document.asset(&clip.asset_id)?;
-            sample_size(&clip.pipeline, [asset.width as f32, asset.height as f32], canvas)
+            let (width, height) = asset.sequence_source()
+                .and_then(|id| data.other_sequences.iter().find(|sequence| sequence.id == id))
+                .map_or((asset.width, asset.height), |sequence| (sequence.width, sequence.height));
+            sample_size(&clip.pipeline, [width as f32, height as f32], canvas)
         };
         Some(Geometry::from_transform(canvas, source, transform))
     }
