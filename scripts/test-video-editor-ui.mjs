@@ -1213,8 +1213,10 @@ async function runVideoCases() {
    await enter(await findInput('Audio source in'), 24000);
    await enter(await findInput('Audio clip gain (%)'), 50);
    assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('123 samples to 48123'));
-   await click('Delete audio clip');
-   assert.equal((await client.byLabel('Audio clip linked-tone.mp4', { role: 'Button', visible: false })).length, 0);
+   await client.click(await clipControl('Delete audio clip', 'Button', 'audio_properties'));
+   await client.waitFor(async () => (await client.byLabel('Audio clip linked-tone.mp4', {
+     role: 'Button', visible: false,
+   })).length === 0, { description: 'deleted audio clip disappears from the timeline' });
    await click('UNDO');
    assert((await audioClip('linked-tone.mp4')).accessibleDescription.startsWith('123 samples to 48123'));
    await fileAction('SAVE AS', join(output, 'unlinked.oqvideo.json'), 'Save project'); await waitState('Project saved');
