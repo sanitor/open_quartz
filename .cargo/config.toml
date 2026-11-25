@@ -1,3 +1,6 @@
 [env]
 PKG_CONFIG_PATH = { value = "apps/open_quartz_slint/runtime/ffmpeg-media/lib/pkgconfig", relative = true }
 DYLD_LIBRARY_PATH = { value = "apps/open_quartz_slint/runtime/ffmpeg-media/lib", relative = true }
+# The Windows FFmpeg SDK includes optional CUDA declarations that require
+# NVIDIA headers. OpenQuartz uses the D3D12 backend and does not bind those APIs.
+BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_msvc = "-DAVUTIL_HWCONTEXT_CUDA_H"

@@ -144,7 +144,7 @@ pub enum FrameSelection {
 
 /// A retained presentation surface and the requested/actual stream-relative time.
 
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+#[cfg(any(all(target_os = "macos", feature = "videotoolbox"), all(windows, feature = "d3d12")))]
 pub struct SelectedFrame {
     pub frame: FrameLease,
     pub target_ns: i64,
@@ -201,10 +201,12 @@ pub use encoder::{
     AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport, EncoderStatus, EncoderSurface,
     Mp4Encoder,
 };
+#[cfg(any(all(target_os = "macos", feature = "videotoolbox"), all(windows, feature = "d3d12")))]
+mod video_session;
+#[cfg(any(all(target_os = "macos", feature = "videotoolbox"), all(windows, feature = "d3d12")))]
+pub use video_session::{ActualPipeline, FrameLease, HardwareFrame, Session};
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-mod videotoolbox;
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-pub use videotoolbox::{ActualPipeline, FrameLease, Session, VideoToolboxFrame};
+pub use video_session::HardwareFrame as VideoToolboxFrame;
 
 #[cfg(all(any(target_os = "macos", windows), feature = "audio"))]
 mod audio;

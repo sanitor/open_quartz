@@ -139,7 +139,7 @@ under `target/screensaver-stub/` and staged in the app runtime for packaging.
 The macOS bundle uses a numeric version derived from root `package.json`.
 `dist-desktop/` is ignored by Git.
 
-Windows FFmpeg uses a dated BtbN FFmpeg 9.0.2 snapshot pinned by SHA-256 (ABI 63).
+Windows FFmpeg uses a dated, SHA-256-pinned FFmpeg-Builds snapshot (libavcodec ABI 63).
 Upstream snapshot retention is not guaranteed: keep the download cache for repeat/
 offline builds. Missing downloads or mismatched bytes fail explicitly rather than
 falling back to a partial package or a system decoder.

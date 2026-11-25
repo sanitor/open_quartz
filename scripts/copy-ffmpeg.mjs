@@ -12,9 +12,9 @@ await mkdir(runtimeDir, { recursive: true });
 
 if (process.platform === 'win32' && process.arch === 'x64') {
   // Upstream retains month-end builds longer than the rolling daily snapshots.
-  const archiveRoot = 'ffmpeg-n9.0.2-39-g7adfbe40dc-win64-lgpl-shared-9.0';
+  const archiveRoot = 'ffmpeg-N-128227-g4811625b5f-win64-lgpl-shared';
   const assetUrl = `https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/${archiveRoot}.zip`;
-  const digest = 'e907b01fa4783913151237e37df2a10fa97d99a1598a021bf59d4ae62ffed4c0';
+  const digest = 'df0064c654faad1537cbf31c399cd93d3aaf6147e23de094a62884ecd480a6bf';
   const cacheDir = resolve(root, 'node_modules', '.cache', 'open-quartz');
   await mkdir(cacheDir, { recursive: true });
   const archive = resolve(cacheDir, `ffmpeg-shared-${digest}.zip`);
@@ -60,7 +60,7 @@ if (process.platform === 'win32' && process.arch === 'x64') {
   await writeFile(
     resolve(runtimeDir, 'FFMPEG-NOTICE.txt'),
     [
-      'FFmpeg 9.0.2 LGPL shared snapshot from BtbN/FFmpeg-Builds (libavcodec ABI 63).',
+      'FFmpeg LGPL shared snapshot from FFmpeg-Builds (libavcodec ABI 63).',
       `Asset: ${assetUrl}`,
       `SHA-256: ${digest}`,
       'FFmpeg is distributed under LGPL-2.1-or-later; source offer and license are in the bundled build.',

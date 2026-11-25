@@ -5,15 +5,16 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.92"
 publish = false
-description = "Framework-independent media frames and native VideoToolbox decoding"
+description = "Timestamp-addressed media with VideoToolbox and D3D12VA decoding"
 
 [features]
 default = []
 audio = ["dep:ffmpeg-next"]
 videotoolbox = ["audio"]
+d3d12 = ["dep:ffmpeg-next"]
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
-ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format", "software-resampling"] }
+ffmpeg-next = { version = "9.1", optional = true, default-features = false, features = ["codec", "format", "software-resampling"] }
 
 [dev-dependencies]
 tempfile = "3"

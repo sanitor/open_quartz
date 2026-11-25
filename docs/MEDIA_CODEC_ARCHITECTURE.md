@@ -32,7 +32,7 @@
 | Windows 管理解码 fence、NV12/P010、纹理子资源及必要 GPU detach copy | [`rendering/dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs)；[当前索引](./DESIGN.md#source-map) | 保留同步/lease，新接口不能只传纹理指针 |
 | 停止/暂停时选择文件，解码并上传一帧，显式 Play 才连续播放 | `open_preview` / render worker pending preview | 迁移必须保留：不启动整图、不消耗开始位置、同尺寸替换不串旧图 |
 | 初期曾草拟 execution/media 外部帧/导入器桥接 | 旧抽象没有生产实现且仓内无消费者，现已删除 | 不与 `oq-media::FrameLease` 或 Metal GPU importer 并存，不保留第二份跨平台帧/同步契约 |
-| FFmpeg 打包不同：Windows 固定 shared 9.0.2 snapshot；其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs)，目标资源目录为 [`apps/open_quartz_slint/runtime/`](../apps/open_quartz_slint/runtime/) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
+| FFmpeg 打包不同：Windows 固定 shared snapshot（libavcodec ABI 63），其余由 installer 提供 executable | [copy-ffmpeg.mjs](../scripts/copy-ffmpeg.mjs)，目标资源目录为 [`apps/open_quartz_slint/runtime/`](../apps/open_quartz_slint/runtime/) | 统一 libav 前必须确定 ABI、构建矩阵和分发资源 |
 | 当前 macOS worker 按 PTS 等待后发布单个当前帧，GPU importer 转换后 `device.poll(Wait)` | [`media/native.rs`](../crates/open_quartz/src/media/native.rs) 与 [`rendering/videotoolbox.rs`](../crates/open_quartz/src/rendering/videotoolbox.rs) | 现有实时路径不是完整预取流水；窗口 admission、受控 slot 和设备完成先落实，再替换宿主等待，不能仅删除同步 |
 
 **Windows 当前代码不能直接视作跨设备、全色彩已验收的基线。** 本次源码核查还发现：Slint shared device 以默认 feature 集合创建，而 NV12/P010 外部纹理使用需要相应 device features；FFmpeg D3D12VA 自行创建设备，没有显式按 host adapter LUID 对齐；现有转换 shader 对 NV12/P010 共用写死的 10-bit/BT.709 limited 公式，未传递 AVFrame 色彩元数据，色度中性偏移也需校正验证。这些是 A/C 阶段必须关闭的正确性缺口，不在本轮设计中顺手改代码，也不把 macOS RGBA 像素回归当作 Windows 硬解证明。

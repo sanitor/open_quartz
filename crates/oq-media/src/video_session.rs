@@ -10,44 +10,58 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use std::{
-    ffi::{c_void, CString},
+    ffi::CString,
     path::{Path, PathBuf},
     ptr,
 };
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+const DEVICE_NAME: &str = "videotoolbox";
+#[cfg(windows)]
+const DEVICE_NAME: &str = "d3d12va";
+#[cfg(target_os = "macos")]
+const HARDWARE_FORMAT: ffi::AVPixelFormat = ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
+#[cfg(windows)]
+const HARDWARE_FORMAT: ffi::AVPixelFormat = ffi::AVPixelFormat::AV_PIX_FMT_D3D12;
+
 static NEXT_SOURCE_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreVideo", kind = "framework")]
 extern "C" {
     fn CVPixelBufferGetPixelFormatType(buffer: *mut c_void) -> u32;
     fn CVPixelBufferGetIOSurface(buffer: *mut c_void) -> *mut c_void;
     fn CVPixelBufferGetDataSize(buffer: *mut c_void) -> usize;
 }
+#[cfg(target_os = "macos")]
 #[link(name = "IOSurface", kind = "framework")]
 extern "C" {
     fn IOSurfaceGetAllocSize(surface: *mut c_void) -> usize;
 }
 
-/// Owns the FFmpeg frame reference, and therefore its immutable VideoToolbox surface.
-pub struct VideoToolboxFrame {
+/// Owns a retained FFmpeg frame and its immutable native decode surface.
+pub struct HardwareFrame {
     raw: *mut ffi::AVFrame,
     format: PixelFormat,
     color: ColorInfo,
     pts_ns: Option<i64>,
     timestamp: Option<SourceTimestamp>,
 }
-// The retained AVFrame and CVPixelBuffer are immutable after publication. FFmpeg's
+// The retained AVFrame and native surface are immutable after publication. FFmpeg's
 // buffer references are thread-safe and the consumer never receives mutable access.
-unsafe impl Send for VideoToolboxFrame {}
-impl Drop for VideoToolboxFrame {
+unsafe impl Send for HardwareFrame {}
+impl Drop for HardwareFrame {
     fn drop(&mut self) {
         unsafe { ffi::av_frame_free(&mut self.raw) }
     }
 }
-impl VideoToolboxFrame {
+impl HardwareFrame {
     pub fn try_clone(&self) -> Result<Self, String> {
         let raw = unsafe { ffi::av_frame_clone(self.raw) };
         if raw.is_null() {
-            return Err("Cannot retain VideoToolbox frame".into());
+            return Err(format!("Cannot retain {DEVICE_NAME} frame"));
         }
         Ok(Self {
             raw,
@@ -57,10 +71,12 @@ impl VideoToolboxFrame {
             timestamp: self.timestamp,
         })
     }
+    #[cfg(target_os = "macos")]
     pub fn pixel_buffer(&self) -> *mut c_void {
         unsafe { (*self.raw).data[3].cast() }
     }
     /// Physical allocation shared by all retained references to this pixel buffer.
+    #[cfg(target_os = "macos")]
     pub fn allocation_size(&self) -> u64 {
         let buffer = self.pixel_buffer();
         if buffer.is_null() {
@@ -107,7 +123,7 @@ impl VideoToolboxFrame {
     }
 }
 pub struct FrameLease {
-    pub frame: VideoToolboxFrame,
+    pub frame: HardwareFrame,
     pub source_epoch: u64,
     pub timeline_epoch: u64,
     pub sequence: u64,
@@ -135,12 +151,43 @@ unsafe extern "C" fn select_format(
 ) -> ffi::AVPixelFormat {
     let mut p = formats;
     while !p.is_null() && *p != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
-        if *p == ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX {
+        if *p == HARDWARE_FORMAT {
             return *p;
         }
         p = p.add(1);
     }
     ffi::AVPixelFormat::AV_PIX_FMT_NONE
+}
+
+#[cfg(target_os = "macos")]
+fn surface_format(raw: &ffi::AVFrame) -> Result<(PixelFormat, bool), MediaError> {
+    if raw.data[3].is_null() {
+        return Err("Decoder did not produce a VideoToolbox surface".into());
+    }
+    let code = unsafe { CVPixelBufferGetPixelFormatType(raw.data[3].cast()) };
+    match code {
+        0x34323076 => Ok((PixelFormat::Nv12, false)),
+        0x34323066 => Ok((PixelFormat::Nv12, true)),
+        0x78343230 => Ok((PixelFormat::P010, false)),
+        0x78663230 => Ok((PixelFormat::P010, true)),
+        0x42475241 => Ok((PixelFormat::Bgra8, true)),
+        _ => Err(format!("Unsupported CVPixelBuffer format {code:#x}").into()),
+    }
+}
+
+#[cfg(windows)]
+fn surface_format(raw: &ffi::AVFrame) -> Result<(PixelFormat, bool), MediaError> {
+    if raw.data[0].is_null() || raw.hw_frames_ctx.is_null() {
+        return Err("Decoder did not produce a D3D12VA surface".into());
+    }
+    let context = unsafe { (*raw.hw_frames_ctx).data.cast::<ffi::AVHWFramesContext>().as_ref() }
+        .ok_or("Decoder returned no hardware frames context")?;
+    let format = match context.sw_format {
+        ffi::AVPixelFormat::AV_PIX_FMT_NV12 => PixelFormat::Nv12,
+        ffi::AVPixelFormat::AV_PIX_FMT_P010LE => PixelFormat::P010,
+        other => return Err(MediaError::unsupported(format!("Unsupported D3D12VA surface format {other:?}"))),
+    };
+    Ok((format, raw.color_range == ffi::AVColorRange::AVCOL_RANGE_JPEG))
 }
 
 pub struct Session {
@@ -173,7 +220,10 @@ impl Session {
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::MediaError::cancelled());
         }
+        #[cfg(target_os = "macos")]
         crate::require_media_sdk()?;
+        #[cfg(windows)]
+        ffmpeg_next::init().map_err(|error| format!("FFmpeg init failed: {error}"))?;
         let path = path
             .as_ref()
             .canonicalize()
@@ -201,7 +251,7 @@ impl Session {
         let stream = input.streams().best(Type::Video).ok_or("No video stream")?;
         if !matches!(stream.parameters().id(), codec::Id::H264 | codec::Id::HEVC) {
             return Err(
-                "VideoToolbox hardware guarantee is available only for H.264 and HEVC".into(),
+                "Hardware decoding is available only for H.264 and HEVC".into(),
             );
         }
         let stream_index = stream.index();
@@ -282,15 +332,15 @@ impl Session {
             .map_err(|e| format!("Cannot create decoder: {e}"))?;
         let mut device = ptr::null_mut();
         unsafe {
-            let name = CString::new("videotoolbox").unwrap();
+            let name = CString::new(DEVICE_NAME).unwrap();
             let kind = ffi::av_hwdevice_find_type_by_name(name.as_ptr());
             if kind == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-                return Err("FFmpeg has no VideoToolbox hardware device".into());
+                return Err(format!("FFmpeg has no {DEVICE_NAME} hardware device").into());
             }
             let result =
                 ffi::av_hwdevice_ctx_create(&mut device, kind, ptr::null(), ptr::null_mut(), 0);
             if result < 0 || device.is_null() {
-                return Err(format!("Cannot create VideoToolbox device: {result}").into());
+                return Err(format!("Cannot create {DEVICE_NAME} device: {result}").into());
             }
             let raw = context.as_mut_ptr();
             (*raw).pkt_timebase = time_base;
@@ -298,13 +348,13 @@ impl Session {
             (*raw).hw_device_ctx = ffi::av_buffer_ref(device);
             ffi::av_buffer_unref(&mut device);
             if (*raw).hw_device_ctx.is_null() {
-                return Err("Cannot retain VideoToolbox device".into());
+                return Err(format!("Cannot retain {DEVICE_NAME} device").into());
             }
         }
         let decoder = context
             .decoder()
             .video()
-            .map_err(|e| format!("Cannot open VideoToolbox decoder: {e}"))?;
+            .map_err(|e| format!("Cannot open {DEVICE_NAME} decoder: {e}"))?;
         Ok(Self {
             path,
             input,
@@ -326,7 +376,7 @@ impl Session {
     }
     pub fn actual_pipeline(&self) -> ActualPipeline {
         ActualPipeline {
-            decoder: "ffmpeg-videotoolbox".into(),
+            decoder: format!("ffmpeg-{DEVICE_NAME}"),
             hardware: (self.sequence > 0).then_some(true),
             fallback_reason: None,
         }
@@ -565,11 +615,10 @@ impl Session {
             match self.decoder.receive_frame(&mut frame) {
                 Ok(()) => {
                     let raw = unsafe { &*frame.as_ptr() };
-                    if raw.format != ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX as i32
-                        || raw.data[3].is_null()
-                    {
-                        return Err("Decoder did not produce a VideoToolbox surface".into());
+                    if raw.format != HARDWARE_FORMAT as i32 {
+                        return Err(format!("Decoder did not produce a {DEVICE_NAME} surface").into());
                     }
+                    let (format, full_range) = surface_format(raw)?;
                     if raw.crop_top != 0
                         || raw.crop_bottom != 0
                         || raw.crop_left != 0
@@ -617,17 +666,6 @@ impl Session {
                             return Err(crate::MediaError::unsupported(format!(
                                 "Unsupported color primaries {other:?}"
                             )))
-                        }
-                    };
-                    let code = unsafe { CVPixelBufferGetPixelFormatType(raw.data[3].cast()) };
-                    let (format, full_range) = match code {
-                        0x34323076 => (PixelFormat::Nv12, false), // 420v
-                        0x34323066 => (PixelFormat::Nv12, true),  // 420f
-                        0x78343230 => (PixelFormat::P010, false), // x420
-                        0x78663230 => (PixelFormat::P010, true),  // xf20
-                        0x42475241 => (PixelFormat::Bgra8, true),
-                        _ => {
-                            return Err(format!("Unsupported CVPixelBuffer format {code:#x}").into())
                         }
                     };
                     let (transfer, transfer_assumed) = match raw.color_trc {
@@ -704,11 +742,11 @@ impl Session {
                     self.cursor_ns = pts;
                     let retained = unsafe { ffi::av_frame_clone(frame.as_ptr()) };
                     if retained.is_null() {
-                        return Err("Cannot retain VideoToolbox frame".into());
+                        return Err(format!("Cannot retain {DEVICE_NAME} frame").into());
                     }
                     self.sequence = self.sequence.saturating_add(1);
                     return Ok(Some(FrameLease {
-                        frame: VideoToolboxFrame {
+                        frame: HardwareFrame {
                             raw: retained,
                             format,
                             color: ColorInfo {
@@ -734,7 +772,7 @@ impl Session {
                 }
                 Err(ffmpeg_next::Error::Other { errno }) if errno == ffmpeg_next::error::EAGAIN => {
                 }
-                Err(e) => return Err(format!("VideoToolbox receive failed: {e}").into()),
+                Err(e) => return Err(format!("{DEVICE_NAME} receive failed: {e}").into()),
             }
             if self.draining {
                 return Err("Decoder stalled while draining".into());
@@ -765,7 +803,7 @@ impl Session {
             if !self.draining {
                 self.decoder
                     .send_packet(&packet)
-                    .map_err(|e| format!("VideoToolbox decode failed: {e}"))?;
+                    .map_err(|e| format!("{DEVICE_NAME} decode failed: {e}"))?;
             }
         }
     }
@@ -848,6 +886,7 @@ mod time_access_tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "requires a D3D12VA hardware decoder")]
     fn unknown_duration_decodes_to_eof_and_unseekable_discontinuity_is_typed() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/source-time.mp4");
         let mut session = Session::open(path).unwrap();
@@ -865,6 +904,7 @@ mod time_access_tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "requires a D3D12VA hardware decoder")]
     fn missing_stream_origin_is_never_replaced_with_an_fps_estimate() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/source-time.mp4");
         let mut session = Session::open(path).unwrap();
