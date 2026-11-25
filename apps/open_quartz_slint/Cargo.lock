@@ -3866,6 +3866,8 @@ name = "oq-media"
 version = "0.1.0"
 dependencies = [
  "ffmpeg-next",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

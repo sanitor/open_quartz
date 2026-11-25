@@ -29,7 +29,7 @@ rfd = "0.16"
 
 [target.'cfg(windows)'.dependencies]
 open_quartz_screensaver = { path = "../../crates/open_quartz_screensaver" }
-open_quartz = { path = "../../crates/open_quartz", features = ["native-video-d3d12", "native-dml"] }
+open_quartz = { path = "../../crates/open_quartz", features = ["native-video-precise-d3d12", "native-dml"] }
 
 
 [build-dependencies]
