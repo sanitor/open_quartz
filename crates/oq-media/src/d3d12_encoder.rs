@@ -68,9 +68,29 @@ impl Drop for Buffer {
 
 pub struct D3d12Encoder {
     encoder: codec::encoder::video::Encoder,
-    frames: Buffer,
+    frames: FramePool,
     profile: Profile,
     durations: BTreeMap<i64, i64>,
+}
+
+/// Shared native input pool. Each handle owns a separate AVBufferRef.
+pub struct FramePool {
+    frames: Buffer,
+}
+
+// AVBufferRefs are thread-safe. This handle owns one reference, and FFmpeg
+// protects allocations from the initialized AVHWFramesContext with its pool.
+unsafe impl Send for FramePool {}
+
+impl FramePool {
+    pub fn allocate(&self) -> Result<InputSurface, MediaError> {
+        let mut frame = Video::empty();
+        check(
+            unsafe { ffi::av_hwframe_get_buffer(self.frames.0.as_ptr(), frame.as_mut_ptr(), 0) },
+            "Allocate D3D12 encoder surface",
+        )?;
+        Ok(InputSurface(frame))
+    }
 }
 
 pub struct InputSurface(Video);
@@ -191,7 +211,7 @@ impl D3d12Encoder {
             .map_err(|error| format!("Open required {} encoder: {error}", profile.codec_name()))?;
         Ok(Self {
             encoder,
-            frames,
+            frames: FramePool { frames },
             profile,
             durations: BTreeMap::new(),
         })
@@ -202,12 +222,18 @@ impl D3d12Encoder {
     }
 
     pub fn allocate(&self) -> Result<InputSurface, MediaError> {
-        let mut frame = Video::empty();
-        check(
-            unsafe { ffi::av_hwframe_get_buffer(self.frames.0.as_ptr(), frame.as_mut_ptr(), 0) },
-            "Allocate D3D12 encoder surface",
-        )?;
-        Ok(InputSurface(frame))
+        self.frames.allocate()
+    }
+
+    /// Reserve a pool handle for a render producer while the encoder runs on
+    /// another thread.
+    pub fn frame_pool(&self) -> Result<FramePool, MediaError> {
+        let raw = unsafe { ffi::av_buffer_ref(self.frames.frames.0.as_ptr()) };
+        NonNull::new(raw)
+            .map(|reference| FramePool {
+                frames: Buffer(reference),
+            })
+            .ok_or_else(|| "Cannot retain encoder frame pool".into())
     }
 
     pub fn encode(
@@ -217,7 +243,7 @@ impl D3d12Encoder {
         duration: i64,
     ) -> Result<Vec<Packet>, MediaError> {
         let context = unsafe { (*surface.0.as_ptr()).hw_frames_ctx };
-        if unsafe { (*context).data != self.frames.0.as_ref().data }
+        if unsafe { (*context).data != self.frames.frames.0.as_ref().data }
             || duration <= 0
             || self.durations.contains_key(&pts)
         {
@@ -357,18 +383,30 @@ mod tests {
                     }
                 }
             }
-            for pts in 0..4 {
-                let mut surface = encoder.allocate().unwrap();
-                assert!(!surface.descriptor().is_null());
-                check(
-                    unsafe {
-                        ffi::av_hwframe_transfer_data(surface.0.as_mut_ptr(), fixture.as_ptr(), 0)
-                    },
-                    "Upload test fixture",
-                )
-                .unwrap();
+            let pool = encoder.frame_pool().unwrap();
+            let (send, receive) = std::sync::mpsc::sync_channel(1);
+            let render = std::thread::spawn(move || {
+                for pts in 0..4 {
+                    let mut surface = pool.allocate().unwrap();
+                    assert!(!surface.descriptor().is_null());
+                    check(
+                        unsafe {
+                            ffi::av_hwframe_transfer_data(
+                                surface.0.as_mut_ptr(),
+                                fixture.as_ptr(),
+                                0,
+                            )
+                        },
+                        "Upload test fixture",
+                    )
+                    .unwrap();
+                    send.send((pts, surface)).unwrap();
+                }
+            });
+            for (pts, surface) in receive {
                 packets.extend(encoder.encode(surface, pts, 1).unwrap());
             }
+            render.join().unwrap();
             packets.extend(encoder.drain().unwrap());
             let mut pts: Vec<_> = packets.iter().map(|packet| packet.pts().unwrap()).collect();
             pts.sort_unstable();
