@@ -510,6 +510,14 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_managed_color_changed(move |enabled| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let result = controller.document.set_managed_color(enabled);
+                controller.finish_edit(result);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_sequence_settings(move |width, height, numerator, denominator| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -1501,9 +1509,9 @@ impl Controller {
             window.set_proxy_mode(self.proxies.enabled);
             window.set_proxy_building(self.proxies.building());
             window.set_proxy_can_prepare_batch(self.document.data.assets.iter()
-                .filter(|asset| asset.online && asset.has_video()).take(2).count() == 2);
+                .filter(|asset| asset.proxy_eligible()).take(2).count() == 2);
             window.set_proxy_can_prepare(self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
-                .is_some_and(|asset| asset.online && asset.has_video()));
+                .is_some_and(|asset| asset.proxy_eligible()));
         }
     }
 
@@ -2284,6 +2292,7 @@ impl Controller {
             return;
         };
         self.refresh_recovery();
+        window.set_sequence_managed_color(self.document.data.managed_color);
         self.publish_sequence_slots(&window);
         window.set_has_offline_assets(self.document.data.assets.iter().any(|asset| !asset.online));
         if matches!(&self.audio_destination, AudioDestination::Track(id)

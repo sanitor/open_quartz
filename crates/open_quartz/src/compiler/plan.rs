@@ -285,7 +285,7 @@ pub fn build_execution_plan_with_options(
                 shader = Some(Arc::new(super::color_boundary::display_program(label, source)));
                 target = Some(TargetSpec { width: default_width, height: default_height, format: TargetFormat::Rgba8Unorm, size_source: Some(source.clone()) });
             }
-        } else if !node.data.managed_color && matches!(node.data.node_type, NodeType::Shader | NodeType::Constant) {
+        } else if !node.data.managed_color && !node.data.managed_display && matches!(node.data.node_type, NodeType::Shader | NodeType::Constant) {
             if let Some(program) = &mut shader {
                 let managed: HashSet<&str> = upstream.iter().filter(|(_, id)| output_domains.get(*id) == Some(&ColorDomain::AcesCgLinear))
                     .map(|(label, _)| label.as_str()).collect();

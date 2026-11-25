@@ -13,6 +13,8 @@ pub(super) fn default_sequence_name() -> String {
 pub struct TimelineSequence {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub managed_color: bool,
     pub width: u32,
     pub height: u32,
     pub fps: Rational,
@@ -93,6 +95,7 @@ impl ProjectData {
         TimelineSequence {
             id: self.sequence_id.clone(),
             name: self.sequence_name.clone(),
+            managed_color: self.managed_color,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -105,6 +108,7 @@ impl ProjectData {
     fn activate(&mut self, sequence: TimelineSequence) {
         self.sequence_id = sequence.id;
         self.sequence_name = sequence.name;
+        self.managed_color = sequence.managed_color;
         self.width = sequence.width;
         self.height = sequence.height;
         self.fps = sequence.fps;

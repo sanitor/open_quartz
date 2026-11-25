@@ -1,4 +1,4 @@
-import { Button, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 import { ToolButton } from "icon_button.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
@@ -648,6 +648,8 @@ export component EditorWindow inherits Window {
     callback shortcut(string);
     callback search_changed(string);
     callback clip_timing_changed(field: string, value: string);
+    in-out property <bool> sequence_managed_color;
+    callback managed_color_changed(bool);
     callback sequence_settings(width: string, height: string, fps_numerator: string, fps_denominator: string);
     callback rename_project(string);
     callback file_submit(kind: string, path: string);
@@ -1769,7 +1771,7 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 480px; height: 586px; background: root.panel;
+                width: 480px; height: 622px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
@@ -1801,6 +1803,11 @@ export component EditorWindow inherits Window {
                             text: "Nest at playhead";
                             clicked => { root.sequence_slot("nest", root.nested_source_choice, ""); }
                         }
+                    }
+                    CheckBox {
+                        text: "Managed color · ACEScg";
+                        checked <=> root.sequence_managed_color;
+                        toggled => { root.managed_color_changed(self.checked); }
                     }
                     Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Width (pixels)"; color: root.secondary; font-size: 12px; }

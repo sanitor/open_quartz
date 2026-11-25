@@ -31,6 +31,7 @@ fn node(id: &str, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
             uniform_animations: Default::default(),
             clock: None,
             managed_color: false,
+            managed_display: false,
             input_data_type: Some(DataType::Float),
             input_mode: Some(InputMode::System),
             image_data_url: None,

@@ -40,7 +40,7 @@ pub use mask::{Mask, MaskShape};
 #[path = "document_grades.rs"]
 mod grades;
 pub use grades::GradeVersions;
-const SCHEMA_VERSION: u32 = 23;
+const SCHEMA_VERSION: u32 = 24;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -133,6 +133,10 @@ impl MediaAsset {
 
     pub fn has_video(&self) -> bool {
         self.has_visual() && !self.still && self.sequence_source().is_none() && self.sequence_source().is_none()
+    }
+
+    pub fn proxy_eligible(&self) -> bool {
+        self.online && self.has_video() && self.hdr_transfer.is_none()
     }
 
     pub fn source_duration_frames(&self, fps: Rational) -> Result<u64, String> {
@@ -287,6 +291,8 @@ pub struct ProjectData {
     pub sequence_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub other_sequences: Vec<TimelineSequence>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub managed_color: bool,
     pub width: u32,
     pub height: u32,
     pub fps: Rational,
@@ -306,6 +312,7 @@ impl Default for ProjectData {
             sequence_id: sequences::default_sequence_id(),
             sequence_name: sequences::default_sequence_name(),
             other_sequences: Vec::new(),
+            managed_color: false,
             width: 1920,
             height: 1080,
             fps: Rational {
@@ -729,6 +736,13 @@ impl EditorDocument {
         })
     }
     /// Frame positions stay fixed; source ranges are revalidated at the new rate.
+    pub fn set_managed_color(&mut self, enabled: bool) -> Result<(), String> {
+        self.transact(|data| {
+            data.managed_color = enabled;
+            Ok(())
+        })
+    }
+
     pub fn set_sequence(&mut self, width: u32, height: u32, fps: Rational) -> Result<(), String> {
         self.transact(|data| {
             data.width = width;

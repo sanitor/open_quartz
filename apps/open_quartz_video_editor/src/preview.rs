@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone)]
 pub struct PreviewRequest {
     pub managed_output: bool,
+    pub managed_view: bool,
     pub ticket: u64,
     pub revision: u64,
     pub frame: u64,
@@ -109,6 +110,7 @@ struct EffectAnimation {
 pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, width: u32, height: u32) -> PreviewRequest {
     let mut request = PreviewRequest {
         managed_output: false,
+        managed_view: false,
         ticket, revision, frame, width, height, source_ns: 0, asset: None,
         transform: ClipTransform::default(), pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
@@ -131,7 +133,10 @@ pub fn sequence_request(
     mut pipeline_override: impl FnMut(&str) -> Option<ClipPipeline>,
     transform_override: Option<(&str, ClipTransform)>,
 ) -> Result<PreviewRequest, String> {
-    build_sequence_request(project, ticket, revision, frame, &mut pipeline_override, transform_override, false, false)
+    let mut request = build_sequence_request(project, ticket, revision, frame, &mut pipeline_override,
+        transform_override, false, project.managed_color)?;
+    request.managed_view = project.managed_color;
+    Ok(request)
 }
 
 fn nested_frame(clip: &document::Clip, asset: &MediaAsset, frame: u64, fps: Rational) -> Result<u64, String> {
@@ -226,6 +231,7 @@ fn build_sequence_request(
     }
     let mut request = PreviewRequest {
         managed_output,
+        managed_view: false,
         ticket, revision, frame, width: project.width, height: project.height,
         asset: None, source_ns: project.fps.frames_to_ns(frame)?, transform: ClipTransform::default(),
         pipeline: ClipPipeline::default(), layers: Vec::new(),

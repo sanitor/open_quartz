@@ -56,3 +56,19 @@ The E2E case verifies Main10 and its BT.2020/PQ tags using an independent
 decoder, calculates the five-frame output range, checks the MP4 mastering
 box, and compares both decoded 10-bit luminance patches with the original
 PQ sample values.
+
+## Managed sequence monitoring
+
+Enable **Managed color · ACEScg** in Sequence settings to grade and composite
+in AP1 before the monitor's SDR display transform. The setting belongs to the
+selected sequence, is saved in the project, and is undoable. SDR export of a
+managed sequence uses the same view transform. HDR10 export sends the
+linear program to the PQ output transform.
+
+Existing sequences retain their previous SDR appearance until this setting
+changes. Legacy shaders use an explicit sRGB compatibility boundary in the
+managed monitor. HDR video preview uses the original P010 surface even when
+the project has SDR proxies enabled.
+
+The input fixture checks that a one-stop exposure adjustment occurs before
+the SDR view, then verifies undo, redo and reopening at the same pixel level.

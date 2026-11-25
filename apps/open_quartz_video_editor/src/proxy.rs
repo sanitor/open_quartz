@@ -72,7 +72,7 @@ impl Proxies {
         if self.building() {
             return Err("A proxy is already being prepared".into());
         }
-        if !asset.online || !asset.has_video() {
+        if !asset.proxy_eligible() {
             return Err("Select an online video asset".into());
         }
         let directory = proxy_directory().ok_or("Proxy cache directory is unavailable")?;
@@ -102,7 +102,7 @@ impl Proxies {
         }
         let mut remaining: VecDeque<_> = assets
             .iter()
-            .filter(|asset| asset.online && asset.has_video())
+            .filter(|asset| asset.proxy_eligible())
             .cloned()
             .collect();
         let total = remaining.len();
@@ -191,6 +191,7 @@ impl Proxies {
     }
 
     pub fn apply(&self, asset: &mut MediaAsset) {
+        if !asset.proxy_eligible() { return; }
         if let Some(entry) = self.entry(asset) {
             asset.path = entry.path.to_string_lossy().into_owned();
         }

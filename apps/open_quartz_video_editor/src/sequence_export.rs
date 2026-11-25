@@ -1,5 +1,5 @@
 use super::{
-    configure, playback, sequence_region, sequence_region_end, sequence_source_times,
+    configure, playback, sequence_region_end, sequence_source_times,
     FramePipeline, PlaybackCapabilities, PreviewConfiguration, PreviewRequest, ProjectData,
     RenderDevice, OUTPUT_ID,
 };
@@ -98,10 +98,10 @@ struct Sequence {
 impl ExportSequence for Sequence {
     fn prepare_region(&mut self, pipeline: &mut FramePipeline, frame: u64) -> Result<u64, String> {
         let frame = self.cadence.sample(frame)?;
-        let (request, end) = if self.hdr10 {
-            let request = super::build_sequence_request(&self.project, 0, self.revision, frame, &mut |_| None, None, false, true)?;
-            (request, sequence_region_end(&self.project, frame, self.end))
-        } else { sequence_region(&self.project, 0, self.revision, frame, self.end)? };
+        let mut request = super::build_sequence_request(&self.project, 0, self.revision, frame, &mut |_| None, None,
+            false, self.hdr10 || self.project.managed_color)?;
+        request.managed_view = !self.hdr10 && self.project.managed_color;
+        let end = sequence_region_end(&self.project, frame, self.end);
         playback::configure_limits(pipeline, &request, self.project.fps)?;
         configure(pipeline, &mut self.configured, &request)?;
         self.request = Some(request);

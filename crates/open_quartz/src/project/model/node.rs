@@ -106,6 +106,8 @@ pub struct NodeData {
     pub clock: Option<super::NodeClock>,
     #[serde(skip)]
     pub managed_color: bool,
+    #[serde(skip)]
+    pub managed_display: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,6 +211,8 @@ struct NodeDataWire {
     clock: Option<super::NodeClock>,
     #[serde(skip)]
     managed_color: bool,
+    #[serde(skip)]
+    managed_display: bool,
     color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     input_data_type: Option<super::DataType>,
     input_mode: Option<InputMode>,
@@ -345,6 +349,7 @@ impl Default for NodeData {
             uniform_animations: BTreeMap::new(),
             clock: None,
             managed_color: false,
+            managed_display: false,
             color_corrector: None,
             input_data_type: None,
             input_mode: None,

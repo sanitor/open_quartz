@@ -51,7 +51,45 @@ pub(super) fn source_id(clip: &str) -> String {
 /// Lower the current timeline stack into the existing graph executor. The
 /// protected clip outputs are replaced by one program output for all layers.
 pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
-    composition(request, None)
+    let mut graph = composition(request, None)?;
+    if request.managed_view {
+        add_managed_view(&mut graph, request.width, request.height)?;
+    }
+    Ok(graph)
+}
+
+fn add_managed_view(graph: &mut Graph, width: u32, height: u32) -> Result<(), String> {
+    let program = graph.nodes.iter_mut().find(|node| node.id == OUTPUT_ID).ok_or("Missing managed program output")?;
+    program.id = "managed-program".into();
+    let source_handle = program.data.outputs.first().ok_or("Missing managed program texture")?.id.clone();
+    for edge in graph.edges.iter_mut().filter(|edge| edge.target == OUTPUT_ID) {
+        edge.target = program.id.clone();
+    }
+    let code = format!("{}{}",
+        open_quartz::operators::WGSL_COLOR_TRANSFORMS, r#"
+        @group(0) @binding(0) var program: texture_2d<f32>;
+        @group(0) @binding(1) var programSampler: sampler;
+        @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
+            let p = textureSample(program, programSampler, uv);
+            let luma = max(dot(p.rgb, vec3f(0.2722287, 0.6740818, 0.0536895)), 0.0);
+            return vec4f(cc_ap1_to_srgb(p.rgb / (1.0 + luma)), p.a);
+        }
+    "#);
+    let (mut output, _) = crate::clip_pipeline::project(Graph::default())
+        .create_graph_node(NodeFactoryRequest::Shader {
+            position: None, label: "SDR monitor".into(), code,
+            template_name: None, shader_template_id: None,
+        }, 0).map_err(|error| error.to_string())?;
+    output.id = OUTPUT_ID.into();
+    output.data.width = Some(width);
+    output.data.height = Some(height);
+    output.data.auto_size = Some(false);
+    output.data.managed_display = true;
+    let input = output.data.inputs.iter().find(|port| port.label == "program").ok_or("Missing monitor input")?;
+    graph.edges.push(Edge { id: "managed-view".into(), source: program.id.clone(),
+        source_handle, target: output.id.clone(), target_handle: input.id.clone() });
+    graph.nodes.push(output);
+    Ok(())
 }
 
 fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Graph, String> {
@@ -232,10 +270,19 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
         } else { "let mask_alpha = 1.0;".into() };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         let color = if request.managed_output {
-            if matches!(&layer.source, LayerSource::Title(_) | LayerSource::Still(_))
-                && !clip.nodes.iter().any(|node| node.node_type == open_quartz::project::NodeType::ColorCorrector) {
-                format!("cc_srgb_to_ap1(sample.rgb) * blend{index}.z")
-            } else { format!("sample.rgb * blend{index}.z") }
+            let mut id = edge.source.as_str();
+            let working = loop {
+                if id == SOURCE_ID {
+                    break matches!(&layer.source, LayerSource::Video { .. } | LayerSource::Nested { .. });
+                }
+                let node = clip.nodes.iter().find(|node| node.id == id).ok_or("Missing layer color producer")?;
+                let Some(corrector) = &node.data.color_corrector else { break false; };
+                if !corrector.is_identity() { break true; }
+                let incoming = clip.edges.iter().find(|edge| edge.target == id).ok_or("Missing Corrector source")?;
+                id = &incoming.source;
+            };
+            if working { format!("sample.rgb * blend{index}.z") }
+            else { format!("cc_srgb_to_ap1(sample.rgb) * blend{index}.z") }
         } else { format!("linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)))") };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) / 4 == order) {{\n\
@@ -271,7 +318,9 @@ fn bezier_progress(t: f32, points: vec4f) -> f32 {
 }
 "#);
     if request.managed_output { animation_code.push_str(open_quartz::operators::WGSL_COLOR_TRANSFORMS); }
-    let result_color = if request.managed_output {
+    let result_color = if request.managed_output && clock.is_some() {
+        "return vec4f(result / max(alpha, 0.00001), alpha);"
+    } else if request.managed_output {
         "return vec4f(result, 1.0);"
     } else if clock.is_some() {
         "return vec4f(encoded(result / max(alpha, 0.00001)), alpha);"
