@@ -18,7 +18,7 @@ fn document() -> EditorDocument {
         id: "clip-1".into(), title: None, asset_id: "asset-1".into(), timeline_start: 0, duration: 60,
         speed_percent: normal_speed(), source_span_remainder: 0,
         source_in_pts: 9000, source_subtick_numerator: 1, source_subtick_denominator: 3,
-        transform: ClipTransform::default(), opacity_keys: Vec::new(), mask: None, crop: Crop::default(), crop_keys: Vec::new(), spatial_keys: Vec::new(), pipeline: ClipPipeline::default(), effect_keys: Vec::new(),
+        transform: ClipTransform::default(), opacity_keys: Vec::new(), mask: None, crop: Crop::default(), crop_keys: Vec::new(), spatial_keys: Vec::new(), pipeline: ClipPipeline::default(), effect_keys: Vec::new(), grade_versions: None,
     });
     EditorDocument::new(data).unwrap()
 }

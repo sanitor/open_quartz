@@ -133,7 +133,11 @@ impl Clip {
         let shift = i128::from(self.timeline_start) - i128::from(start);
         let times = self.spatial_keys.iter_mut().map(|key| &mut key.time)
             .chain(self.crop_keys.iter_mut().map(|key| &mut key.time))
-            .chain(self.effect_keys.iter_mut().flat_map(|entry| entry.keys.iter_mut()).map(|key| &mut key.time));
+            .chain(self.effect_keys.iter_mut()
+                .chain(self.grade_versions.iter_mut().flat_map(|versions| {
+                    versions.alternatives.iter_mut().flat_map(|version| &mut version.effect_keys)
+                }))
+                .flat_map(|entry| entry.keys.iter_mut()).map(|key| &mut key.time));
         for time in times {
             *time = i64::try_from(i128::from(*time) + shift)
                 .map_err(|_| "Animation keyframe position overflow")?;

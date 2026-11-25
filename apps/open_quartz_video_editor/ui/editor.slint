@@ -625,6 +625,12 @@ export component EditorWindow inherits Window {
     in property <string> color_scope_summary;
     private property <int> color_scope_mode;
     callback color_scope_changed(int);
+    in property <bool> grade_available;
+    in-out property <bool> grades_open;
+    in property <[string]> grade_names;
+    in-out property <int> grade_index;
+    in property <string> grade_name;
+    callback grade_action(string, int, string);
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -942,6 +948,10 @@ export component EditorWindow inherits Window {
                     VerticalLayout {
                         spacing: 0px;
                         HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: root.nodes_open ? "Final · " + root.selected_clip_name : "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } if !root.nodes_open: ToolButton { label: "TRANSFORM"; glyph: "⛶"; selected: root.show_transform; clicked => { editor_focus.focus(); root.show_transform = !root.show_transform; root.monitor_gesture("cancel", "", 0, 0, 0); } }
+                            if root.nodes_open: Button {
+                                text: "Grade versions"; enabled: root.grade_available;
+                                clicked => { root.grades_open = true; }
+                            }
                             ComboBox {
                                 width: 146px; accessible-label: "Color scope";
                                 model: ["Scopes off", "RGB histogram", "Luma waveform"];
@@ -1661,6 +1671,37 @@ export component EditorWindow inherits Window {
                 Button { text: "Discard autosave"; clicked => { root.project_action("discard-autosave"); } }
             }
             Rectangle { height: 26px; background: #121415; HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 12px; Text { text: root.export_status == "" ? root.project_status : root.export_status; color: #939ba2; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } Text { text: root.project_data_width + " × " + root.project_data_height + " · " + root.sequence_fps + " fps"; color: #939ba2; font-size: 11px; vertical-alignment: center; } } }
+        }
+        if root.grades_open: Rectangle {
+            width: parent.width; height: parent.height; background: #000000b0;
+            TouchArea { clicked => { root.grades_open = false; editor_focus.focus(); } }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 410px; height: 226px; background: root.panel;
+                border-width: 1px; border-color: root.border; border-radius: 10px;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 18px; spacing: 8px;
+                    Text { text: "Grade versions"; color: root.text; font-size: 18px; font-weight: 700; }
+                    ComboBox {
+                        accessible-label: "Grade version"; model: root.grade_names;
+                        current-index <=> root.grade_index;
+                        selected => { root.grade_action("select", self.current-index, ""); }
+                    }
+                    LineEdit {
+                        property <string> label: root.grade_name;
+                        text: self.label; accessible-label: "Grade version name";
+                        changed label => { self.text = self.label; }
+                        accepted(text) => { root.grade_action("rename", 0, text); }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "Duplicate grade"; clicked => { root.grade_action("duplicate", 0, ""); } }
+                        Button { text: "Remove grade"; enabled: root.grade_names.length > 1; clicked => { root.grade_action("remove", 0, ""); } }
+                        Button { text: "Close versions"; clicked => { root.grades_open = false; editor_focus.focus(); } }
+                    }
+                }
+            }
         }
         if root.settings_open: Rectangle {
             width: parent.width; height: parent.height; background: #000000b0;

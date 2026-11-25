@@ -37,7 +37,10 @@ pub use sequences::TimelineSequence;
 #[path = "document_mask.rs"]
 mod mask;
 pub use mask::{Mask, MaskShape};
-const SCHEMA_VERSION: u32 = 21;
+#[path = "document_grades.rs"]
+mod grades;
+pub use grades::GradeVersions;
+const SCHEMA_VERSION: u32 = 22;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -190,6 +193,8 @@ pub struct Clip {
     pub pipeline: ClipPipeline,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effect_keys: Vec<EffectKeys>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade_versions: Option<GradeVersions>,
 }
 pub(super) fn is_normal_speed(value: &u16) -> bool { *value == normal_speed() }
 fn is_zero(value: &u16) -> bool { *value == 0 }
@@ -541,7 +546,7 @@ impl EditorDocument {
             crop_keys: Vec::new(),
             spatial_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
-            effect_keys: Vec::new(),
+            effect_keys: Vec::new(), grade_versions: None,
         };
         if source.start != 0 {
             advance_source(&mut clip, i128::from(source.start), self.data.fps, asset.time_base)?;
@@ -1095,6 +1100,7 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
             clip.validate_opacity_keys()?;
             clip.validate_spatial()?;
             clip.validate_effect_animation()?;
+            clip.validate_grade_versions()?;
             if let Some(mask) = clip.mask { mask.validate()?; }
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());

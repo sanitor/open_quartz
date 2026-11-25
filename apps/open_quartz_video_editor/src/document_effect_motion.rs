@@ -43,15 +43,19 @@ impl Clip {
     }
 
     pub(super) fn validate_effect_animation(&self) -> Result<(), String> {
-        let mut unique = std::collections::BTreeSet::new();
-        for entry in &self.effect_keys {
-            if !unique.insert((&entry.node, &entry.parameter))
-                || effect_uniform(&self.pipeline, &entry.node, &entry.parameter).is_none()
-                || entry.keys.is_empty() || !animation_key::validate(&entry.keys, |value| value.is_finite())
-            {
-                return Err("Invalid animated effect parameter".into());
-            }
-        }
-        Ok(())
+        validate_effect_keys(&self.pipeline, &self.effect_keys)
     }
+}
+
+pub(super) fn validate_effect_keys(pipeline: &ClipPipeline, keys: &[EffectKeys]) -> Result<(), String> {
+    let mut unique = std::collections::BTreeSet::new();
+    for entry in keys {
+        if !unique.insert((&entry.node, &entry.parameter))
+            || effect_uniform(pipeline, &entry.node, &entry.parameter).is_none()
+            || entry.keys.is_empty() || !animation_key::validate(&entry.keys, |value| value.is_finite())
+        {
+            return Err("Invalid animated effect parameter".into());
+        }
+    }
+    Ok(())
 }

@@ -362,6 +362,12 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_grade_action(move |action, index, value| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().grade_action(&action, index, &value);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_track_action(move |id, action, value| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().track_action(&id, &action, &value);
@@ -1394,6 +1400,44 @@ impl Controller {
         }
     }
 
+    fn grade_action(&mut self, action: &str, index: i32, value: &str) {
+        let Some(id) = self.selected_clip.clone() else { return; };
+        if self.pipeline_has_drafts() {
+            self.publish_grades();
+            self.status("Apply or discard the pending node drafts before changing versions");
+            return;
+        }
+        let Some(clip) = self.document.clip(&id) else { return; };
+        let grade = if action == "select" {
+            let choices = clip.grade_options();
+            let Some(choice) = choices.get(index as usize) else { return; };
+            choice.id.clone()
+        } else { value.to_owned() };
+        let result = self.document.edit_grade(&id, action, &grade);
+        if result.is_ok() && matches!(action, "select" | "remove") { self.pipeline_editor.reset(); }
+        self.finish_edit(result);
+    }
+
+    fn publish_grades(&self) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let Some(clip) = self.selected_clip.as_deref().and_then(|id| self.document.clip(id))
+            .filter(|clip| clip.title.is_none()) else {
+            window.set_grade_available(false);
+            window.set_grades_open(false);
+            return;
+        };
+        window.set_grade_available(true);
+        let labels = clip.grade_options();
+        let active = clip.grade_versions.as_ref().map_or("grade-0", |versions| versions.active.id.as_str());
+        let index = labels.iter().position(|label| label.id == active).unwrap_or(0);
+        let names: Vec<slint::SharedString> = labels.iter().map(|label| label.name.as_str().into()).collect();
+        if window.get_grade_names().iter().ne(names.iter().cloned()) {
+            window.set_grade_names(ModelRc::new(VecModel::from(names)));
+        }
+        window.set_grade_index(index as i32);
+        if let Some(label) = labels.get(index) { window.set_grade_name(label.name.as_str().into()); }
+    }
+
     fn publish_sequence_slots(&self, window: &EditorWindow) {
         let slots = self.document.data.sequence_options();
         let names: Vec<slint::SharedString> = slots.iter().map(|(_, label)| (*label).into()).collect();
@@ -2364,6 +2408,7 @@ impl Controller {
             window.set_selected_clip_id("".into());
             window.set_selected_clip_name("No clip selected".into());
         }
+        self.publish_grades();
         self.publish_pipeline();
         self.refresh_time();
         self.refresh_monitor();

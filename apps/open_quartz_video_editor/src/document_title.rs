@@ -100,6 +100,6 @@ pub(super) fn generated_clip(id: String, start: u64, duration: u64, text: Title)
         crop_keys: Vec::new(),
         spatial_keys: Vec::new(),
         pipeline: ClipPipeline::default(),
-        effect_keys: Vec::new(),
+        effect_keys: Vec::new(), grade_versions: None,
     }
 }

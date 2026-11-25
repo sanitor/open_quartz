@@ -315,7 +315,7 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4');
     await waitNodeCount(2); await snapshot('01-nodes-default-red', 'red');
     originalData = await save(true);
-    assert.equal(originalData.schema_version, 21);
+    assert.equal(originalData.schema_version, 22);
     assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
   }, { core: true });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {
@@ -587,6 +587,44 @@ try {
     await close();
   });
   if (smoke) await close();
+  await step('Duplicate, switch and remove independent grade versions on a clip', async () => {
+    const path = join(output, 'grade-versions.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('red');
+    const options = () => client.find({ label: 'Grade version', role: 'Combobox' });
+    const choose = async (key, label) => {
+      await client.click(await options()); await client.key(key); await client.key('\n');
+      await client.waitFor(async () => (await options()).accessibleValue === label,
+        { description: `active grade ${label}` });
+    };
+    await click('Grade versions'); await click('Duplicate grade');
+    const name = await client.find({ label: 'Grade version name', role: 'TextInput' });
+    await client.click(name); await client.setValue(name, 'Night'); await client.key('\n');
+    assert.equal((await options()).accessibleValue, 'Night');
+    await click('Close versions');
+    await selectNode('video'); await addEffect('Invert'); await waitColor('cyan');
+    await click('Grade versions'); await choose('\uf700', 'Original');
+    await click('Close versions'); await waitColor('red');
+    await click('Grade versions'); await choose('\uf701', 'Night');
+    await click('Close versions'); await waitColor('cyan');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const data = JSON.parse(await readFile(path, 'utf8')).data;
+    const grades = data.tracks[0].clips[0].grade_versions;
+    assert.equal(grades.active.name, 'Night');
+    assert.equal(grades.alternatives[0].label.name, 'Original');
+    assert.equal(grades.alternatives[0].pipeline.graph.nodes.length, 2);
+    await close();
+    await launch(path); await waitState('clips 1'); await click('Nodes workspace'); await selectClip('red.mp4');
+    await waitColor('cyan');
+    await click('Grade versions'); assert.equal((await options()).accessibleValue, 'Night');
+    await click('Remove grade'); assert.equal((await options()).accessibleValue, 'Original');
+    await click('Close versions'); await waitColor('red');
+    await click('UNDO'); await waitColor('cyan');
+    await click('SAVE'); await waitState('Project saved');
+    await close();
+  }, { core: true });
   report.passed = true;
 } catch (error) {
   report.error = error.stack;
