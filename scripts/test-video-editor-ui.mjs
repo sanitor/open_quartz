@@ -993,7 +993,9 @@ async function runVideoCases() {
    assert.deepEqual(inserted.audio_tracks[1].clips.map(audio => audio.placement.video_id), [clip.id]);
    await client.click(await assetCard('linked-tone.mp4'));
    await waitState('source PTS 466666667 ns');
-   const audioBox = await client.find({ label: 'Source audio destination', role: 'Combobox' });
+   const audioBox = await client.waitFor(async () => (await client.byLabel('Source audio destination', {
+     role: 'Combobox', enabled: true,
+   }))[0], { description: 'audio destination becomes available after reselecting the source' });
    await client.click(audioBox);
    await client.key('\uf700'); await client.key('\uf700'); await client.key('\n');
    await click('Overwrite'); await waitState('audio clips 1');
