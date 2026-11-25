@@ -12,6 +12,8 @@ pub enum Mode {
     Off,
     RgbHistogram,
     LumaWaveform,
+    RgbParade,
+    Vectorscope,
 }
 
 impl Mode {
@@ -19,6 +21,8 @@ impl Mode {
         match index {
             1 => Self::RgbHistogram,
             2 => Self::LumaWaveform,
+            3 => Self::RgbParade,
+            4 => Self::Vectorscope,
             _ => Self::Off,
         }
     }
@@ -119,6 +123,8 @@ fn plot(mode: Mode, image: &GpuPreviewImage) -> Plot {
     let summary = match mode {
         Mode::RgbHistogram => histogram(image, &mut pixels),
         Mode::LumaWaveform => waveform(image, &mut pixels),
+        Mode::RgbParade => parade(image, &mut pixels),
+        Mode::Vectorscope => vectorscope(image, &mut pixels),
         Mode::Off => String::new(),
     };
     Plot { pixels, summary }
@@ -160,6 +166,54 @@ fn waveform(image: &GpuPreviewImage, plot: &mut [u8]) -> String {
     format!("Luma levels · {}–{}", min, max)
 }
 
+fn parade(image: &GpuPreviewImage, plot: &mut [u8]) -> String {
+    let mut minima = [255; 3];
+    let mut maxima = [0; 3];
+    let panel = WIDTH / 3;
+    for (index, pixel) in image.rgba.chunks_exact(4).enumerate() {
+        let x = index as u32 % image.width * panel / image.width;
+        for channel in 0..3 {
+            let level = pixel[channel];
+            minima[channel] = minima[channel].min(level);
+            maxima[channel] = maxima[channel].max(level);
+            let row = HEIGHT - 1 - u32::from(level) * (HEIGHT - 1) / 255;
+            let at = ((row * WIDTH + x + channel as u32 * panel) * 4) as usize;
+            plot[at..at + 3].copy_from_slice(&[42; 3]);
+            plot[at + channel] = 247;
+        }
+    }
+    format!("RGB parade levels · R {}–{} · G {}–{} · B {}–{}",
+        minima[0], maxima[0], minima[1], maxima[1], minima[2], maxima[2])
+}
+
+fn vectorscope(image: &GpuPreviewImage, plot: &mut [u8]) -> String {
+    let cx = WIDTH as i32 / 2;
+    let cy = HEIGHT as i32 / 2;
+    let radius = cy - 4;
+    for y in -radius..=radius {
+        for x in -radius..=radius {
+            if x == 0 || y == 0 || ((x * x + y * y) - radius * radius).abs() <= radius {
+                let at = ((cy + y) * WIDTH as i32 + cx + x) as usize * 4;
+                plot[at..at + 3].copy_from_slice(&[47, 60, 61]);
+            }
+        }
+    }
+    let (mut cb_min, mut cb_max, mut cr_min, mut cr_max) = (127, -128, 127, -128);
+    for pixel in image.rgba.chunks_exact(4) {
+        let [r, g, b] = [pixel[0], pixel[1], pixel[2]].map(f32::from);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let cb = ((b - luma) / 1.8556).round().clamp(-128.0, 127.0) as i32;
+        let cr = ((r - luma) / 1.5748).round().clamp(-128.0, 127.0) as i32;
+        cb_min = cb_min.min(cb); cb_max = cb_max.max(cb);
+        cr_min = cr_min.min(cr); cr_max = cr_max.max(cr);
+        let x = cx + cb * radius / 128;
+        let y = cy - cr * radius / 128;
+        let at = (y * WIDTH as i32 + x) as usize * 4;
+        plot[at..at + 3].copy_from_slice(&[89, 242, 191]);
+    }
+    format!("Vectorscope · Cb {cb_min}–{cb_max} · Cr {cr_min}–{cr_max}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +226,7 @@ mod tests {
         };
         assert_eq!(plot(Mode::RgbHistogram, &image).summary, "RGB peak levels · R 255 · G 0 · B 0");
         assert_eq!(plot(Mode::LumaWaveform, &image).summary, "Luma levels · 18–54");
+        assert_eq!(plot(Mode::RgbParade, &image).summary, "RGB parade levels · R 0–255 · G 0–0 · B 0–255");
+        assert_eq!(plot(Mode::Vectorscope, &image).summary, "Vectorscope · Cb -29–127 · Cr -12–127");
     }
 }

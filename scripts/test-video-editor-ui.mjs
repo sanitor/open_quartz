@@ -2086,7 +2086,7 @@ try{
      { description: 'undo restores a clip outside the first viewport' });
    await close();
  }, { core: true });
- await step('Read live RGB histogram and luma waveform from the program monitor', async () => {
+ await step('Read live histogram, waveform, RGB parade and vectorscope from the program monitor', async () => {
    await launch(exportProject); await waitState('clips 3'); await expectColor('blue');
    const scope = () => client.find({ label: 'Color scope', role: 'Combobox' });
    const plot = () => client.find({ label: 'Color scope plot', role: 'Image' });
@@ -2115,7 +2115,19 @@ try{
      return codes && Number(codes[1]) >= 45 && Number(codes[2]) <= 65;
    }, { description: 'luma waveform of the red program frame' });
    await snapshot('luma-waveform');
-   await choose('\uf700', 2);
+   await choose('\uf701', 1);
+   await client.waitFor(async () => {
+     const levels = /RGB parade levels · R (\d+)–(\d+) · G (\d+)–(\d+) · B (\d+)–(\d+)/.exec((await plot()).accessibleDescription);
+     return levels && Number(levels[2]) > 220 && Number(levels[4]) < 25 && Number(levels[6]) < 25;
+   }, { description: 'red program frame in independent RGB parade bands' });
+   await snapshot('rgb-parade');
+   await choose('\uf701', 1);
+   await client.waitFor(async () => {
+     const levels = /Vectorscope · Cb (-?\d+)–(-?\d+) · Cr (-?\d+)–(-?\d+)/.exec((await plot()).accessibleDescription);
+     return levels && Number(levels[1]) < -20 && Number(levels[4]) > 100;
+   }, { description: 'red program frame in the correct vectorscope quadrant' });
+   await snapshot('vectorscope');
+   await choose('\uf700', 4);
    assert.equal((await scope()).accessibleValue, 'Scopes off');
    assert.equal((await client.byLabel('Color scope plot', { role: 'Image' })).length, 0);
    await close();

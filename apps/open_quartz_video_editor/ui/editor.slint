@@ -984,7 +984,7 @@ export component EditorWindow inherits Window {
                             }
                             ComboBox {
                                 width: 146px; accessible-label: "Color scope";
-                                model: ["Scopes off", "RGB histogram", "Luma waveform"];
+                                model: ["Scopes off", "RGB histogram", "Luma waveform", "RGB parade", "Vectorscope"];
                                 current-index <=> root.color_scope_mode;
                                 selected => { root.color_scope_changed(self.current-index); }
                             }

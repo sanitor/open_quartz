@@ -68,6 +68,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **Library → Input color** 可按素材选择 Sony S-Log3 / S-Gamut3.Cine、S-Log3 / S-Gamut3 或 S-Log2 / S-Gamut。选择 **Auto** 恢复自动解释。
 - **Nodes → Blend** 提供底图与叠加图的两路图像输入；**Luma Mask** 用第二分支的亮度与 alpha 控制底图覆盖率。插入时第二路默认接 **Clip Source**，可拖线重接同片段的其他图像节点。**Amount** 控制混合强度。启用 ACEScg 时，两路在浮点工作域合成。
 - **Color Corrector → Curves** 提供 Master 和独立 R、G、B 参数曲线。以 18% 灰为 0 EV，可编辑四个锚点的曝光偏移。主曲线与通道曲线在停止数域叠加，可独立旁路曲线阶段并重置。
+- 监视器 **Color scope** 提供 RGB Parade 和 Vectorscope。RGB Parade 按画面横坐标分列显示各通道码值，Vectorscope 显示 Rec.709 Cb/Cr 分布。两者跟随监视器当前 SDR 图像。
 - **Color Corrector → RGB Mixer** 在 ACEScg 中以 3×3 矩阵混合通道。每行控制一个输出通道，支持负系数、独立旁路、重置和撤销，保持 alpha 不变。
 - **Nodes → Compare original** 从同一帧左侧显示原素材，右侧显示当前调色结果。拖动分界可检查局部或临时全屏旁路片段节点。比较在关闭、换片段或播放时结束。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
