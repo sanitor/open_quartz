@@ -40,7 +40,7 @@ async function buttons(label) {
 async function click(label,last=false){const items=await buttons(label);assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
 async function fileAction(action,path,submit){await click(action);await client.setValue(await client.find({label:'File path',role:'TextInput'}),path);await click(submit,true);}
 const timeline=async name=>(await buttons(name)).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
-const assetCard=async name=>{const cards=(await client.byLabel(name,{role:'Button'})).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
+const assetCard=async name=>{const cards=(await buttons(name)).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
 async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
@@ -90,7 +90,7 @@ try{
  await step('Play and pause real GPU video',async()=>{await client.click((await timeline('blue.mp4'))[0]);await click('PLAY');await client.waitFor(async()=>/playhead 1[1-7]\d frames/.test(await state()),{description:'video playback'});await click('PAUSE');await snapshot('07-playing-paused','blue');const paused=await state();await delay(200);assert.equal((await state()).match(/playhead (\d+)/)[1],paused.match(/playhead (\d+)/)[1]);}, { core: true });
  await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.tracks.flatMap(track => track.clips).map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.tracks.flatMap(track => track.clips)[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();}, { core: true });
  await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));}, { core: true });
- await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();}, { core: true });
+ await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await buttons('red.mp4')).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await buttons('red.mp4')).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();}, { core: true });
  await step('Long media plus preserves full duration beyond GPU texture limits',async()=>{
   const longMedia=generate('long.mp4','red',30);
   const longProject=join(output,'long.oqvideo.json');
@@ -1556,6 +1556,77 @@ try{
    await waitState('Project saved');
    await close();
  });
+ const batchAssetsProject = join(output, 'batch-media.oqvideo.json');
+ await step('Batch import deduplicates files and prepares one verified proxy per asset', async () => {
+   const invalid = join(output, 'batch-invalid.mp4');
+   await writeFile(invalid, 'Not a video');
+   await launch(); await waitState('assets 0');
+   await click('Import files');
+   const input = await client.find({ label: 'Import file paths', role: 'TextInput' });
+   await client.setValue(input, [background, foreground, background, invalid].join('\n'));
+   await click('Import selected files');
+   await waitState('Imported 2 · 1 duplicates · 1 failed');
+   await waitState('assets 2');
+   await click('UNDO'); await waitState('assets 0');
+   await click('REDO'); await waitState('assets 2');
+   await click('Prepare all proxies');
+   await waitState('Proxy batch complete · 2 of 2 ready');
+   const files = await readdir(join(output, 'proxies'));
+   assert(files.filter(name => /^[a-f0-9]{64}\.mp4$/.test(name)).length >= 2);
+   await fileAction('SAVE AS', batchAssetsProject, 'Save project'); await waitState('Project saved');
+   await close();
+ }, { core: true });
+ await step('Batch relink finds renamed originals only by content, with one undo step', async () => {
+   const project = JSON.parse(await readFile(exportProject, 'utf8'));
+   const folder = join(output, 'relinked-media');
+   const nested = join(folder, 'camera-a');
+   await mkdir(nested, { recursive: true });
+   for (const [index, asset] of project.data.assets.entries()) {
+     const content = await readFile(resolve(output, asset.path));
+     await writeFile(join(nested, `take-${index}.mp4`), content);
+     await writeFile(join(folder, asset.name), Buffer.alloc(content.length, 17));
+     asset.path = `absent/${asset.name}`;
+   }
+   const path = join(output, 'relink-folder-seed.oqvideo.json');
+   await writeFile(path, JSON.stringify(project));
+   await launch(path); await waitState('assets 2');
+   assert((await assetCard('background.mp4')).accessibleDescription.includes('offline'));
+   await fileAction('Relink folder', folder, 'Search folder');
+   await waitState('Relinked 2 originals · 0 still offline');
+   assert((await assetCard('background.mp4')).accessibleDescription.includes('online'));
+   assert((await assetCard('foreground.mp4')).accessibleDescription.includes('online'));
+   await click('UNDO');
+   assert((await assetCard('background.mp4')).accessibleDescription.includes('offline'));
+   assert((await assetCard('foreground.mp4')).accessibleDescription.includes('offline'));
+   await click('REDO');
+   await click('SAVE'); await waitState('Project saved');
+   const verified = JSON.parse(await readFile(path, 'utf8')).data;
+   assert.deepEqual(verified.assets.map(asset => asset.path),
+     ['relinked-media/camera-a/take-0.mp4', 'relinked-media/camera-a/take-1.mp4']);
+   await close();
+ }, { core: true });
+ await step('Cancel a proxy batch while preserving the usable originals and cached work', async () => {
+   const fixture = JSON.parse(await readFile(batchAssetsProject, 'utf8'));
+   const folder = join(output, 'new-batch');
+   await mkdir(folder, { recursive: true });
+   for (const asset of fixture.data.assets) {
+     const path = join(folder, asset.name);
+     const fresh = generate(`cancel-${asset.name}`, asset.name === 'background.mp4' ? 'blue' : 'red', 12, 30, '1920x1080');
+     await writeFile(path, await readFile(fresh));
+   }
+   await launch(); await waitState('assets 0');
+   await click('Import files');
+   const input = await client.find({ label: 'Import file paths', role: 'TextInput' });
+   await client.setValue(input, fixture.data.assets.map(asset => join(folder, asset.name)).join('\n'));
+   await click('Import selected files'); await waitState('Imported 2');
+   await click('Prepare all proxies');
+   await click('Cancel proxy'); await waitState('Proxy batch cancelled');
+   assert(!(await readdir(join(output, 'proxies'))).some(name => name.startsWith('.building')));
+   await client.click(await assetCard('background.mp4'));
+   await expectColor('blue');
+   await fileAction('SAVE AS', join(output, 'cancel-proxy-batch.oqvideo.json'), 'Save project'); await waitState('Project saved');
+   await close();
+ });
  const proxyProject = join(output, 'proxy-seed.oqvideo.json');
  const cacheFiles = async () => (await readdir(join(output, 'proxies'))).filter(name => /^[a-f0-9]{64}\.mp4$/.test(name));
  await step('Preview from a verified 360p proxy while export requires the original media', async () => {
@@ -1603,11 +1674,14 @@ try{
    const previous = await cacheFiles();
    await click('Prepare proxy'); await waitState('Proxy ready');
    assert.deepEqual(await cacheFiles(), previous);
-   await client.click(await assetCard('foreground.mp4'));
+   const uncached = generate('single-cancel.mp4', 'red', 14, 24, '1920x1080');
+   await fileAction('IMPORT', uncached, 'Import media'); await waitState('assets 3');
    await click('Prepare proxy');
    await click('Cancel proxy'); await waitState('Proxy cancelled');
    assert.deepEqual(await cacheFiles(), previous);
    assert(!(await readdir(join(output, 'proxies'))).some(name => name.startsWith('.building')));
+   await fileAction('SAVE AS', join(output, 'proxy-single-cancel.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
    await close();
  });
  await step('Seek and play through the last cut of an eight-minute proxy project', async () => {

@@ -398,6 +398,7 @@ export component EditorWindow inherits Window {
     in property <string> recovery_status;
     in property <bool> proxy_mode;
     in property <bool> proxy_building;
+    in property <bool> proxy_can_prepare_batch;
     in property <bool> proxy_can_prepare;
     in property <string> proxy_status;
     in property <bool> recovery_available;
@@ -463,6 +464,7 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_source_in: "0";
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
+    in property <bool> has_offline_assets;
     in property <bool> source_visible;
     in property <bool> source_can_previous;
     in property <bool> source_can_next;
@@ -839,7 +841,14 @@ export component EditorWindow inherits Window {
                         }
                         if root.library_tab == "media": VerticalLayout {
                             spacing: 0px;
-                            HorizontalLayout { height: 38px; padding-left: 12px; padding-right: 8px; cross-axis-alignment: center; Text { text: "Media library"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; } ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } } }
+                            HorizontalLayout {
+                                height: 38px; padding-left: 12px; padding-right: 8px; spacing: 2px; cross-axis-alignment: center;
+                                Text { text: "Media library"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                                if root.proxy_can_prepare_batch: ToolButton { label: "Prepare all proxies"; glyph: "≡+"; active: !root.proxy_building; clicked => { root.project_action("prepare-proxy-batch"); } }
+                                if root.has_offline_assets: ToolButton { label: "Relink folder"; glyph: "▱"; clicked => { root.project_action("relink-folder"); } }
+                                ToolButton { label: "Import files"; glyph: "+"; clicked => { root.project_action("import-files"); } }
+                                ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
+                            }
                             if root.proxy_can_prepare || root.proxy_building || root.proxy_mode: VerticalLayout {
                                 padding-left: 8px; padding-right: 8px; spacing: 4px;
                                 HorizontalLayout {
@@ -1451,13 +1460,13 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 680px; height: root.file_dialog_kind == "export" ? 390px : root.file_dialog_kind == "export-srt" ? 318px : 264px; background: root.panel;
+                width: 680px; height: root.file_dialog_kind == "import-files" ? 370px : root.file_dialog_kind == "export" ? 390px : root.file_dialog_kind == "export-srt" ? 318px : 264px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
-                    Text { text: "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
+                    Text { text: root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "import-files" ? "Paste one full file path per line, or use Browse." : root.file_dialog_kind == "relink-folder" ? "Paste a folder path, or use Browse to choose a folder." : "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
                         text: "H.264 MP4" + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
                         color: root.secondary; font-size: 11px;
@@ -1495,7 +1504,12 @@ export component EditorWindow inherits Window {
                     }
                     HorizontalLayout {
                         spacing: 10px;
-                        LineEdit {
+                        if root.file_dialog_kind == "import-files": TextEdit {
+                            height: 140px;
+                            accessible-label: "Import file paths";
+                            text <=> root.file_path;
+                        }
+                        if root.file_dialog_kind != "import-files": LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
                             placeholder-text: root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
@@ -1509,7 +1523,7 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Rectangle { horizontal-stretch: 1; }
                         Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
-                        Button { text: root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

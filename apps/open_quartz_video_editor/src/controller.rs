@@ -37,6 +37,8 @@ impl SourceMarks {
 }
 
 enum IoResult {
+    BatchImport(u64, Vec<Result<MediaAsset, String>>),
+    FolderRelink(u64, u64, Result<Vec<crate::batch_media::RelinkMatch>, String>),
     Import(u64, Result<MediaAsset, String>),
     Open(u64, Result<EditorDocument, String>),
     Recover(u64, Option<PathBuf>, Result<EditorDocument, String>),
@@ -595,6 +597,33 @@ impl Controller {
             let _ = sender.send(IoResult::Import(generation, crate::media::probe(&path)));
         });
     }
+    fn import_files(&mut self, paths: Vec<PathBuf>) {
+        if self.busy || paths.is_empty() { return; }
+        self.busy = true;
+        let generation = self.generation;
+        let sender = self.io_send.clone();
+        self.status(format!("Importing {} files…", paths.len()));
+        std::thread::spawn(move || {
+            let media = paths.into_iter().map(|path| crate::media::probe(&path)
+                .map_err(|error| format!("{} · {error}", path.display()))).collect();
+            let _ = sender.send(IoResult::BatchImport(generation, media));
+        });
+    }
+
+    fn relink_folder(&mut self, folder: PathBuf) {
+        if self.busy { return; }
+        self.busy = true;
+        let generation = self.generation;
+        let revision = self.document.revision;
+        let sender = self.io_send.clone();
+        let assets = self.document.data.assets.clone();
+        self.status("Searching the folder for offline originals…");
+        std::thread::spawn(move || {
+            let matches = crate::batch_media::find_originals(&folder, &assets);
+            let _ = sender.send(IoResult::FolderRelink(generation, revision, matches));
+        });
+    }
+
     fn import_dialog(&mut self) {
         self.path_dialog("import");
     }
@@ -614,12 +643,18 @@ impl Controller {
         }
         match action {
             "import" | "media" => self.import_dialog(),
+            "import-files" | "relink-folder" => self.path_dialog(action),
             #[cfg(target_os = "macos")]
             "prepare-proxy" => {
                 let asset = self.selected_asset.as_deref().and_then(|id| self.document.asset(id)).cloned();
                 let result = asset.as_ref().ok_or_else(|| "Select a video asset".to_owned())
                     .and_then(|asset| self.proxies.start(asset));
                 self.set_proxy_status(result.map_or_else(|error| error, |_| "Preparing proxy…".into()));
+            }
+            #[cfg(target_os = "macos")]
+            "prepare-proxy-batch" => {
+                let result = self.proxies.start_batch(&self.document.data.assets);
+                self.set_proxy_status(result.unwrap_or_else(|error| error));
             }
             #[cfg(target_os = "macos")]
             "cancel-proxy" => {
@@ -823,7 +858,14 @@ impl Controller {
         window.set_file_dialog_open(false);
         state.status("Choose a local file…");
         let weak_window = state.window.clone();
-        let selected = run_reentrant_native_dialog(state, || match kind {
+        let selected = run_reentrant_native_dialog(state, || {
+            if kind == "import-files" {
+                return rfd::FileDialog::new()
+                    .add_filter("Supported media", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac", "png", "jpg", "jpeg"])
+                    .pick_files();
+            }
+            let selected = match kind {
+            "relink-folder" => rfd::FileDialog::new().set_title("Find offline originals").pick_folder(),
             "import" => rfd::FileDialog::new()
                 .add_filter("Supported media", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac", "png", "jpg", "jpeg"])
                 .pick_file(),
@@ -848,13 +890,19 @@ impl Controller {
                 .set_title("Relink original media")
                 .pick_file(),
             _ => None,
+            };
+            selected.map(|path| vec![path])
         });
         let Ok(mut state) = controller.try_borrow_mut() else {
             return;
         };
         state.busy = false;
-        if let Some(path) = selected {
-            state.file_submit(kind, path);
+        if let Some(mut paths) = selected {
+            if kind == "import-files" {
+                state.import_files(paths);
+            } else if let Some(path) = paths.pop() {
+                state.file_submit(kind, path);
+            }
         } else if let Some(window) = weak_window.upgrade() {
             window.set_file_path(previous_path.into());
             window.set_file_dialog_open(true);
@@ -878,6 +926,13 @@ impl Controller {
         }
         match kind {
             "import" => self.import_path(path),
+            "import-files" => {
+                let paths = path.to_string_lossy().lines().filter(|line| !line.trim().is_empty())
+                    .map(PathBuf::from).collect::<Vec<_>>();
+                if paths.is_empty() { self.status("Enter at least one local file path"); }
+                else { self.import_files(paths); }
+            }
+            "relink-folder" => self.relink_folder(path),
             "srt" => match self.document.import_subtitles(&path) {
                 Ok(count) => {
                     self.changed();
@@ -1234,6 +1289,8 @@ impl Controller {
         if let Some(window) = self.window.upgrade() {
             window.set_proxy_mode(self.proxies.enabled);
             window.set_proxy_building(self.proxies.building());
+            window.set_proxy_can_prepare_batch(self.document.data.assets.iter()
+                .filter(|asset| asset.online && asset.has_video()).take(2).count() == 2);
             window.set_proxy_can_prepare(self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
                 .is_some_and(|asset| asset.online && asset.has_video()));
         }
@@ -1476,8 +1533,7 @@ impl Controller {
         #[cfg(target_os = "macos")]
         if let Some(status) = self.proxies.poll() {
             self.set_proxy_status(status);
-            if self.proxies.enabled {
-                self.pause();
+            if self.proxies.enabled && !self.playing {
                 self.requested = None;
                 self.request_preview();
             }
@@ -1600,6 +1656,49 @@ impl Controller {
                                 }
                                 Err(error) => self.status(error),
                             }
+                        }
+                        Err(error) => self.status(error),
+                    }
+                }
+                IoResult::BatchImport(generation, results) if generation == self.generation => {
+                    self.busy = false;
+                    let mut failures = Vec::new();
+                    let assets = results.into_iter().filter_map(|result| match result {
+                        Ok(asset) => Some(asset),
+                        Err(error) => { failures.push(error); None }
+                    }).collect::<Vec<_>>();
+                    let count = assets.len();
+                    match self.document.add_assets(assets) {
+                        Ok(added) => {
+                            if let Some(id) = added.last() {
+                                self.selected_asset = Some(id.clone());
+                                self.selected_clip = None;
+                                self.extra_selection.clear();
+                                self.selected_audio = None;
+                                self.asset_preview = true;
+                                self.requested = None;
+                                self.refresh();
+                                self.request_preview();
+                            }
+                            let first = failures.first().map_or(String::new(), |error| format!(" · {error}"));
+                            self.status(format!("Imported {} · {} duplicates · {} failed{first}",
+                                added.len(), count - added.len(), failures.len()));
+                        }
+                        Err(error) => self.status(error),
+                    }
+                }
+                IoResult::FolderRelink(generation, revision, result) if generation == self.generation => {
+                    self.busy = false;
+                    match result.and_then(|matches| {
+                        self.document.relink_folder_matches(revision, &matches)?;
+                        Ok(matches)
+                    }) {
+                        Ok(matches) => {
+                            #[cfg(target_os = "macos")]
+                            for entry in &matches { self.waveforms.invalidate(&entry.id); }
+                            self.changed();
+                            let offline = self.document.data.assets.iter().filter(|asset| !asset.online).count();
+                            self.status(format!("Relinked {} originals · {offline} still offline", matches.len()));
                         }
                         Err(error) => self.status(error),
                     }
@@ -1871,6 +1970,7 @@ impl Controller {
             return;
         };
         self.refresh_recovery();
+        window.set_has_offline_assets(self.document.data.assets.iter().any(|asset| !asset.online));
         if matches!(&self.audio_destination, AudioDestination::Track(id)
             if !self.document.data.audio_tracks.iter().any(|track| track.id == *id))
         {

@@ -1,7 +1,7 @@
 use crate::document::{fingerprint_until, new_id, MediaAsset, ProjectData};
 use oq_media::Session;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,6 +18,27 @@ pub struct Proxies {
     pub enabled: bool,
     entries: HashMap<String, CacheEntry>,
     pending: Option<Pending>,
+    batch: Option<Batch>,
+}
+
+struct Batch {
+    remaining: VecDeque<MediaAsset>,
+    total: usize,
+    inspected: usize,
+    succeeded: usize,
+    first_error: Option<String>,
+}
+
+impl Batch {
+    fn failed(&mut self, error: String) {
+        if self.first_error.is_none() {
+            self.first_error = Some(error);
+        }
+    }
+
+    fn progress(&self) -> String {
+        format!("Preparing proxy {} of {}", self.inspected + 1, self.total)
+    }
 }
 
 struct CacheEntry {
@@ -75,6 +96,32 @@ impl Proxies {
         Ok(())
     }
 
+    pub fn start_batch(&mut self, assets: &[MediaAsset]) -> Result<String, String> {
+        if self.building() {
+            return Err("A proxy is already being prepared".into());
+        }
+        let mut remaining: VecDeque<_> = assets
+            .iter()
+            .filter(|asset| asset.online && asset.has_video())
+            .cloned()
+            .collect();
+        let total = remaining.len();
+        let first = remaining
+            .pop_front()
+            .ok_or("There are no online video assets")?;
+        self.start(&first)?;
+        let batch = Batch {
+            remaining,
+            total,
+            inspected: 0,
+            succeeded: 0,
+            first_error: None,
+        };
+        let status = batch.progress();
+        self.batch = Some(batch);
+        Ok(status)
+    }
+
     pub fn cancel(&self) {
         if let Some(job) = &self.pending {
             job.cancel.store(true, Ordering::Release);
@@ -88,17 +135,54 @@ impl Proxies {
             Err(mpsc::TryRecvError::Empty) => return None,
             Err(mpsc::TryRecvError::Disconnected) => Err("Proxy worker stopped".into()),
         };
-        let status = match result {
-            _ if job.cancel.load(Ordering::Acquire) => "Proxy cancelled".into(),
-            Ok(entry) => {
-                self.entries.insert(job.id.clone(), entry);
-                "Proxy ready".into()
-            }
-
-            Err(error) => format!("Proxy unavailable · {error}"),
-        };
+        let id = job.id.clone();
+        let cancelled = job.cancel.load(Ordering::Acquire);
         self.pending = None;
-        Some(status)
+        let result = if cancelled {
+            Err("Proxy cancelled".into())
+        } else {
+            result.map(|entry| {
+                self.entries.insert(id, entry);
+            })
+        };
+        let Some(mut batch) = self.batch.take() else {
+            return Some(match result {
+                Ok(()) => "Proxy ready".into(),
+                Err(error) if cancelled => error,
+                Err(error) => format!("Proxy unavailable · {error}"),
+            });
+        };
+        if cancelled {
+            return Some(format!(
+                "Proxy batch cancelled · {} of {} ready",
+                batch.succeeded, batch.total
+            ));
+        }
+        batch.inspected += 1;
+        match result {
+            Ok(()) => batch.succeeded += 1,
+            Err(error) => batch.failed(error),
+        }
+        while let Some(asset) = batch.remaining.pop_front() {
+            match self.start(&asset) {
+                Ok(()) => {
+                    let status = batch.progress();
+                    self.batch = Some(batch);
+                    return Some(status);
+                }
+                Err(error) => {
+                    batch.inspected += 1;
+                    batch.failed(error);
+                }
+            }
+        }
+        let detail = batch
+            .first_error
+            .map_or(String::new(), |error| format!(" · {error}"));
+        Some(format!(
+            "Proxy batch complete · {} of {} ready{detail}",
+            batch.succeeded, batch.total
+        ))
     }
 
     fn entry(&self, asset: &MediaAsset) -> Option<&CacheEntry> {

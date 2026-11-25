@@ -368,6 +368,39 @@ impl EditorDocument {
             Ok(())
         })
     }
+    pub fn add_assets(&mut self, assets: Vec<MediaAsset>) -> Result<Vec<String>, String> {
+        let mut added = Vec::new();
+        self.transact(|data| {
+            let mut checksums: std::collections::HashSet<_> =
+                data.assets.iter().map(|asset| asset.fingerprint.clone()).collect();
+            for asset in assets {
+                if checksums.insert(asset.fingerprint.clone()) {
+                    added.push(asset.id.clone());
+                    data.assets.push(asset);
+                }
+            }
+            Ok(())
+        })?;
+        Ok(added)
+    }
+
+    pub fn relink_folder_matches(
+        &mut self, revision: u64, matches: &[crate::batch_media::RelinkMatch],
+    ) -> Result<(), String> {
+        self.transact_at(revision, |data| {
+            for entry in matches {
+                let asset = data.assets.iter_mut().find(|asset| asset.id == entry.id)
+                    .ok_or("Media asset no longer exists")?;
+                if asset.online || asset.fingerprint != entry.fingerprint {
+                    return Err("Original media changed before the folder search completed".into());
+                }
+                asset.path = entry.path.to_string_lossy().into_owned();
+                asset.online = true;
+            }
+            Ok(())
+        })
+    }
+
     pub fn set_clip_pipeline(
         &mut self,
         clip_id: &str,
