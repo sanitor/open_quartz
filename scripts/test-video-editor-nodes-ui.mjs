@@ -323,7 +323,7 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4');
     await waitNodeCount(2); await snapshot('01-nodes-default-red', 'red');
     originalData = await save(true);
-    assert.equal(originalData.schema_version, 25);
+    assert.equal(originalData.schema_version, 26);
     assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
   }, { core: true });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {
@@ -821,6 +821,34 @@ try {
     await click('SAVE'); await waitState('Project saved');
     await close(); await launch(project); await waitState('clips 1');
     await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('dim-cyan');
+    await close();
+  }, { core: true });
+  await step('Capture, compare, remove and reopen embedded reference stills', async () => {
+    const path = join(output, 'reference-stills.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('red');
+    await click('Grab still'); await waitState('Reference still captured');
+    await selectNode('video'); await addEffect('Invert'); await waitColor('cyan');
+    await click('Grab still'); await waitState('Reference still captured');
+    const combo = () => client.find({ label: 'Reference still', role: 'Combobox' });
+    await click('Show still'); await waitColor('cyan');
+    await client.click(await combo()); await client.key('\uf700'); await client.key('\n');
+    await waitColor('red');
+    await click('Show live'); await waitColor('cyan');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const data = JSON.parse(await readFile(path, 'utf8')).data;
+    assert.equal(data.reference_stills.length, 2);
+    assert.equal(Buffer.from(data.reference_stills[0].png, 'base64').readUInt32BE(), 0x89504e47);
+    await click('Remove still');
+    await client.waitFor(async () => (await combo()).accessibleValue.startsWith('Still 2'), { description: 'remaining still' });
+    await click('UNDO');
+    await client.click(await combo()); await client.key('\uf700'); await client.key('\n');
+    await click('Show still'); await waitColor('red');
+    await close(); await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await click('Show still'); await waitColor('red'); await click('Show live'); await waitColor('cyan');
     await close();
   }, { core: true });
   report.passed = true;

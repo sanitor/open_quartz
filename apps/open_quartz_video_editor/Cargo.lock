@@ -3586,6 +3586,7 @@ dependencies = [
 name = "open_quartz_video_editor"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cosmic-text",
  "image",
  "naga",

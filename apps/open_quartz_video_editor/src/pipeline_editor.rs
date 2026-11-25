@@ -164,6 +164,7 @@ impl Controller {
         if let PipelineCommand::Workspace(open)=command {
             self.extra_selection.clear();
             if !open {
+                self.hide_reference();
                 self.discard_pipeline_corrector();
                 let tap = self.pipeline_editor.monitor.take();
                 let comparison = self.pipeline_editor.comparison.take();

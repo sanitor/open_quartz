@@ -593,6 +593,12 @@ export component EditorWindow inherits Window {
     callback pipeline_port_dropped(string, string, bool, float, float, float);
     callback pipeline_edge_selected(string);
     callback pipeline_add_effect(int);
+    in property <[string]> reference_names;
+    in-out property <int> reference_index: -1;
+    in property <bool> reference_capture_busy;
+    in property <bool> reference_viewing;
+    in property <image> reference_image;
+    callback reference_action(string, int);
     in property <string> pipeline_monitor_label;
     in property <bool> pipeline_compare_active;
     in-out property <float> pipeline_split: 0.5;
@@ -1009,6 +1015,25 @@ export component EditorWindow inherits Window {
                             }
                             if root.pipeline_compare_active: Text { text: "Graded"; color: root.secondary; vertical-alignment: center; }
                         }
+                        if root.nodes_open: HorizontalLayout {
+                            height: 29px; padding-left: 14px; padding-right: 14px; spacing: 8px;
+                            Button {
+                                text: "Grab still"; enabled: root.has_monitor_image && !root.playing && !root.reference_capture_busy && !root.reference_viewing && root.reference_names.length < 8;
+                                clicked => { root.reference_action("grab", root.reference_index); }
+                            }
+                            if root.reference_names.length > 0: ComboBox {
+                                accessible-label: "Reference still"; model: root.reference_names;
+                                current-index <=> root.reference_index;
+                                selected => { root.reference_action("select", self.current-index); }
+                            }
+                            if root.reference_names.length > 0: Button {
+                                text: root.reference_viewing ? "Show live" : "Show still";
+                                clicked => { root.reference_action("view", root.reference_index); }
+                            }
+                            if root.reference_names.length > 0: Button {
+                                text: "Remove still"; clicked => { root.reference_action("remove", root.reference_index); }
+                            }
+                        }
                         monitor_surface := Rectangle {
                             horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
                             clip: true;
@@ -1018,7 +1043,11 @@ export component EditorWindow inherits Window {
                             accessible-role: image;
                             accessible-label: "Video preview";
                             if root.has_monitor_image: Image { width: parent.width; height: parent.height; source: root.monitor_image; image-fit: contain; }
-                            if root.color_scope_mode != 0: Rectangle {
+                            if root.nodes_open && root.reference_viewing: Image {
+                                width: parent.width; height: parent.height; source: root.reference_image; image-fit: contain;
+                                accessible-role: image; accessible-label: "Reference still preview";
+                            }
+                            if root.color_scope_mode != 0 && !root.reference_viewing: Rectangle {
                                 width: min(272px, parent.width - 20px); height: 144px;
                                 x: parent.width - self.width - 10px; y: 10px;
                                 background: #14191cec; border-color: root.border; border-width: 1px; border-radius: 5px;

@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
+#[path = "reference_stills.rs"]
+mod reference_stills;
 #[path = "pipeline_editor.rs"]
 mod pipeline_editor;
 #[path = "monitor_transform.rs"]
@@ -103,6 +105,7 @@ pub struct Controller {
     requested: Option<(u64, u64, bool)>,
     displayed: Option<StableFrame>,
     color_scope: crate::color_scope::ColorScope,
+    references: reference_stills::ReferenceGallery,
     displayed_frame: Option<u64>,
     thumbnail_order: VecDeque<String>,
     thumbnails: HashMap<String, Thumbnail>,
@@ -178,7 +181,7 @@ impl Controller {
             playing: false,
             requested: None,
             displayed: None,
-            color_scope: Default::default(),
+            color_scope: Default::default(), references: Default::default(),
             displayed_frame: None,
             thumbnail_order: VecDeque::new(),
             thumbnails: HashMap::new(),
@@ -372,6 +375,12 @@ impl Controller {
                     let result = controller.document.edit_mask(&id, &field, &value);
                     controller.finish_edit(result);
                 }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_reference_action(move |action, index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().reference_action(&action, index);
             }
         });
         let weak = Rc::downgrade(this);
@@ -1400,6 +1409,7 @@ impl Controller {
         }
         self.pipeline_editor.monitor = None;
         self.pipeline_editor.comparison = None;
+        self.hide_reference();
         self.playing = true;
         self.requested = None;
         self.refresh();
@@ -1819,6 +1829,7 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        self.poll_references();
         if let Some(result) = self.color_scope.update(&self.backend, self.displayed.as_ref()) {
             if let Some(window) = self.window.upgrade() {
                 match result {
@@ -2535,6 +2546,7 @@ impl Controller {
         }
         self.publish_grades();
         self.publish_pipeline();
+        self.publish_references();
         self.refresh_time();
         self.refresh_monitor();
         window.set_project_dirty(self.document.is_dirty());
@@ -2542,6 +2554,8 @@ impl Controller {
     fn clear_images(&mut self) {
         self.motion = MotionEditor::default();
         self.color_scope.clear();
+        self.references = Default::default();
+        self.hide_reference();
         self.source_marks.clear();
         self.audio_destination = AudioDestination::Automatic;
         #[cfg(target_os = "macos")]
@@ -2766,7 +2780,7 @@ mod native_dialog_tests {
             extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,
             displayed: None,
-            color_scope: Default::default(), displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
+            color_scope: Default::default(), references: Default::default(), displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,

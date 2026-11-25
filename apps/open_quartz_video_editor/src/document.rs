@@ -37,10 +37,14 @@ pub use sequences::TimelineSequence;
 #[path = "document_mask.rs"]
 mod mask;
 pub use mask::{Mask, MaskShape};
+#[path = "document_reference.rs"]
+mod references;
+pub use references::ReferenceStill;
+pub(crate) use references::MAX_REFERENCES;
 #[path = "document_grades.rs"]
 mod grades;
 pub use grades::GradeVersions;
-const SCHEMA_VERSION: u32 = 25;
+const SCHEMA_VERSION: u32 = 26;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -295,6 +299,8 @@ pub struct ProjectData {
     pub other_sequences: Vec<TimelineSequence>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub managed_color: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_stills: Vec<ReferenceStill>,
     pub width: u32,
     pub height: u32,
     pub fps: Rational,
@@ -315,6 +321,7 @@ impl Default for ProjectData {
             sequence_name: sequences::default_sequence_name(),
             other_sequences: Vec::new(),
             managed_color: false,
+            reference_stills: Vec::new(),
             width: 1920,
             height: 1080,
             fps: Rational {
@@ -1069,6 +1076,7 @@ fn migrate_keyframes(project: &mut serde_json::Value) -> Result<(), String> {
 }
 
 fn validate(data: &ProjectData) -> Result<(), String> {
+    references::validate_references(&data.reference_stills)?;
     data.validate_sequence_slots()?;
     validate_timeline(data)
 }

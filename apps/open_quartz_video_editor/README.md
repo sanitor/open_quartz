@@ -72,6 +72,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **Color Corrector → Curves** 提供 Master 和独立 R、G、B 参数曲线。以 18% 灰为 0 EV，可编辑四个锚点的曝光偏移。主曲线与通道曲线在停止数域叠加，可独立旁路曲线阶段并重置。
 - 监视器 **Color scope** 提供 RGB Parade 和 Vectorscope。RGB Parade 按画面横坐标分列显示各通道码值，Vectorscope 显示 Rec.709 Cb/Cr 分布。两者跟随监视器当前 SDR 图像。
 - **Color Corrector → RGB Mixer** 在 ACEScg 中以 3×3 矩阵混合通道。每行控制一个输出通道，支持负系数、独立旁路、重置和撤销，保持 alpha 不变。
+- 在 **Nodes** 监视器按 **Grab still** 固定当前画面的 SDR 参考图。参考图随工程保存，可在八张以内切换，通过 **Show still / Show live** 对照当前调色。删除参考图可撤销。
 - **Nodes → Compare original** 从同一帧左侧显示原素材，右侧显示当前调色结果。拖动分界可检查局部或临时全屏旁路片段节点。比较在关闭、换片段或播放时结束。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。
@@ -116,7 +117,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 25，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 26，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 

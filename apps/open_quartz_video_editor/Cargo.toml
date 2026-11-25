@@ -13,6 +13,7 @@ description = "Native non-destructive video editor for OpenQuartz"
 ui-automation = ["slint/mcp"]
 
 [dependencies]
+base64 = "0.22"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
 cosmic-text = { version = "=0.18.2", default-features = false, features = ["std", "swash"] }
 open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video"] }
@@ -22,7 +23,7 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "
 naga = { version = "30", features = ["wgsl-in"] }
 pollster = "0.4"
 rfd = "0.16"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10"
 
