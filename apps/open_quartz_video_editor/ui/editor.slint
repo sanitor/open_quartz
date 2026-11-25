@@ -621,6 +621,10 @@ export component EditorWindow inherits Window {
     in property <string> mask_height;
     in property <string> mask_feather;
     callback mask_field(string, string);
+    in property <image> color_scope_plot;
+    in property <string> color_scope_summary;
+    private property <int> color_scope_mode;
+    callback color_scope_changed(int);
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -938,6 +942,12 @@ export component EditorWindow inherits Window {
                     VerticalLayout {
                         spacing: 0px;
                         HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: root.nodes_open ? "Final · " + root.selected_clip_name : "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } if !root.nodes_open: ToolButton { label: "TRANSFORM"; glyph: "⛶"; selected: root.show_transform; clicked => { editor_focus.focus(); root.show_transform = !root.show_transform; root.monitor_gesture("cancel", "", 0, 0, 0); } }
+                            ComboBox {
+                                width: 146px; accessible-label: "Color scope";
+                                model: ["Scopes off", "RGB histogram", "Luma waveform"];
+                                current-index <=> root.color_scope_mode;
+                                selected => { root.color_scope_changed(self.current-index); }
+                            }
                             Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                         monitor_surface := Rectangle {
                             horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
@@ -948,6 +958,21 @@ export component EditorWindow inherits Window {
                             accessible-role: image;
                             accessible-label: "Video preview";
                             if root.has_monitor_image: Image { width: parent.width; height: parent.height; source: root.monitor_image; image-fit: contain; }
+                            if root.color_scope_mode != 0: Rectangle {
+                                width: min(272px, parent.width - 20px); height: 144px;
+                                x: parent.width - self.width - 10px; y: 10px;
+                                background: #14191cec; border-color: root.border; border-width: 1px; border-radius: 5px;
+                                VerticalLayout {
+                                    padding: 7px; spacing: 4px;
+                                    Image {
+                                        source: root.color_scope_plot; image-fit: contain;
+                                        accessible-role: image; accessible-label: "Color scope plot";
+                                        accessible-description: root.color_scope_summary;
+                                    }
+                                    Text { text: root.color_scope_summary; color: root.text; font-size: 10px; }
+                                }
+                            }
+
                             if !root.has_monitor_image: VerticalLayout { alignment: LayoutAlignment.center; spacing: 8px; Text { text: "◩"; color: #444b50; font-size: 36px; horizontal-alignment: center; } Text { text: "Add media to the timeline"; color: #7c848a; font-size: 12px; horizontal-alignment: center; } }
                             if !root.nodes_open && root.show_transform && root.monitor_box.visible: Path {
                                 width: parent.width; height: parent.height;

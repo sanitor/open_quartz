@@ -1968,6 +1968,40 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Read live RGB histogram and luma waveform from the program monitor', async () => {
+   await launch(exportProject); await waitState('clips 3'); await expectColor('blue');
+   const scope = () => client.find({ label: 'Color scope', role: 'Combobox' });
+   const plot = () => client.find({ label: 'Color scope plot', role: 'Image' });
+   const choose = async (key, count) => {
+     await client.click(await scope());
+     for (let i = 0; i < count; i++) await client.key(key);
+     await client.key('\n');
+   };
+   await choose('\uf701', 1);
+   const channel = async color => client.waitFor(async () => {
+     const info = (await plot()).accessibleDescription;
+     const codes = /RGB peak levels · R (\d+) · G (\d+) · B (\d+)/.exec(info);
+     if (!codes) return false;
+     const [r, g, b] = codes.slice(1).map(Number);
+     return color === 'blue' ? b > 220 && r < 25 && g < 25 : r > 220 && b < 25 && g < 25;
+   }, { description: `histogram of actual ${color} pixels` });
+   await channel('blue');
+   for (let i = 0; i < 3; i++) await click('NEXT');
+   // The red inset sits on blue, so use a frame without any blue backdrop.
+   for (let i = 3; i < 12; i++) await click('NEXT');
+   await channel('red');
+   await snapshot('rgb-histogram');
+   await choose('\uf701', 1);
+   await client.waitFor(async () => {
+     const codes = /Luma levels · (\d+)–(\d+)/.exec((await plot()).accessibleDescription);
+     return codes && Number(codes[1]) >= 45 && Number(codes[2]) <= 65;
+   }, { description: 'luma waveform of the red program frame' });
+   await snapshot('luma-waveform');
+   await choose('\uf700', 2);
+   assert.equal((await scope()).accessibleValue, 'Scopes off');
+   assert.equal((await client.byLabel('Color scope plot', { role: 'Image' })).length, 0);
+   await close();
+ }, { core: true });
  await step('Shape and feather a clip mask and export the same alpha composite', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);

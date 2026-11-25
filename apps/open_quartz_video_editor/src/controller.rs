@@ -92,6 +92,7 @@ pub struct Controller {
     playing: bool,
     requested: Option<(u64, u64, bool)>,
     displayed: Option<StableFrame>,
+    color_scope: crate::color_scope::ColorScope,
     displayed_frame: Option<u64>,
     thumbnail_order: VecDeque<String>,
     thumbnails: HashMap<String, Thumbnail>,
@@ -157,6 +158,7 @@ impl Controller {
             playing: false,
             requested: None,
             displayed: None,
+            color_scope: Default::default(),
             displayed_frame: None,
             thumbnail_order: VecDeque::new(),
             thumbnails: HashMap::new(),
@@ -345,6 +347,17 @@ impl Controller {
                 if let Some(id) = controller.selected_clip.clone() {
                     let result = controller.document.edit_mask(&id, &field, &value);
                     controller.finish_edit(result);
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_color_scope_changed(move |mode| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.color_scope.select(crate::color_scope::Mode::from_index(mode));
+                if let Some(window) = controller.window.upgrade() {
+                    window.set_color_scope_plot(slint::Image::default());
+                    window.set_color_scope_summary("Waiting for a program frame".into());
                 }
             }
         });
@@ -1653,6 +1666,17 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        if let Some(result) = self.color_scope.update(&self.backend, self.displayed.as_ref()) {
+            if let Some(window) = self.window.upgrade() {
+                match result {
+                    Ok(plot) => {
+                        window.set_color_scope_plot(plot.image());
+                        window.set_color_scope_summary(plot.summary.into());
+                    }
+                    Err(error) => window.set_color_scope_summary(format!("Color scope unavailable · {error}").into()),
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Some(status) = self.proxies.poll() {
             self.set_proxy_status(status);
@@ -2347,6 +2371,7 @@ impl Controller {
     }
     fn clear_images(&mut self) {
         self.motion = MotionEditor::default();
+        self.color_scope.clear();
         self.source_marks.clear();
         self.audio_destination = AudioDestination::Automatic;
         #[cfg(target_os = "macos")]
@@ -2361,6 +2386,8 @@ impl Controller {
         self.displayed_ticket = None;
         self.pipeline_editor.reset();
         if let Some(window) = self.window.upgrade() {
+            window.set_color_scope_plot(slint::Image::default());
+            window.set_color_scope_summary("Waiting for a program frame".into());
             window.set_monitor_image(slint::Image::default());
             window.set_has_monitor_image(false);
             window.set_monitor_status("".into());
@@ -2538,7 +2565,8 @@ mod native_dialog_tests {
             selected_audio: None,
             extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,
-            displayed: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
+            displayed: None,
+            color_scope: Default::default(), displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
