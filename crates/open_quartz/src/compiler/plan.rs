@@ -244,7 +244,7 @@ pub fn build_execution_plan_with_options(
                     input_ports,
                     upstream_map: upstream.clone(),
                     video_inputs,
-                    target_format: "rgba8unorm".to_owned(),
+                    target_format: if node.data.managed_color { "rgba16float" } else { "rgba8unorm" }.to_owned(),
                 };
                 let compiled = compile_shader(&request);
                 let errors = validate_shader(&compiled.full_fragment_code, compiled.preamble_lines);
@@ -255,7 +255,7 @@ pub fn build_execution_plan_with_options(
             };
         let mut structured = None;
         let input_domain = size_source.and_then(|id| output_domains.get(id)).copied().unwrap_or(ColorDomain::LegacySrgb);
-        let mut output_domain = ColorDomain::LegacySrgb;
+        let mut output_domain = if node.data.managed_color { ColorDomain::AcesCgLinear } else { ColorDomain::LegacySrgb };
         if node.data.node_type == NodeType::ColorCorrector {
             let lowered = node.data.color_corrector.as_ref()
                 .ok_or_else(|| crate::operators::OperatorError("ColorCorrector config is missing".into()))
@@ -285,7 +285,7 @@ pub fn build_execution_plan_with_options(
                 shader = Some(Arc::new(super::color_boundary::display_program(label, source)));
                 target = Some(TargetSpec { width: default_width, height: default_height, format: TargetFormat::Rgba8Unorm, size_source: Some(source.clone()) });
             }
-        } else if matches!(node.data.node_type, NodeType::Shader | NodeType::Constant) {
+        } else if !node.data.managed_color && matches!(node.data.node_type, NodeType::Shader | NodeType::Constant) {
             if let Some(program) = &mut shader {
                 let managed: HashSet<&str> = upstream.iter().filter(|(_, id)| output_domains.get(*id) == Some(&ColorDomain::AcesCgLinear))
                     .map(|(label, _)| label.as_str()).collect();
@@ -390,7 +390,7 @@ fn target_for(node: &ProjectNode, default_width: u32, default_height: u32) -> Op
     } else {
         (default_width, default_height)
     };
-    let format = if node.data.node_type == NodeType::ColorCorrector {
+    let format = if node.data.node_type == NodeType::ColorCorrector || node.data.managed_color {
         TargetFormat::Rgba16Float
     } else {
         match node.data.out_format {

@@ -1,6 +1,6 @@
 use super::EncoderSurface;
 use super::{
-    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus,
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport, EncoderStatus,
 };
 use crate::{MediaError, RationalTimeBase};
 use ffmpeg_next::{codec, format, Dictionary, Packet};
@@ -51,6 +51,7 @@ pub struct Mp4Encoder {
     target: PathBuf,
     last_pts: Option<i64>,
     finish_sent: bool,
+    profile: EncoderProfile,
 }
 impl Mp4Encoder {
     pub fn open(path: impl AsRef<Path>, config: EncoderConfig) -> Result<Self, MediaError> {
@@ -62,7 +63,13 @@ impl Mp4Encoder {
         config: EncoderConfig,
         audio: Option<AudioRender>,
     ) -> Result<Self, MediaError> {
-        Self::start(path, config, audio, |file| file)
+        Self::open_with_profile(path, config, audio, EncoderProfile::Sdr)
+    }
+
+    pub fn open_with_profile(
+        path: impl AsRef<Path>, config: EncoderConfig, audio: Option<AudioRender>, profile: EncoderProfile,
+    ) -> Result<Self, MediaError> {
+        Self::start(path, config, audio, profile, |file| file)
     }
 
     #[cfg(test)]
@@ -75,13 +82,14 @@ impl Mp4Encoder {
         W: std::io::Write + std::io::Seek + Send + 'static,
         F: FnOnce(File) -> W + Send + 'static,
     {
-        Self::start(path, config, None, make_writer)
+        Self::start(path, config, None, EncoderProfile::Sdr, make_writer)
     }
 
     fn start<W, F>(
         path: impl AsRef<Path>,
         config: EncoderConfig,
         audio: Option<AudioRender>,
+        profile: EncoderProfile,
         make_writer: F,
     ) -> Result<Self, MediaError>
     where
@@ -120,7 +128,7 @@ impl Mp4Encoder {
         let thread_target = target.clone();
         let thread_config = config.clone();
         let worker = thread::Builder::new()
-            .name("oq-h264-mp4-encoder".into())
+            .name("oq-videotoolbox-mp4-encoder".into())
             .spawn(move || {
                 let writer = match temp_guard.try_clone() {
                     Ok(file) => file,
@@ -131,7 +139,7 @@ impl Mp4Encoder {
                     }
                 };
                 let writer = make_writer(writer);
-                let mut pipeline = match Pipeline::open(&temp, writer, &thread_config, audio) {
+                let mut pipeline = match Pipeline::open(&temp, writer, &thread_config, audio, profile) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
                         let _ = fs::remove_file(&temp);
@@ -198,7 +206,7 @@ impl Mp4Encoder {
                                 input_frames: inputs,
                                 packets,
                                 hardware: true,
-                                encoder: "h264_videotoolbox (allow_sw=0, require_sw=0)".into(),
+                                encoder: format!("{} (allow_sw=0, require_sw=0)", profile.codec()),
                                 time_base: thread_config.time_base,
                             };
                             drop(pipeline);
@@ -329,6 +337,7 @@ impl Mp4Encoder {
                 target,
                 last_pts: None,
                 finish_sent: false,
+            profile,
             }),
             Err(error) => {
                 let _ = worker.join();
@@ -337,6 +346,9 @@ impl Mp4Encoder {
         }
     }
     pub fn submit(&mut self, frame: EncodeFrame) -> Result<EncodeAdmission, MediaError> {
+        if frame.surface.profile() != self.profile {
+            return Err("Encoder surface does not match the selected profile".into());
+        }
         if self.lifecycle.load(Ordering::Acquire) != 0 {
             return Err("Encoder is cancelled or committing".into());
         }
@@ -560,6 +572,7 @@ struct Pipeline {
     time_base: RationalTimeBase,
     audio: Option<AudioEncoder>,
     end_pts: i64,
+    profile: EncoderProfile,
 }
 impl Pipeline {
     fn open(
@@ -567,14 +580,15 @@ impl Pipeline {
         writer: impl std::io::Write + std::io::Seek + Send + 'static,
         c: &EncoderConfig,
         render_audio: Option<AudioRender>,
+        profile: EncoderProfile,
     ) -> Result<Self, MediaError> {
         crate::require_media_sdk()?;
         let custom_io = format::context::StreamIo::from_write_seek(writer)
             .map_err(|e| format!("Cannot create MP4 AVIO: {e}"))?;
         let mut output = format::output_to_stream(custom_io, None, Some("mp4"))
             .map_err(|e| format!("Cannot open MP4 muxer: {e}"))?;
-        let codec = codec::encoder::find_by_name("h264_videotoolbox")
-            .ok_or("FFmpeg h264_videotoolbox encoder is unavailable")?;
+        let codec = codec::encoder::find_by_name(profile.codec())
+            .ok_or_else(|| format!("FFmpeg {} encoder is unavailable", profile.codec()))?;
         let mut video = codec::context::Context::new_with_codec(codec)
             .encoder()
             .video()
@@ -587,24 +601,36 @@ impl Pipeline {
         video.set_bit_rate(c.bitrate as usize);
         video.set_max_b_frames(c.max_b_frames as usize);
         video.set_color_range(ffmpeg_next::color::Range::MPEG);
-        video.set_colorspace(ffmpeg_next::color::Space::BT709);
-        video.set_color_primaries(ffmpeg_next::color::Primaries::BT709);
-        video.set_color_transfer_characteristic(ffmpeg_next::color::TransferCharacteristic::BT709);
+        let (space, primaries, transfer) = color_tags(profile);
+        video.set_colorspace(space);
+        video.set_color_primaries(primaries);
+        video.set_color_transfer_characteristic(transfer);
         video.set_flags(codec::Flags::GLOBAL_HEADER);
         unsafe {
-            (*video.as_mut_ptr()).sw_pix_fmt = ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*video.as_mut_ptr()).sw_pix_fmt = match profile {
+                EncoderProfile::Sdr => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NV12,
+                EncoderProfile::Hdr10 => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
+            };
         }
         let mut options = Dictionary::new();
         options.set("allow_sw", "0");
         options.set("require_sw", "0");
+        if profile == EncoderProfile::Hdr10 { options.set("profile", "main10"); }
         let encoder = video
             .open_with(options)
             .map_err(|e| format!("Cannot open required VideoToolbox encoder: {e}"))?;
         let mut stream = output
             .add_stream(codec)
-            .map_err(|e| format!("Cannot add H.264 stream: {e}"))?;
+            .map_err(|e| format!("Cannot add video stream: {e}"))?;
         stream.set_time_base((c.time_base.numerator, c.time_base.denominator));
         stream.set_parameters(&encoder);
+        if profile == EncoderProfile::Hdr10 {
+            unsafe {
+                let parameters = (*stream.as_mut_ptr()).codecpar;
+                (*parameters).codec_tag = u32::from_le_bytes(*b"hvc1");
+                declare_mastering_display(parameters)?;
+            }
+        }
         let stream_index = stream.index();
         drop(stream);
         let audio = render_audio
@@ -620,6 +646,7 @@ impl Pipeline {
             time_base: c.time_base,
             audio,
             end_pts: 0,
+            profile,
         })
     }
     fn encode(&mut self, input: EncodeFrame, credit: InputCredit) -> Result<u64, MediaError> {
@@ -629,9 +656,10 @@ impl Pipeline {
             .ok_or("Encoder timestamp overflow")?;
         let mut frame = ffmpeg_next::util::frame::video::Video::empty();
         frame.set_color_range(ffmpeg_next::color::Range::MPEG);
-        frame.set_color_space(ffmpeg_next::color::Space::BT709);
-        frame.set_color_primaries(ffmpeg_next::color::Primaries::BT709);
-        frame.set_color_transfer_characteristic(ffmpeg_next::color::TransferCharacteristic::BT709);
+        let (space, primaries, transfer) = color_tags(self.profile);
+        frame.set_color_space(space);
+        frame.set_color_primaries(primaries);
+        frame.set_color_transfer_characteristic(transfer);
         unsafe {
             let raw = &mut *frame.as_mut_ptr();
             raw.width = input.surface.width() as i32;
@@ -747,6 +775,54 @@ impl Pipeline {
         Ok(packets)
     }
 }
+fn color_tags(profile: EncoderProfile) -> (ffmpeg_next::color::Space, ffmpeg_next::color::Primaries, ffmpeg_next::color::TransferCharacteristic) {
+    use ffmpeg_next::color::{Primaries, Space, TransferCharacteristic as Transfer};
+    match profile {
+        EncoderProfile::Sdr => (Space::BT709, Primaries::BT709, Transfer::BT709),
+        EncoderProfile::Hdr10 => (Space::BT2020NCL, Primaries::BT2020, Transfer::SMPTE2084),
+    }
+}
+
+unsafe fn declare_mastering_display(parameters: *mut ffmpeg_next::ffi::AVCodecParameters) -> Result<(), MediaError> {
+    use ffmpeg_next::ffi as av;
+    // The HDR10 preset explicitly declares a BT.2020/D65 mastering target.
+    // Content-light statistics have an independent meaning and are left unset.
+    #[repr(C)]
+    struct MasteringDisplay {
+        display_primaries: [[av::AVRational; 2]; 3],
+        white_point: [av::AVRational; 2],
+        min_luminance: av::AVRational,
+        max_luminance: av::AVRational,
+        has_primaries: std::ffi::c_int,
+        has_luminance: std::ffi::c_int,
+    }
+    unsafe extern "C" {
+        fn av_mastering_display_metadata_alloc_size(size: *mut usize) -> *mut MasteringDisplay;
+    }
+    let mut size = 0;
+    let buffer = unsafe { av_mastering_display_metadata_alloc_size(&mut size) };
+    if buffer.is_null() { return Err("Cannot allocate HDR10 mastering metadata".into()); }
+    let metadata = unsafe { &mut *buffer };
+    let xy = |num| av::AVRational { num, den: 50_000 };
+    metadata.display_primaries = [[xy(35400), xy(14600)], [xy(8500), xy(39850)], [xy(6550), xy(2300)]];
+    metadata.white_point = [xy(15635), xy(16450)];
+    metadata.min_luminance = av::AVRational { num: 5, den: 1000 };
+    metadata.max_luminance = av::AVRational { num: 1000, den: 1 };
+    metadata.has_primaries = 1;
+    metadata.has_luminance = 1;
+    let attached = unsafe { av::av_packet_side_data_add(
+        &mut (*parameters).coded_side_data,
+        &mut (*parameters).nb_coded_side_data,
+        av::AVPacketSideDataType::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+        buffer.cast(), size, 0,
+    ) };
+    if attached.is_null() {
+        unsafe { av::av_free(buffer.cast()); }
+        return Err("Cannot attach HDR10 mastering metadata".into());
+    }
+    Ok(())
+}
+
 unsafe extern "C" fn release_surface(opaque: *mut std::ffi::c_void, _data: *mut u8) {
     drop(unsafe { Box::from_raw(opaque.cast::<(EncoderSurface, InputCredit)>()) });
 }

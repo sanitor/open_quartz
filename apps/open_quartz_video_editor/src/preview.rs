@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct PreviewRequest {
+    pub managed_output: bool,
     pub ticket: u64,
     pub revision: u64,
     pub frame: u64,
@@ -107,6 +108,7 @@ struct EffectAnimation {
 
 pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, width: u32, height: u32) -> PreviewRequest {
     let mut request = PreviewRequest {
+        managed_output: false,
         ticket, revision, frame, width, height, source_ns: 0, asset: None,
         transform: ClipTransform::default(), pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
@@ -129,7 +131,7 @@ pub fn sequence_request(
     mut pipeline_override: impl FnMut(&str) -> Option<ClipPipeline>,
     transform_override: Option<(&str, ClipTransform)>,
 ) -> Result<PreviewRequest, String> {
-    build_sequence_request(project, ticket, revision, frame, &mut pipeline_override, transform_override, false)
+    build_sequence_request(project, ticket, revision, frame, &mut pipeline_override, transform_override, false, false)
 }
 
 fn nested_frame(clip: &document::Clip, asset: &MediaAsset, frame: u64, fps: Rational) -> Result<u64, String> {
@@ -141,7 +143,7 @@ fn nested_frame(clip: &document::Clip, asset: &MediaAsset, frame: u64, fps: Rati
 fn build_sequence_request(
     project: &ProjectData, ticket: u64, revision: u64, frame: u64,
     pipeline_override: &mut dyn FnMut(&str) -> Option<ClipPipeline>,
-    transform_override: Option<(&str, ClipTransform)>, nested: bool,
+    transform_override: Option<(&str, ClipTransform)>, nested: bool, managed_output: bool,
 ) -> Result<PreviewRequest, String> {
     let mut layers = Vec::new();
     for input in project.video_inputs(frame) {
@@ -154,7 +156,7 @@ fn build_sequence_request(
             if let Some(id) = asset.sequence_source() {
                 let child = project.sequence_project(id)?;
                 let frame = nested_frame(clip, asset, frame, project.fps)?;
-                let child_request = build_sequence_request(&child, ticket, revision, frame, &mut |_| None, None, true)?;
+                let child_request = build_sequence_request(&child, ticket, revision, frame, &mut |_| None, None, true, managed_output)?;
                 let child_fps = f64::from(child.fps.numerator) / f64::from(child.fps.denominator);
                 let recorded_fps = f64::from(asset.time_base.denominator) / f64::from(asset.time_base.numerator);
                 let source_start = (clip.source_in_pts as f64
@@ -223,6 +225,7 @@ fn build_sequence_request(
         });
     }
     let mut request = PreviewRequest {
+        managed_output,
         ticket, revision, frame, width: project.width, height: project.height,
         asset: None, source_ns: project.fps.frames_to_ns(frame)?, transform: ClipTransform::default(),
         pipeline: ClipPipeline::default(), layers: Vec::new(),
@@ -230,7 +233,7 @@ fn build_sequence_request(
     // Retimed clips use the sequence clock for window admission and a
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
-        if !nested && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
+        if !managed_output && !nested && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
@@ -457,7 +460,8 @@ impl PreviewBridge {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
-        let features = adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        let features = adapter.features() & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("OpenQuartz Studio shared GPU"),
             required_features: features,
@@ -594,7 +598,7 @@ fn pipeline_graph(
 }
 
 fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
-    if !request.layers.is_empty() { return composition::graph(request); }
+    if request.managed_output || !request.layers.is_empty() { return composition::graph(request); }
     let mut graph = pipeline_graph(&request.pipeline, request.width, request.height)?;
     let code = if let Some(asset) = &request.asset {
         let t = request.transform;

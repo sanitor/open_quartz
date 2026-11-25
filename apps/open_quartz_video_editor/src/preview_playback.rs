@@ -414,6 +414,7 @@ mod tests {
     use super::*;
     fn session() -> PlaybackSession {
         let mut session = PlaybackSession::new(PreviewCommand::Exact(PreviewRequest {
+            managed_output: false,
             ticket: 7, revision: 9, frame: 10, source_ns: 9_000_000_000,
             width: 64, height: 64, asset: None, transform: ClipTransform::default(), pipeline: ClipPipeline::default(), layers: Vec::new(),
         })).unwrap();

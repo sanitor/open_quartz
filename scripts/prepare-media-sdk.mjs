@@ -14,7 +14,7 @@ export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
-const revision = 'oq-vt-hw3-metal-encode-r2-audio1-studio1';
+const revision = 'oq-vt-hw3-metal-encode-r2-audio1-studio2';
 
 function run(command, args, cwd) {
   return new Promise((accept, reject) => {
@@ -59,7 +59,7 @@ export async function prepareMediaSdk() {
     '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--enable-avfilter',
     '--enable-filter=scale,format,null,anull,aformat,aresample',
     '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-swresample', '--enable-videotoolbox',
-    '--enable-encoder=h264_videotoolbox,aac', '--enable-muxer=mp4,mov',
+    '--enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac', '--enable-muxer=mp4,mov',
     '--enable-decoder=h264,hevc,mpeg4,vp9,av1,aac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le',
     '--enable-parser=h264,hevc,mpeg4video,vp9,av1,aac',
     '--enable-demuxer=mov,matroska,avi,mpegts,wav,aac', '--enable-protocol=file',
@@ -86,7 +86,7 @@ export async function prepareMediaSdk() {
   await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-hardware.patch'), join(staging, 'ffmpeg-videotoolbox-hardware.patch'));
   await copyFile(join(root, 'scripts', 'ffmpeg-videotoolbox-reorder.patch'), join(staging, 'ffmpeg-videotoolbox-reorder.patch'));
   await writeFile(join(staging, 'BUILD-CONFIG.txt'), `${sourceUrl}\nSHA-256: ${sha256}\n./configure ${args.map(arg => /\s/.test(arg) ? JSON.stringify(arg) : arg).join(' ')}\n`);
-  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require H.264/HEVC hardware decode and Metal-compatible output; enable a matching FFmpeg CLI with scaling, hardware H.264 encoding and MP4/MOV muxing; backport upstream H.264 reorder-depth correction 2da55bf59a68801a8157ab141a487196ce3416a8.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch and patch -p1 < ffmpeg-videotoolbox-reorder.patch before configuring. Original source, exact patches, LGPL license and build options included.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
+  await writeFile(join(staging, 'FFMPEG-MEDIA-NOTICE.txt'), `FFmpeg ${version}, LGPL-2.1-or-later.\nSource: ${sourceUrl}\nSHA-256: ${sha256}\nBuilt without GPL/nonfree/external codec libraries.\nModifications: require H.264/HEVC hardware decode and Metal-compatible output; enable a matching FFmpeg CLI with scaling, hardware H.264 and HEVC encoding and MP4/MOV muxing; backport upstream H.264 reorder-depth correction 2da55bf59a68801a8157ab141a487196ce3416a8.\nApply patch -p1 < ffmpeg-videotoolbox-hardware.patch and patch -p1 < ffmpeg-videotoolbox-reorder.patch before configuring. Original source, exact patches, LGPL license and build options included.\nlibavcodec ABI 62 / libavformat ABI 62 / libavutil ABI 60.\n`);
   await writeFile(join(staging, '.build-id'), marker);
   await rm(mediaSdk, { recursive: true, force: true });
   await rename(staging, mediaSdk);

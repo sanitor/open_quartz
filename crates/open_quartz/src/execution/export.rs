@@ -3,7 +3,6 @@ use super::{FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, Fra
 use crate::outputs::FrameStamp;
 use crate::rendering::{
     ConversionAdmission, ConvertedFrame, InputInterpretation, Nv12Converter, StableFrame,
-    TextureFormat,
 };
 use crate::resources::source_identity::SourceFileIdentity;
 use oq_media::{
@@ -206,7 +205,7 @@ impl ExportJob {
                     .into(),
             );
         }
-        let encoder = Mp4Encoder::open_with_audio(&config.output, config.encoder.clone(), audio)
+        let encoder = Mp4Encoder::open_with_profile(&config.output, config.encoder.clone(), audio, config.input_interpretation.encoder_profile())
             .map_err(|e| e.to_string())?;
         Ok(Self {
             pipeline,
@@ -260,10 +259,10 @@ impl ExportJob {
             }
         }
         let (width, height, format) = pipeline.window_output_extent(&config.output_node_id, 0);
-        if format != TextureFormat::Rgba8Unorm
+        if format != config.input_interpretation.texture_format()
             || (width, height) != (config.encoder.width, config.encoder.height)
         {
-            return Err(format!("export output {width}x{height} {format:?} disagrees with encoder {}x{} RGBA8 input", config.encoder.width, config.encoder.height));
+            return Err(format!("export output {width}x{height} {format:?} disagrees with encoder {}x{} input format", config.encoder.width, config.encoder.height));
         }
         let identities = pipeline.videos.file_identities();
         if identities.len() != pipeline.videos.node_ids().len() {

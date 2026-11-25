@@ -36,3 +36,23 @@ shoulder after conversion to linear Rec.709. Its HLG reference display uses
 The native E2E case generates tagged 10-bit neutral clips, checks the monitor
 against the expected SDR code values for each transfer, and checks that the
 asset interpretation survives saving and reopening.
+
+## HDR10 export
+
+In the MP4 export dialog select **HDR10 PQ · BT.2020 / 1000 nits** for a
+single visible video track. This declares a BT.2020/D65 1000 cd/m² mastering
+target and 0.005 cd/m² minimum. Use the preset for material mastered to that
+target. The encoder writes an MP4 mastering display box. The target omits
+MaxCLL and MaxFALL.
+
+The export worker reads original VideoToolbox planes into AP1 RGBA16Float.
+Composition and Color Corrector work on that linear signal. The final shader
+converts to BT.2020 PQ and writes limited-range 10-bit P010 directly into
+IOSurface planes for VideoToolbox HEVC Main10. SDR H.264 stays the default.
+A queued export captures the selected profile. Nested sequences and legacy
+custom shader effects are rejected for this profile.
+
+The E2E case verifies Main10 and its BT.2020/PQ tags using an independent
+decoder, calculates the five-frame output range, checks the MP4 mastering
+box, and compares both decoded 10-bit luminance patches with the original
+PQ sample values.

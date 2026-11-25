@@ -14,7 +14,7 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio1` SDK 和开发测试使用的 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
+命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio2` SDK 和开发测试使用的 FFmpeg helper，再启动原生应用。当前只验收 macOS / Metal / VideoToolbox；设备或素材不满足硬件路径时明确失败，不读取 CPU 图像做替代显示。
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
@@ -65,6 +65,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 监视器上方的 **Color scope** 可切换 RGB 直方图和亮度波形。示波器跟随可见画面，包括效果与合成，显示 SDR 程序画面的 8 位码值。
 - 在 Nodes 的 **Grade versions** 可复制、命名、切换和删除片段的调色方案。版本保存独立的片段节点图及其动画参数。活动版本立刻用于监视器和导出，可撤销版本操作。
 - 长时间线按窗口实例化片段控件。滚动会加载临近区间，拖拽结束时同步窗口。库、工程里的总片段数和编辑选择使用完整时间线。
+- MP4 色彩选项支持 **HDR10 PQ · BT.2020 / 1000 nits**，使用原始素材生成 HEVC Main10。适用范围与验收见 [HDR 工作流](HDR_WORKFLOW.md)。
 - 在 MP4 导出窗口可用 **Add to queue** 冻结当前序列、范围和编码选项。用 **Render queue** 查看任务、串行启动、取消或重试。任务保留在当前应用会话，继续剪辑不会改动已排队的版本。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。

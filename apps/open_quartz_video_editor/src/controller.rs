@@ -924,6 +924,7 @@ impl Controller {
                 window.set_export_resolution(0);
                 window.set_export_frame_rate(0);
                 window.set_export_quality(0);
+                window.set_export_profile(0);
                 window.set_export_start_frame("0".into());
                 window.set_export_end_frame(self.document.duration_frames().to_string().into());
             }
@@ -1662,6 +1663,7 @@ impl Controller {
                         resolution: window.get_export_resolution(),
                         frame_rate: window.get_export_frame_rate(),
                         quality: window.get_export_quality(),
+                        hdr10: window.get_export_profile() == 1,
                     };
                     let spec = ExportSpec {
                         project: self.document.data.clone(), revision: self.document.revision,

@@ -36,7 +36,7 @@ impl Drop for CfRef {
 
 struct State {
     cache: CfRef,
-    pipelines: HashMap<u8, (wgpu::BindGroupLayout, wgpu::RenderPipeline)>,
+    pipelines: HashMap<u16, (wgpu::BindGroupLayout, wgpu::RenderPipeline)>,
 }
 
 pub struct VideoToolboxImporter {
@@ -106,14 +106,14 @@ impl GpuBackend {
         self.videotoolbox_importer.get_or_init(|| VideoToolboxImporter::new(self)).as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn try_create_video_texture(&self, width: u32, height: u32) -> Result<Option<TextureHandle>, String> {
+    pub(crate) fn try_create_video_texture(&self, width: u32, height: u32, format: TextureFormat) -> Result<Option<TextureHandle>, String> {
         let limit = self.device.limits().max_texture_dimension_2d;
         if width == 0 || height == 0 || width > limit || height > limit { return Err("invalid video dimensions".into()); }
-        let bytes = u64::from(width).checked_mul(u64::from(height)).and_then(|pixels| pixels.checked_mul(4))
+        let bytes = u64::from(width).checked_mul(u64::from(height)).and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel() as u64))
             .ok_or("video destination allocation size overflow")?;
         let Some(credit) = self.acquire_texture_credit(&self.frame_budget(), bytes)? else { return Ok(None); };
         let credit = Arc::new(credit);
-        let mut texture = self.create_texture(width, height, TextureFormat::Rgba8Unorm);
+        let mut texture = self.create_texture(width, height, format);
         texture.texture = self.leased_metal_texture(texture.texture, credit.clone())?;
         texture.view = Arc::new(texture.texture.create_view(&Default::default()));
         texture.lease = Some(credit);
@@ -185,7 +185,7 @@ impl GpuBackend {
     pub(crate) fn try_upload_videotoolbox(&self, frame: &VideoToolboxFrame, output: &TextureHandle) -> Result<bool, String> {
         let (width, height) = (frame.width(), frame.height());
         let limit = self.device.limits().max_texture_dimension_2d;
-        if width == 0 || height == 0 || width > limit || height > limit || output.width != width || output.height != height || output.format != TextureFormat::Rgba8Unorm {
+        if width == 0 || height == 0 || width > limit || height > limit || output.width != width || output.height != height || !matches!(output.format, TextureFormat::Rgba8Unorm | TextureFormat::Rgba16Float) {
             return Err("invalid VideoToolbox frame or output dimensions/format".into());
         }
         let buffer = frame.pixel_buffer();
@@ -255,9 +255,11 @@ impl GpuBackend {
             ColorPrimaries::Bt470Bg => 1,
             ColorPrimaries::Bt2020 => 2,
         };
-        let key = ((format * 6 + matrix * 2 + u8::from(color.full_range)) * 4 + transfer) * 3 + primaries;
+        let managed = output.format == TextureFormat::Rgba16Float;
+        let key = u16::from(((format * 6 + matrix * 2 + u8::from(color.full_range)) * 4 + transfer) * 3 + primaries)
+            + if managed { 216 } else { 0 };
         let (layout, pipeline) = state.pipelines.entry(key).or_insert_with(|| {
-            create_pipeline(&self.device, format, matrix, color.full_range, transfer, primaries)
+            create_pipeline(&self.device, format, matrix, color.full_range, transfer, primaries, managed)
         });
         let view0 = textures[0].as_ref().unwrap().create_view(&Default::default());
         let view1 = textures[if format == 2 { 0 } else { 1 }].as_ref().unwrap().create_view(&Default::default());
@@ -294,7 +296,7 @@ fn videotoolbox_bytes(frame: &VideoToolboxFrame) -> Result<usize, String> {
     Ok(bytes)
 }
 
-fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, transfer: u8, primaries: u8) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, transfer: u8, primaries: u8, managed: bool) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let (kr, kb) = match matrix { 0 => (0.299f64, 0.114f64), 1 => (0.2126, 0.0722), _ => (0.2627, 0.0593) };
     let kg = 1.0 - kr - kb;
     let (scale, y_offset, y_range, c_mid, c_range) = match (format, full) {
@@ -303,7 +305,7 @@ fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, tr
         (_, false) => (255.0, 16.0, 219.0, 128.0, 224.0),
         _ => (255.0, 0.0, 255.0, 128.0, 255.0),
     };
-    let conversion = if format == 2 { "return vec4f(output_color(textureLoad(y_tex,p,0).rgb),1.0);".to_owned() } else { format!("let y = (textureLoad(y_tex,p,0).r * {scale} - {y_offset}) / {y_range}; let chroma = (textureLoad(uv_tex,c,0).rg * {scale} - vec2f({c_mid})) / {c_range}; let rgb = clamp(vec3f(y + {rv} * chroma.y, y - {gu} * chroma.x - {gv} * chroma.y, y + {bu} * chroma.x), vec3f(0.0), vec3f(1.0)); return vec4f(output_color(rgb),1.0);", rv=2.0*(1.0-kr), gu=2.0*kb*(1.0-kb)/kg, gv=2.0*kr*(1.0-kr)/kg, bu=2.0*(1.0-kb)) };
+    let conversion = if format == 2 { "return vec4f(output_color(textureLoad(y_tex,p,0).rgb),1.0);".to_owned() } else { format!("let y = (textureLoad(y_tex,p,0).r * {scale} - {y_offset}) / {y_range}; let chroma = (textureLoad(uv_tex,c,0).rg * {scale} - vec2f({c_mid})) / {c_range}; let rgb = vec3f(y + {rv} * chroma.y, y - {gu} * chroma.x - {gv} * chroma.y, y + {bu} * chroma.x); return vec4f(output_color({channel}),1.0);", rv=2.0*(1.0-kr), gu=2.0*kb*(1.0-kb)/kg, gv=2.0*kr*(1.0-kr)/kg, bu=2.0*(1.0-kb), channel=if managed && transfer < 2 { "rgb" } else { "clamp(rgb, vec3f(0.0), vec3f(1.0))" }) };
     let decode_transfer = match transfer {
         1 => {
         "let linear = select(pow(max((v + vec3f(0.055)) / 1.055, vec3f(0.0)), vec3f(2.4)), v / 12.92, v <= vec3f(0.04045));"
@@ -322,7 +324,13 @@ fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, tr
     let display = if transfer >= 2 {
         "let luminance = max(dot(rgb709, vec3f(0.2126, 0.7152, 0.0722)), 0.0); let mapped = rgb709 / (1.0 + luminance);"
     } else { "let mapped = rgb709;" };
-    let transfer = if transfer == 1 && primaries == 0 { "return v;".to_owned() } else { format!(r#"
+    let transfer = if managed { format!(r#"
+        {decode_transfer}
+        {gamut}
+        return vec3f(dot(rgb709, vec3f(0.613128899, 0.339517308, 0.047353793)),
+            dot(rgb709, vec3f(0.070106762, 0.916365764, 0.013527474)),
+            dot(rgb709, vec3f(0.020586613, 0.109567717, 0.869845670)));
+    "#) } else if transfer == 1 && primaries == 0 { "return v;".to_owned() } else { format!(r#"
         {decode_transfer}
         {gamut}
         {display}
@@ -341,7 +349,7 @@ fn output_color(v: vec3f) -> vec3f {{ {transfer} }}
     let entries = [0, 1].map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("videotoolbox-layout"), entries: &entries });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("videotoolbox-pipeline-layout"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("videotoolbox-pipeline"), layout: Some(&pipeline_layout), vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() }, fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }), primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("videotoolbox-pipeline"), layout: Some(&pipeline_layout), vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() }, fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: if managed { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm }, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }), primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
     (layout, pipeline)
 }
 

@@ -7,6 +7,7 @@ pub struct ExportOptions {
     pub resolution: i32,
     pub frame_rate: i32,
     pub quality: i32,
+    pub hdr10: bool,
 }
 
 impl ExportOptions {

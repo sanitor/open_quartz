@@ -90,6 +90,7 @@ struct Sequence {
     revision: u64,
     end: u64,
     cadence: Cadence,
+    hdr10: bool,
     configured: Option<PreviewConfiguration>,
     request: Option<PreviewRequest>,
 }
@@ -97,7 +98,10 @@ struct Sequence {
 impl ExportSequence for Sequence {
     fn prepare_region(&mut self, pipeline: &mut FramePipeline, frame: u64) -> Result<u64, String> {
         let frame = self.cadence.sample(frame)?;
-        let (request, end) = sequence_region(&self.project, 0, self.revision, frame, self.end)?;
+        let (request, end) = if self.hdr10 {
+            let request = super::build_sequence_request(&self.project, 0, self.revision, frame, &mut |_| None, None, false, true)?;
+            (request, sequence_region_end(&self.project, frame, self.end))
+        } else { sequence_region(&self.project, 0, self.revision, frame, self.end)? };
         playback::configure_limits(pipeline, &request, self.project.fps)?;
         configure(pipeline, &mut self.configured, &request)?;
         self.request = Some(request);
@@ -152,6 +156,22 @@ fn run(
     cancel: &Arc<AtomicBool>,
     progress: &Mutex<(String, Option<Phase>)>,
 ) -> Result<bool, String> {
+    if options.hdr10 {
+        if project.tracks.iter().filter(|track| track.visible && !track.clips.is_empty()).count() > 1 {
+            return Err("HDR10 currently requires a single visible video track".into());
+        }
+        for input in project.tracks.iter().filter(|track| track.visible).flat_map(|track| &track.clips) {
+            if input.timeline_start >= frames.end || input.timeline_end()? <= frames.start { continue; }
+            if project.assets.iter().find(|asset| asset.id == input.asset_id).is_some_and(|asset| asset.sequence_source().is_some()) {
+                return Err("Nested sequences are not available in HDR10 export".into());
+            }
+            if input.pipeline.graph().nodes.iter().any(|node| node.id != super::SOURCE_ID && node.id != OUTPUT_ID
+                && node.node_type != open_quartz::project::NodeType::ColorCorrector)
+            {
+                return Err("HDR10 supports Color Corrector and clip composition. Remove legacy shader effects from the export range.".into());
+            }
+        }
+    }
     let output_fps = options.fps(project.fps);
     let cadence = Cadence::new(frames.start, project.fps, output_fps);
     let total = cadence.boundary(frames.end)?;
@@ -212,7 +232,8 @@ fn run(
             max_b_frames: 0,
             overwrite: false,
         },
-        input_interpretation: InputInterpretation::SdrSrgbRgba8Black,
+        input_interpretation: if options.hdr10 { InputInterpretation::Hdr10AcesCgRgba16Float }
+            else { InputInterpretation::SdrSrgbRgba8Black },
         date: [0.0; 4],
         mouse: [0.0; 4],
     };
@@ -221,6 +242,7 @@ fn run(
         revision,
         end,
         cadence,
+        hdr10: options.hdr10,
         configured: None,
         request: None,
     };

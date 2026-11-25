@@ -227,7 +227,7 @@ impl GpuExecutor {
     #[cfg(all(target_os = "macos", feature = "native-video"))]
     pub(crate) fn prepare_video_texture(&mut self, node_id: &str, width: u32, height: u32) -> Result<bool, GpuExecutionError> {
         if self.video_texture_matches(node_id, width, height) { return Ok(true); }
-        let Some(texture) = self.backend.try_create_video_texture(width, height)
+        let Some(texture) = self.backend.try_create_video_texture(width, height, self.video_texture_format(node_id))
             .map_err(|message| GpuExecutionError::for_node(node_id, message))? else { return Ok(false); };
         self.textures.insert(node_id.to_owned(), texture);
         Ok(true)
@@ -236,7 +236,7 @@ impl GpuExecutor {
     #[cfg(all(target_os = "macos", feature = "native-video"))]
     fn video_texture_matches(&self, node_id: &str, width: u32, height: u32) -> bool {
         self.textures.get(node_id).is_some_and(|texture| {
-            texture.width == width && texture.height == height && texture.format == TextureFormat::Rgba8Unorm
+            texture.width == width && texture.height == height && texture.format == self.video_texture_format(node_id)
                 && texture.lease.as_ref().is_some_and(|lease| lease.is::<crate::resources::FrameCredit>())
         })
     }
@@ -256,7 +256,7 @@ impl GpuExecutor {
         if recreate {
             // Keep the previous graph input intact if another session consumes
             // the shared credit between preflight and the atomic reservation.
-            let Some(texture) = self.backend.try_create_video_texture(width, height)
+            let Some(texture) = self.backend.try_create_video_texture(width, height, self.video_texture_format(node_id))
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))? else { return Ok(false); };
             let uploaded = self.backend.try_upload_videotoolbox(frame, &texture)
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))?;
@@ -266,6 +266,14 @@ impl GpuExecutor {
             let texture = self.textures.get(node_id).expect("texture exists when not recreated");
             self.backend.try_upload_videotoolbox(frame, texture)
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    fn video_texture_format(&self, node_id: &str) -> TextureFormat {
+        match self.output_domains.get(node_id) {
+            Some(crate::operators::ColorDomain::AcesCgLinear) => TextureFormat::Rgba16Float,
+            _ => TextureFormat::Rgba8Unorm,
         }
     }
 

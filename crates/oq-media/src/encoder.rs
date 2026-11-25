@@ -16,6 +16,7 @@ extern "C" {
     ) -> i32;
     fn CVPixelBufferRetain(pixel_buffer: *mut c_void) -> *mut c_void;
     fn CVPixelBufferRelease(pixel_buffer: *mut c_void);
+    fn CVPixelBufferGetPixelFormatType(buffer: *mut c_void) -> u32;
     fn CVPixelBufferGetWidth(pixel_buffer: *mut c_void) -> usize;
     fn CVPixelBufferGetHeight(pixel_buffer: *mut c_void) -> usize;
     fn CVPixelBufferGetDataSize(pixel_buffer: *mut c_void) -> usize;
@@ -71,6 +72,9 @@ impl Drop for EncoderSurface {
 }
 impl EncoderSurface {
     pub fn new(width: u32, height: u32) -> Result<Self, MediaError> {
+        Self::with_profile(width, height, EncoderProfile::Sdr)
+    }
+    pub fn with_profile(width: u32, height: u32, profile: EncoderProfile) -> Result<Self, MediaError> {
         if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
             return Err(MediaError::time(
                 ErrorKind::UnsupportedContent,
@@ -114,7 +118,7 @@ impl EncoderSurface {
                 std::ptr::null(),
                 width as usize,
                 height as usize,
-                0x34323076,
+                profile.pixel_format(),
                 attrs,
                 &mut pixel_buffer,
             );
@@ -130,6 +134,11 @@ impl EncoderSurface {
                 leases: [None, None],
             })
         }
+    }
+    pub fn profile(&self) -> EncoderProfile {
+        if unsafe { CVPixelBufferGetPixelFormatType(self.pixel_buffer) } == u32::from_be_bytes(*b"x420") {
+            EncoderProfile::Hdr10
+        } else { EncoderProfile::Sdr }
     }
     pub fn width(&self) -> u32 {
         unsafe { CVPixelBufferGetWidth(self.pixel_buffer) as u32 }
@@ -161,6 +170,23 @@ impl EncoderSurface {
             self.leases[1] = Some(lease);
         }
         self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncoderProfile {
+    #[default]
+    Sdr,
+    Hdr10,
+}
+
+impl EncoderProfile {
+    fn pixel_format(self) -> u32 {
+        u32::from_be_bytes(match self { Self::Sdr => *b"420v", Self::Hdr10 => *b"x420" })
+    }
+
+    fn codec(self) -> &'static str {
+        match self { Self::Sdr => "h264_videotoolbox", Self::Hdr10 => "hevc_videotoolbox" }
     }
 }
 

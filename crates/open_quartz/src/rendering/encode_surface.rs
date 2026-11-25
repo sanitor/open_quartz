@@ -15,7 +15,7 @@ use std::{
 
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::{MTLTexture, MTLTextureType, MTLTextureUsage};
-use oq_media::EncoderSurface;
+use oq_media::{EncoderProfile, EncoderSurface};
 
 use super::{GpuBackend, StableFrame, TextureFormat};
 use crate::{
@@ -86,18 +86,40 @@ pub enum InputInterpretation {
     /// Encoded RGB is premultiplied; unpremultiply before decoding sRGB.
     SdrSrgbRgba8PremultipliedBlack,
     SdrSrgbRgba8OpaqueBlack,
+    Hdr10AcesCgRgba16Float,
 }
 impl InputInterpretation {
+    pub fn texture_format(self) -> TextureFormat {
+        match self {
+            Self::Hdr10AcesCgRgba16Float => TextureFormat::Rgba16Float,
+            _ => TextureFormat::Rgba8Unorm,
+        }
+    }
+
+    pub fn encoder_profile(self) -> EncoderProfile {
+        match self {
+            Self::Hdr10AcesCgRgba16Float => EncoderProfile::Hdr10,
+            _ => EncoderProfile::Sdr,
+        }
+    }
+
+    fn color_space(self) -> FrameColorSpace {
+        match self {
+            Self::Hdr10AcesCgRgba16Float => FrameColorSpace::AcesCgLinear,
+            _ => FrameColorSpace::Srgb,
+        }
+    }
+
     fn alpha(self) -> FrameAlphaMode {
         match self {
-            Self::SdrSrgbRgba8Black => FrameAlphaMode::Straight,
+            Self::SdrSrgbRgba8Black | Self::Hdr10AcesCgRgba16Float => FrameAlphaMode::Straight,
             Self::SdrSrgbRgba8PremultipliedBlack => FrameAlphaMode::Premultiplied,
             Self::SdrSrgbRgba8OpaqueBlack => FrameAlphaMode::Opaque,
         }
     }
     fn shader_alpha(self) -> u32 {
         match self {
-            Self::SdrSrgbRgba8Black => 0,
+            Self::SdrSrgbRgba8Black | Self::Hdr10AcesCgRgba16Float => 0,
             Self::SdrSrgbRgba8PremultipliedBlack => 1,
             Self::SdrSrgbRgba8OpaqueBlack => 2,
         }
@@ -274,17 +296,22 @@ impl Nv12Converter {
         if count == 0 || count > self.max_surfaces {
             return Err("NV12 preparation count exceeds pool capacity".into());
         }
+        let profile = self.interpretation.map_or(EncoderProfile::Sdr, InputInterpretation::encoder_profile);
+        if profile == EncoderProfile::Hdr10 && !self.backend.device.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+            return Err("The device cannot render into P010 encoder planes".into());
+        }
         self.slots.retain(|slot| {
-            slot.surface.width() == width && slot.surface.height() == height
+            slot.surface.width() == width && slot.surface.height() == height && slot.surface.profile() == profile
                 || slot.busy.load(Ordering::Acquire)
         });
         let matching =
-            |slot: &&Arc<Slot>| slot.surface.width() == width && slot.surface.height() == height;
+            |slot: &&Arc<Slot>| slot.surface.width() == width && slot.surface.height() == height && slot.surface.profile() == profile;
         while self.slots.iter().filter(matching).count() < count {
             if self.slots.len() == self.max_surfaces {
                 return Ok(false);
             }
-            let surface = EncoderSurface::new(width, height).map_err(|error| error.to_string())?;
+            let surface = EncoderSurface::with_profile(width, height, profile).map_err(|error| error.to_string())?;
             let bytes = surface.allocation_size();
             if bytes == 0 {
                 return Err("NV12 surface has no measurable physical allocation".into());
@@ -323,11 +350,15 @@ impl Nv12Converter {
 
     fn import_planes(&self, surface: &EncoderSurface) -> Result<Planes, String> {
         let buffer = surface.pixel_buffer();
+        let pixel_format = match surface.profile() {
+            EncoderProfile::Sdr => *b"420v",
+            EncoderProfile::Hdr10 => *b"x420",
+        };
         if unsafe {
-            CVPixelBufferGetPixelFormatType(buffer) != u32::from_be_bytes(*b"420v")
+            CVPixelBufferGetPixelFormatType(buffer) != u32::from_be_bytes(pixel_format)
                 || CVPixelBufferGetPlaneCount(buffer) != 2
         } {
-            return Err("encoder surface is not two-plane video-range 420v".into());
+            return Err("Encoder surface is not two-plane video-range NV12 or P010".into());
         }
         let mut textures: [Option<wgpu::Texture>; 2] = [None, None];
         let mut wrappers: [Option<CfRef>; 2] = [None, None];
@@ -341,7 +372,13 @@ impl Nv12Converter {
                 return Err(format!("invalid encoder NV12 plane {plane} dimensions"));
             }
             let mut wrapper = ptr::null_mut();
-            let metal_format = if plane == 0 { 10 } else { 30 }; // R8Unorm, RG8Unorm
+            let profile = surface.profile();
+            let metal_format = match (profile, plane) {
+                (EncoderProfile::Hdr10, 0) => 20,
+                (EncoderProfile::Hdr10, _) => 60,
+                (EncoderProfile::Sdr, 0) => 10,
+                (EncoderProfile::Sdr, _) => 30,
+            };
             let status = unsafe {
                 CVMetalTextureCacheCreateTextureFromImage(
                     ptr::null(),
@@ -375,11 +412,7 @@ impl Nv12Converter {
                     "CoreVideo NV12 plane {plane} is not a correctly sized Metal render target"
                 ));
             }
-            let format = if plane == 0 {
-                wgpu::TextureFormat::R8Unorm
-            } else {
-                wgpu::TextureFormat::Rg8Unorm
-            };
+            let format = plane_formats(profile)[plane];
             let size = wgpu::Extent3d {
                 width,
                 height,
@@ -438,20 +471,20 @@ impl Nv12Converter {
         if !input.belongs_to(&self.backend) {
             return Err("NV12 input belongs to another GPU device".into());
         }
-        if output.format != TextureFormat::Rgba8Unorm
-            || output.texture.format() != wgpu::TextureFormat::Rgba8Unorm
+        if output.format != interpretation.texture_format()
+            || output.texture.format() != interpretation.texture_format().into()
             || !output
                 .texture
                 .usage()
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
         {
-            return Err("NV12 input must be a shader-readable SDR RGBA8Unorm texture".into());
+            return Err(format!("Encoder input must be a shader-readable {:?} texture", interpretation.texture_format()));
         }
         if input.image.color_space != FrameColorSpace::Unknown
-            && input.image.color_space != FrameColorSpace::Srgb
+            && input.image.color_space != interpretation.color_space()
         {
             return Err(
-                "NV12 input color metadata disagrees with explicit sRGB interpretation".into(),
+                "Encoder input color metadata disagrees with explicit interpretation".into(),
             );
         }
         if input.image.alpha_mode != FrameAlphaMode::Unknown
@@ -468,6 +501,7 @@ impl Nv12Converter {
             .find(|slot| {
                 slot.surface.width() == output.width
                     && slot.surface.height() == output.height
+                    && slot.surface.profile() == interpretation.encoder_profile()
                     && !slot.busy.load(Ordering::Acquire)
             })
             .cloned();
@@ -548,6 +582,14 @@ impl Nv12Converter {
     }
 }
 
+fn plane_formats(profile: EncoderProfile) -> [wgpu::TextureFormat; 2] {
+    use wgpu::TextureFormat::*;
+    match profile {
+        EncoderProfile::Sdr => [R8Unorm, Rg8Unorm],
+        EncoderProfile::Hdr10 => [R16Unorm, Rg16Unorm],
+    }
+}
+
 fn create_pipelines(
     device: &wgpu::Device,
     interpretation: InputInterpretation,
@@ -556,7 +598,9 @@ fn create_pipelines(
     wgpu::BindGroupLayout,
     [wgpu::RenderPipeline; 2],
 ) {
-    let source = SHADER.replace("ALPHA_MODE", &interpretation.shader_alpha().to_string());
+    let profile = interpretation.encoder_profile();
+    let source = SHADER.replace("ALPHA_MODE", &interpretation.shader_alpha().to_string())
+        .replace("HDR_MODE", if profile == EncoderProfile::Hdr10 { "true" } else { "false" });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("encoder-nv12-srgb-to-709"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -579,10 +623,8 @@ fn create_pipelines(
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
-    let pipelines = [
-        ("fs_y", wgpu::TextureFormat::R8Unorm),
-        ("fs_uv", wgpu::TextureFormat::Rg8Unorm),
-    ]
+    let [y, uv] = plane_formats(profile);
+    let pipelines = [("fs_y", y), ("fs_uv", uv)]
     .map(|(entry, format)| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("encoder-nv12-pipeline"),
@@ -618,8 +660,19 @@ const SHADER: &str = r#"
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     return vec4f(f32(i / 2u) * 4.0 - 1.0, f32(i % 2u) * 4.0 - 1.0, 0.0, 1.0);
 }
-fn rgb709(p: vec2i) -> vec3f {
+fn pq_encode(nits: vec3f) -> vec3f {
+    let v = pow(clamp(nits, vec3f(0.0), vec3f(10000.0)) / 10000.0, vec3f(2610.0 / 16384.0));
+    return pow((0.8359375 + 18.8515625 * v) / (1.0 + 18.6875 * v), vec3f(2523.0 / 32.0));
+}
+fn rgb_signal(p: vec2i) -> vec3f {
     let sample = textureLoad(source, p, 0);
+    if HDR_MODE {
+        let c = sample.rgb * sample.a;
+        let rgb2020 = vec3f(dot(c, vec3f(1.0258247, -0.0200532, -0.0057715)),
+            dot(c, vec3f(-0.0022344, 1.0045865, -0.0023521)),
+            dot(c, vec3f(-0.0050134, -0.0252901, 1.0303035)));
+        return pq_encode(min(rgb2020 * 203.0, vec3f(1000.0)));
+    }
     var encoded = sample.rgb;
     var alpha = sample.a;
     if (ALPHA_MODE == 1u) {
@@ -630,17 +683,26 @@ fn rgb709(p: vec2i) -> vec3f {
     return select(1.099 * pow(linear, vec3f(0.45)) - vec3f(0.099), 4.5 * linear, linear < vec3f(0.018));
 }
 fn ycbcr(rgb: vec3f) -> vec3f {
+    if HDR_MODE {
+        let y = dot(rgb, vec3f(0.2627, 0.6780, 0.0593));
+        return vec3f(y, (rgb.b - y) / 1.8814, (rgb.r - y) / 1.4746);
+    }
     let y = dot(rgb, vec3f(0.2126, 0.7152, 0.0722));
     return vec3f(y, (rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748);
 }
 @fragment fn fs_y(@builtin(position) p: vec4f) -> @location(0) vec4f {
-    let y = ycbcr(rgb709(vec2i(p.xy))).x;
+    let y = ycbcr(rgb_signal(vec2i(p.xy))).x;
+    if HDR_MODE { return vec4f(round(clamp(64.0 + 876.0 * y, 64.0, 940.0)) * (64.0 / 65535.0), 0.0, 0.0, 1.0); }
     return vec4f(floor(clamp(16.0 + 219.0 * y, 16.0, 235.0) + 0.5) / 255.0, 0.0, 0.0, 1.0);
 }
 @fragment fn fs_uv(@builtin(position) p: vec4f) -> @location(0) vec4f {
     let q = vec2i(p.xy) * 2;
-    let rgb = (rgb709(q) + rgb709(q + vec2i(1,0)) + rgb709(q + vec2i(0,1)) + rgb709(q + vec2i(1,1))) * 0.25;
+    let rgb = (rgb_signal(q) + rgb_signal(q + vec2i(1,0)) + rgb_signal(q + vec2i(0,1)) + rgb_signal(q + vec2i(1,1))) * 0.25;
     let uv = ycbcr(rgb).yz;
+    if HDR_MODE {
+        let codes = round(clamp(vec2f(512.0) + 896.0 * uv, vec2f(64.0), vec2f(960.0)));
+        return vec4f(codes * (64.0 / 65535.0), 0.0, 1.0);
+    }
     let codes = floor(clamp(vec2f(128.0) + 224.0 * uv, vec2f(16.0), vec2f(240.0)) + vec2f(0.5));
     return vec4f(codes / 255.0, 0.0, 1.0);
 }

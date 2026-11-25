@@ -121,6 +121,9 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             if node.id == SOURCE_ID && nested.is_some() { continue; }
             let mut node = node.clone();
             node.data.clock = clock.clone();
+            if request.managed_output && node.id == SOURCE_ID && matches!(&layer.source, LayerSource::Video { .. }) {
+                node.data.managed_color = true;
+            }
             if let Some(effects) = &layer.effects {
                 let start = (i128::from(effects.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
                 for animated in effects.keys.iter().filter(|entry| entry.node == node.id) {
@@ -228,6 +231,12 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             )
         } else { "let mask_alpha = 1.0;".into() };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
+        let color = if request.managed_output {
+            if matches!(&layer.source, LayerSource::Title(_) | LayerSource::Still(_))
+                && !clip.nodes.iter().any(|node| node.node_type == open_quartz::project::NodeType::ColorCorrector) {
+                format!("cc_srgb_to_ap1(sample.rgb) * blend{index}.z")
+            } else { format!("sample.rgb * blend{index}.z") }
+        } else { format!("linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)))") };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) / 4 == order) {{\n\
                 track_mode = i32(blend{index}.w) % 4;
@@ -238,7 +247,7 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                 if (all(p >= {minimum}) && all(p <= {maximum})) {{\n\
                     {mask_setup}
                     let alpha = ({alpha}) * mask_alpha;\n\
-                    let color = linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
+                    let color = {color};\n\
                     track_pixel += vec4f(color * alpha, alpha) * {weight};\n\
                 }}\n\
             }}\n"
@@ -261,7 +270,10 @@ fn bezier_progress(t: f32, points: vec4f) -> f32 {
     return cubic_unit((low + high) / 2.0, points.y, points.w);
 }
 "#);
-    let result_color = if clock.is_some() {
+    if request.managed_output { animation_code.push_str(open_quartz::operators::WGSL_COLOR_TRANSFORMS); }
+    let result_color = if request.managed_output {
+        "return vec4f(result, 1.0);"
+    } else if clock.is_some() {
         "return vec4f(encoded(result / max(alpha, 0.00001)), alpha);"
     } else { "return vec4f(encoded(result), 1.0);" };
     let code = format!("{bindings}
@@ -326,6 +338,7 @@ fn blend_rgb(backdrop: vec3f, source: vec3f, mode: i32) -> vec3f {{
     output.data.height = Some(request.height);
     output.data.auto_size = Some(false);
     output.data.clock = clock;
+    output.data.managed_color = request.managed_output;
     output.data.uniforms = parameters;
     for (index, (source, source_handle)) in inputs.into_iter().enumerate() {
         let target = output

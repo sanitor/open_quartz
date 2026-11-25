@@ -198,7 +198,7 @@ pub struct ColorInfo {
 mod encoder;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use encoder::{
-    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderReport, EncoderStatus, EncoderSurface,
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport, EncoderStatus, EncoderSurface,
     Mp4Encoder,
 };
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]

@@ -2857,6 +2857,46 @@ try{
    await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
    await close();
  }, { core: true });
+ await step('Export PQ highlights as independently decoded HDR10 Main10 with mastering metadata', async () => {
+   const input = join(output, 'pq-split.mp4');
+   mediaCommand(['-f', 'lavfi', '-i',
+     "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum='if(lt(X,160),509,720)':cb=512:cr=512",
+     '-frames:v', '24', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
+     '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
+     '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-y', input]);
+   await launch(); await waitState('assets 0');
+   await click('SEQUENCE');
+   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
+   await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
+   await click('Apply settings');
+   await importMedia(input); await waitState('assets 1');
+   await click('ADD CLIP'); await waitState('clips 1');
+   const path = join(output, 'main10.mp4');
+   await click('EXPORT');
+   await client.click(await client.find({ label: 'Export color profile', role: 'Combobox' }));
+   await client.key('\uf701'); await client.key('\n');
+   await client.waitFor(async () =>
+     (await client.find({ label: 'Export color profile', role: 'Combobox' })).accessibleValue.startsWith('HDR10'),
+     { description: 'HDR10 export profile selected' });
+   await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), '5');
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Export MP4'); await waitState('Export complete');
+   const probe = spawnSync(ffmpeg, ['-hide_banner', '-i', path, '-vf', 'showinfo', '-f', 'null', '-'], { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(probe.status, 0, probe.stderr);
+   assert.match(probe.stderr, /hevc \(Main 10\).*yuv420p10le.*bt2020nc\/bt2020\/smpte2084/);
+   assert.match(probe.stderr, /n:\s*0\s+pts:\s*0\s+pts_time:0/);
+   const decoded = mediaCommand(['-i', path, '-an', '-pix_fmt', 'yuv420p10le', '-f', 'rawvideo', '-']);
+   assert.equal(decoded.length, 320 * 180 * 3 * 5);
+   const dark = decoded.readUInt16LE((90 * 320 + 100) * 2);
+   const light = decoded.readUInt16LE((90 * 320 + 220) * 2);
+   assert(Math.abs(dark - 509) <= 5 && Math.abs(light - 720) <= 5, `expected original PQ values, got ${dark} and ${light}`);
+   const container = await readFile(path);
+   const mdcv = container.indexOf(Buffer.from('mdcv'));
+   assert(mdcv > 4 && container.readUInt32BE(mdcv - 4) === 32, 'explicit MP4 mastering display declaration');
+   assert.equal(container.readUInt32BE(mdcv + 20), 10_000_000, '1000 nit target in mastering metadata');
+   await fileAction('SAVE AS', join(output, 'hdr-export.oqvideo.json'), 'Save project');
+   await waitState('Project saved'); await close();
+ }, { core: true });
  report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
 }finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.caseDefinitions});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}
