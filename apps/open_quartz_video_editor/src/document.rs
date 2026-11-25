@@ -25,7 +25,7 @@ pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 use timing::RippleEdit;
 pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 14;
+const SCHEMA_VERSION: u32 = 15;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, SpatialKey};

@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 14);
+   assert.equal(data.schema_version, 15);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -872,8 +872,8 @@ try{
    assert.equal(data.tracks[0].clips[0].duration * 1600, length);
    await close();
  });
- const clipControl = async (label, role = 'TextInput') => {
-   const viewport = await client.find({ id: 'EditorWindow::clip_properties' });
+ const clipControl = async (label, role = 'TextInput', section = 'clip_properties') => {
+   const viewport = await client.find({ id: `EditorWindow::${section}` });
    const scroll = deltaY => client.value('dispatch_pointer_scroll', {
      windowHandle: client.windowId, position: center(viewport), deltaX: 0, deltaY,
    });
@@ -899,6 +899,77 @@ try{
    }
    throw new Error(`Could not scroll clip Inspector to ${label}`);
  };
+ await step('Solo a track, observe separated meters, and export only that track', async () => {
+   await launch(audioProject); await waitState('audio clips 2');
+   await audioLaneScroll();
+   const solo = async () => (await buttons('Solo Audio 2'))[0];
+   assert.equal((await solo()).accessibleDescription, 'Solo disabled');
+   await client.click(await solo());
+   assert.equal((await solo()).accessibleDescription, 'Solo enabled');
+   await click('PLAY'); await waitAudio();
+   const meter = name => client.find({ label: `${name} level`, visible: false });
+   await client.waitFor(async () => Number((await meter('Audio 2')).accessibleDescription.replace('%', '')) > 0,
+     { description: 'soloed lane shows an active level' });
+   assert.equal((await meter('Audio 1')).accessibleDescription, '0%');
+   await click('PAUSE');
+   const path = join(output, 'audio-solo.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const samples = pcm(path);
+   assert(amplitude(samples, 0.45, 440) < 0.006);
+   assert(amplitude(samples, 0.45, 880) > 0.04);
+   await click('UNDO');
+   assert.equal((await solo()).accessibleDescription, 'Solo disabled');
+   await close();
+ }, { core: true });
+ await step('Report clipping from the mixed signal before it is clamped', async () => {
+   const tone = join(output, 'clipping.wav');
+   mediaCommand(['-f', 'lavfi', '-i', 'aevalsrc=0.56*sin(2*PI*440*t)|0.56*sin(2*PI*440*t):s=48000:d=1.2:c=stereo',
+     '-c:a', 'pcm_s16le', '-y', tone]);
+   await launch();
+   await fileAction('IMPORT', tone, 'Import media'); await waitState('assets 1');
+   await click('Add clipping.wav to timeline'); await waitState('audio clips 1');
+   const gain = await client.find({ label: 'Audio 1 gain (%)', role: 'TextInput' });
+   await enter(gain, '200');
+   await click('PLAY'); await waitState('Audio output 100% · clipping');
+   await click('PAUSE');
+   await fileAction('SAVE AS', join(output, 'clipping.oqvideo.json'), 'Save project'); await waitState('Project saved');
+   await close();
+ });
+ await step('Crossfade adjacent audio clips and hear both source tones in the export', async () => {
+   const fixture = JSON.parse(await readFile(audioProject, 'utf8'));
+   const [linkedTrack, independentTrack] = fixture.data.audio_tracks;
+   const [left] = independentTrack.clips;
+   const [right] = linkedTrack.clips;
+   left.placement = { kind: 'independent', start: 0, duration: 48000, source: 0 };
+   right.placement = { kind: 'independent', start: 48000, duration: 48000, source: 48000 };
+   independentTrack.clips = [left, right];
+   fixture.data.audio_tracks = [independentTrack];
+   const seed = join(output, 'audio-crossfade.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('audio clips 2');
+   await click('FIT TIMELINE'); await audioLaneScroll();
+   await client.click(await audioClip('independent-tone.wav'));
+   const setCrossfade = async value => enter(await clipControl('Audio crossfade (samples)', 'TextInput', 'audio_properties'), value);
+   await setCrossfade(96000);
+   await waitState('Crossfade needs more source audio before the incoming clip');
+   await setCrossfade(9600);
+   await click('SAVE'); await waitState('Project saved');
+   const stored = JSON.parse(await readFile(seed, 'utf8')).data.audio_tracks[0];
+   assert.deepEqual(stored.crossfades, [{ outgoing: left.id, incoming: right.id, samples: 9600 }]);
+   const path = join(output, 'audio-crossfade.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const samples = pcm(path);
+   assert(amplitude(samples, 0.75, 880) > 0.04);
+   assert(amplitude(samples, 0.75, 440) < 0.006);
+   assert(amplitude(samples, 0.95, 880) > 0.035);
+   assert(amplitude(samples, 0.95, 440) > 0.035);
+   assert(amplitude(samples, 1.2, 440) > 0.04);
+   assert(amplitude(samples, 1.2, 880) < 0.006);
+   await setCrossfade(0);
+   await click('SAVE'); await waitState('Project saved');
+   assert.equal(JSON.parse(await readFile(seed, 'utf8')).data.audio_tracks[0].crossfades, undefined);
+   await close();
+ }, { core: true });
  const keyProject = join(output, 'opacity.oqvideo.json');
  await step('Animate opacity with the same interpolation in scrubbing, playback and MP4', async () => {
    const fixture = JSON.parse(await readFile(multiProject, 'utf8'));

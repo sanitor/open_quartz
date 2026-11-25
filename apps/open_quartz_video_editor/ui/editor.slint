@@ -23,7 +23,7 @@ component NodeEffectTile inherits Rectangle {
 }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool }
-export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, sync_ripple: bool, gain: string }
+export struct AudioTrackRow { id: string, name: string, muted: bool, solo: bool, locked: bool, sync_ripple: bool, gain: string }
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
@@ -413,6 +413,8 @@ export component EditorWindow inherits Window {
     in property <string> audio_clip_end;
     in property <string> audio_clip_source;
     in property <string> audio_clip_gain;
+    in property <[int]> audio_track_peaks;
+    in property <string> audio_crossfade_length;
     in property <string> audio_fade_in;
     in property <string> audio_fade_out;
     in property <string> audio_clip_speed: "100";
@@ -1090,7 +1092,7 @@ export component EditorWindow inherits Window {
                         }
                         if !root.nodes_open: VerticalLayout {
                             HorizontalLayout { height: 44px; padding-left: 16px; Text { text: "Clip properties"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
-                            if root.audio_clip_id != "": ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
+                            if root.audio_clip_id != "": audio_properties := ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
                                 Text { text: root.audio_clip_name; color: root.text; wrap: word-wrap; }
                                 if root.audio_clip_speed != "100": Text { text: root.audio_clip_speed + "% speed"; color: root.secondary; font-size: 11px; }
                                 Text { text: "Audio timing uses 48 kHz samples. End is exclusive."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
@@ -1102,6 +1104,11 @@ export component EditorWindow inherits Window {
                                 if !root.audio_clip_linked: TimingField { label: "Audio fade out (samples)"; value: root.audio_fade_out; enabled: !root.audio_clip_locked; committed(value) => { root.audio_clip_action(root.audio_clip_id, "fade-out", value); } }
                                 if root.audio_clip_linked: Button { text: "Unlink audio"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "unlink", ""); } }
                                 if !root.audio_clip_linked: Button { text: "Delete audio clip"; enabled: !root.audio_clip_locked; clicked => { root.audio_clip_action(root.audio_clip_id, "delete", ""); } }
+                                TimingField {
+                                    label: "Audio crossfade (samples)"; value: root.audio_crossfade_length;
+                                    enabled: !root.audio_clip_locked;
+                                    committed(value) => { root.audio_clip_action(root.audio_clip_id, "crossfade", value); }
+                                }
                                 Rectangle { vertical-stretch: 1; }
                             } }
                             if root.audio_clip_id == "": clip_properties := ScrollView { horizontal-stretch: 1; vertical-stretch: 1; VerticalLayout { padding: 14px; spacing: 12px;
@@ -1316,6 +1323,15 @@ export component EditorWindow inherits Window {
                                 height: 84px; width: parent.width; background: #223031;
                                 border-width: 1px; border-color: root.border;
                                 Text { x: 8px; y: 5px; text: track.name; color: root.text; font-size: 11px; }
+                                Rectangle {
+                                    property <int> percent: index < root.audio_track_peaks.length ? root.audio_track_peaks[index] : 0;
+                                    x: 5px; y: 23px; width: parent.width - 10px; height: 4px; background: #172122;
+                                    accessible-role: AccessibleRole.text;
+                                    accessible-label: track.name + " level";
+                                    accessible-description: self.percent + "%";
+                                    Rectangle { width: parent.width * min(100, parent.percent) / 100; height: parent.height; background: parent.percent > 100 ? #ff796d : #48c9a5; }
+                                }
+
                                 HorizontalLayout {
                                     x: 5px; y: 30px; height: 28px; width: parent.width - 10px; spacing: 3px;
                                     TrackButton { glyph: track.muted ? "×" : "♪"; label: (track.muted ? "Unmute " : "Mute ") + track.name; clicked => { root.audio_track_action(track.id, "mute", ""); } }
@@ -1327,6 +1343,12 @@ export component EditorWindow inherits Window {
                                     label: "Ripple sync " + track.name;
                                     accessible-description: track.sync_ripple ? "Ripple sync enabled" : "Ripple sync disabled";
                                     clicked => { root.audio_track_action(track.id, "sync-ripple", ""); }
+                                }
+                                TrackButton {
+                                    x: 50px; y: 64px; width: 42px; height: 17px; glyph: "Solo"; selected: track.solo;
+                                    label: "Solo " + track.name;
+                                    accessible-description: track.solo ? "Solo enabled" : "Solo disabled";
+                                    clicked => { root.audio_track_action(track.id, "solo", ""); }
                                 }
                             }
                             if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px + timeline_scroll.content-y - 1px; height: 2px; width: parent.width; background: root.accent; }

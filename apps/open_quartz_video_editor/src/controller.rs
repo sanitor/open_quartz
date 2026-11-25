@@ -1561,10 +1561,19 @@ impl Controller {
         }
         #[cfg(target_os = "macos")]
         if let Some(window) = self.window.upgrade() {
-            let status = self.audio.as_ref().map_or(String::new(), |audio| {
-                format!("Audio output {}%", (audio.clock.peak() * 100.0).round() as u32)
-            });
+            let (status, peaks) = self.audio.as_ref().map_or_else(
+                || (String::new(), Vec::new()),
+                |audio| {
+                    let clipping = if audio.clock.clipping() { " · clipping" } else { "" };
+                    let status = format!("Audio output {}%{clipping}", (audio.clock.peak() * 100.0).round() as u32);
+                    let peaks = audio.clock.track_peaks().map(|peak| (peak * 100.0).round() as i32).collect();
+                    (status, peaks)
+                }
+            );
             if window.get_audio_level().as_str() != status { window.set_audio_level(status.into()); }
+            if window.get_audio_track_peaks().iter().ne(peaks.iter().copied()) {
+                window.set_audio_track_peaks(ModelRc::new(VecModel::from(peaks)));
+            }
         }
         #[cfg(target_os = "macos")]
         if let Some(export) = &self.export {
@@ -1912,7 +1921,7 @@ impl Controller {
     fn refresh_audio(&self, window: &EditorWindow) {
         let data = &self.document.data;
         let tracks = data.audio_tracks.iter().map(|track| AudioTrackRow {
-            id: track.id.clone().into(), name: track.name.clone().into(), muted: track.muted,
+            id: track.id.clone().into(), name: track.name.clone().into(), muted: track.muted, solo: track.solo,
             locked: track.locked, sync_ripple: track.sync_ripple, gain: (track.gain * 100.0).round().to_string().into(),
         }).collect::<Vec<_>>();
         reconcile(&self.audio_track_model, tracks, |row| row.id.as_str(), |a, b| a == b);
@@ -1920,6 +1929,7 @@ impl Controller {
             / crate::document::SAMPLE_RATE as f64;
         let mut rows = Vec::new();
         let mut selection = None;
+        let has_solo = data.audio_tracks.iter().any(|track| track.solo);
         for (lane, track) in data.audio_tracks.iter().enumerate() {
             for clip in &track.clips {
                 let Ok(interval) = clip.interval(data) else { continue };
@@ -1938,16 +1948,16 @@ impl Controller {
                     description: format!("{} samples to {}{}{}", interval.start, interval.end,
                         if interval.speed_percent == document::normal_speed() { String::new() } else { format!(" · {}% speed", interval.speed_percent) },
                         if linked { " · linked video" } else { "" }).into(),
-                    selected, muted: track.muted, editable: !linked && !track.locked,
+                    selected, muted: track.muted || (has_solo && !track.solo), editable: !linked && !track.locked,
                     waveform: waveform.into(),
                     fade_in: (clip.fade_in as f64 * scale) as f32,
                     fade_out: (clip.fade_out as f64 * scale) as f32,
                 });
-                if selected { selection = Some((clip, asset_name, interval, track.locked, linked)); }
+                if selected { selection = Some((clip, asset_name, interval, track.locked, linked, track.crossfade_samples(&clip.id))); }
             }
         }
         reconcile(&self.audio_clip_model, rows, |row| row.id.as_str(), |a, b| a == b);
-        if let Some((clip, name, interval, locked, linked)) = selection {
+        if let Some((clip, name, interval, locked, linked, crossfade)) = selection {
             window.set_audio_clip_id(clip.id.clone().into());
             window.set_audio_clip_name(name.into());
             window.set_audio_clip_start(interval.start.to_string().into());
@@ -1959,6 +1969,7 @@ impl Controller {
             window.set_audio_fade_out(clip.fade_out.to_string().into());
             window.set_audio_clip_locked(locked);
             window.set_audio_clip_linked(linked);
+            window.set_audio_crossfade_length(crossfade.to_string().into());
         } else {
             window.set_audio_clip_id("".into());
         }

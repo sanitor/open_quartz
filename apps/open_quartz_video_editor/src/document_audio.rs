@@ -21,11 +21,79 @@ pub struct AudioTrack {
     pub id: String,
     pub name: String,
     pub muted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub solo: bool,
     pub locked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_ripple: bool,
     pub gain: f32,
     pub clips: Vec<AudioClip>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    crossfades: Vec<AudioCrossfade>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AudioCrossfade {
+    outgoing: String,
+    incoming: String,
+    samples: u64,
+}
+
+pub struct AudioBlend<'a> {
+    pub outgoing: &'a str,
+    pub incoming: &'a str,
+    pub start: u64,
+    pub end: u64,
+}
+
+impl AudioTrack {
+    pub fn crossfade_samples(&self, clip: &str) -> u64 {
+        self.crossfades.iter().find(|fade| fade.outgoing == clip)
+            .map_or(0, |fade| fade.samples)
+    }
+
+    pub fn blends(&self, data: &ProjectData) -> Result<Vec<AudioBlend<'_>>, String> {
+        let mut blends = Vec::with_capacity(self.crossfades.len());
+        for fade in &self.crossfades {
+            let input = |id: &str| {
+                let clip = self.clips.iter().find(|clip| clip.id == id)
+                    .ok_or_else(|| format!("Remove the crossfade on {} before deleting its clip", self.name))?;
+                let asset = data.assets.iter().find(|asset| asset.id == clip.asset_id)
+                    .and_then(|asset| asset.audio.as_ref()).ok_or("Crossfade audio source is missing")?;
+                Ok::<_, String>((clip.interval(data)?, asset))
+            };
+            let (left, left_asset) = input(&fade.outgoing)?;
+            let (right, right_asset) = input(&fade.incoming)?;
+            if left.end != right.start || left.start >= right.start || fade.samples < 2 {
+                return Err(format!("Crossfade on {} requires two adjoining audio clips", self.name));
+            }
+            if left.speed_percent != normal_speed() || right.speed_percent != normal_speed() {
+                return Err("Audio crossfades require clips at 100% speed".into());
+            }
+            let start = left.end.checked_sub(fade.samples / 2).filter(|start| *start >= left.start)
+                .ok_or("Crossfade is longer than the outgoing clip")?;
+            let end = start.checked_add(fade.samples).filter(|end| *end <= right.end)
+                .ok_or("Crossfade is longer than the incoming clip")?;
+            let right_source_start = source_sample(right_asset.start_pts, 0, 1, right_asset.time_base)?;
+            if i128::from(right.source) - i128::from(right.start - start) < i128::from(right_source_start) {
+                return Err("Crossfade needs more source audio before the incoming clip".into());
+            }
+            if let Some(duration) = left_asset.duration_pts {
+                let pts = left_asset.start_pts.checked_add(duration).ok_or("Audio source duration overflow")?;
+                let left_source_end = source_sample(pts, 0, 1, left_asset.time_base)?;
+                if i128::from(left.source) + i128::from(end - left.start) > i128::from(left_source_end) {
+                    return Err("Crossfade needs more source audio after the outgoing clip".into());
+                }
+            }
+            blends.push(AudioBlend { outgoing: &fade.outgoing, incoming: &fade.incoming, start, end });
+        }
+        blends.sort_by_key(|blend| blend.start);
+        if blends.windows(2).any(|pair| pair[0].end > pair[1].start) {
+            return Err(format!("Audio crossfades overlap on {}", self.name));
+        }
+        Ok(blends)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -228,6 +296,7 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
             data.fps.sample_to_frame_ceil(range.end)?;
             intervals.push(range);
         }
+        track.blends(data)?;
         intervals.sort_by_key(|range| range.start);
         if intervals.windows(2).any(|pair| pair[0].end > pair[1].start) {
             return Err(format!("Audio clips overlap on {}", track.name));
@@ -286,10 +355,12 @@ impl ProjectData {
                     id: new_id("audio-track", revision),
                     name: format!("Audio {}", self.audio_tracks.len() + 1),
                     muted: false,
+                    solo: false,
                     locked: false,
                     sync_ripple: false,
                     gain: 1.0,
                     clips: Vec::new(),
+                    crossfades: Vec::new(),
                 });
                 self.audio_tracks.len() - 1
             }
@@ -417,6 +488,10 @@ fn trim_audio_source(source: i64, previous: u64, start: u64, speed: u16) -> Resu
 
 impl EditorDocument {
     pub fn edit_audio_clip(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
+        if action == "crossfade" {
+            let samples = value.trim().parse().map_err(|_| "Enter an audio crossfade length in samples")?;
+            return self.set_audio_crossfade(id, samples);
+        }
         self.transact(|data| {
             let (lane, index) = data.writable_audio(id)?;
             let interval = data.audio_tracks[lane].clips[index].interval(data)?;
@@ -629,6 +704,27 @@ impl EditorDocument {
         })
     }
 
+    fn set_audio_crossfade(&mut self, id: &str, samples: u64) -> Result<(), String> {
+        self.transact(|data| {
+            let (lane, index) = data.writable_audio(id)?;
+            let track = &data.audio_tracks[lane];
+            let incoming = if samples != 0 {
+                let cut = track.clips[index].interval(data)?.end;
+                Some(track.clips.iter().find(|clip| clip.id != id
+                    && clip.interval(data).is_ok_and(|interval| interval.start == cut))
+                    .ok_or("Crossfade requires an adjoining audio clip on the same track")?.id.clone())
+            } else {
+                None
+            };
+            let fades = &mut data.audio_tracks[lane].crossfades;
+            fades.retain(|fade| fade.outgoing != id);
+            if let Some(incoming) = incoming {
+                fades.push(AudioCrossfade { outgoing: id.into(), incoming, samples });
+            }
+            Ok(())
+        })
+    }
+
     pub fn audio_track(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
         self.transact(|data| {
             let track = data
@@ -638,6 +734,7 @@ impl EditorDocument {
                 .ok_or("Audio track is missing")?;
             match action {
                 "mute" => track.muted = !track.muted,
+                "solo" => track.solo = !track.solo,
                 "lock" => track.locked = !track.locked,
                 "sync-ripple" => track.sync_ripple = !track.sync_ripple,
                 "gain" => {
@@ -669,6 +766,7 @@ mod tests {
             id: "sync-audio".into(),
             name: "Audio".into(),
             muted: false,
+            solo: false,
             locked: false,
             sync_ripple: true,
             gain: 1.0,
@@ -681,6 +779,7 @@ mod tests {
                 speed_percent: 150,
                 placement: AudioPlacement::Independent { start: 1, duration: 10_000, source: 20 },
             }],
+            crossfades: Vec::new(),
         });
         project.ripple_independent_audio(2..3, RippleEdit::Insert, 0).unwrap();
         let lane = &project.audio_tracks[0];

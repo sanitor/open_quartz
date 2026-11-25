@@ -18,6 +18,8 @@ pub struct AudioClock {
     finished: AtomicBool,
     played: AtomicU64,
     peak: AtomicU32,
+    clipping: AtomicBool,
+    track_peaks: Vec<AtomicU32>,
 }
 impl AudioClock {
     pub fn start(&self) {
@@ -30,6 +32,14 @@ impl AudioClock {
     }
     pub fn peak(&self) -> f32 {
         f32::from_bits(self.peak.load(Ordering::Relaxed))
+    }
+    pub fn clipping(&self) -> bool {
+        self.clipping.load(Ordering::Relaxed)
+    }
+    pub fn track_peaks(&self) -> impl Iterator<Item = f32> + '_ {
+        self.track_peaks
+            .iter()
+            .map(|level| f32::from_bits(level.load(Ordering::Relaxed)))
     }
     pub fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
@@ -54,7 +64,12 @@ impl AudioPlayback {
         }
         let start = project.fps.frame_to_sample(start_frame)?;
         let end = project.fps.frame_to_sample(project.duration_frames())?;
-        let clock = Arc::new(AudioClock::default());
+        let clock = Arc::new(AudioClock {
+            track_peaks: (0..project.audio_tracks.len())
+                .map(|_| AtomicU32::default())
+                .collect(),
+            ..AudioClock::default()
+        });
         let error = Arc::new(Mutex::new(None));
         let worker_clock = clock.clone();
         let worker_cancel = cancel.clone();
@@ -147,6 +162,9 @@ fn play(
         if draining && queued == 0 && !queue.is_running()? {
             clock.played.store(end - start, Ordering::Release);
             clock.peak.store(0, Ordering::Relaxed);
+            for peak in &clock.track_peaks {
+                peak.store(0, Ordering::Relaxed);
+            }
             clock.finished.store(true, Ordering::Release);
             return Ok(());
         }
@@ -287,11 +305,15 @@ impl Queue {
             unsafe { std::slice::from_raw_parts_mut((*buffer).data.cast::<StereoSample>(), count) };
         mix.render(start, samples)
             .map_err(|error| error.to_string())?;
-        let peak = samples
-            .iter()
-            .flatten()
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        clock.peak.store(peak.to_bits(), Ordering::Relaxed);
+        clock
+            .peak
+            .store(mix.output_peak.min(1.0).to_bits(), Ordering::Relaxed);
+        if mix.output_peak > 1.0 {
+            clock.clipping.store(true, Ordering::Relaxed);
+        }
+        for (meter, peak) in clock.track_peaks.iter().zip(&mix.track_peaks) {
+            meter.store(peak.to_bits(), Ordering::Relaxed);
+        }
         unsafe {
             (*buffer).size = (count * BYTES) as u32;
         }
