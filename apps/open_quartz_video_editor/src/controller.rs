@@ -2634,8 +2634,13 @@ fn asset_details(asset: &MediaAsset) -> String {
     if !asset.has_video() {
         return audio.unwrap_or_default();
     }
+    let color = match asset.hdr_transfer {
+        Some(crate::document::HdrTransfer::Pq) => " · BT.2020 PQ · 10-bit",
+        Some(crate::document::HdrTransfer::Hlg) => " · BT.2020 HLG · 10-bit",
+        None => "",
+    };
     format!(
-        "{} × {} · {} · {}",
+        "{} × {} · {} · {}{color}",
         asset.width,
         asset.height,
         asset

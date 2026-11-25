@@ -12,7 +12,7 @@ fn document() -> EditorDocument {
         fingerprint: "offline-fingerprint".into(), still: false, size_bytes: 1, width: 64, height: 64,
         duration_pts: Some(90), start_pts: Some(9000),
         time_base: Rational { numerator: 1, denominator: 30 },
-        fps: Some(Rational { numerator: 30, denominator: 1 }), has_audio: false, audio: None, online: false,
+        fps: Some(Rational { numerator: 30, denominator: 1 }), hdr_transfer: None, has_audio: false, audio: None, online: false,
     });
     data.tracks[0].clips.push(Clip {
         id: "clip-1".into(), title: None, asset_id: "asset-1".into(), timeline_start: 0, duration: 60,

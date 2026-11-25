@@ -215,10 +215,10 @@ impl NativeVideoSource {
                 fallback_reason: None,
             }
         } else {
-            probe_video(&ffmpeg, &config).map_err(|error| decode_policy.error(error))?
+            probe_video_for_playback(&ffmpeg, &config, precise).map_err(|error| decode_policy.error(error))?
         };
         #[cfg(not(test))]
-        let info = probe_video(&ffmpeg, &config).map_err(|error| decode_policy.error(error))?;
+        let info = probe_video_for_playback(&ffmpeg, &config, precise).map_err(|error| decode_policy.error(error))?;
         #[cfg(target_os = "macos")]
         let (exact_session, exact_cancelled) = if precise
             && decode_policy == DecodePolicy::HardwareRequired
@@ -1381,7 +1381,16 @@ fn d3d12_decode_policy(video_line: &str) -> (bool, bool) {
     (codec_supported && format_supported, detach_required)
 }
 
+#[cfg(test)]
 fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoInfo, String> {
+    probe_video_for_playback(ffmpeg, config, false)
+}
+
+fn probe_video_for_playback(
+    ffmpeg: &Path, config: &NativeVideoConfig, precise: bool,
+) -> Result<NativeVideoInfo, String> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = precise;
     let mut command = Command::new(ffmpeg);
     command.args(["-hide_banner"]);
     append_input_args(&mut command, config, 0.0);
@@ -1396,7 +1405,7 @@ fn probe_video(ffmpeg: &Path, config: &NativeVideoConfig) -> Result<NativeVideoI
         .find(|line| line.contains("Video:"))
         .ok_or_else(|| format!("FFmpeg found no video stream in {}", config.source))?;
     #[cfg(target_os = "macos")]
-    if video_line.contains("smpte2084") || video_line.contains("arib-std-b67") {
+    if !precise && (video_line.contains("smpte2084") || video_line.contains("arib-std-b67")) {
         return Err("HDR transfer is unsupported without tone mapping".to_owned());
     }
     let size = Regex::new(r"(?:^|\s)(\d{2,5})x(\d{2,5})(?:[\s,]|$)")

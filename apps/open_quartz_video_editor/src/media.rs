@@ -1,6 +1,6 @@
 use crate::document::{fingerprint, new_id, MediaAsset, Rational};
 #[cfg(target_os = "macos")]
-use crate::document::AudioAsset;
+use crate::document::{AudioAsset, HdrTransfer};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbaImage};
 use std::path::{Path, PathBuf};
 
@@ -28,6 +28,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             start_pts: None,
             time_base: Rational::new(1, 1)?,
             fps: None,
+            hdr_transfer: None,
             has_audio: false,
             audio: None,
             online: true,
@@ -48,7 +49,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 id: new_id("asset", 0), name, path, fingerprint: fingerprint(&canonical)?,
                 size_bytes: metadata.len(), still: false, width: 0, height: 0, duration_pts: audio.duration_pts,
                 start_pts: Some(audio.start_pts), time_base: audio.time_base, fps: None,
-                has_audio: true, audio: Some(audio), online: true,
+                hdr_transfer: None, has_audio: true, audio: Some(audio), online: true,
             });
         }
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
@@ -71,8 +72,8 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             .frame_at_ns(0, 1)
             .map_err(|e| e.to_string())?
             .ok_or("Video file has no decodable presentation frame")?;
-        if frame.frame.frame.format() != oq_media::PixelFormat::Nv12 {
-            return Err("The first editor workflow accepts 8-bit SDR video only".into());
+        if !matches!(frame.frame.frame.format(), oq_media::PixelFormat::Nv12 | oq_media::PixelFormat::P010) {
+            return Err("The editor requires an NV12 or P010 hardware video surface".into());
         }
         Ok(MediaAsset {
             id: new_id("asset", 0),
@@ -90,6 +91,11 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 .average_frame_rate
                 .map(|fps| Rational::new(fps.numerator, fps.denominator))
                 .transpose()?,
+            hdr_transfer: match frame.frame.frame.color().transfer {
+                oq_media::TransferFunction::Pq => Some(HdrTransfer::Pq),
+                oq_media::TransferFunction::Hlg => Some(HdrTransfer::Hlg),
+                _ => None,
+            },
             has_audio: info.has_audio,
             audio,
             online: true,

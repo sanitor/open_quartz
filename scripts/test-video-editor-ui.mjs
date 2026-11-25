@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 22);
+   assert.equal(data.schema_version, 23);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -2221,7 +2221,7 @@ try{
    }] }];
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
    // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
-   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 22);
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 23);
    fixture.data.tracks[0].clips[0].spatial_keys = [
      { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
      { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
@@ -2425,7 +2425,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 22);
+   assert.equal(saved.schema_version, 23);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');
@@ -2815,6 +2815,46 @@ try{
    const saved = JSON.parse(await readFile(multiProject, 'utf8')).data;
    assert.equal(saved.name, 'Multitrack interaction coverage');
    assert.equal(saved.tracks[0].clips[0].source_in_pts, asset.start_pts + ticksPerSecond / 2);
+   await close();
+ }, { core: true });
+ await step('Import PQ and HLG and inspect the hardware tone-mapped monitor', async () => {
+   const asset = (name, transfer) => {
+     const path = join(output, name + '.mp4');
+     mediaCommand(['-f', 'lavfi', '-i',
+       "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum=509:cb=512:cr=512",
+       '-frames:v', '24', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
+       '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
+       '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', transfer, '-y', path]);
+     return path;
+   };
+   const pq = asset('pq-neutral', 'smpte2084');
+   const hlg = asset('hlg-neutral', 'arib-std-b67');
+   await launch();
+   const check = async (name, profile, min, max) => {
+     const card = await assetCard(name + '.mp4');
+     assert(card.accessibleDescription.includes(profile));
+     await client.waitFor(async () => {
+       const pixels = decodePng(await client.screenshot());
+       const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+       const win = await client.windowProperties();
+       const scale = pixels.width / (win.size.width / (win.scaleFactor || 1));
+       const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2) * scale);
+       const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * scale);
+       const offset = (y * pixels.width + x) * pixels.channels;
+       const [red, green, blue] = pixels.pixels.subarray(offset, offset + 3);
+       return red >= min && red <= max && Math.abs(red - green) <= 2 && Math.abs(red - blue) <= 2;
+     }, { description: profile + ' neutral display value' });
+   };
+   await importMedia(pq); await waitState('assets 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
+   await click('ADD CLIP'); await waitState('clips 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
+   await importMedia(hlg); await waitState('assets 2');
+   await check('hlg-neutral', 'BT.2020 HLG · 10-bit', 114, 132);
+   const project = join(output, 'hdr-import.oqvideo.json');
+   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved'); await close();
+   await launch(project); await waitState('clips 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
    await close();
  }, { core: true });
  report.passed=true;

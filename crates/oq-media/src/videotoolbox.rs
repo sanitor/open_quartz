@@ -606,6 +606,7 @@ impl Session {
                     }
                     let (primaries, primaries_assumed) = match raw.color_primaries {
                         ffi::AVColorPrimaries::AVCOL_PRI_BT709 => (ColorPrimaries::Bt709, false),
+                        ffi::AVColorPrimaries::AVCOL_PRI_BT2020 => (ColorPrimaries::Bt2020, false),
                         ffi::AVColorPrimaries::AVCOL_PRI_BT470BG => {
                             (ColorPrimaries::Bt470Bg, false)
                         }
@@ -637,6 +638,8 @@ impl Session {
                         ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1 => {
                             (TransferFunction::Srgb, false)
                         }
+                        ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 => (TransferFunction::Pq, false),
+                        ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 => (TransferFunction::Hlg, false),
                         ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED => {
                             (TransferFunction::Bt709, true)
                         }
@@ -646,6 +649,14 @@ impl Session {
                             )))
                         }
                     };
+                    if matches!(transfer, TransferFunction::Pq | TransferFunction::Hlg)
+                        && (format != PixelFormat::P010 || primaries != ColorPrimaries::Bt2020
+                            || raw.colorspace != ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL)
+                    {
+                        return Err(crate::MediaError::unsupported(
+                            "PQ/HLG input requires P010, BT.2020 primaries and the BT.2020 non-constant matrix",
+                        ));
+                    }
                     let matrix = match raw.colorspace {
                         ffi::AVColorSpace::AVCOL_SPC_BT709 => ColorMatrix::Bt709,
                         ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL => ColorMatrix::Bt2020,

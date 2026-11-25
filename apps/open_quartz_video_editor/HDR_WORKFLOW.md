@@ -23,3 +23,16 @@ HDR10 export acceptance requires independent decoding of the rendered file,
 including Main10 depth, BT.2020/PQ signalling, the actual mastering-display
 declaration and timestamps. Content light levels need their own measurement
 or an explicit declaration.
+
+## BT.2020 input and SDR viewing
+
+OpenQuartz Studio imports seekable HEVC Main10 files with explicit BT.2020
+nonconstant matrix and PQ or HLG metadata. The Library displays the hardware
+detected transfer and bit depth. Source preview and the SDR timeline use the
+VideoToolbox P010 planes on the GPU. The SDR view maps luminance using a smooth
+shoulder after conversion to linear Rec.709. Its HLG reference display uses
+1,000 cd/m² and system gamma 1.2.
+
+The native E2E case generates tagged 10-bit neutral clips, checks the monitor
+against the expected SDR code values for each transfer, and checks that the
+asset interpretation survives saving and reopening.

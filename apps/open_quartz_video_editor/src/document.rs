@@ -40,7 +40,7 @@ pub use mask::{Mask, MaskShape};
 #[path = "document_grades.rs"]
 mod grades;
 pub use grades::GradeVersions;
-const SCHEMA_VERSION: u32 = 22;
+const SCHEMA_VERSION: u32 = 23;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -95,6 +95,13 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
     a.max(1)
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HdrTransfer {
+    Pq,
+    Hlg,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MediaAsset {
@@ -112,6 +119,8 @@ pub struct MediaAsset {
     pub start_pts: Option<i64>,
     pub time_base: Rational,
     pub fps: Option<Rational>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr_transfer: Option<HdrTransfer>,
     pub has_audio: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioAsset>,
@@ -1434,6 +1443,7 @@ mod tests {
                 numerator: 30,
                 denominator: 1,
             }),
+            hdr_transfer: None,
             has_audio: false,
             audio: None,
             online: true,

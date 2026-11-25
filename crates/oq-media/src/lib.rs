@@ -166,18 +166,20 @@ pub enum ColorMatrix {
     Bt709,
     Bt2020,
 }
-/// Supported source transfer characteristics. GPU adapters convert Bt709 to
-/// the application's SDR sRGB-encoded output; unsupported transfers are rejected.
+/// Transfer characteristics carried separately from native sample depth.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TransferFunction {
     Bt709,
     Srgb,
+    Pq,
+    Hlg,
 }
 /// RGB chromaticities, distinct from YUV matrix coefficients.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColorPrimaries {
     Bt709,
     Bt470Bg,
+    Bt2020,
 }
 /// Source color metadata. Unspecified matrix/transfer/primaries are reported as
 /// assumptions, not as measured properties.

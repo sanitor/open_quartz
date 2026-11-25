@@ -39,7 +39,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 
 ## Timeline Editing
 
-- **IMPORT**：导入本地 H.264 / HEVC、8-bit SDR 视频，带明确时长的 AAC 或 PCM 音频，以及 SDR PNG / JPEG 图片。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
+- **IMPORT**：导入本地 H.264 / HEVC、SDR 视频及标注 BT.2020 PQ 或 HLG 的 HEVC Main10 视频（SDR 显示预览），带明确时长的 AAC 或 PCM 音频，以及 SDR PNG / JPEG 图片。素材库显示支持的音频编码、采样率和声道数。视频文件必须可精确定位且有可信 stream origin/duration。
 - **Import files** 支持在系统选择器里多选，也可逐行粘贴完整路径。成功导入的素材共用一个撤销步骤，重复项与失败项计入结果。素材离线时，**Relink folder** 在所选目录及子目录中按内容指纹查找原片，匹配结果一次应用。
 - PNG 和 JPEG 可在素材库预览，放入时间线时默认持续三秒。可修剪、分割和变换，也可参与叠化。PNG 保留透明度，JPEG 按 EXIF 方向显示。预览和 MP4 导出使用同一套合成规则。
 - **ADD CLIP** / 素材旁的 **+**：将选定素材放入目标轨道的可用空隙。普通移动保留其他片段的时间。同轨重叠时拒绝放置，跨轨重叠按轨道顺序合成。
@@ -105,7 +105,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 22，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 23，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 

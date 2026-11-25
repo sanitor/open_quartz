@@ -243,10 +243,22 @@ impl GpuBackend {
             cv_textures[plane] = Some(cv_texture);
         }
         let matrix = match frame.color().matrix { ColorMatrix::Bt601 => 0, ColorMatrix::Bt709 => 1, ColorMatrix::Bt2020 => 2 };
-        let source_srgb = frame.color().transfer == TransferFunction::Srgb;
-        let pal_primaries = frame.color().primaries == ColorPrimaries::Bt470Bg;
-        let key = ((format * 6 + matrix * 2 + u8::from(frame.color().full_range)) * 2 + u8::from(source_srgb)) * 2 + u8::from(pal_primaries);
-        let (layout, pipeline) = state.pipelines.entry(key).or_insert_with(|| create_pipeline(&self.device, format, matrix, frame.color().full_range, source_srgb, pal_primaries));
+        let color = frame.color();
+        let transfer = match color.transfer {
+            TransferFunction::Bt709 => 0,
+            TransferFunction::Srgb => 1,
+            TransferFunction::Pq => 2,
+            TransferFunction::Hlg => 3,
+        };
+        let primaries = match color.primaries {
+            ColorPrimaries::Bt709 => 0,
+            ColorPrimaries::Bt470Bg => 1,
+            ColorPrimaries::Bt2020 => 2,
+        };
+        let key = ((format * 6 + matrix * 2 + u8::from(color.full_range)) * 4 + transfer) * 3 + primaries;
+        let (layout, pipeline) = state.pipelines.entry(key).or_insert_with(|| {
+            create_pipeline(&self.device, format, matrix, color.full_range, transfer, primaries)
+        });
         let view0 = textures[0].as_ref().unwrap().create_view(&Default::default());
         let view1 = textures[if format == 2 { 0 } else { 1 }].as_ref().unwrap().create_view(&Default::default());
         let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("videotoolbox-planes"), layout, entries: &[
@@ -282,7 +294,7 @@ fn videotoolbox_bytes(frame: &VideoToolboxFrame) -> Result<usize, String> {
     Ok(bytes)
 }
 
-fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, source_srgb: bool, pal_primaries: bool) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, transfer: u8, primaries: u8) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let (kr, kb) = match matrix { 0 => (0.299f64, 0.114f64), 1 => (0.2126, 0.0722), _ => (0.2627, 0.0593) };
     let kg = 1.0 - kr - kb;
     let (scale, y_offset, y_range, c_mid, c_range) = match (format, full) {
@@ -292,20 +304,29 @@ fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, so
         _ => (255.0, 0.0, 255.0, 128.0, 255.0),
     };
     let conversion = if format == 2 { "return vec4f(output_color(textureLoad(y_tex,p,0).rgb),1.0);".to_owned() } else { format!("let y = (textureLoad(y_tex,p,0).r * {scale} - {y_offset}) / {y_range}; let chroma = (textureLoad(uv_tex,c,0).rg * {scale} - vec2f({c_mid})) / {c_range}; let rgb = clamp(vec3f(y + {rv} * chroma.y, y - {gu} * chroma.x - {gv} * chroma.y, y + {bu} * chroma.x), vec3f(0.0), vec3f(1.0)); return vec4f(output_color(rgb),1.0);", rv=2.0*(1.0-kr), gu=2.0*kb*(1.0-kb)/kg, gv=2.0*kr*(1.0-kr)/kg, bu=2.0*(1.0-kb)) };
-    let decode_transfer = if source_srgb {
+    let decode_transfer = match transfer {
+        1 => {
         "let linear = select(pow(max((v + vec3f(0.055)) / 1.055, vec3f(0.0)), vec3f(2.4)), v / 12.92, v <= vec3f(0.04045));"
-    } else {
-        "let linear = select(pow(max((v + vec3f(0.099)) / 1.099, vec3f(0.0)), vec3f(1.0 / 0.45)), v / 4.5, v < vec3f(0.081));"
+        }
+        2 => "let u = pow(v, vec3f(32.0 / 2523.0)); let linear = (10000.0 / 203.0) * pow(max(u - 0.8359375, vec3f(0.0)) / (18.8515625 - 18.6875 * u), vec3f(16384.0 / 2610.0));",
+        3 => "let scene = select((exp((v - 0.55991073) / 0.17883277) + 0.28466892) / 12.0, v * v / 3.0, v <= vec3f(0.5)); let linear = (1000.0 / 203.0) * scene * pow(dot(scene, vec3f(0.2627, 0.6780, 0.0593)), 0.2);",
+        _ => "let linear = select(pow(max((v + vec3f(0.099)) / 1.099, vec3f(0.0)), vec3f(1.0 / 0.45)), v / 4.5, v < vec3f(0.081));",
     };
     // BT.470BG (PAL) and BT.709 share D65. Convert linear RGB using their
     // chromaticities: PAL R(.64,.33) G(.29,.60) B(.15,.06), 709 G(.30,.60).
-    let gamut = if pal_primaries {
-        "let rgb709 = vec3f(1.044043209 * linear.r - 0.044043209 * linear.g, linear.g, 0.011793378 * linear.g + 0.988206622 * linear.b);"
-    } else { "let rgb709 = linear;" };
-    let transfer = if source_srgb && !pal_primaries { "return v;".to_owned() } else { format!(r#"
+    let gamut = match primaries {
+        1 => "let rgb709 = vec3f(1.044043209 * linear.r - 0.044043209 * linear.g, linear.g, 0.011793378 * linear.g + 0.988206622 * linear.b);",
+        2 => "let rgb709 = vec3f(dot(linear, vec3f(1.660491, -0.587641, -0.072850)), dot(linear, vec3f(-0.124550, 1.132900, -0.008349)), dot(linear, vec3f(-0.018151, -0.100579, 1.118730)));",
+        _ => "let rgb709 = linear;",
+    };
+    let display = if transfer >= 2 {
+        "let luminance = max(dot(rgb709, vec3f(0.2126, 0.7152, 0.0722)), 0.0); let mapped = rgb709 / (1.0 + luminance);"
+    } else { "let mapped = rgb709;" };
+    let transfer = if transfer == 1 && primaries == 0 { "return v;".to_owned() } else { format!(r#"
         {decode_transfer}
         {gamut}
-        let encoded = select(1.055 * pow(max(rgb709, vec3f(0.0)), vec3f(1.0 / 2.4)) - vec3f(0.055), 12.92 * rgb709, rgb709 <= vec3f(0.0031308));
+        {display}
+        let encoded = select(1.055 * pow(max(mapped, vec3f(0.0)), vec3f(1.0 / 2.4)) - vec3f(0.055), 12.92 * mapped, mapped <= vec3f(0.0031308));
         return clamp(encoded, vec3f(0.0), vec3f(1.0));
     "#) };
     let source = format!(r#"
