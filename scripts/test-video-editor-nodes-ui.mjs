@@ -78,7 +78,11 @@ async function close() {
 }
 async function fileAction(action, path, submit) {
   await click(action);
-  await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+  const input = await client.waitFor(async () => {
+    const fields = await client.byLabel('File path', { role: 'TextInput' });
+    return fields.length === 1 && fields[0];
+  }, { description: `${action} file dialog` });
+  await client.setValue(input, path);
   const matches = await client.byLabel(submit, { role: 'Button' });
   assert(matches.length, `Missing file submission ${submit}`);
   await client.click(matches.at(-1));
@@ -668,6 +672,9 @@ async function runVideoCases() {
     const coefficient = await revealInspector('Corrector Red output from red');
     await client.click(coefficient); await client.setValue(coefficient, '0');
     await waitColor('mixed-red'); await client.key('\n');
+    await client.waitFor(async () => (await client.byLabel('Corrector Red output from red', {
+      role: 'TextInput', enabled: true, visible: false,
+    })).some(field => field.accessibleValue === '0.0000'), { description: 'committed RGB mixer coefficient' });
     await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
     const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
     assert.deepEqual(graph.nodes.find(node => node.id === corrector.id).data.colorCorrector.rgbMixer.red, [0, 0, 0]);
