@@ -1,8 +1,8 @@
 # OpenQuartz 开发文档
 
-## 当前开发入口（Rust Slint + 独立 .scr）
+## 当前开发入口（Rust Slint）
 
-当前产品仅为 `apps/open_quartz_slint` 原生桌面与独立 Windows `.scr`；Web、Tauri fallback、TypeScript SDK、WASM 与 bindings API/feature 已退役。`npm run dev` 准备原生运行库并启动 Slint，`npm run build` 生成 `dist-desktop/` 中的 portable 包，`npm run test:desktop` 运行 Slint 应用测试。没有 Vite/Web/Tauri 构建入口。`dist-desktop/` 是可重新生成的忽略产物；Slint 的独立 workspace 构建目录为 `apps/open_quartz_slint/target/`。
+`npm run dev` 启动 Open Quartz 桌面，`npm run dev:video-editor` 启动 OpenQuartz Studio。`npm run build` 和 `npm run package:video-editor` 生成各自的平台包。Windows 另外提供独立 `.scr`。桌面与 Studio 的 Rust 测试分别运行 `npm run test:desktop` 和 `npm run test:video-editor`，两平台共用 `npm run test:e2e:full`。`npm run test:desktop:export` 用独立解码验证 SDK 的硬件 H.264 导出和逐帧像素。
 
 历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
@@ -10,7 +10,7 @@ Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.m
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
-媒体架构与首轮实现见 [跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。macOS 文件视频已接入独立 `oq-media` 的进程内 VideoToolbox 硬解及 CoreVideo/Metal GPU 转换；`oq` 仅表示 OpenQuartz 出处，不代表依赖。完整跨平台会话、编码和独立 Slint 播放器组件仍是设计。`npm run prepare:desktop` 在 macOS 准备校验过的 LGPL-only libav SDK；直接运行 Cargo 前也需准备运行库，必要时设置 `OPEN_QUARTZ_FFMPEG_PATH` 指向 FFmpeg executable。
+`oq-media` 在 macOS 通过 VideoToolbox 和 CoreVideo/Metal 解码、转换与交付视频，在 Windows 通过 D3D12VA 和 D3D12 执行这些操作。`npm run prepare:desktop` 准备当前平台固定版本的 LGPL FFmpeg 运行库和 SDK。媒体架构与首轮实现见[跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。
 
 Phase4共享流水使用`FramePipeline::submit_window/configure_window`，单帧显式`submit`复用同一执行事务；NativePlayer负责clock/prefill/deadline，媒体cursor在有界worker中选择真实PTS。原生source preview同样request/poll，不同步seek/decode；GPU导入保持同queue owner至completion，不逐帧host wait。`FrameBudget`可在创建backend/pipeline前注入，共享设备的多个backend包装须注入同Arc；callback只发送Wake，不在原生析构器内执行渲染。实际阶段trace需显式`enable_stage_trace(true)`，默认不分配/采样事件。窗口/bytes/surfaces满是反压，最小工作集不可能则明确capacity，不退回CPU。
 
@@ -18,7 +18,7 @@ CI新增macOS独立`media-source-window` job：准备真实libav/FFmpeg后运行
 
 当前推理边界见[推理架构](INFERENCE_ARCHITECTURE.md)和[节点契约](ONNX_NODE_DESIGN.md)。`inspect_onnx(model)` 无需 ORT，保留完整 source facts：IR/producer/model versions、domain、graph name、模型/图/值 metadata、opsets、递归类型与精确 dtype codes、scalar/UnknownRank、维度/符号/denotation、Required/Optional/OverridableInitializer 及 dense/sparse external-data 引用；自省不加载权重。runtime metadata/ValueKind/元素分类、hash/size/format 分开，不把 runtime sentinel 当源版本。`ImageInterfaceReport` 仅结构兼容，typed `ImageTaskContract` 才定义命名输出、layout/preprocessing/resize/color/shape/decoder；声明在 frame access 前检查，实际输出在解码/交付前检查。JSON 分列 `model`/`taskContract`。旧 CoreML EP 混合执行数据仅为历史 reference，不是 resident fallback。
 
-图任务契约要求一个图像输入与一个显式选定输出，而非模型只有一个输出。U²Net-P 保留全部 `1959`–`1965` 并绑定主 mask `1959`；未知多输出无 binding 拒绝。Metal 后端可执行七个目录 profile，完整生产链路、数值对照与原生窗口显示由下方七模型 E2E 单独验收；其他平台和未知模型在 frame access 前报错。`.scr` 推理导出/stub 明确不可用，不能回退 CPU，非推理 Shader/硬件视频导出保留。
+图任务契约要求一个图像输入与一个显式选定输出。U²Net-P 保留全部 `1959`–`1965` 并绑定主 mask `1959`。Metal 和 D3D12 桌面后端执行相同的七个目录模型，生产链路、独立数值对照与原生窗口显示由下方七模型 E2E 验收。推理图在桌面运行时执行，Windows `.scr` 路径支持 Shader 图。
 
 图语义核心为单一 open_quartz，根部仅 lib.rs。compiler 拥有 shader/topology/plan，GraphEvaluator 拥有 dirty/Math/feedback，GraphInstance 拥有 identity/generation/state。execution::FrameExecutionSession 组合 GraphInstance+OutputHub；PlaybackSession 为同一 owner 加 clock。NativePlayer 拥有共享 FramePipeline+实时 clock；FramePipeline 拥有 session、RenderDevice、VideoSources、InferenceTasks、有界稳定帧池与在途请求。RenderDevice 管 GPU/import/presentation，VideoSources 管图源 map/lifecycle，InferenceTasks 管 resident session/图任务身份/输出适配；独立 oq-inference 管 GPU compiler/session 与显式 reference Tensor APIs，oq-media 管媒体 session/FrameLease。project/resources 分别负责编辑/history 与准备/规划。
 
