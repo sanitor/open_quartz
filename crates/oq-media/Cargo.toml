@@ -9,9 +9,10 @@ description = "Framework-independent media frames and native VideoToolbox decodi
 
 [features]
 default = []
-videotoolbox = ["dep:ffmpeg-next"]
+audio = ["dep:ffmpeg-next"]
+videotoolbox = ["audio"]
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format", "software-resampling"] }
 
 [dev-dependencies]

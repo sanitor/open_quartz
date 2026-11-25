@@ -51,6 +51,10 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
           "$pwd\node_modules\.cache\open-quartz\desktop-runtime-win32-x64" >> $env:GITHUB_PATH
 
+      - name: Test native audio seeking on Windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p oq-media --features audio --lib
+
       - name: Enforce 100% Rust SDK coverage
         run: npm run test:sdk-coverage
 

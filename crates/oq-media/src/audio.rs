@@ -29,7 +29,10 @@ pub struct AudioProbe {
 }
 
 fn input(path: &Path, cancel: Arc<AtomicBool>) -> Result<format::context::Input, MediaError> {
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
     crate::require_media_sdk()?;
+    #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
+    ffmpeg_next::init().map_err(|error| format!("FFmpeg init failed: {error}"))?;
     let path = path
         .canonicalize()
         .map_err(|error| format!("Cannot access audio file: {error}"))?;

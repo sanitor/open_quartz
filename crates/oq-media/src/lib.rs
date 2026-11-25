@@ -206,9 +206,9 @@ mod videotoolbox;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use videotoolbox::{ActualPipeline, FrameLease, Session, VideoToolboxFrame};
 
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "audio"))]
 mod audio;
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "audio"))]
 pub use audio::{audio_sample, probe_audio, AudioProbe, AudioReader, AudioSourceInfo, StereoSample, AUDIO_RATE, MAX_AUDIO_BLOCK};
 
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
