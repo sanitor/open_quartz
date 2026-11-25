@@ -2053,7 +2053,15 @@ async function runVideoCases() {
    await expectColor('blue');
    const original = resolve(output, video.path);
    const moved = original + '.offline';
-   await rename(original, moved);
+   await client.waitFor(async () => {
+     try {
+       await rename(original, moved);
+       return true;
+     } catch (error) {
+       if (process.platform !== 'win32' || error.code !== 'EBUSY') throw error;
+       return false;
+     }
+   }, { description: 'switching to a proxy releases the original video file' });
    try {
      await click('NEXT'); await waitState('Frame 1 · source PTS 33333333 ns');
      await click('PLAY'); await waitState('Frame 8 · source PTS 266666667 ns');
