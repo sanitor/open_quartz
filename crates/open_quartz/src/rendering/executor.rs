@@ -65,6 +65,7 @@ struct NodeGpuResources {
     bindings: Arc<Vec<BindingDescriptor>>,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    static_buffer: Option<(u32, wgpu::Buffer)>,
     uniform_buffers: HashMap<String, wgpu::Buffer>,
     uniform_values: HashMap<String, Arc<[f32]>>,
     builtin_resolution: bool,
@@ -832,6 +833,7 @@ impl GpuExecutor {
             bindings: Arc::new(shader.bindings.clone()),
             bind_group_layout: shared.layout,
             pipeline: shared.pipeline,
+            static_buffer: shared.static_buffer,
             uniform_buffers,
             uniform_values: HashMap::new(),
             builtin_resolution: plan.builtin_ports.iter().any(|name| name == "iResolution"),
@@ -899,11 +901,14 @@ impl GpuExecutor {
             self.backend.runtime_counters.uniform_writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        let entries = resources
+        let mut entries = resources
             .bindings
             .iter()
             .map(|binding| bind_group_entry(binding, resources, &sampled))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some((binding, buffer)) = &resources.static_buffer {
+            entries.push(wgpu::BindGroupEntry { binding: *binding, resource: buffer.as_entire_binding() });
+        }
         let bind_group = self
             .backend
             .device

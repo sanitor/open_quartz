@@ -211,10 +211,11 @@ pub fn compile_shader(request: &CompileRequest) -> CompiledShader {
 }
 
 pub fn validate_shader(code: &str, preamble_lines: u32) -> Vec<WgslCompilationError> {
-    match wgsl::parse_str(code) {
+    let code = super::shader_validation_source(code);
+    match wgsl::parse_str(&code) {
         Ok(_) => Vec::new(),
         Err(error) => {
-            let raw = error.emit_to_string(code);
+            let raw = error.emit_to_string(&code);
             let (line, column) = first_error_position(&raw, preamble_lines);
             vec![WgslCompilationError {
                 message: compact_diagnostic(&raw),

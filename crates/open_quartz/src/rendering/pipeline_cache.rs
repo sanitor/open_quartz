@@ -32,6 +32,7 @@ pub(crate) struct RuntimeCounters {
 pub(crate) struct SharedPipeline {
     pub layout: wgpu::BindGroupLayout,
     pub pipeline: wgpu::RenderPipeline,
+    pub static_buffer: Option<(u32, wgpu::Buffer)>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -125,10 +126,30 @@ pub(crate) type DevicePipelineCache = Mutex<PipelineCache>;
 
 pub(crate) fn prepare_pipeline(backend: &super::GpuBackend, shader: &CompiledShader, format: TextureFormat, domain: crate::operators::ColorDomain) -> Result<SharedPipeline, super::GpuExecutionError> {
     backend.pipeline_cache.lock().get_or_create(shader, format, domain, || {
-        let module = naga::front::wgsl::parse_str(&shader.full_fragment_code).map_err(|error| super::GpuExecutionError { node_id: None, message: error.emit_to_string(&shader.full_fragment_code) })?;
+        let mut entries = shader.bindings.iter().map(super::executor::binding_layout_entry).collect::<Result<Vec<_>, _>>()?;
+        let mut fragment_code = std::borrow::Cow::Borrowed(shader.full_fragment_code.as_str());
+        let mut static_buffer = None;
+        if cfg!(windows) {
+            let binding = entries.iter().map(|entry| entry.binding).max().map_or(0, |last| last + 1);
+            if let Some((code, bytes)) = crate::compiler::shader::embedded_cube_buffer(&fragment_code, binding) {
+                use wgpu::util::DeviceExt;
+                static_buffer = Some((binding, backend.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Embedded CUBE samples"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE,
+                })));
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                });
+                fragment_code = code.into();
+            }
+        }
+        let module = naga::front::wgsl::parse_str(&fragment_code).map_err(|error| super::GpuExecutionError { node_id: None, message: error.emit_to_string(&fragment_code) })?;
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
             .map_err(|error| super::GpuExecutionError { node_id: None, message: error.to_string() })?;
-        let entries = shader.bindings.iter().map(super::executor::binding_layout_entry).collect::<Result<Vec<_>, _>>()?;
         let layout = backend.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("open-quartz-shared-bindings"), entries: &entries,
         });
@@ -139,7 +160,7 @@ pub(crate) fn prepare_pipeline(backend: &super::GpuBackend, shader: &CompiledSha
             label: Some("open-quartz-shared-vertex"), source: wgpu::ShaderSource::Wgsl(shader.vertex_shader.clone().into()),
         });
         let fragment = backend.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("open-quartz-shared-fragment"), source: wgpu::ShaderSource::Wgsl(shader.full_fragment_code.clone().into()),
+            label: Some("open-quartz-shared-fragment"), source: wgpu::ShaderSource::Wgsl(fragment_code),
         });
         let pipeline = backend.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("open-quartz-shared-pipeline"), layout: Some(&pipeline_layout),
@@ -149,6 +170,6 @@ pub(crate) fn prepare_pipeline(backend: &super::GpuBackend, shader: &CompiledSha
                 targets: &[Some(wgpu::ColorTargetState { format: format.into(), blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: None,
         });
-        Ok(SharedPipeline { layout, pipeline })
+        Ok(SharedPipeline { layout, pipeline, static_buffer })
     })
 }

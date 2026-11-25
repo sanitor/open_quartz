@@ -29,7 +29,8 @@ pub struct ParsedShader {
 }
 
 pub fn parse_shader(code: &str) -> ParsedShader {
-    let (description, port_descriptions) = extract_comments(code);
+    let validation_source = super::shader_validation_source(code);
+    let (description, port_descriptions) = extract_comments(&validation_source);
     let mut result = ParsedShader {
         inputs: Vec::new(),
         outputs: Vec::new(),
@@ -38,19 +39,19 @@ pub fn parse_shader(code: &str) -> ParsedShader {
         description,
     };
 
-    match naga::front::wgsl::parse_str(code) {
+    match naga::front::wgsl::parse_str(&validation_source) {
         Ok(module) => {
             extract_naga_bindings(&module, &port_descriptions, &mut result);
             extract_naga_outputs(&module, &mut result);
             if result.inputs.is_empty() {
-                fallback_extract(code, &port_descriptions, &mut result);
+                fallback_extract(&validation_source, &port_descriptions, &mut result);
             }
         }
         Err(error) => {
-            fallback_extract(code, &port_descriptions, &mut result);
+            fallback_extract(&validation_source, &port_descriptions, &mut result);
             let has_fragment_output = code.contains("@location") && code.contains("->");
             if !has_fragment_output {
-                result.parse_error = Some(error.emit_to_string(code));
+                result.parse_error = Some(error.emit_to_string(&validation_source));
             }
         }
     }

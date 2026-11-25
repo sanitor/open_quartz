@@ -26,6 +26,7 @@ fn main(@location(0) v_uv: vec2f) -> @location(0) vec4f {
 "#;
 
 pub mod compiler;
+mod embedded_cube;
 pub mod parser;
 
 pub use compiler::{
@@ -33,3 +34,6 @@ pub use compiler::{
     WgslCompilationError,
 };
 pub use parser::{parse_shader, ParsedShader};
+pub use embedded_cube::shader_validation_source;
+#[cfg(feature = "gpu")]
+pub(crate) use embedded_cube::embedded_cube_buffer;

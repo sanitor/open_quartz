@@ -210,8 +210,9 @@ impl ClipPipeline {
                 return Err(format!("Node {}: {}", node.id, error.message));
             }
             if let Some(shader) = &node.shader {
-                let module = naga::front::wgsl::parse_str(&shader.full_fragment_code)
-                    .map_err(|error| format!("Node {}: {}", node.id, error.emit_to_string(&shader.full_fragment_code)))?;
+                let source = open_quartz::compiler::shader::shader_validation_source(&shader.full_fragment_code);
+                let module = naga::front::wgsl::parse_str(&source)
+                    .map_err(|error| format!("Node {}: {}", node.id, error.emit_to_string(&source)))?;
                 if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Fragment
                     || module.entry_points[0].name != "main"
                 {

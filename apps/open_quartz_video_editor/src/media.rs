@@ -110,10 +110,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        Err(
-            "Precise resident editing currently requires macOS VideoToolbox; no CPU fallback"
-                .into(),
-        )
+        Err("Precise video editing requires macOS VideoToolbox or Windows D3D12VA".into())
     }
 }
 
