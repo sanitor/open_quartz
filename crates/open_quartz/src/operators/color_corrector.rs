@@ -6,7 +6,7 @@ use super::OperatorError;
 pub enum ColorDomain { LegacySrgb, AcesCgLinear }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColorCorrectorStage { Primaries, HdrZones, RgbMixer, Curves }
+pub enum ColorCorrectorStage { Primaries, HdrZones, RgbMixer, Curves, Qualifier }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -109,6 +109,31 @@ impl CurveConfig {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QualifierConfig {
+    pub enabled: bool,
+    pub hue: f32,
+    pub width: f32,
+    pub saturation_min: f32,
+    pub saturation_max: f32,
+    pub lightness_min: f32,
+    pub lightness_max: f32,
+    pub softness: f32,
+    pub matte_output: f32,
+}
+
+impl Default for QualifierConfig {
+    fn default() -> Self {
+        Self { enabled: false, hue: 0.0, width: 0.5, saturation_min: 0.0, saturation_max: 1.0,
+            lightness_min: 0.0, lightness_max: 1.0, softness: 0.04, matte_output: 0.0 }
+    }
+}
+
+impl QualifierConfig {
+    pub(super) fn is_default(&self) -> bool { *self == Self::default() }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ColorCorrectorWire {
     schema_version: u32,
     algorithm_version: u32,
@@ -119,6 +144,8 @@ struct ColorCorrectorWire {
     rgb_mixer: RgbMixerConfig,
     #[serde(default)]
     curves: CurveConfig,
+    #[serde(default)]
+    qualifier: QualifierConfig,
 }
 
 /// Version 1 order: WB → exposure → lift/gamma/gain/offset → contrast → HDR zones
@@ -135,18 +162,20 @@ pub struct ColorCorrectorConfig {
     pub rgb_mixer: RgbMixerConfig,
     #[serde(skip_serializing_if = "CurveConfig::is_default")]
     pub curves: CurveConfig,
+    #[serde(skip_serializing_if = "QualifierConfig::is_default")]
+    pub qualifier: QualifierConfig,
 }
 impl Default for ColorCorrectorConfig {
     fn default() -> Self {
         Self { schema_version: 1, algorithm_version: 1, enabled: true,
-            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default(), rgb_mixer: RgbMixerConfig::default(), curves: CurveConfig::default() }
+            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default(), rgb_mixer: RgbMixerConfig::default(), curves: CurveConfig::default(), qualifier: QualifierConfig::default() }
     }
 }
 impl TryFrom<ColorCorrectorWire> for ColorCorrectorConfig {
     type Error = OperatorError;
     fn try_from(w: ColorCorrectorWire) -> Result<Self, Self::Error> {
         let config = Self { schema_version: w.schema_version, algorithm_version: w.algorithm_version,
-            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones, rgb_mixer: w.rgb_mixer, curves: w.curves };
+            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones, rgb_mixer: w.rgb_mixer, curves: w.curves, qualifier: w.qualifier };
         config.validate()?;
         Ok(config)
     }
@@ -235,6 +264,14 @@ pub const COLOR_CORRECTOR_FIELDS: &[ColorCorrectorField] = &[
     field!("curve_blue_low","Low mids (-2 EV)",Curves,-4.0,4.0,0.0,curves.blue[1]),
     field!("curve_blue_middle","Mid grey (+0 EV)",Curves,-4.0,4.0,0.0,curves.blue[2]),
     field!("curve_blue_highlights","Highlights (+3 EV)",Curves,-4.0,4.0,0.0,curves.blue[3]),
+    field!("qualifier_hue","Hue center",Qualifier,0.0,1.0,0.0,qualifier.hue),
+    field!("qualifier_width","Hue half-width",Qualifier,0.0,0.5,0.5,qualifier.width),
+    field!("qualifier_saturation_min","Minimum saturation",Qualifier,0.0,1.0,0.0,qualifier.saturation_min),
+    field!("qualifier_saturation_max","Maximum saturation",Qualifier,0.0,1.0,1.0,qualifier.saturation_max),
+    field!("qualifier_lightness_min","Minimum lightness",Qualifier,0.0,1.0,0.0,qualifier.lightness_min),
+    field!("qualifier_lightness_max","Maximum lightness",Qualifier,0.0,1.0,1.0,qualifier.lightness_max),
+    field!("qualifier_softness","Qualifier softness",Qualifier,0.001,0.5,0.04,qualifier.softness),
+    field!("qualifier_matte_output","Qualifier matte output",Qualifier,0.0,1.0,0.0,qualifier.matte_output),
 ];
 
 impl ColorCorrectorConfig {
@@ -247,6 +284,10 @@ impl ColorCorrectorConfig {
             if !value.is_finite() || value < field.min || value > field.max {
                 return Err(OperatorError(format!("{} must be finite and in [{}, {}]",field.key,field.min,field.max)));
             }
+        }
+        if self.qualifier.saturation_min > self.qualifier.saturation_max
+            || self.qualifier.lightness_min > self.qualifier.lightness_max {
+            return Err(OperatorError("Qualifier minimum must not exceed maximum".into()));
         }
         if self.hdr_zones.shadow_pivot >= self.hdr_zones.highlight_pivot {
             return Err(OperatorError("Shadow center must be below highlight center".into()));
@@ -265,10 +306,10 @@ impl ColorCorrectorConfig {
         Ok(())
     }
     pub fn stage_enabled(&self, stage: ColorCorrectorStage) -> bool {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled, ColorCorrectorStage::Curves => self.curves.enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled, ColorCorrectorStage::Curves => self.curves.enabled, ColorCorrectorStage::Qualifier => self.qualifier.enabled }
     }
     pub fn set_stage_enabled(&mut self, stage: ColorCorrectorStage, enabled: bool) {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled = enabled, ColorCorrectorStage::Curves => self.curves.enabled = enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled = enabled, ColorCorrectorStage::Curves => self.curves.enabled = enabled, ColorCorrectorStage::Qualifier => self.qualifier.enabled = enabled }
     }
     /// Reset parameters, preserving the independent bypass state.
     pub fn reset_stage(&mut self, stage: ColorCorrectorStage) {
@@ -283,6 +324,6 @@ impl ColorCorrectorConfig {
         }) && (!self.hdr_zones.enabled || {
             let z = &self.hdr_zones;
             [&z.blacks,&z.shadows,&z.darks,&z.lights,&z.highlights,&z.specular].iter().all(|z| z.exposure == 0.0 && z.saturation == 1.0)
-        }) && self.rgb_mixer.is_identity() && self.curves.is_identity())
+        }) && self.rgb_mixer.is_identity() && self.curves.is_identity() && (!self.qualifier.enabled || self.qualifier.matte_output < 0.5))
     }
 }

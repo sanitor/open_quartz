@@ -67,6 +67,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 长时间线按窗口实例化片段控件。滚动会加载临近区间，拖拽结束时同步窗口。库、工程里的总片段数和编辑选择使用完整时间线。
 - **Library → Input color** 可按素材选择 Sony S-Log3 / S-Gamut3.Cine、S-Log3 / S-Gamut3 或 S-Log2 / S-Gamut。选择 **Auto** 恢复自动解释。
 - **Nodes → Blend** 提供底图与叠加图的两路图像输入；**Luma Mask** 用第二分支的亮度与 alpha 控制底图覆盖率。插入时第二路默认接 **Clip Source**，可拖线重接同片段的其他图像节点。**Amount** 控制混合强度。启用 ACEScg 时，两路在浮点工作域合成。
+- **Color Corrector → Qualifier** 用色相、饱和度、明度和软边限制该节点的调色范围。用 Primaries 等面板调整入选像素，将 **Qualifier matte output** 设为 1 可输出黑白蒙版，供 Luma Mask 的第二路使用。
 - **Nodes → Import CUBE LUT** 把线性 ACEScg 3D CUBE LUT 插入片段图。支持 2–33 点网格和输入域声明，进行三线性插值，超出输入域取边缘。LUT 随工程保存，可撤销和重开，无需保留原 CUBE 文件。
 - **Color Corrector → Curves** 提供 Master 和独立 R、G、B 参数曲线。以 18% 灰为 0 EV，可编辑四个锚点的曝光偏移。主曲线与通道曲线在停止数域叠加，可独立旁路曲线阶段并重置。
 - 监视器 **Color scope** 提供 RGB Parade 和 Vectorscope。RGB Parade 按画面横坐标分列显示各通道码值，Vectorscope 显示 Rec.709 Cb/Cr 分布。两者跟随监视器当前 SDR 图像。

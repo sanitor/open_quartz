@@ -146,7 +146,7 @@ fn generated_variants_are_valid_wgsl_and_disabled_stages_have_no_bindings() {
             config.hdr_zones.shadows.exposure=1.0;
             let lowered=lower_color_corrector(&config,domain).unwrap();
             assert_eq!(lowered.parameters.contains_key("cc_primary"),primaries);
-            assert_eq!(lowered.parameters.contains_key("cc_zones_a"),zones);
+            assert_eq!(lowered.parameters.contains_key("cc_zones"),zones);
             let source=lowered.shader_source.unwrap();
             let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|error|panic!("{}",error.emit_to_string(&source)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::empty()).validate(&module).unwrap();
@@ -213,4 +213,22 @@ fn curves_interpolate_in_stops_with_independent_channels_and_signed_headroom() {
     assert_eq!(plan.parameters["cc_curves"].len(), 16);
     config.curves.enabled = false;
     assert!(config.is_identity());
+}
+
+
+#[test]
+fn qualifier_wraps_hue_and_preserves_unselected_pixels() {
+    let mut config = ColorCorrectorConfig::default();
+    config.qualifier.enabled = true;
+    config.qualifier.hue = 0.99;
+    config.qualifier.width = 0.06;
+    config.qualifier.saturation_min = 0.5;
+    config.primaries.exposure = -1.0;
+    let red = [0.6131289, 0.07010676, 0.02058661, 0.5];
+    let green = [0.33951731, 0.91636576, 0.10956772, 0.5];
+    close(managed(&config, red)[0], red[0] / 2.0);
+    assert_eq!(managed(&config, green), green);
+    config.qualifier.matte_output = 1.0;
+    assert_eq!(managed(&config, red), [1.0, 1.0, 1.0, 0.5]);
+    assert_eq!(managed(&config, green), [0.0, 0.0, 0.0, 0.5]);
 }

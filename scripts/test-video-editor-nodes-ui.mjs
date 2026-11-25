@@ -240,6 +240,9 @@ async function previewMatches(png, color) {
       : color === 'masked-cyan' ? r < 20 && g >= 75 && g < 165 && b >= 75 && b < 165
       : color === 'middle-gray' ? r >= 123 && r <= 132 && Math.abs(r-g) < 4 && Math.abs(r-b) < 4
       : color === 'dark-gray' ? r >= 59 && r <= 73 && Math.abs(r-g) < 4 && Math.abs(r-b) < 4
+      : color === 'dim-cyan' ? r < 25 && g >= 50 && g <= 160 && b >= 50 && b <= 160
+      : color === 'white' ? r > 242 && g > 242 && b > 242
+      : color === 'black' ? r < 12 && g < 12 && b < 12
       : color === 'mixed-red' ? r < 120 && g > 35
       : color === 'dim-green' ? r < 25 && g >= 45 && g <= 155 && b < 25
       : false;
@@ -784,6 +787,40 @@ try {
     await click('UNDO'); await waitColor('red'); await click('REDO'); await waitColor('green');
     await close(); await unlink(lut); await launch(path); await waitState('clips 1');
     await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('green');
+    await close();
+  }, { core: true });
+  await step('Qualify a grade by hue and inspect the output matte', async () => {
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); await addEffect('Invert'); await waitColor('cyan');
+    const corrector = await addEffect('Color Corrector'); await selectNode(corrector.id);
+    const edit = async (label, value) => {
+      const field = await client.waitFor(async () => {
+        const input = await revealInspector(label);
+        return input.accessibleEnabled ? input : false;
+      }, { description: `editable ${label} after validation` });
+      await client.click(field); await client.setValue(field, value); await client.key('\n');
+    };
+    await edit(CORRECTOR_EXPOSURE, '-2'); await waitColor('dim-cyan');
+    await client.activate(await revealInspector('Corrector palette Qualifier', 'Button'));
+    await client.click(await revealInspector('Qualifier enabled', 'Checkbox'));
+    await edit('Corrector Hue half-width', '0.1'); await waitColor('cyan');
+    await edit('Corrector Qualifier matte output', '1'); await waitColor('black');
+    await edit('Corrector Hue center', '0.5'); await waitColor('white');
+    await edit('Corrector Qualifier matte output', '0'); await waitColor('dim-cyan');
+    const project = join(output, 'qualifier.oqvideo.json');
+    await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(project, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.equal(graph.nodes.find(node => node.id === corrector.id).data.colorCorrector.qualifier.hue, 0.5);
+    await client.activate(await revealInspector('Reset Qualifier', 'Button'));
+    await edit('Corrector Qualifier matte output', '1'); await waitColor('white');
+    await click('UNDO'); await waitColor('dim-cyan');
+    await click('UNDO');
+    await click('SAVE'); await waitState('Project saved');
+    await close(); await launch(project); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('dim-cyan');
     await close();
   }, { core: true });
   report.passed = true;

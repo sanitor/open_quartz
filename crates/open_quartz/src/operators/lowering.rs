@@ -43,8 +43,8 @@ impl ColorCorrectorConfig {
         let alias = self.is_identity();
         Ok(OperatorStructuralKey { kind: "color_corrector", schema_version: self.schema_version,
             algorithm_version: self.algorithm_version,
-            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2) | (u8::from(!self.rgb_mixer.is_identity()) << 3) | (u8::from(!self.curves.is_identity()) << 4),
-            alias, input_domain, output_domain: if alias { input_domain } else { ColorDomain::AcesCgLinear }, layout_version: 1 })
+            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2) | (u8::from(!self.rgb_mixer.is_identity()) << 3) | (u8::from(!self.curves.is_identity()) << 4) | (u8::from(self.qualifier.enabled) << 5),
+            alias, input_domain, output_domain: if alias { input_domain } else { ColorDomain::AcesCgLinear }, layout_version: 2 })
     }
     pub fn parameter_values(&self) -> Result<BTreeMap<String, Vec<f32>>, OperatorError> {
         self.validate()?;
@@ -60,10 +60,12 @@ impl ColorCorrectorConfig {
         }
         let z = &self.hdr_zones;
         if z.enabled {
-            values.insert("cc_zones_a".into(), vec![z.blacks.exposure,z.shadows.exposure,z.darks.exposure,z.lights.exposure]);
-            values.insert("cc_zones_b".into(), vec![z.highlights.exposure,z.specular.exposure,z.blacks.saturation,z.shadows.saturation]);
-            values.insert("cc_zones_c".into(), vec![z.darks.saturation,z.lights.saturation,z.highlights.saturation,z.specular.saturation]);
-            values.insert("cc_zones_range".into(), vec![z.shadow_pivot,z.highlight_pivot,z.range,z.falloff]);
+            values.insert("cc_zones".into(), vec![
+                z.blacks.exposure, z.shadows.exposure, z.darks.exposure, z.lights.exposure,
+                z.highlights.exposure, z.specular.exposure, z.blacks.saturation, z.shadows.saturation,
+                z.darks.saturation, z.lights.saturation, z.highlights.saturation, z.specular.saturation,
+                z.shadow_pivot, z.highlight_pivot, z.range, z.falloff,
+            ]);
         }
         if !self.rgb_mixer.is_identity() {
             let mixer = &self.rgb_mixer;
@@ -74,6 +76,14 @@ impl ColorCorrectorConfig {
             let curves = &self.curves;
             values.insert("cc_curves".into(), [curves.master, curves.red, curves.green, curves.blue].concat());
         }
+        if self.qualifier.enabled {
+            let selection = &self.qualifier;
+            values.insert("cc_selection".into(), vec![
+                selection.hue, selection.width, selection.softness, selection.matte_output,
+                selection.saturation_min, selection.saturation_max, selection.lightness_min, selection.lightness_max,
+                0.0,
+            ]);
+        }
         Ok(values)
     }
     pub fn classify_update(&self, candidate: &Self, input_domain: ColorDomain) -> Result<OperatorUpdate, OperatorError> {
@@ -82,7 +92,8 @@ impl ColorCorrectorConfig {
         if !key.alias && ((self.primaries.enabled && self.primaries != candidate.primaries)
             || (self.hdr_zones.enabled && self.hdr_zones != candidate.hdr_zones)
             || (!self.rgb_mixer.is_identity() && self.rgb_mixer != candidate.rgb_mixer)
-            || (!self.curves.is_identity() && self.curves != candidate.curves)) { return Ok(OperatorUpdate::Parameters); }
+            || (!self.curves.is_identity() && self.curves != candidate.curves)
+            || (self.qualifier.enabled && self.qualifier != candidate.qualifier)) { return Ok(OperatorUpdate::Parameters); }
         Ok(OperatorUpdate::Unchanged)
     }
 }
@@ -92,8 +103,8 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
     let parameters = config.parameter_values()?;
     let parameter_types = parameters.keys().map(|key| {
         (key.clone(), match key.as_str() {
-            "cc_mix" => "mat3".into(),
-            "cc_curves" => "mat4".into(),
+            "cc_mix" | "cc_selection" => "mat3".into(),
+            "cc_curves" | "cc_zones" => "mat4".into(),
             _ => "vec4".into(),
         })
     }).collect();
@@ -105,14 +116,14 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
         let mut shader = String::from("@group(0) @binding(0) var source: texture_2d<f32>;\n@group(0) @binding(1) var sourceSampler: sampler;\n");
         for (index,name) in parameters.keys().enumerate() {
             let uniform = match name.as_str() {
-                "cc_mix" => "mat3x3f",
-                "cc_curves" => "mat4x4f",
+                "cc_mix" | "cc_selection" => "mat3x3f",
+                "cc_curves" | "cc_zones" => "mat4x4f",
                 _ => "vec4f",
             };
             shader.push_str(&format!("@group(0) @binding({}) var<uniform> {name}: {uniform};\n",index+2));
         }
         shader.push_str("fn cc_signed_pow(v:vec3<f32>,p:vec3<f32>)->vec3<f32>{return sign(v)*pow(abs(v),p);}\nfn cc_luma(v:vec3<f32>)->f32{return dot(v,vec3<f32>(0.2722287168,0.6740817658,0.0536895174));}\nfn cc_saturate(v:vec3<f32>,s:f32)->vec3<f32>{let y=cc_luma(v);return vec3<f32>(y)+(v-vec3<f32>(y))*s;}\n");
-        if input_domain == ColorDomain::LegacySrgb { shader.push_str(WGSL_COLOR_TRANSFORMS); }
+        if input_domain == ColorDomain::LegacySrgb || config.qualifier.enabled { shader.push_str(WGSL_COLOR_TRANSFORMS); }
         if !config.curves.is_identity() {
             shader.push_str(r#"
 fn cc_curve_delta(stops: f32, points: vec4f) -> f32 {
@@ -126,13 +137,45 @@ fn cc_curve_value(value: f32, points: vec4f) -> f32 {
 }
 "#);
         }
+        if config.qualifier.enabled {
+            shader.push_str(r#"
+fn cc_qualifier(scene: vec3f) -> f32 {
+    let rgb = clamp(cc_ap1_to_srgb(scene), vec3f(0.0), vec3f(1.0));
+    let hi = max(rgb.r, max(rgb.g, rgb.b));
+    let lo = min(rgb.r, min(rgb.g, rgb.b));
+    let span = hi - lo;
+    let safe = max(span, 0.00001);
+    let lightness = 0.5 * (hi + lo);
+    let saturation = span / max(1.0 - abs(2.0 * lightness - 1.0), 0.00001);
+    var sector = (rgb.r - rgb.g) / safe + 4.0;
+    if hi == rgb.r { sector = (rgb.g - rgb.b) / safe; }
+    else if hi == rgb.g { sector = (rgb.b - rgb.r) / safe + 2.0; }
+    let hue = fract(sector / 6.0);
+    let distance = abs(hue - cc_selection[0].x);
+    let cyclic = min(distance, 1.0 - distance);
+    let width = cc_selection[0].y;
+    let softness = cc_selection[0].z;
+    let sat = cc_limits(saturation, cc_selection[1].yz, softness);
+    let light = cc_limits(lightness, vec2f(cc_selection[2].x, cc_selection[2].y), softness);
+    let hue_gate = select((1.0 - smoothstep(width, width + softness, cyclic)) * smoothstep(0.0, 0.01, saturation), 1.0, width >= 0.5);
+    return hue_gate * sat * light;
+}
+fn cc_limits(level: f32, bounds: vec2f, softness: f32) -> f32 {
+    return smoothstep(bounds.x - softness, bounds.x, level) *
+        (1.0 - smoothstep(bounds.y, bounds.y + softness, level));
+}
+"#);
+        }
         shader.push_str("@fragment fn main(@location(0) uv:vec2<f32>)->@location(0) vec4<f32>{\nlet sample=textureSample(source,sourceSampler,uv);\nvar c=sample.rgb;\n");
         if input_domain == ColorDomain::LegacySrgb { shader.push_str("c=cc_srgb_to_ap1(c);\n"); }
+        if config.qualifier.enabled {
+            shader.push_str("let ungraded = c; let coverage = cc_qualifier(c); if cc_selection[1].x >= 0.5 { return vec4f(vec3f(coverage), sample.a); }\n");
+        }
         if config.primaries.enabled {
             shader.push_str("let wb=exp2(vec3<f32>(cc_primary.x+cc_primary.y,-cc_primary.y, -cc_primary.x+cc_primary.y));\nc=c*wb/cc_luma(wb);\nc=c*exp2(cc_primary.z);\nc=cc_signed_pow(c+cc_lift.xyz,vec3<f32>(1.0)/cc_gamma.xyz)*cc_gain.xyz+cc_offset.xyz;\nc=cc_finish.x*cc_signed_pow(c/cc_finish.x,vec3<f32>(cc_primary.w));\n");
         }
         if config.hdr_zones.enabled {
-            shader.push_str("let stops=log2(max(cc_luma(c),0.00000001)/0.18);\nlet pivots=vec4<f32>(cc_zones_range.x-cc_zones_range.z,cc_zones_range.x,(cc_zones_range.x+cc_zones_range.y)*0.5,cc_zones_range.y);\nlet cuts=smoothstep(pivots-vec4<f32>(cc_zones_range.w),pivots+vec4<f32>(cc_zones_range.w),vec4<f32>(stops));\nlet last=smoothstep(cc_zones_range.y+cc_zones_range.z-cc_zones_range.w,cc_zones_range.y+cc_zones_range.z+cc_zones_range.w,stops);\nlet weights0=vec4<f32>(1.0-cuts.x,cuts.x-cuts.y,cuts.y-cuts.z,cuts.z-cuts.w);\nlet weights1=vec2<f32>(cuts.w-last,last);\nc=c*exp2(dot(weights0,cc_zones_a)+dot(weights1,cc_zones_b.xy));\nc=cc_saturate(c,dot(weights0,vec4<f32>(cc_zones_b.zw,cc_zones_c.xy))+dot(weights1,cc_zones_c.zw));\n");
+            shader.push_str("let cc_zones_a=cc_zones[0];let cc_zones_b=cc_zones[1];let cc_zones_c=cc_zones[2];let cc_zones_range=cc_zones[3];\nlet stops=log2(max(cc_luma(c),0.00000001)/0.18);\nlet pivots=vec4<f32>(cc_zones_range.x-cc_zones_range.z,cc_zones_range.x,(cc_zones_range.x+cc_zones_range.y)*0.5,cc_zones_range.y);\nlet cuts=smoothstep(pivots-vec4<f32>(cc_zones_range.w),pivots+vec4<f32>(cc_zones_range.w),vec4<f32>(stops));\nlet last=smoothstep(cc_zones_range.y+cc_zones_range.z-cc_zones_range.w,cc_zones_range.y+cc_zones_range.z+cc_zones_range.w,stops);\nlet weights0=vec4<f32>(1.0-cuts.x,cuts.x-cuts.y,cuts.y-cuts.z,cuts.z-cuts.w);\nlet weights1=vec2<f32>(cuts.w-last,last);\nc=c*exp2(dot(weights0,cc_zones_a)+dot(weights1,cc_zones_b.xy));\nc=cc_saturate(c,dot(weights0,vec4<f32>(cc_zones_b.zw,cc_zones_c.xy))+dot(weights1,cc_zones_c.zw));\n");
         }
         if config.primaries.enabled {
             shader.push_str("let maximum=max(max(abs(c.r),abs(c.g)),abs(c.b));\nlet minimum=min(min(abs(c.r),abs(c.g)),abs(c.b));\nlet chroma=(maximum-minimum)/max(maximum,0.000001);\nc=cc_saturate(c,cc_finish.y*(1.0+cc_finish.z*(1.0-clamp(chroma,0.0,1.0))));\n");
@@ -142,6 +185,9 @@ fn cc_curve_value(value: f32, points: vec4f) -> f32 {
         }
         if !config.curves.is_identity() {
             shader.push_str("c = vec3f(cc_curve_value(c.r, cc_curves[1]), cc_curve_value(c.g, cc_curves[2]), cc_curve_value(c.b, cc_curves[3]));\n");
+        }
+        if config.qualifier.enabled {
+            shader.push_str("c = mix(ungraded, c, coverage);\n");
         }
         shader.push_str("return vec4<f32>(c,sample.a);\n}\n");
         shader_source = Some(shader);
@@ -182,6 +228,11 @@ pub fn evaluate_color_corrector(config: &ColorCorrectorConfig, input_domain: Col
             [0.070106762186640,0.916365764243620,0.013527473569741],
             [0.020586612954493,0.109567717001633,0.869845670043874]];
         c = m.map(|row| row.into_iter().zip(c).map(|(a,b)|a*b).sum());
+    }
+    let ungraded = c;
+    let coverage = if config.qualifier.enabled { qualifier_coverage(c, &config.qualifier) } else { 1.0 };
+    if config.qualifier.enabled && config.qualifier.matte_output >= 0.5 {
+        return Ok([coverage as f32, coverage as f32, coverage as f32, pixel[3]]);
     }
     let p = &config.primaries;
     if p.enabled {
@@ -229,9 +280,44 @@ pub fn evaluate_color_corrector(config: &ColorCorrectorConfig, input_domain: Col
             *value *= (curve_delta(stops, curves.master) + curve_delta(stops, points)).exp2();
         }
     }
+    if config.qualifier.enabled {
+        for (value, original) in c.iter_mut().zip(ungraded) {
+            *value = original + (*value - original) * coverage;
+        }
+    }
     let result=[c[0] as f32,c[1] as f32,c[2] as f32,pixel[3]];
     if result.iter().any(|v|!v.is_finite()) { return Err(OperatorError("ColorCorrector result exceeds finite f32 range".into())); }
     Ok(result)
+}
+fn qualifier_coverage(scene: [f64; 3], selection: &super::color_corrector::QualifierConfig) -> f64 {
+    let matrix = [[1.7048586763, -0.6217160219, -0.0831426544],
+        [-0.1300768242, 1.1407357748, -0.0106589506], [-0.0239640729, -0.1289755083, 1.1529395812]];
+    let rgb = matrix.map(|row| {
+        let value: f64 = row.into_iter().zip(scene).map(|(a, b)| a * b).sum();
+        let value = value.clamp(0.0, 1.0);
+        if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 }
+    });
+    let [r, g, b] = rgb;
+    let hi = r.max(g).max(b);
+    let lo = r.min(g).min(b);
+    let span = hi - lo;
+    let lightness = (hi + lo) * 0.5;
+    let saturation = span / (1.0 - (2.0 * lightness - 1.0).abs()).max(1e-5);
+    let safe = span.max(1e-5);
+    let sector = if hi == r { (g - b) / safe } else if hi == g { (b - r) / safe + 2.0 } else { (r - g) / safe + 4.0 };
+    let distance = ((sector / 6.0).rem_euclid(1.0) - f64::from(selection.hue)).abs();
+    let width = f64::from(selection.width);
+    let softness = f64::from(selection.softness);
+    let hue = if width >= 0.5 { 1.0 } else {
+        (1.0 - smoothstep(width, width + softness, distance.min(1.0 - distance)))
+            * smoothstep(0.0, 0.01, saturation)
+    };
+    let limits = |level, min, max| {
+        let (min, max) = (f64::from(min), f64::from(max));
+        smoothstep(min - softness, min, level) * (1.0 - smoothstep(max, max + softness, level))
+    };
+    hue * limits(saturation, selection.saturation_min, selection.saturation_max)
+        * limits(lightness, selection.lightness_min, selection.lightness_max)
 }
 fn curve_delta(stops: f64, points: [f32; 4]) -> f64 {
     let anchors = [-4.0, -2.0, 0.0, 3.0];
