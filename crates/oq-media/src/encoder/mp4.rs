@@ -1,9 +1,16 @@
+#[cfg(target_os = "macos")]
 use super::EncoderSurface;
 use super::{
-    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport, EncoderStatus,
+    AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport,
+    EncoderStatus,
 };
+#[cfg(windows)]
+use crate::d3d12_encoder::{D3d12Encoder, FramePool};
 use crate::{MediaError, RationalTimeBase};
-use ffmpeg_next::{codec, format, Dictionary, Packet};
+#[cfg(target_os = "macos")]
+use ffmpeg_next::Dictionary;
+use ffmpeg_next::{codec, format, Packet};
+#[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -54,10 +61,29 @@ pub struct Mp4Encoder {
     profile: EncoderProfile,
 }
 impl Mp4Encoder {
+    #[cfg(windows)]
+    pub fn open_d3d12(
+        path: impl AsRef<Path>,
+        config: EncoderConfig,
+        audio: Option<AudioRender>,
+        native: D3d12Encoder,
+    ) -> Result<(Self, FramePool), MediaError> {
+        let (width, height, time_base) = native.geometry();
+        if (width, height, time_base) != (config.width, config.height, config.time_base) {
+            return Err("MP4 dimensions or time base differ from the D3D12 encoder".into());
+        }
+        let profile = native.profile();
+        let frames = native.frame_pool()?;
+        let writer = Self::start(path, config, audio, profile, |file| file, native)?;
+        Ok((writer, frames))
+    }
+
+    #[cfg(target_os = "macos")]
     pub fn open(path: impl AsRef<Path>, config: EncoderConfig) -> Result<Self, MediaError> {
         Self::open_with_audio(path, config, None)
     }
 
+    #[cfg(target_os = "macos")]
     pub fn open_with_audio(
         path: impl AsRef<Path>,
         config: EncoderConfig,
@@ -66,13 +92,17 @@ impl Mp4Encoder {
         Self::open_with_profile(path, config, audio, EncoderProfile::Sdr)
     }
 
+    #[cfg(target_os = "macos")]
     pub fn open_with_profile(
-        path: impl AsRef<Path>, config: EncoderConfig, audio: Option<AudioRender>, profile: EncoderProfile,
+        path: impl AsRef<Path>,
+        config: EncoderConfig,
+        audio: Option<AudioRender>,
+        profile: EncoderProfile,
     ) -> Result<Self, MediaError> {
         Self::start(path, config, audio, profile, |file| file)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn open_with_writer<W, F>(
         path: impl AsRef<Path>,
         config: EncoderConfig,
@@ -91,6 +121,7 @@ impl Mp4Encoder {
         audio: Option<AudioRender>,
         profile: EncoderProfile,
         make_writer: F,
+        #[cfg(windows)] native: D3d12Encoder,
     ) -> Result<Self, MediaError>
     where
         W: std::io::Write + std::io::Seek + Send + 'static,
@@ -128,7 +159,7 @@ impl Mp4Encoder {
         let thread_target = target.clone();
         let thread_config = config.clone();
         let worker = thread::Builder::new()
-            .name("oq-videotoolbox-mp4-encoder".into())
+            .name("oq-native-mp4-encoder".into())
             .spawn(move || {
                 let writer = match temp_guard.try_clone() {
                     Ok(file) => file,
@@ -139,7 +170,15 @@ impl Mp4Encoder {
                     }
                 };
                 let writer = make_writer(writer);
-                let mut pipeline = match Pipeline::open(&temp, writer, &thread_config, audio, profile) {
+                let mut pipeline = match Pipeline::open(
+                    &temp,
+                    writer,
+                    &thread_config,
+                    audio,
+                    profile,
+                    #[cfg(windows)]
+                    native,
+                ) {
                     Ok(pipeline) => pipeline,
                     Err(error) => {
                         let _ = fs::remove_file(&temp);
@@ -206,7 +245,7 @@ impl Mp4Encoder {
                                 input_frames: inputs,
                                 packets,
                                 hardware: true,
-                                encoder: format!("{} (allow_sw=0, require_sw=0)", profile.codec()),
+                                encoder: encoder_name(profile),
                                 time_base: thread_config.time_base,
                             };
                             drop(pipeline);
@@ -337,7 +376,7 @@ impl Mp4Encoder {
                 target,
                 last_pts: None,
                 finish_sent: false,
-            profile,
+                profile,
             }),
             Err(error) => {
                 let _ = worker.join();
@@ -484,6 +523,10 @@ fn validate(c: &EncoderConfig) -> Result<(), MediaError> {
     if c.bitrate == 0 || c.bitrate > i32::MAX as u64 {
         return Err("VideoToolbox bitrate must fit a positive signed 32-bit value".into());
     }
+    #[cfg(windows)]
+    if c.max_b_frames != 0 {
+        return Err("Windows export currently requires zero B-frames".into());
+    }
     let reorder_depth = if c.max_b_frames == 0 { 0 } else { 2 };
     if c.max_b_frames > 2 || c.queue_capacity < reorder_depth + 2 {
         return Err("Encoder queue must hold native reorder depth + 2 inputs (B-frame reorder depth is two)".into());
@@ -491,18 +534,25 @@ fn validate(c: &EncoderConfig) -> Result<(), MediaError> {
     Ok(())
 }
 fn create_temp(parent: &Path) -> Result<(PathBuf, File), MediaError> {
-    use std::os::unix::fs::OpenOptionsExt;
     for _ in 0..64 {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let name = format!(".oq-export-{}-{id}.mp4", std::process::id());
         let candidate = parent.join(name);
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .create_new(true)
-            .open(&candidate)
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(target_os = "macos")]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        #[cfg(windows)]
         {
+            use windows::Win32::Storage::FileSystem::{
+                DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+            };
+            std::os::windows::fs::OpenOptionsExt::access_mode(
+                &mut options,
+                (DELETE | FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+            );
+        }
+        match options.open(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("Cannot create export temporary: {e}").into()),
@@ -523,6 +573,7 @@ fn set_status(
         callback();
     }
 }
+#[cfg(target_os = "macos")]
 fn atomic_commit(
     temp: &Path,
     target: &Path,
@@ -565,13 +616,86 @@ fn atomic_commit(
     }
     Ok(())
 }
+#[cfg(windows)]
+fn atomic_commit(
+    _temp: &Path,
+    target: &Path,
+    overwrite: bool,
+    guard: &File,
+) -> Result<(), MediaError> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO},
+    };
+
+    let absolute =
+        std::path::absolute(target).map_err(|error| format!("Resolve MP4 target path: {error}"))?;
+    let name: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    if name.contains(&0) {
+        return Err("MP4 target contains a null character".into());
+    }
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or("MP4 target is too long")?;
+    let length = std::mem::offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(name_bytes + size_of::<u16>())
+        .ok_or("MP4 target is too long")?
+        .max(size_of::<FILE_RENAME_INFO>());
+    let mut buffer = vec![0usize; length.div_ceil(size_of::<usize>())];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = overwrite;
+        (*info).FileNameLength = u32::try_from(name_bytes).map_err(|_| "MP4 target is too long")?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).FileName).cast(),
+            name.len(),
+        );
+        SetFileInformationByHandle(
+            HANDLE(guard.as_raw_handle()),
+            FileRenameInfo,
+            info.cast(),
+            u32::try_from(length).map_err(|_| "MP4 target is too long")?,
+        )
+    }
+    .map_err(|error| format!("Atomic MP4 commit failed: {error}").into())
+}
+
+fn codec_name(profile: EncoderProfile) -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        profile.codec()
+    }
+    #[cfg(windows)]
+    {
+        profile.codec_name()
+    }
+}
+
+fn encoder_name(profile: EncoderProfile) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        format!("{} (allow_sw=0, require_sw=0)", codec_name(profile))
+    }
+    #[cfg(windows)]
+    {
+        codec_name(profile).to_owned()
+    }
+}
+
 struct Pipeline {
     output: format::context::Output,
+    #[cfg(target_os = "macos")]
     encoder: codec::encoder::video::Encoder,
+    #[cfg(windows)]
+    encoder: D3d12Encoder,
     stream: usize,
     time_base: RationalTimeBase,
     audio: Option<AudioEncoder>,
     end_pts: i64,
+    #[cfg(target_os = "macos")]
     profile: EncoderProfile,
 }
 impl Pipeline {
@@ -581,54 +705,68 @@ impl Pipeline {
         c: &EncoderConfig,
         render_audio: Option<AudioRender>,
         profile: EncoderProfile,
+        #[cfg(windows)] encoder: D3d12Encoder,
     ) -> Result<Self, MediaError> {
+        #[cfg(target_os = "macos")]
         crate::require_media_sdk()?;
         let custom_io = format::context::StreamIo::from_write_seek(writer)
             .map_err(|e| format!("Cannot create MP4 AVIO: {e}"))?;
         let mut output = format::output_to_stream(custom_io, None, Some("mp4"))
             .map_err(|e| format!("Cannot open MP4 muxer: {e}"))?;
-        let codec = codec::encoder::find_by_name(profile.codec())
-            .ok_or_else(|| format!("FFmpeg {} encoder is unavailable", profile.codec()))?;
-        let mut video = codec::context::Context::new_with_codec(codec)
-            .encoder()
-            .video()
-            .map_err(|e| format!("Cannot create VideoToolbox encoder: {e}"))?;
-        video.set_width(c.width);
-        video.set_height(c.height);
-        video.set_format(format::Pixel::VIDEOTOOLBOX);
-        video.set_time_base((c.time_base.numerator, c.time_base.denominator));
-        video.set_frame_rate(Some((c.time_base.denominator, c.time_base.numerator)));
-        video.set_bit_rate(c.bitrate as usize);
-        video.set_max_b_frames(c.max_b_frames as usize);
-        video.set_color_range(ffmpeg_next::color::Range::MPEG);
-        let (space, primaries, transfer) = color_tags(profile);
-        video.set_colorspace(space);
-        video.set_color_primaries(primaries);
-        video.set_color_transfer_characteristic(transfer);
-        video.set_flags(codec::Flags::GLOBAL_HEADER);
-        unsafe {
-            (*video.as_mut_ptr()).sw_pix_fmt = match profile {
-                EncoderProfile::Sdr => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NV12,
-                EncoderProfile::Hdr10 | EncoderProfile::Hlg => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
-            };
-        }
-        let mut options = Dictionary::new();
-        options.set("allow_sw", "0");
-        options.set("require_sw", "0");
-        if profile.is_hdr() { options.set("profile", "main10"); }
-        let encoder = video
-            .open_with(options)
-            .map_err(|e| format!("Cannot open required VideoToolbox encoder: {e}"))?;
+        let codec = codec::encoder::find_by_name(codec_name(profile))
+            .ok_or_else(|| format!("FFmpeg {} encoder is unavailable", codec_name(profile)))?;
+        #[cfg(target_os = "macos")]
+        let encoder = {
+            let mut video = codec::context::Context::new_with_codec(codec)
+                .encoder()
+                .video()
+                .map_err(|e| format!("Cannot create VideoToolbox encoder: {e}"))?;
+            video.set_width(c.width);
+            video.set_height(c.height);
+            video.set_format(format::Pixel::VIDEOTOOLBOX);
+            video.set_time_base((c.time_base.numerator, c.time_base.denominator));
+            video.set_frame_rate(Some((c.time_base.denominator, c.time_base.numerator)));
+            video.set_bit_rate(c.bitrate as usize);
+            video.set_max_b_frames(c.max_b_frames as usize);
+            video.set_color_range(ffmpeg_next::color::Range::MPEG);
+            let (space, primaries, transfer) = color_tags(profile);
+            video.set_colorspace(space);
+            video.set_color_primaries(primaries);
+            video.set_color_transfer_characteristic(transfer);
+            video.set_flags(codec::Flags::GLOBAL_HEADER);
+            unsafe {
+                (*video.as_mut_ptr()).sw_pix_fmt = match profile {
+                    EncoderProfile::Sdr => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NV12,
+                    EncoderProfile::Hdr10 | EncoderProfile::Hlg => {
+                        ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_P010LE
+                    }
+                };
+            }
+            let mut options = Dictionary::new();
+            options.set("allow_sw", "0");
+            options.set("require_sw", "0");
+            if profile.is_hdr() {
+                options.set("profile", "main10");
+            }
+            video
+                .open_with(options)
+                .map_err(|e| format!("Cannot open required VideoToolbox encoder: {e}"))?
+        };
         let mut stream = output
             .add_stream(codec)
             .map_err(|e| format!("Cannot add video stream: {e}"))?;
         stream.set_time_base((c.time_base.numerator, c.time_base.denominator));
+        #[cfg(target_os = "macos")]
         stream.set_parameters(&encoder);
+        #[cfg(windows)]
+        stream.set_parameters(encoder.parameters());
         if profile.is_hdr() {
             unsafe {
                 let parameters = (*stream.as_mut_ptr()).codecpar;
                 (*parameters).codec_tag = u32::from_le_bytes(*b"hvc1");
-                if profile == EncoderProfile::Hdr10 { declare_mastering_display(parameters)?; }
+                if profile == EncoderProfile::Hdr10 {
+                    declare_mastering_display(parameters)?;
+                }
             }
         }
         let stream_index = stream.index();
@@ -646,9 +784,11 @@ impl Pipeline {
             time_base: c.time_base,
             audio,
             end_pts: 0,
+            #[cfg(target_os = "macos")]
             profile,
         })
     }
+    #[cfg(target_os = "macos")]
     fn encode(&mut self, input: EncodeFrame, credit: InputCredit) -> Result<u64, MediaError> {
         self.end_pts = input
             .pts
@@ -668,7 +808,7 @@ impl Pipeline {
             raw.pts = input.pts;
             raw.duration = input.duration;
             let owner = Box::into_raw(Box::new((input.surface, credit)));
-            let pixel = (*owner).0.pixel_buffer as *mut u8;
+            let pixel = (*owner).0.pixel_buffer() as *mut u8;
             let allocation_size = (*owner).0.allocation_size() as usize;
             let buf = ffmpeg_next::ffi::av_buffer_create(
                 pixel,
@@ -703,35 +843,14 @@ impl Pipeline {
         }
         Ok(packets)
     }
+    #[cfg(target_os = "macos")]
     fn packets(&mut self) -> Result<u64, MediaError> {
         let mut count = 0;
         loop {
             let mut packet = Packet::empty();
             match self.encoder.receive_packet(&mut packet) {
                 Ok(()) => {
-                    packet.set_stream(self.stream);
-                    let output_time_base = self
-                        .output
-                        .stream(self.stream)
-                        .ok_or("Missing MP4 stream")?
-                        .time_base();
-                    let output_tb = RationalTimeBase {
-                        numerator: output_time_base.0,
-                        denominator: output_time_base.1,
-                    };
-                    let pts = packet.pts().ok_or("H.264 encoder packet has no PTS")?;
-                    let dts = packet.dts().ok_or("H.264 encoder packet has no DTS")?;
-                    packet.set_pts(Some(checked_rescale(pts, self.time_base, output_tb)?));
-                    packet.set_dts(Some(checked_rescale(dts, self.time_base, output_tb)?));
-                    let duration = packet.duration();
-                    packet.set_duration(if duration <= 0 {
-                        checked_rescale(1, self.time_base, output_tb)?.max(1)
-                    } else {
-                        checked_rescale(duration, self.time_base, output_tb)?
-                    });
-                    packet
-                        .write_interleaved(&mut self.output)
-                        .map_err(|e| format!("Cannot mux encoded packet: {e}"))?;
+                    self.write_packet(packet)?;
                     count += 1;
                 }
                 Err(ffmpeg_next::Error::Other {
@@ -743,27 +862,86 @@ impl Pipeline {
         }
         Ok(count)
     }
+    #[cfg(windows)]
+    fn encode(&mut self, input: EncodeFrame, _credit: InputCredit) -> Result<u64, MediaError> {
+        self.end_pts = input
+            .pts
+            .checked_add(input.duration)
+            .ok_or("Encoder timestamp overflow")?;
+        let packets = self
+            .encoder
+            .encode(input.surface, input.pts, input.duration)?;
+        let count = packets.len() as u64;
+        for packet in packets {
+            self.write_packet(packet)?;
+        }
+        if let Some(audio) = &mut self.audio {
+            let end = crate::audio_sample(self.end_pts, self.time_base)?;
+            audio.encode_until(&mut self.output, end, false)?;
+        }
+        Ok(count)
+    }
+
+    fn write_packet(&mut self, mut packet: Packet) -> Result<(), MediaError> {
+        packet.set_stream(self.stream);
+        let output_time_base = self
+            .output
+            .stream(self.stream)
+            .ok_or("Missing MP4 stream")?
+            .time_base();
+        let output_tb = RationalTimeBase {
+            numerator: output_time_base.0,
+            denominator: output_time_base.1,
+        };
+        let pts = packet.pts().ok_or("H.264 encoder packet has no PTS")?;
+        let dts = packet.dts().ok_or("H.264 encoder packet has no DTS")?;
+        packet.set_pts(Some(checked_rescale(pts, self.time_base, output_tb)?));
+        packet.set_dts(Some(checked_rescale(dts, self.time_base, output_tb)?));
+        let duration = packet.duration();
+        packet.set_duration(if duration <= 0 {
+            checked_rescale(1, self.time_base, output_tb)?.max(1)
+        } else {
+            checked_rescale(duration, self.time_base, output_tb)?
+        });
+        packet
+            .write_interleaved(&mut self.output)
+            .map_err(|e| format!("Cannot mux encoded packet: {e}"))?;
+        Ok(())
+    }
     fn drain(&mut self) -> Result<u64, MediaError> {
-        let mut packets = 0;
-        loop {
-            match self.encoder.send_eof() {
-                Ok(()) => break,
-                Err(ffmpeg_next::Error::Other {
-                    errno: ffmpeg_next::error::EAGAIN,
-                }) => {
-                    packets += self.packets()?;
+        #[cfg(target_os = "macos")]
+        let packets = {
+            let mut packets = 0;
+            loop {
+                match self.encoder.send_eof() {
+                    Ok(()) => break,
+                    Err(ffmpeg_next::Error::Other {
+                        errno: ffmpeg_next::error::EAGAIN,
+                    }) => {
+                        packets += self.packets()?;
+                    }
+                    Err(ffmpeg_next::Error::Eof) => break,
+                    Err(e) => return Err(format!("Cannot send encoder EOF: {e}").into()),
                 }
-                Err(ffmpeg_next::Error::Eof) => break,
-                Err(e) => return Err(format!("Cannot send encoder EOF: {e}").into()),
             }
-        }
-        loop {
-            let count = self.packets()?;
-            packets += count;
-            if count == 0 {
-                break;
+            loop {
+                let count = self.packets()?;
+                packets += count;
+                if count == 0 {
+                    break;
+                }
             }
-        }
+            packets
+        };
+        #[cfg(windows)]
+        let packets = {
+            let packets = self.encoder.drain()?;
+            let count = packets.len() as u64;
+            for packet in packets {
+                self.write_packet(packet)?;
+            }
+            count
+        };
         if let Some(audio) = &mut self.audio {
             let end = crate::audio_sample(self.end_pts, self.time_base)?;
             audio.encode_until(&mut self.output, end, true)?;
@@ -775,7 +953,14 @@ impl Pipeline {
         Ok(packets)
     }
 }
-fn color_tags(profile: EncoderProfile) -> (ffmpeg_next::color::Space, ffmpeg_next::color::Primaries, ffmpeg_next::color::TransferCharacteristic) {
+#[cfg(target_os = "macos")]
+fn color_tags(
+    profile: EncoderProfile,
+) -> (
+    ffmpeg_next::color::Space,
+    ffmpeg_next::color::Primaries,
+    ffmpeg_next::color::TransferCharacteristic,
+) {
     use ffmpeg_next::color::{Primaries, Space, TransferCharacteristic as Transfer};
     match profile {
         EncoderProfile::Sdr => (Space::BT709, Primaries::BT709, Transfer::BT709),
@@ -784,7 +969,9 @@ fn color_tags(profile: EncoderProfile) -> (ffmpeg_next::color::Space, ffmpeg_nex
     }
 }
 
-unsafe fn declare_mastering_display(parameters: *mut ffmpeg_next::ffi::AVCodecParameters) -> Result<(), MediaError> {
+unsafe fn declare_mastering_display(
+    parameters: *mut ffmpeg_next::ffi::AVCodecParameters,
+) -> Result<(), MediaError> {
     use ffmpeg_next::ffi as av;
     // The HDR10 preset explicitly declares a BT.2020/D65 mastering target.
     // Content-light statistics have an independent meaning and are left unset.
@@ -802,28 +989,41 @@ unsafe fn declare_mastering_display(parameters: *mut ffmpeg_next::ffi::AVCodecPa
     }
     let mut size = 0;
     let buffer = unsafe { av_mastering_display_metadata_alloc_size(&mut size) };
-    if buffer.is_null() { return Err("Cannot allocate HDR10 mastering metadata".into()); }
+    if buffer.is_null() {
+        return Err("Cannot allocate HDR10 mastering metadata".into());
+    }
     let metadata = unsafe { &mut *buffer };
     let xy = |num| av::AVRational { num, den: 50_000 };
-    metadata.display_primaries = [[xy(35400), xy(14600)], [xy(8500), xy(39850)], [xy(6550), xy(2300)]];
+    metadata.display_primaries = [
+        [xy(35400), xy(14600)],
+        [xy(8500), xy(39850)],
+        [xy(6550), xy(2300)],
+    ];
     metadata.white_point = [xy(15635), xy(16450)];
     metadata.min_luminance = av::AVRational { num: 5, den: 1000 };
     metadata.max_luminance = av::AVRational { num: 1000, den: 1 };
     metadata.has_primaries = 1;
     metadata.has_luminance = 1;
-    let attached = unsafe { av::av_packet_side_data_add(
-        &mut (*parameters).coded_side_data,
-        &mut (*parameters).nb_coded_side_data,
-        av::AVPacketSideDataType::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
-        buffer.cast(), size, 0,
-    ) };
+    let attached = unsafe {
+        av::av_packet_side_data_add(
+            &mut (*parameters).coded_side_data,
+            &mut (*parameters).nb_coded_side_data,
+            av::AVPacketSideDataType::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+            buffer.cast(),
+            size,
+            0,
+        )
+    };
     if attached.is_null() {
-        unsafe { av::av_free(buffer.cast()); }
+        unsafe {
+            av::av_free(buffer.cast());
+        }
         return Err("Cannot attach HDR10 mastering metadata".into());
     }
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" fn release_surface(opaque: *mut std::ffi::c_void, _data: *mut u8) {
     drop(unsafe { Box::from_raw(opaque.cast::<(EncoderSurface, InputCredit)>()) });
 }
@@ -852,6 +1052,6 @@ fn checked_rescale(
         .map_err(|_| "Timestamp rescaling exceeds i64".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "mp4_tests.rs"]
 mod tests;

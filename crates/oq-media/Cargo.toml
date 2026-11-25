@@ -11,10 +11,11 @@ description = "Timestamp-addressed media with VideoToolbox and D3D12VA decoding"
 default = []
 audio = ["dep:ffmpeg-next"]
 videotoolbox = ["audio"]
-d3d12 = ["dep:ffmpeg-next", "dep:windows-core"]
+d3d12 = ["audio", "dep:windows-core", "dep:windows"]
 
 [target.'cfg(windows)'.dependencies]
 windows-core = { version = "0.62", optional = true }
+windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 ffmpeg-next = { version = "9.1", optional = true, default-features = false, features = ["codec", "format", "software-resampling"] }

@@ -194,9 +194,9 @@ pub struct ColorInfo {
     pub primaries_assumed: bool,
 }
 
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+#[cfg(any(all(target_os = "macos", feature = "videotoolbox"), all(windows, feature = "d3d12")))]
 mod encoder;
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+#[cfg(any(all(target_os = "macos", feature = "videotoolbox"), all(windows, feature = "d3d12")))]
 pub use encoder::{
     AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderProfile, EncoderReport, EncoderStatus, EncoderSurface,
     Mp4Encoder,

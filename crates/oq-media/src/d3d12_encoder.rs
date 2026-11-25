@@ -4,8 +4,9 @@ use ffmpeg_next::{codec, color, ffi, format::Pixel, frame::Video, Dictionary, Pa
 use std::{collections::BTreeMap, ffi::c_void, ptr, ptr::NonNull};
 use windows_core::{IUnknown, Interface};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum Profile {
+    #[default]
     Sdr,
     Hdr10,
     Hlg,
@@ -76,6 +77,7 @@ pub struct D3d12Encoder {
 /// Shared native input pool. Each handle owns a separate AVBufferRef.
 pub struct FramePool {
     frames: Buffer,
+    profile: Profile,
 }
 
 // AVBufferRefs are thread-safe. This handle owns one reference, and FFmpeg
@@ -89,13 +91,24 @@ impl FramePool {
             unsafe { ffi::av_hwframe_get_buffer(self.frames.0.as_ptr(), frame.as_mut_ptr(), 0) },
             "Allocate D3D12 encoder surface",
         )?;
-        Ok(InputSurface(frame))
+        Ok(InputSurface(frame, self.profile))
     }
 }
 
-pub struct InputSurface(Video);
+pub struct InputSurface(Video, Profile);
 
 impl InputSurface {
+    pub fn width(&self) -> u32 {
+        self.0.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.0.height()
+    }
+
+    pub fn profile(&self) -> Profile {
+        self.1
+    }
     /// Borrow the AVD3D12VAFrame descriptor for the life of this surface.
     /// GPU writes must complete before the surface is sent to the encoder.
     pub fn descriptor(&self) -> *const c_void {
@@ -188,6 +201,7 @@ impl D3d12Encoder {
         video.set_time_base((time_base.numerator, time_base.denominator));
         video.set_frame_rate(Some((time_base.denominator, time_base.numerator)));
         video.set_bit_rate(bitrate);
+        video.set_max_b_frames(0);
         video.set_flags(codec::Flags::GLOBAL_HEADER);
         let (space, primaries, transfer) = profile.color();
         video.set_color_range(color::Range::MPEG);
@@ -211,7 +225,7 @@ impl D3d12Encoder {
             .map_err(|error| format!("Open required {} encoder: {error}", profile.codec_name()))?;
         Ok(Self {
             encoder,
-            frames: FramePool { frames },
+            frames: FramePool { frames, profile },
             profile,
             durations: BTreeMap::new(),
         })
@@ -219,6 +233,22 @@ impl D3d12Encoder {
 
     pub fn parameters(&self) -> codec::Parameters {
         codec::Parameters::from(&self.encoder)
+    }
+
+    pub fn profile(&self) -> Profile {
+        self.profile
+    }
+
+    pub(crate) fn geometry(&self) -> (u32, u32, RationalTimeBase) {
+        let tb = self.encoder.time_base();
+        (
+            self.encoder.width(),
+            self.encoder.height(),
+            RationalTimeBase {
+                numerator: tb.0,
+                denominator: tb.1,
+            },
+        )
     }
 
     pub fn allocate(&self) -> Result<InputSurface, MediaError> {
@@ -232,6 +262,7 @@ impl D3d12Encoder {
         NonNull::new(raw)
             .map(|reference| FramePool {
                 frames: Buffer(reference),
+                profile: self.profile,
             })
             .ok_or_else(|| "Cannot retain encoder frame pool".into())
     }
@@ -337,6 +368,148 @@ fn check(result: i32, operation: &str) -> Result<(), MediaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires native D3D12 hardware encoding"]
+    fn mp4_writer_muxes_audio_and_commits_or_cancels_atomically() {
+        use crate::{
+            AudioRender, EncodeAdmission, EncodeFrame, EncoderConfig, EncoderStatus, Mp4Encoder,
+        };
+        use std::{
+            fs, thread,
+            time::{Duration, Instant},
+        };
+
+        fn wait(writer: &Mp4Encoder, predicate: impl Fn(&EncoderStatus) -> bool) -> EncoderStatus {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let status = writer.poll().unwrap();
+                if predicate(&status) || matches!(status, EncoderStatus::Failed(_)) {
+                    return status;
+                }
+                assert!(Instant::now() < deadline, "MP4 writer stalled: {status:?}");
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = EncoderConfig {
+            width: 320,
+            height: 180,
+            time_base: RationalTimeBase {
+                numerator: 1,
+                denominator: 30,
+            },
+            bitrate: 1_000_000,
+            queue_capacity: 2,
+            max_b_frames: 0,
+            overwrite: false,
+        };
+        let mut fixture = Video::new(Pixel::NV12, config.width, config.height);
+        fixture.data_mut(0).fill(96);
+        fixture.data_mut(1).fill(128);
+        for operation in ["commit", "replace", "cancel", "collision"] {
+            let target = directory.path().join(format!("{operation}.mp4"));
+            let mut config = config.clone();
+            config.overwrite = matches!(operation, "replace" | "cancel");
+            if config.overwrite {
+                fs::write(&target, b"previous delivery").unwrap();
+            }
+            let native = D3d12Encoder::open(
+                config.width,
+                config.height,
+                config.time_base,
+                config.bitrate as usize,
+                Profile::Sdr,
+            )
+            .unwrap();
+            let audio: AudioRender = Box::new(|start, samples| {
+                for (index, sample) in samples.iter_mut().enumerate() {
+                    let phase =
+                        (start + index as u64) as f32 * 440.0 * std::f32::consts::TAU / 48_000.0;
+                    *sample = [phase.sin() * 0.2, phase.sin() * 0.1];
+                }
+                Ok(())
+            });
+            let (mut writer, frames) =
+                Mp4Encoder::open_d3d12(&target, config, Some(audio), native).unwrap();
+            for pts in 0..4 {
+                let mut surface = frames.allocate().unwrap();
+                check(
+                    unsafe {
+                        ffi::av_hwframe_transfer_data(surface.0.as_mut_ptr(), fixture.as_ptr(), 0)
+                    },
+                    "Upload test planes",
+                )
+                .unwrap();
+                let mut frame = EncodeFrame {
+                    surface,
+                    pts,
+                    duration: 1,
+                };
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match writer.submit(frame).unwrap() {
+                        EncodeAdmission::Accepted => break,
+                        EncodeAdmission::WouldBlock(pending) => frame = pending,
+                    }
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !writer.finish().unwrap() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            let status = wait(&writer, |status| {
+                matches!(status, EncoderStatus::ReadyToCommit(_))
+            });
+            assert!(
+                matches!(status, EncoderStatus::ReadyToCommit(ref report)
+                if report.hardware && report.input_frames == 4 && report.packets == 4),
+                "{status:?}"
+            );
+            if operation == "collision" {
+                fs::write(&target, b"previous delivery").unwrap();
+            }
+            if operation == "cancel" {
+                writer.cancel();
+                assert!(matches!(
+                    wait(&writer, |s| matches!(s, EncoderStatus::Cancelled)),
+                    EncoderStatus::Cancelled
+                ));
+            } else {
+                assert!(writer.commit().unwrap());
+                let status = wait(&writer, |s| matches!(s, EncoderStatus::Completed(_)));
+                if operation == "collision" {
+                    assert!(matches!(status, EncoderStatus::Failed(_)));
+                } else {
+                    assert!(matches!(status, EncoderStatus::Completed(_)), "{status:?}");
+                    let file = ffmpeg_next::format::input(&target).unwrap();
+                    assert!(file
+                        .streams()
+                        .any(|s| s.parameters().id() == codec::Id::AAC));
+                    let mut video = crate::Session::open(&target).unwrap();
+                    assert!(video.source_info().has_audio);
+                    let mut frames = 0;
+                    while video.next_frame().unwrap().is_some() {
+                        frames += 1;
+                    }
+                    assert_eq!(frames, 4);
+                }
+            }
+            drop(writer);
+            if matches!(operation, "cancel" | "collision") {
+                assert_eq!(fs::read(&target).unwrap(), b"previous delivery");
+            }
+            assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".oq-export-")));
+        }
+    }
 
     #[test]
     #[ignore = "requires native D3D12 H.264 and Main 10 hardware encoding"]
