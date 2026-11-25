@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 17);
+   assert.equal(data.schema_version, 18);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1968,6 +1968,52 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Create, rename, duplicate and reopen independent sequences sharing one media library', async () => {
+   const seed = join(output, 'sequence-switch.oqvideo.json');
+   await writeFile(seed, await readFile(exportProject));
+   await launch(seed); await waitState('assets 2; clips 3');
+   await click('SEQUENCE');
+   await click('New sequence'); await waitState('assets 2; clips 0');
+   await enter(await findInput('Sequence name'), 'Delivery');
+   await client.setValue(await findInput('Sequence width'), '640');
+   await client.setValue(await findInput('Sequence height'), '360');
+   await click('Apply settings');
+   const chooseSequence = async (steps, label) => {
+     const box = () => client.find({ label: 'Active sequence', role: 'Combobox' });
+     await client.click(await box());
+     for (let i = 0; i < Math.abs(steps); i++) await client.key(steps < 0 ? '\uf700' : '\uf701');
+     await client.key('\n');
+     await client.waitFor(async () => (await box()).accessibleValue === label,
+       { description: `active sequence ${label}` });
+   };
+   await click('SEQUENCE');
+   await chooseSequence(-1, 'Sequence 1');
+   await waitState('assets 2; clips 3');
+   assert.equal((await findInput('Sequence width')).accessibleValue, '320');
+   await click('Duplicate sequence');
+   assert.equal((await findInput('Sequence name')).accessibleValue, 'Sequence 1 copy');
+   await click('Cancel');
+   await client.click(await item('foreground.mp4'));
+   await click('DELETE'); await waitState('clips 2');
+   await click('SEQUENCE');
+   await chooseSequence(-2, 'Sequence 1');
+   await waitState('assets 2; clips 3');
+   await click('Cancel');
+   await click('SAVE'); await waitState('Project saved');
+   const stored = JSON.parse(await readFile(seed, 'utf8')).data;
+   assert.equal(stored.sequence_name, 'Sequence 1');
+   assert.equal(stored.other_sequences.find(slot => slot.name === 'Delivery').width, 640);
+   assert.equal(stored.other_sequences.find(slot => slot.name === 'Sequence 1 copy').tracks.flatMap(track => track.clips).length, 2);
+   await close();
+   await launch(seed); await waitState('assets 2; clips 3');
+   await click('SEQUENCE');
+   await chooseSequence(1, 'Delivery');
+   await waitState('assets 2; clips 0');
+   assert.equal((await findInput('Sequence width')).accessibleValue, '640');
+   await click('Cancel');
+   await click('UNDO'); await waitState('assets 2; clips 3');
+   await close();
+ }, { core: true });
  await step('Animate a shader scalar through keyframes in playback and export', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    const [upper] = fixture.data.tracks;
@@ -2072,7 +2118,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 17);
+   assert.equal(saved.schema_version, 18);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

@@ -451,6 +451,12 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_sequence_slot(move |action, index, name| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().sequence_slot(&action, index, &name);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_sequence_settings(move |width, height, numerator, denominator| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -770,11 +776,15 @@ impl Controller {
             }
             "relink" => self.path_dialog("relink"),
             "undo" => {
+                let previous = self.document.data.sequence_id.clone();
                 self.document.undo();
+                self.refresh_sequence_view(&previous);
                 self.changed();
             }
             "redo" => {
+                let previous = self.document.data.sequence_id.clone();
                 self.document.redo();
+                self.refresh_sequence_view(&previous);
                 self.changed();
             }
             "toggle-marker" => {
@@ -1306,6 +1316,58 @@ impl Controller {
         self.refresh();
         self.request_preview();
     }
+    fn sequence_slot(&mut self, action: &str, index: i32, label: &str) {
+        self.pause();
+        let previous = self.document.data.sequence_id.clone();
+        let result = match action {
+            "create" => self.document.add_sequence(false),
+            "duplicate" => self.document.add_sequence(true),
+            "rename" => self.document.rename_sequence(label),
+            "select" => {
+                let sequence = self.document.data.sequence_options().get(index as usize)
+                    .map(|(id, _)| (*id).to_owned());
+                match sequence {
+                    Some(id) => self.document.switch_sequence(&id),
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        self.refresh_sequence_view(&previous);
+        self.finish_edit(result);
+    }
+
+    fn refresh_sequence_view(&mut self, previous: &str) {
+        if self.document.data.sequence_id != previous {
+            self.playhead = 0;
+            self.selected_clip = None;
+            self.extra_selection.clear();
+            self.selected_audio = None;
+            self.selected_track = self.document.data.tracks[0].id.clone();
+            self.asset_preview = false;
+            self.requested = None;
+            if let Some(window) = self.window.upgrade() {
+                let data = &self.document.data;
+                window.set_draft_width(data.width.to_string().into());
+                window.set_draft_height(data.height.to_string().into());
+                window.set_draft_fps_numerator(data.fps.numerator.to_string().into());
+                window.set_draft_fps_denominator(data.fps.denominator.to_string().into());
+            }
+        }
+    }
+
+    fn publish_sequence_slots(&self, window: &EditorWindow) {
+        let slots = self.document.data.sequence_options();
+        let names: Vec<slint::SharedString> = slots.iter().map(|(_, label)| (*label).into()).collect();
+        if window.get_sequence_names().iter().ne(names.iter().cloned()) {
+            window.set_sequence_names(ModelRc::new(VecModel::from(names)));
+        }
+        if let Some(index) = slots.iter().position(|(id, _)| *id == self.document.data.sequence_id) {
+            window.set_sequence_choice(index as i32);
+        }
+        window.set_active_sequence_name(self.document.data.sequence_name.clone().into());
+    }
+
     #[cfg(target_os = "macos")]
     fn set_proxy_status(&self, text: String) {
         if let Some(window) = self.window.upgrade() {
@@ -2011,6 +2073,7 @@ impl Controller {
             return;
         };
         self.refresh_recovery();
+        self.publish_sequence_slots(&window);
         window.set_has_offline_assets(self.document.data.assets.iter().any(|asset| !asset.online));
         if matches!(&self.audio_destination, AudioDestination::Track(id)
             if !self.document.data.audio_tracks.iter().any(|track| track.id == *id))

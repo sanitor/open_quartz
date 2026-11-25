@@ -58,6 +58,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 点击标尺定位，**PREVIOUS / NEXT** 逐序列帧步进，**SPLIT** 在播放头处分割，**DELETE** 为 lift 删除，保留空隙。空隙真实渲染不透明黑色。
 - 右侧 **Timeline start / Timeline end** 用序列帧；**Source in / Source out** 用原始 stream ticks。结束点为半开边界；输入后按 Enter 提交。分割和修剪保留有理数源入点，不逐次截断到整数源帧。
 - **UNDO / REDO**；**SEQUENCE** 设置固定画布和有理数帧率（如 30000/1001）。改名在顶部名称输入框中按 Enter。
+- **SEQUENCE** 里可创建、命名、复制和切换序列。序列共享工程素材库，各自保留画布、帧率、片段、音轨和标记。编辑与导出作用于当前序列，序列操作随工程保存并可撤销。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。
 - **Crop** 四个百分比字段裁切片段画面，保留原来的摆放位置。用 **Add transform keyframe** 在当前序列帧记录位置、缩放和旋转。建立关键帧后，在片段内改这些属性或拖预览手柄会更新当前位置的关键帧。在关键帧上可切换到下一帧的线性或缓入缓出插值，也可删除关键帧。
@@ -97,7 +98,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 17，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 18，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 

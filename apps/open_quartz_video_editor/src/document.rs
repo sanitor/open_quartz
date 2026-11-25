@@ -31,7 +31,10 @@ pub use motion::{MotionChannel, MotionPoint};
 #[path = "document_effect_motion.rs"]
 mod effect_motion;
 pub use effect_motion::EffectKeys;
-const SCHEMA_VERSION: u32 = 17;
+#[path = "document_sequences.rs"]
+mod sequences;
+pub use sequences::TimelineSequence;
+const SCHEMA_VERSION: u32 = 18;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -231,6 +234,12 @@ pub struct ProjectData {
     pub schema_version: u32,
     pub id: String,
     pub name: String,
+    #[serde(default = "sequences::default_sequence_id")]
+    pub sequence_id: String,
+    #[serde(default = "sequences::default_sequence_name")]
+    pub sequence_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_sequences: Vec<TimelineSequence>,
     pub width: u32,
     pub height: u32,
     pub fps: Rational,
@@ -247,6 +256,9 @@ impl Default for ProjectData {
             schema_version: SCHEMA_VERSION,
             id: format!("oqvideo-{}", std::process::id()),
             name: "Untitled Video".into(),
+            sequence_id: sequences::default_sequence_id(),
+            sequence_name: sequences::default_sequence_name(),
+            other_sequences: Vec::new(),
             width: 1920,
             height: 1080,
             fps: Rational {
@@ -742,7 +754,9 @@ impl EditorDocument {
         }
         let mut candidate = self.data.clone();
         change(&mut candidate)?;
-        audio::validate_locked_links(&self.data, &candidate)?;
+        if candidate.sequence_id == self.data.sequence_id {
+            audio::validate_locked_links(&self.data, &candidate)?;
+        }
         validate(&candidate)?;
         if candidate == self.data {
             return Ok(());
@@ -977,6 +991,7 @@ fn migrate_keyframes(project: &mut serde_json::Value) -> Result<(), String> {
 }
 
 fn validate(data: &ProjectData) -> Result<(), String> {
+    data.validate_sequence_slots()?;
     if data.schema_version != SCHEMA_VERSION {
         return Err("Unsupported in-memory project schema".into());
     }

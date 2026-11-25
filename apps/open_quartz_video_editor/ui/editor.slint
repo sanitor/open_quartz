@@ -636,11 +636,15 @@ export component EditorWindow inherits Window {
         editor_focus.focus();
         root.file_submit(kind, path);
     }
+    in property <[string]> sequence_names;
+    in property <string> active_sequence_name;
+    in-out property <int> sequence_choice;
+    callback sequence_slot(string, int, string);
     private property <bool> settings_open: false;
-    private property <string> draft_width;
-    private property <string> draft_height;
-    private property <string> draft_fps_numerator;
-    private property <string> draft_fps_denominator;
+    in-out property <string> draft_width;
+    in-out property <string> draft_height;
+    in-out property <string> draft_fps_numerator;
+    in-out property <string> draft_fps_denominator;
     function open_settings() {
         root.draft_width = root.project_data_width + "";
         root.draft_height = root.project_data_height + "";
@@ -1608,12 +1612,28 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 420px; height: 432px; background: root.panel;
+                width: 480px; height: 552px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 10px;
                     Text { text: "Sequence settings"; color: root.text; font-size: 18px; font-weight: 700; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        ComboBox {
+                            accessible-label: "Active sequence"; model: root.sequence_names;
+                            current-index <=> root.sequence_choice;
+                            selected => { root.sequence_slot("select", self.current-index, ""); }
+                        }
+                        Button { text: "New sequence"; clicked => { root.sequence_slot("create", 0, ""); } }
+                        Button { text: "Duplicate sequence"; clicked => { root.sequence_slot("duplicate", 0, ""); } }
+                    }
+                    LineEdit {
+                        property <string> sequence_label: root.active_sequence_name;
+                        text: self.sequence_label; accessible-label: "Sequence name";
+                        changed sequence_label => { self.text = self.sequence_label; }
+                        accepted(value) => { root.sequence_slot("rename", 0, value); }
+                    }
                     Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Width (pixels)"; color: root.secondary; font-size: 12px; }
                     LineEdit { accessible-label: "Sequence width"; text <=> root.draft_width; }
