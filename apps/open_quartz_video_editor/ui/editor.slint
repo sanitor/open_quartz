@@ -387,13 +387,14 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status);
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + (root.project_dirty ? "; Unsaved changes" : "") + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status);
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
     in-out property <string> project_path: "Not saved";
     in-out property <string> project_status: "Hardware GPU initializing";
-    in-out property <string> io_status: "All changes saved";
+    in-out property <bool> project_dirty;
+    in-out property <string> io_status: "";
     in property <string> export_status;
     in property <string> recovery_status;
     in property <bool> proxy_mode;
@@ -494,6 +495,8 @@ export component EditorWindow inherits Window {
     in property <bool> spatial_key_enabled;
     in property <bool> on_spatial_key;
     in property <bool> eased_spatial_key;
+    in property <bool> on_crop_key;
+    in property <bool> crop_editable;
     in property <string> crop_left;
     in property <string> crop_top;
     in property <string> crop_right;
@@ -827,7 +830,7 @@ export component EditorWindow inherits Window {
                     ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
                     ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
                     Text { text: root.project_path; color: root.secondary; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
-                    Text { text: root.monitor_status == "" ? root.io_status : root.io_status + " · " + root.monitor_status; color: root.secondary; font-size: 11px; overflow: elide; max-width: 420px; }
+                    Text { text: root.monitor_status == "" ? (root.io_status == "" ? (root.project_dirty ? "Unsaved changes" : "All changes saved") : root.io_status) : (root.io_status == "" ? root.monitor_status : root.io_status + " · " + root.monitor_status); color: root.secondary; font-size: 11px; overflow: elide; max-width: 420px; }
                 }
             }
             HorizontalLayout {
@@ -1168,10 +1171,15 @@ export component EditorWindow inherits Window {
                                     if !root.selected_clip_uses_sequence_timing: Button { text: root.on_opacity_key ? "Remove opacity keyframe" : "Add opacity keyframe"; enabled: root.opacity_key_enabled; clicked => { root.project_action(root.on_opacity_key ? "remove-opacity-key" : "add-opacity-key"); } }
                                     TimingField { label: "Exposure (EV)"; value: root.selected_clip_exposure; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("exposure", value); } }
                                     Text { text: "Crop"; color: root.accent; }
-                                    TimingField { label: "Crop left (%)"; value: root.crop_left; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-left", value); } }
-                                    TimingField { label: "Crop top (%)"; value: root.crop_top; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-top", value); } }
-                                    TimingField { label: "Crop right (%)"; value: root.crop_right; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-right", value); } }
-                                    TimingField { label: "Crop bottom (%)"; value: root.crop_bottom; enabled: root.selected_clip_writable; committed(value) => { root.transform_field("crop-bottom", value); } }
+                                    TimingField { label: "Crop left (%)"; value: root.crop_left; enabled: root.crop_editable; committed(value) => { root.transform_field("crop-left", value); } }
+                                    TimingField { label: "Crop top (%)"; value: root.crop_top; enabled: root.crop_editable; committed(value) => { root.transform_field("crop-top", value); } }
+                                    TimingField { label: "Crop right (%)"; value: root.crop_right; enabled: root.crop_editable; committed(value) => { root.transform_field("crop-right", value); } }
+                                    TimingField { label: "Crop bottom (%)"; value: root.crop_bottom; enabled: root.crop_editable; committed(value) => { root.transform_field("crop-bottom", value); } }
+                                    Button {
+                                        text: root.on_crop_key ? "Remove crop keyframe" : "Add crop keyframe";
+                                        enabled: root.spatial_key_enabled;
+                                        clicked => { root.project_action("toggle-crop-key"); }
+                                    }
                                 }
 
                                 Text { text: "Press Enter to apply a frame value. Drag a clip to move it; drag an edge to trim. Esc cancels a drag."; color: root.secondary; font-size: 11px; wrap: word-wrap; }

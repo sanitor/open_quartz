@@ -1,5 +1,5 @@
 use crate::clip_pipeline::{ClipPipeline, OUTPUT_ID, SOURCE_ID};
-use crate::document::{self, ClipTransform, Crop, DissolveSide, MediaAsset, ProjectData, Rational, SpatialKey, Title};
+use crate::document::{self, ClipTransform, Crop, DissolveSide, MediaAsset, ProjectData, Rational, Title};
 use open_quartz::execution::{
     FrameAdmission, FrameDemand, FrameEvaluationInput, FrameOutcome, FramePipeline, FrameWindowConfig,
     PreparedNativeGraph,
@@ -41,7 +41,8 @@ pub struct PreviewLayer {
     speed_percent: u16,
     opacity: Option<OpacityAnimation>,
     crop: Crop,
-    spatial: Option<SpatialAnimation>,
+    crop_animation: Option<ClipAnimation<Crop>>,
+    spatial: Option<ClipAnimation<document::Pose>>,
     dissolve: Option<DissolveLayer>,
 }
 #[derive(Clone)]
@@ -80,8 +81,8 @@ struct OpacityAnimation {
 }
 
 #[derive(Clone)]
-struct SpatialAnimation {
-    keys: Vec<SpatialKey>,
+struct ClipAnimation<Value> {
+    keys: Vec<crate::animation_key::Keyframe<i64, Value>>,
     timeline_start_ns: u64,
     seconds_per_frame: f64,
 }
@@ -96,7 +97,7 @@ pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, 
             clip_id: asset.id.clone(), track_name: String::new(), track_id: asset.id.clone(),
             source: LayerSource::Still(asset), transform: request.transform,
             pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
-            opacity: None, dissolve: None, crop: Crop::default(), spatial: None,
+            opacity: None, dissolve: None, crop: Crop::default(), crop_animation: None, spatial: None,
         });
     } else if asset.has_video() {
         request.asset = Some(asset);
@@ -138,7 +139,7 @@ pub fn sequence_request(
         }).transpose()?;
         let draft = transform_override.filter(|(id, _)| *id == clip.id).map(|(_, value)| value);
         let spatial = if !clip.spatial_keys.is_empty() && draft.is_none() {
-            Some(SpatialAnimation {
+            Some(ClipAnimation {
                 keys: clip.spatial_keys.clone(),
                 timeline_start_ns: project.fps.frames_to_ns(clip.timeline_start)?,
                 seconds_per_frame: f64::from(project.fps.denominator) / f64::from(project.fps.numerator),
@@ -146,12 +147,21 @@ pub fn sequence_request(
         } else {
             None
         };
+        let crop_animation = if clip.crop_keys.is_empty() {
+            None
+        } else {
+            Some(ClipAnimation {
+                keys: clip.crop_keys.clone(),
+                timeline_start_ns: project.fps.frames_to_ns(clip.timeline_start)?,
+                seconds_per_frame: f64::from(project.fps.denominator) / f64::from(project.fps.numerator),
+            })
+        };
         layers.push(PreviewLayer {
             clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
             transform: draft.unwrap_or(clip.transform),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
             speed_percent: clip.speed_percent,
-            opacity, crop: clip.crop, spatial,
+            opacity, crop: clip.crop, crop_animation, spatial,
             dissolve,
         });
     }
@@ -163,7 +173,7 @@ pub fn sequence_request(
     // Retimed clips use the sequence clock for window admission and a
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
-        if project.tracks.len() == 1 && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty()
+        if project.tracks.len() == 1 && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
@@ -217,7 +227,8 @@ impl PreviewRequest {
         }
         self.layers.iter().flat_map(|layer| {
             [layer.opacity.as_ref().map(|animation| animation.timeline_start_ns),
-             layer.spatial.as_ref().map(|animation| animation.timeline_start_ns)].into_iter().flatten()
+             layer.spatial.as_ref().map(|animation| animation.timeline_start_ns),
+             layer.crop_animation.as_ref().map(|animation| animation.timeline_start_ns)].into_iter().flatten()
         }).max().unwrap_or(0)
     }
 

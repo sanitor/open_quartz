@@ -25,10 +25,10 @@ pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 use timing::RippleEdit;
 pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 #[path = "document_spatial.rs"]
 mod spatial;
-pub use spatial::{Crop, SpatialKey};
+pub use spatial::{Crop, CropKey, Pose, SpatialKey};
 #[path = "document_timeline_tools.rs"]
 mod timeline_tools;
 pub use timeline_tools::Marker;
@@ -169,6 +169,8 @@ pub struct Clip {
     pub opacity_keys: Vec<OpacityKey>,
     #[serde(default, skip_serializing_if = "Crop::is_empty")]
     pub crop: Crop,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crop_keys: Vec<CropKey>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spatial_keys: Vec<SpatialKey>,
     pub pipeline: ClipPipeline,
@@ -481,6 +483,7 @@ impl EditorDocument {
             transform: ClipTransform::default(),
             opacity_keys: Vec::new(),
             crop: Crop::default(),
+            crop_keys: Vec::new(),
             spatial_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
         };
@@ -921,8 +924,45 @@ fn decode_project_file(bytes: &[u8]) -> Result<ProjectData, String> {
             "id": DEFAULT_TRACK, "name": "Video 1", "visible": true, "locked": false, "clips": clips
         }]));
     }
+    if file.schema_version <= 15 {
+        migrate_keyframes(&mut file.data)?;
+    }
     file.data["schema_version"] = serde_json::json!(SCHEMA_VERSION);
     serde_json::from_value(file.data).map_err(|error| format!("Cannot parse project file: {error}"))
+}
+
+fn migrate_keyframes(project: &mut serde_json::Value) -> Result<(), String> {
+    let Some(tracks) = project.get_mut("tracks").and_then(serde_json::Value::as_array_mut) else {
+        return Ok(());
+    };
+    for track in tracks {
+        let Some(clips) = track.get_mut("clips").and_then(serde_json::Value::as_array_mut) else { continue; };
+        for clip in clips {
+            for (name, time, value) in [("opacity_keys", "source_ns", "opacity"), ("spatial_keys", "offset", "pose")] {
+                let Some(keys) = clip.get_mut(name).and_then(serde_json::Value::as_array_mut) else { continue; };
+                for key in keys {
+                    let key = key.as_object_mut().ok_or("Invalid legacy animation keyframe")?;
+                    if key.contains_key("time") || key.contains_key("value") || key.contains_key("curve") {
+                        return Err("Unsupported fields on legacy animation keyframe".into());
+                    }
+                    let time = key.remove(time).ok_or("Legacy animation keyframe has no time")?;
+                    let value = key.remove(value).ok_or("Legacy animation keyframe has no value")?;
+                    key.insert("time".into(), time);
+                    key.insert("value".into(), value);
+                    if name == "spatial_keys" {
+                        if let Some(ease) = key.remove("ease") {
+                            match ease.as_bool() {
+                                Some(true) => { key.insert("curve".into(), serde_json::json!("smooth")); }
+                                Some(false) => {}
+                                None => return Err("Invalid legacy animation easing".into()),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate(data: &ProjectData) -> Result<(), String> {

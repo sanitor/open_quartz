@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 15);
+   assert.equal(data.schema_version, 16);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1001,7 +1001,7 @@ try{
    await fileAction('SAVE AS', keyProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(keyProject, 'utf8'));
    assert.deepEqual(data.tracks[0].clips[0].opacity_keys, [
-     { source_ns: 0, opacity: 0 }, { source_ns: 66666666, opacity: 1 },
+     { time: 0, value: 0 }, { time: 66666666, value: 1 },
    ]);
    const exportPath = join(output, 'opacity.mp4');
    await fileAction('EXPORT', exportPath, 'Export MP4'); await waitState('Export complete');
@@ -1861,6 +1861,58 @@ try{
  const spatialProject = join(output, 'spatial.oqvideo.json');
  const transformControl = async (label, value) => enter(await clipControl(label), value);
  const spatialButton = async label => client.click(await clipControl(label, 'Button'));
+ await step('Migrate legacy animations and keyframe crop in the monitor and export', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   fixture.schema_version = 15; fixture.data.schema_version = 15;
+   const [upper, , lower] = fixture.data.tracks;
+   upper.clips = upper.clips.slice(0, 1);
+   upper.clips[0].timeline_start = 0;
+   upper.clips[0].duration = 5;
+   upper.clips[0].transform.scale = 1;
+   upper.clips[0].spatial_keys = [
+     { offset: 0, pose: { x: 0, y: 0, scale: 1, rotation: 0 }, ease: true },
+     { offset: 4, pose: { x: 0, y: 0, scale: 1, rotation: 0 } },
+   ];
+   upper.clips[0].opacity_keys = [{ source_ns: 0, opacity: 1 }];
+   lower.clips[0].duration = 5;
+   fixture.data.tracks = [upper, lower];
+   const seed = join(output, 'animated-crop.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   await client.click(await item('foreground.mp4')); await expectColor('red');
+   const cropKey = action => clipControl(`${action} crop keyframe`, 'Button');
+   await client.click(await cropKey('Add'));
+   for (let i = 0; i < 4; i++) await click('NEXT');
+   await enter(await clipControl('Crop left (%)'), 90);
+   await expectColor('blue');
+   await click('PREVIOUS'); await waitState('playhead 3 frames'); await expectColor('blue');
+   await click('PREVIOUS'); await waitState('playhead 2 frames'); await expectColor('red');
+   assert.equal((await clipControl('Crop left (%)')).accessibleValue, '45.000');
+   const path = join(output, 'animated-crop.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const dominant = frame => {
+     const offset = frame * 32 * 18 * 3 + (9 * 32 + 16) * 3;
+     return pixels[offset] > pixels[offset + 2] ? 'red' : 'blue';
+   };
+   assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
+   await click('SAVE'); await waitState('Project saved');
+   const saved = JSON.parse(await readFile(seed, 'utf8'));
+   assert.equal(saved.schema_version, 16);
+   const [layer] = saved.data.tracks[0].clips;
+   assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
+   assert.equal(layer.spatial_keys[0].curve, 'smooth');
+   assert.deepEqual(layer.crop_keys.map(key => key.time), [0, 4]);
+   await close();
+   await launch(seed); await waitState('clips 2');
+   await client.click(await item('foreground.mp4'));
+   for (let i = 0; i < 4; i++) await click('NEXT');
+   await client.click(await cropKey('Remove'));
+   await expectColor('red');
+   await click('UNDO'); await expectColor('blue');
+   await close();
+ }, { core: true });
  await step('Crop the layer and match eased transform keyframes in preview and exported pixels', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    const [upper, , lower] = fixture.data.tracks;
@@ -1890,7 +1942,7 @@ try{
    await fileAction('SAVE AS', spatialProject, 'Save project'); await waitState('Project saved');
    const clip = JSON.parse(await readFile(spatialProject, 'utf8')).data.tracks[0].clips[0];
    assert.deepEqual(clip.crop, { left: 0.5, top: 0.2, right: 0.1, bottom: 0.2 });
-   assert.deepEqual(clip.spatial_keys.map(key => [key.offset, key.pose.x, !!key.ease]),
+   assert.deepEqual(clip.spatial_keys.map(key => [key.time, key.value.x, key.curve === "smooth"]),
      [[0, 0, true], [8, 0.4, false]]);
    const path = join(output, 'eased-crop.mp4');
    await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');

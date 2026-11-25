@@ -1,3 +1,4 @@
+mod animation_key;
 mod batch_media;
 mod controller;
 #[cfg(target_os = "macos")]

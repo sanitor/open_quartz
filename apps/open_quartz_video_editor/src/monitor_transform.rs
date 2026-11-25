@@ -268,6 +268,8 @@ impl Controller {
         let mut spatial_editable = false;
         let mut spatial_key_enabled = false;
         let mut spatial_key = None;
+        let mut crop_key = false;
+        let mut crop_editable = false;
         if let Some(clip) = selected {
             let transform = draft.map_or_else(|| clip.transform_at(self.playhead), |draft| draft.value);
             let track = self
@@ -279,9 +281,11 @@ impl Controller {
                 .is_some_and(|active| active.id == clip.id);
             spatial_editable = writable && (clip.spatial_keys.is_empty() || spatial_key_enabled);
             spatial_key = clip.spatial_key_at(self.playhead);
+            crop_key = clip.has_crop_key_at(self.playhead);
+            crop_editable = writable && (clip.crop_keys.is_empty() || spatial_key_enabled);
             let source_ns = self.document.data.clip_source_time(clip, self.playhead).ok();
             key_enabled = writable && source_ns.is_some() && !self.playing;
-            on_key = source_ns.is_some_and(|ns| clip.opacity_keys.binary_search_by_key(&ns, |key| key.source_ns).is_ok());
+            on_key = source_ns.is_some_and(|ns| clip.opacity_keys.binary_search_by_key(&ns, |key| key.time).is_ok());
             opacity_editable = writable && (clip.opacity_keys.is_empty() || key_enabled);
             if track.visible
                 && track
@@ -301,10 +305,11 @@ impl Controller {
             let opacity = source_ns.map_or(transform.opacity, |ns| clip.opacity_at(ns));
             window.set_selected_clip_opacity(format(opacity * 100.0));
             window.set_selected_clip_exposure(format(transform.exposure));
-            window.set_crop_left(format(clip.crop.left * 100.0));
-            window.set_crop_top(format(clip.crop.top * 100.0));
-            window.set_crop_right(format(clip.crop.right * 100.0));
-            window.set_crop_bottom(format(clip.crop.bottom * 100.0));
+            let crop = clip.crop_at(self.playhead);
+            window.set_crop_left(format(crop.left * 100.0));
+            window.set_crop_top(format(crop.top * 100.0));
+            window.set_crop_right(format(crop.right * 100.0));
+            window.set_crop_bottom(format(crop.bottom * 100.0));
         }
         window.set_selected_clip_writable(writable);
         window.set_opacity_key_enabled(key_enabled);
@@ -313,7 +318,9 @@ impl Controller {
         window.set_spatial_editable(spatial_editable);
         window.set_spatial_key_enabled(spatial_key_enabled);
         window.set_on_spatial_key(spatial_key.is_some());
-        window.set_eased_spatial_key(spatial_key.is_some_and(|key| key.ease));
+        window.set_eased_spatial_key(spatial_key.is_some_and(|key| key.curve == crate::animation_key::Curve::Smooth));
+        window.set_on_crop_key(crop_key);
+        window.set_crop_editable(crop_editable);
         window.set_monitor_box(overlay);
     }
 
@@ -383,7 +390,7 @@ impl Controller {
                                     .map_or(clip.transform.opacity, |ns| clip.opacity_at(ns)) > 0.0
                                     && self
                                         .geometry(clip, clip.transform_at(self.playhead))
-                                        .is_some_and(|g| g.contains_crop(point, clip.crop)))
+                                        .is_some_and(|g| g.contains_crop(point, clip.crop_at(self.playhead))))
                                 .then_some(clip)
                             })
                     })
@@ -465,7 +472,7 @@ impl Controller {
                     return Err("Transform value must be finite".into());
                 }
                 if field.starts_with("crop-") {
-                    return self.document.set_crop(&id, field, value / 100.0);
+                    return self.document.set_crop(&id, self.playhead, field, value / 100.0);
                 }
                 match field {
                     "x" => transform.x = value / self.document.data.width as f32,

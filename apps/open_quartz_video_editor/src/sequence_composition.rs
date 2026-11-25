@@ -1,7 +1,28 @@
 use open_quartz::project::{Edge, Graph, InputMode, NodeFactoryRequest};
 
-use super::{LayerSource, OpacityAnimation, PreviewRequest, SpatialAnimation, OUTPUT_ID, SOURCE_ID};
+use super::{ClipAnimation, LayerSource, OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
+use crate::animation_key::Keyframe;
 use crate::document::DissolveSide;
+
+fn animated_function<Time: Copy, Value: Copy>(
+    name: &str, ty: &str, keys: &[Keyframe<Time, Value>],
+    seconds: impl Fn(Time) -> f64, format_value: impl Fn(Value) -> String,
+) -> String {
+    let mut shader = format!("fn {name}() -> {ty} {{\n");
+    for pair in keys.windows(2) {
+        let (left, right) = (pair[0], pair[1]);
+        let (start, end) = (seconds(left.time), seconds(right.time));
+        let span = end - start;
+        let progress = left.curve.wgsl();
+        shader.push_str(&format!(
+            "if (iTime < {end:.9e}) {{ let t = clamp((iTime - ({start:.9e})) / {span:.9e}, 0.0, 1.0); return mix({}, {}, {progress}); }}\n",
+            format_value(left.value), format_value(right.value),
+        ));
+    }
+    let last = keys.last().expect("animation has at least one key");
+    shader.push_str(&format!("return {};\n}}\n", format_value(last.value)));
+    shader
+}
 
 fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, speed_percent: u16) -> String {
     let timeline_scale = 100.0 / f64::from(speed_percent);
@@ -9,41 +30,15 @@ fn opacity_function(index: usize, animation: &OpacityAnimation, origin: u64, spe
         ((i128::from(animation.timeline_start_ns) - i128::from(origin)) as f64
             + (i128::from(source_ns) - i128::from(animation.source_in_ns)) as f64 * timeline_scale) / 1_000_000_000.0
     };
-    let mut shader = format!("fn animated_alpha{index}() -> f32 {{\n");
-    for pair in animation.keys.windows(2) {
-        let left = pair[0];
-        let right = pair[1];
-        let span = (right.source_ns - left.source_ns) as f64 * timeline_scale / 1_000_000_000.0;
-        shader.push_str(&format!(
-            "if (iTime < {:.9e}) {{ return mix({:.9e}, {:.9e}, clamp((iTime - ({:.9e})) / {:.9e}, 0.0, 1.0)); }}\n",
-            seconds(right.source_ns), left.opacity, right.opacity, seconds(left.source_ns), span,
-        ));
-    }
-    let last = animation.keys.last().expect("animation has at least one key");
-    shader.push_str(&format!("return {:.9e};\n}}\n", last.opacity));
-    shader
+    animated_function(&format!("animated_alpha{index}"), "f32", &animation.keys, seconds, |opacity| format!("{opacity:.9e}"))
 }
 
-fn spatial_function(index: usize, animation: &SpatialAnimation, origin: u64) -> String {
+fn clip_function<V: Copy>(
+    name: &str, animation: &ClipAnimation<V>, origin: u64, format_value: impl Fn(V) -> String,
+) -> String {
     let start = (i128::from(animation.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
     let seconds = |offset: i64| start + offset as f64 * animation.seconds_per_frame;
-    let pose = |key: &crate::document::SpatialKey| {
-        let value = key.pose;
-        format!("vec4f({:.9e}, {:.9e}, {:.9e}, {:.9e})", value.x, value.y, value.scale, value.rotation.to_radians())
-    };
-    let mut shader = format!("fn animated_pose{index}() -> vec4f {{\n");
-    for pair in animation.keys.windows(2) {
-        let (left, right) = (&pair[0], &pair[1]);
-        let span = (i128::from(right.offset) - i128::from(left.offset)) as f64 * animation.seconds_per_frame;
-        let progress = if left.ease { "t * t * (3.0 - 2.0 * t)" } else { "t" };
-        shader.push_str(&format!(
-            "if (iTime < {:.9e}) {{ let t = clamp((iTime - ({:.9e})) / {:.9e}, 0.0, 1.0); return mix({}, {}, {progress}); }}\n",
-            seconds(right.offset), seconds(left.offset), span, pose(left), pose(right),
-        ));
-    }
-    let last = animation.keys.last().expect("animation has at least one key");
-    shader.push_str(&format!("return {};\n}}\n", pose(last)));
-    shader
+    animated_function(name, "vec4f", &animation.keys, seconds, format_value)
 }
 
 pub(super) fn source_id(clip: &str) -> String {
@@ -68,7 +63,8 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
     let origin = request.animation_origin_ns();
     if slots.iter().any(|layer| layer.dissolve.is_some()
         || layer.opacity.as_ref().is_some_and(|animation| animation.keys.len() > 1)
-        || layer.spatial.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
+        || layer.spatial.as_ref().is_some_and(|animation| animation.keys.len() > 1)
+        || layer.crop_animation.as_ref().is_some_and(|animation| animation.keys.len() > 1)) {
         bindings.push_str(&format!("@group(0) @binding({}) var<uniform> iTime:f32;\n", slots.len() * 4));
     }
     for (index, layer) in slots.iter().enumerate() {
@@ -146,18 +142,27 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
             }
         };
         let placement = if let Some(animation) = &layer.spatial {
-            animation_code.push_str(&spatial_function(index, animation, origin));
+            animation_code.push_str(&clip_function(&format!("animated_pose{index}"), animation, origin,
+                |value| format!("vec4f({:.9e}, {:.9e}, {:.9e}, {:.9e})",
+                    value.x, value.y, value.scale, value.rotation.to_radians())));
             format!("let animated = animated_pose{index}(); let layer_place = vec4f(animated.xyz, placement{index}.w); let layer_blend = vec4f(cos(animated.w), sin(animated.w), blend{index}.zw);")
         } else {
             format!("let layer_place = placement{index}; let layer_blend = blend{index};")
         };
-        let crop = layer.crop;
-        let minimum = format!("vec2f({:.9e}, {:.9e})", crop.left, crop.top);
-        let maximum = format!("vec2f({:.9e}, {:.9e})", 1.0 - crop.right, 1.0 - crop.bottom);
+        let (crop_setup, minimum, maximum) = if let Some(animation) = &layer.crop_animation {
+            animation_code.push_str(&clip_function(&format!("animated_crop{index}"), animation, origin,
+                |crop| format!("vec4f({:.9e}, {:.9e}, {:.9e}, {:.9e})", crop.left, crop.top, 1.0 - crop.right, 1.0 - crop.bottom)));
+            (format!("let crop_bounds = animated_crop{index}();"), "crop_bounds.xy".into(), "crop_bounds.zw".into())
+        } else {
+            let crop = layer.crop;
+            (String::new(), format!("vec2f({:.9e}, {:.9e})", crop.left, crop.top),
+                format!("vec2f({:.9e}, {:.9e})", 1.0 - crop.right, 1.0 - crop.bottom))
+        };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) == order) {{\n\
                 {placement}
+                {crop_setup}
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), layer_place, layer_blend);\n\
                 let sample = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0);\n\
                 if (all(p >= {minimum}) && all(p <= {maximum})) {{\n\

@@ -1,7 +1,6 @@
 use super::{Clip, ClipTransform, EditorDocument};
 use serde::{Deserialize, Serialize};
-
-const MAX_KEYS: usize = 256;
+use crate::animation_key::{self, Curve, Keyframe};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -75,37 +74,22 @@ impl Pose {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SpatialKey {
-    pub offset: i64,
-    pub pose: Pose,
-    #[serde(default, skip_serializing_if = "super::is_false")]
-    pub ease: bool,
-}
+pub type SpatialKey = Keyframe<i64, Pose>;
+pub type CropKey = Keyframe<i64, Crop>;
 
 impl Clip {
     fn pose_at(&self, offset: i128) -> Pose {
-        let keys = &self.spatial_keys;
-        let right = keys.partition_point(|key| i128::from(key.offset) <= offset);
-        match (
-            right.checked_sub(1).map(|index| &keys[index]),
-            keys.get(right),
-        ) {
-            (Some(left), Some(right)) => {
-                let delta = offset - i128::from(left.offset);
-                let length = i128::from(right.offset) - i128::from(left.offset);
-                let t = delta as f64 / length as f64;
-                let t = if left.ease {
-                    t * t * (3.0 - 2.0 * t)
-                } else {
-                    t
-                };
-                left.pose.interpolate(right.pose, t)
-            }
-            (Some(key), None) | (None, Some(key)) => key.pose,
-            (None, None) => Pose::from_transform(self.transform),
-        }
+        animation_key::sample(&self.spatial_keys, offset, Pose::from_transform(self.transform), Pose::interpolate)
+    }
+
+    pub fn crop_at(&self, frame: u64) -> Crop {
+        let offset = i128::from(frame) - i128::from(self.timeline_start);
+        animation_key::sample(&self.crop_keys, offset, self.crop, |left, right, progress| Crop {
+            left: animation_key::mix_scalar(left.left, right.left, progress),
+            top: animation_key::mix_scalar(left.top, right.top, progress),
+            right: animation_key::mix_scalar(left.right, right.right, progress),
+            bottom: animation_key::mix_scalar(left.bottom, right.bottom, progress),
+        })
     }
 
     pub fn transform_at(&self, frame: u64) -> ClipTransform {
@@ -129,53 +113,41 @@ impl Clip {
         let offset = self.offset_at(frame).ok()?;
         let index = self
             .spatial_keys
-            .binary_search_by_key(&offset, |key| key.offset)
+            .binary_search_by_key(&offset, |key| key.time)
             .ok()?;
         Some(self.spatial_keys[index])
     }
 
     pub(super) fn validate_spatial(&self) -> Result<(), String> {
         self.crop.validate()?;
-        if self.spatial_keys.len() > MAX_KEYS
-            || self.spatial_keys.iter().any(|key| !key.pose.valid())
-            || self
-                .spatial_keys
-                .windows(2)
-                .any(|pair| pair[0].offset >= pair[1].offset)
-        {
+        if !animation_key::validate(&self.spatial_keys, |pose| pose.valid()) {
             return Err("Invalid transform keyframes".into());
+        }
+        if !animation_key::validate(&self.crop_keys, |crop| crop.validate().is_ok()) {
+            return Err("Invalid crop keyframes".into());
         }
         Ok(())
     }
 
     pub(super) fn preserve_spatial_keys_on_trim(&mut self, start: u64) -> Result<(), String> {
         let shift = i128::from(self.timeline_start) - i128::from(start);
-        for key in &mut self.spatial_keys {
-            key.offset = i64::try_from(i128::from(key.offset) + shift)
-                .map_err(|_| "Transform keyframe position overflow")?;
+        let times = self.spatial_keys.iter_mut().map(|key| &mut key.time)
+            .chain(self.crop_keys.iter_mut().map(|key| &mut key.time));
+        for time in times {
+            *time = i64::try_from(i128::from(*time) + shift)
+                .map_err(|_| "Animation keyframe position overflow")?;
         }
         Ok(())
     }
 
     fn write_spatial_key(&mut self, offset: i64, pose: Pose) -> Result<(), String> {
-        match self
-            .spatial_keys
-            .binary_search_by_key(&offset, |key| key.offset)
-        {
-            Ok(index) => self.spatial_keys[index].pose = pose,
-            Err(index) if self.spatial_keys.len() < MAX_KEYS => {
-                self.spatial_keys.insert(
-                    index,
-                    SpatialKey {
-                        offset,
-                        pose,
-                        ease: false,
-                    },
-                );
-            }
-            Err(_) => return Err("A clip supports up to 256 transform keyframes".into()),
-        }
-        Ok(())
+        animation_key::set_key(&mut self.spatial_keys, offset, pose)
+    }
+
+    pub fn has_crop_key_at(&self, frame: u64) -> bool {
+        self.offset_at(frame).is_ok_and(|offset| {
+            self.crop_keys.binary_search_by_key(&offset, |key| key.time).is_ok()
+        })
     }
 }
 
@@ -209,12 +181,12 @@ impl EditorDocument {
             let offset = clip.offset_at(frame)?;
             let key = clip
                 .spatial_keys
-                .binary_search_by_key(&offset, |key| key.offset);
+                .binary_search_by_key(&offset, |key| key.time);
             match (action, key) {
                 ("toggle-key", Ok(index)) => {
                     let removed = clip.spatial_keys.remove(index);
                     if clip.spatial_keys.is_empty() {
-                        removed.pose.apply(&mut clip.transform);
+                        removed.value.apply(&mut clip.transform);
                     }
                 }
                 ("toggle-key", Err(_)) => {
@@ -222,7 +194,8 @@ impl EditorDocument {
                     clip.write_spatial_key(offset, pose)?;
                 }
                 ("ease", Ok(index)) => {
-                    clip.spatial_keys[index].ease = !clip.spatial_keys[index].ease
+                    let key = &mut clip.spatial_keys[index];
+                    key.curve = if key.curve == Curve::Smooth { Curve::Linear } else { Curve::Smooth };
                 }
                 _ => return Err("Select a transform keyframe to change easing".into()),
             }
@@ -230,10 +203,29 @@ impl EditorDocument {
         })
     }
 
-    pub fn set_crop(&mut self, id: &str, edge: &str, value: f32) -> Result<(), String> {
+    pub fn toggle_crop_key(&mut self, id: &str, frame: u64) -> Result<(), String> {
         self.transact(|data| {
             let (track, index) = data.writable_clip(id)?;
-            let crop = &mut data.tracks[track].clips[index].crop;
+            let clip = &mut data.tracks[track].clips[index];
+            let offset = clip.offset_at(frame)?;
+            if let Ok(index) = clip.crop_keys.binary_search_by_key(&offset, |key| key.time) {
+                let key = clip.crop_keys.remove(index);
+                if clip.crop_keys.is_empty() {
+                    clip.crop = key.value;
+                }
+                Ok(())
+            } else {
+                let crop = clip.crop_at(frame);
+                animation_key::set_key(&mut clip.crop_keys, offset, crop)
+            }
+        })
+    }
+
+    pub fn set_crop(&mut self, id: &str, frame: u64, edge: &str, value: f32) -> Result<(), String> {
+        self.transact(|data| {
+            let (track, index) = data.writable_clip(id)?;
+            let clip = &mut data.tracks[track].clips[index];
+            let mut crop = clip.crop_at(frame);
             match edge {
                 "crop-left" => crop.left = value,
                 "crop-top" => crop.top = value,
@@ -241,7 +233,13 @@ impl EditorDocument {
                 "crop-bottom" => crop.bottom = value,
                 _ => return Err("Unknown crop edge".into()),
             }
-            Ok(())
+            if clip.crop_keys.is_empty() {
+                clip.crop = crop;
+                Ok(())
+            } else {
+                let offset = clip.offset_at(frame)?;
+                animation_key::set_key(&mut clip.crop_keys, offset, crop)
+            }
         })
     }
 }

@@ -759,6 +759,13 @@ impl Controller {
                 self.finish_edit(result);
             }
             "split" => self.split(),
+            "toggle-crop-key" => {
+                self.pause();
+                if let Some(id) = self.selected_clip.clone() {
+                    let result = self.document.toggle_crop_key(&id, self.playhead);
+                    self.finish_edit(result);
+                }
+            }
             "toggle-transform-key" | "ease-transform-key" => {
                 self.pause();
                 if let Some(id) = self.selected_clip.clone() {
@@ -2205,9 +2212,7 @@ impl Controller {
         self.publish_pipeline();
         self.refresh_time();
         self.refresh_monitor();
-        if self.document.is_dirty() {
-            self.status("Unsaved changes");
-        }
+        window.set_project_dirty(self.document.is_dirty());
     }
     fn clear_images(&mut self) {
         self.source_marks.clear();

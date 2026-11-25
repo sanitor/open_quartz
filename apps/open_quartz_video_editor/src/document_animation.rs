@@ -1,49 +1,19 @@
 use super::{source_time_ns, Clip, EditorDocument, ProjectData};
-use serde::{Deserialize, Serialize};
+use crate::animation_key::{self, Keyframe};
 
-const MAX_OPACITY_KEYS: usize = 256;
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpacityKey {
-    pub source_ns: u64,
-    pub opacity: f32,
-}
+pub type OpacityKey = Keyframe<u64, f32>;
 
 impl Clip {
     pub fn opacity_at(&self, source_ns: u64) -> f32 {
-        let keys = &self.opacity_keys;
-        let right = keys.partition_point(|key| key.source_ns <= source_ns);
-        match (
-            right.checked_sub(1).and_then(|left| keys.get(left)),
-            keys.get(right),
-        ) {
-            (Some(left), Some(right)) => {
-                let progress =
-                    (source_ns - left.source_ns) as f64 / (right.source_ns - left.source_ns) as f64;
-                (f64::from(left.opacity)
-                    + (f64::from(right.opacity) - f64::from(left.opacity)) * progress)
-                    as f32
-            }
-            (Some(key), None) | (None, Some(key)) => key.opacity,
-            (None, None) => self.transform.opacity,
-        }
+        animation_key::sample(&self.opacity_keys, i128::from(source_ns), self.transform.opacity, animation_key::mix_scalar)
     }
 
     pub(super) fn validate_opacity_keys(&self) -> Result<(), String> {
-        if self.opacity_keys.len() > MAX_OPACITY_KEYS
-            || self
-                .opacity_keys
-                .iter()
-                .any(|key| !(0.0..=1.0).contains(&key.opacity))
-            || self
-                .opacity_keys
-                .windows(2)
-                .any(|pair| pair[0].source_ns >= pair[1].source_ns)
-        {
-            return Err("Invalid clip opacity keyframes".into());
+        if animation_key::validate(&self.opacity_keys, |opacity| (0.0..=1.0).contains(opacity)) {
+            Ok(())
+        } else {
+            Err("Invalid clip opacity keyframes".into())
         }
-        Ok(())
     }
 }
 
@@ -75,17 +45,7 @@ impl EditorDocument {
             let clip = &data.tracks[track].clips[index];
             let source_ns = data.clip_source_time(clip, frame)?;
             let opacity = opacity.unwrap_or_else(|| clip.opacity_at(source_ns));
-            let key = OpacityKey { source_ns, opacity };
-            let keys = &mut data.tracks[track].clips[index].opacity_keys;
-            match keys.binary_search_by_key(&source_ns, |key| key.source_ns) {
-                Ok(index) => keys[index] = key,
-                Err(index) if keys.len() < MAX_OPACITY_KEYS => keys.insert(index, key),
-                Err(_) => {
-                    return Err(format!(
-                        "A clip supports up to {MAX_OPACITY_KEYS} opacity keyframes"
-                    ))
-                }
-            }
+            animation_key::set_key(&mut data.tracks[track].clips[index].opacity_keys, source_ns, opacity)?;
             Ok(())
         })
     }
@@ -97,11 +57,11 @@ impl EditorDocument {
             let clip = &mut data.tracks[track].clips[index];
             let index = clip
                 .opacity_keys
-                .binary_search_by_key(&source_ns, |key| key.source_ns)
+                .binary_search_by_key(&source_ns, |key| key.time)
                 .map_err(|_| "The playhead is not on an opacity keyframe")?;
             let key = clip.opacity_keys.remove(index);
             if clip.opacity_keys.is_empty() {
-                clip.transform.opacity = key.opacity;
+                clip.transform.opacity = key.value;
             }
             Ok(())
         })
