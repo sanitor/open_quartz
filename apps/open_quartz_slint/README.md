@@ -495,9 +495,9 @@ not a production fallback. Shader editing and project I/O need no loaded model.
 - Loads, progress, backend and inference results are session state, not SDK history
   or saved node data. Open never loads/downloads models implicitly. Resource
   operations are guarded by unapplied inspector drafts.
-- UI policy is **Metal GPU / Auto Hardware** only: MetalGpu / Metal, GPU placement,
-  Device path, RequireResident + AcceleratorOnly + Forbid CPU. Auto never selects
-  ORT/CPU/CoreML EP. Legacy project parsing cannot weaken these production constraints.
+- **Auto Hardware** selects `MetalGpu` on macOS and `Dx12Gpu` on Windows. Both
+  report GPU placement and the Device path and enforce `RequireResident`,
+  `AcceleratorOnly`, and `Forbid` CPU fallback. Legacy projects follow the same policy.
 - `.onnx` remains the real artifact format and menus remain task-centric; catalog
   presence and successful introspection do not imply resident model support.
 - Independent sessions support named multiple FP32 inputs/outputs. The graph image

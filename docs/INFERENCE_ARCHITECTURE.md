@@ -58,7 +58,7 @@ GPU source texture
 
 卷积使用按已验证层几何专门编译的 FP32 内核：一个 64-thread workgroup 覆盖 32 个输出通道 × 32 个邻接像素，每线程累加 4×4 register tile；归约以 K=32 的输入/权重共享分块执行，workgroup storage 为 8KB。输出仍是 NCHW；9-channel 尾部、padding、bias 和 ReLU 保持原模型语义。专门编译和权重上传只发生在准备阶段，不增加逐帧 CPU 图像处理。
 
-Metal 后端可执行七个目录 profile：SR3、RealESRGAN-x4、U²Net-P、MODNet、MiDaS-small、YOLOv8n、YOLO26n-sem。SR3 网络固定 `[1,1,224,224] → [1,1,672,672]`，任意源尺寸仍缩到 224×224 并重建源宽高各 ×3，不是 tiling 或原始大图全分辨率推理；RealESRGAN 按源分辨率执行并输出 ×4。其他平台与未知模型拒绝，不退回 ORT。执行支持与完整回归是否通过分开报告：入口为 `npm run test:desktop:inference`，详见[开发文档](DEVELOPMENT.md#七模型推理-e2e-回归)。
+macOS Metal 和 Windows D3D12 桌面后端均执行七个目录模型（SR3、RealESRGAN-x4、U²Net-P、MODNet、MiDaS-small、YOLOv8n、YOLO26n-sem）。SR3 网络固定 `[1,1,224,224] → [1,1,672,672]`，把源图缩到 224×224 后重建源宽高各 ×3。RealESRGAN 按源分辨率执行并输出 ×4。双平台生产路径与独立数值对照共用 `npm run test:desktop:inference`，参见[开发文档](DEVELOPMENT.md#七模型推理-e2e-回归)。
 此前 `catalog_benchmark` 的 Apple M4 Pro 720p 记录覆盖六模型原始选定输出与最终 RGBA，但绕过桌面模型加载和图输出契约；它不是完整 E2E。历史梯度样本最大字节差异 1，YOLOv8n 检测框为 0；不能由该结果外推自然图像、非空检测、其他硬件或完整生产验收。
 六个 catalog 模型各自另执行了不计时的 Metal 生命周期检查：同时持有三份 consumer output lease 时拒绝第四次提交；释放一个 lease 后复用对应 slot；销毁 session 后等待中仍可读到持有中的输出纹理。RealESRGAN 另验证源分辨率从 1280×720 切到 640×360、再恢复 1280×720 后，输出尺寸分别为 2560×1440 与 5120×2880。每个模型额外执行 3 次 CPU 与 3 次 GPU completion 样本；含 lifecycle 字段的专用记录为 `test-results/output-metrics/catalog-<model>-1280x720-lifecycle.json`，不作为性能统计。SR3 的独立真实 Metal pool/resource/device 验收及多尺寸性能记录见下方历史条目。
 
@@ -66,11 +66,11 @@ Metal 后端可执行七个目录 profile：SR3、RealESRGAN-x4、U²Net-P、MOD
 
 ## 执行政策与方案
 
-生产 backend 为 `MetalGpu`、provider 为 `Metal`，plan 报告 GPU placement 与 Device transfer path。生产强制 `RequireResident`、`AcceleratorOnly`、CPU fallback `Forbid`；UI 仅提供 **Metal GPU / Auto Hardware**。Auto Hardware 不表示可以退到 ORT/CPU。旧项目配置仍可解析，但不能放宽实时硬件约束。
+生产后端为 `MetalGpu` 或 `Dx12Gpu`，plan 报告 GPU placement 与 Device transfer path。Windows 原生 WGSL 执行 SR3，其他六个模型通过 DirectML 在渲染器的 D3D12 device 和 queue 上执行。DirectML 会话使用 GPU buffer 绑定输入输出，并关闭 CPU EP 回退。两平台均执行 `RequireResident`、`AcceleratorOnly` 和 CPU fallback `Forbid` 策略，**Auto Hardware** 按当前设备选择生产 GPU 后端。
 
-独立 ORT CPU、Windows DirectML、macOS CoreML EP 与命名 FP32 Tensor API 保留为显式 reference/诊断接口及 examples。CoreML EP 的 provider 注册或混合 CoreML/CPU dispatch 不能证明 resident、GPU/ANE-only，也不能成为生产兼容路径。Direct Core ML、WinML、CUDA 与其他平台的 resident 支持没有由本路径实现。
+独立 ORT CPU、主机内存 Tensor API、DirectML 和 CoreML 的诊断入口保留用于 reference 和 examples。生产路径使用渲染器持有的 GPU 资源。
 
-Windows `.scr` 的推理导出与 stub 执行明确不可用：没有合格 resident backend，禁止回退到同步 readback → CPU → upload。非推理 Shader/硬件视频导出仍保留。
+Windows `.scr` 导出支持 Shader 图。推理图通过桌面运行时执行。
 
 ## 模型事实、自省与任务契约
 
