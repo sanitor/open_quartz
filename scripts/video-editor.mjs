@@ -40,6 +40,10 @@ if(mode==='dev')await run('cargo',['run','--locked','--manifest-path',manifest,'
 if (mode === 'test' || mode === 'test-portable') {
   const hardware = mode === 'test' ? ['--include-ignored'] : [];
   await run('cargo', ['test', '--locked', '--manifest-path', manifest, '--', '--test-threads=1', ...hardware], env);
+  if (windows && mode === 'test') {
+    await run('cargo', ['test', '--locked', '-p', 'oq-media', '--features', 'audio,d3d12',
+      '--lib', '--test', 'decode_d3d12', '--', '--test-threads=1', '--include-ignored'], env);
+  }
 }
 if(mode==='build')await run('cargo',['build','--locked','--release','--manifest-path',manifest],env);
 if(mode==='package'){

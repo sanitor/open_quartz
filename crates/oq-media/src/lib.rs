@@ -208,6 +208,9 @@ pub use video_session::{ActualPipeline, FrameLease, HardwareFrame, Session};
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use video_session::HardwareFrame as VideoToolboxFrame;
 
+#[cfg(all(windows, feature = "d3d12"))]
+pub mod d3d12_encoder;
+
 #[cfg(all(any(target_os = "macos", windows), feature = "audio"))]
 mod audio;
 #[cfg(all(any(target_os = "macos", windows), feature = "audio"))]
