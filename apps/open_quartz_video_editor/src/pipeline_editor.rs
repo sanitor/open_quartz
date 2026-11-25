@@ -66,6 +66,7 @@ struct CorrectorState {
 #[derive(Default)]
 pub(super) struct PipelineEditor {
     clip: Option<String>,
+    pub(super) monitor: Option<(String, String)>,
     selected: BTreeSet<String>,
     edge: Option<String>,
     port: Option<(String,String,bool)>,
@@ -152,7 +153,13 @@ impl Controller {
     pub(super) fn pipeline_command(&mut self, command: PipelineCommand) {
         if let PipelineCommand::Workspace(open)=command {
             self.extra_selection.clear();
-            if !open { self.discard_pipeline_corrector(); }
+            if !open {
+                self.discard_pipeline_corrector();
+                if self.pipeline_editor.monitor.take().is_some() {
+                    self.requested = None;
+                    self.request_preview();
+                }
+            }
             if open {
                 let id=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()))
                     .or_else(||self.document.data.active_clips(self.playhead).find(|(_, clip)| clip.title.is_none()).map(|(_, clip)| clip.id.clone()));
@@ -169,7 +176,7 @@ impl Controller {
         let read_only = match &command {
             PipelineCommand::Select(..) | PipelineCommand::Edge(..) => true,
             PipelineCommand::Action(action) => matches!(action.as_str(),
-                "copy" | "select-all" | "discard-drafts" | "cancel-connection"),
+                "copy" | "select-all" | "discard-drafts" | "cancel-connection" | "show-selected-node" | "show-program") || action.starts_with("toggle-preview:"),
             _ => false,
         };
         if !read_only {
@@ -252,6 +259,12 @@ impl Controller {
         self.publish_pipeline();
     }
     fn pipeline_action(&mut self, action:&str){
+        if action == "show-program" {
+            self.pipeline_editor.monitor = None;
+            self.refresh_pipeline_monitor();
+            return;
+        }
+
         if action.starts_with("apply-"){self.apply_pipeline_inspector(action);return;}
         let Some(id)=self.pipeline_editor.clip.clone()else{return;};
         let Some(clip)=self.document.clip(&id)else{return;};
@@ -294,12 +307,24 @@ impl Controller {
                     }
                 }
             }
-            action if action.starts_with("toggle-preview:")=>{
-                self.pipeline_error("Node thumbnails are not enabled in clip mode; the viewer shows the final output".into());
+            action if action == "show-selected-node" || action.starts_with("toggle-preview:") => {
+                let node = action.strip_prefix("toggle-preview:").map(str::to_owned)
+                    .or_else(|| (self.pipeline_editor.selected.len() == 1).then(|| self.pipeline_editor.selected.first().cloned()).flatten());
+                let Some(node) = node else { self.pipeline_error("Select one image node".into()); return; };
+                if let Err(error) = pipeline.monitor_tap(&node) { self.pipeline_error(error); return; }
+                self.pipeline_editor.monitor = Some((id, node));
+                self.refresh_pipeline_monitor();
             }
             _=>{}
         }
     }
+    fn refresh_pipeline_monitor(&mut self) {
+        self.pause();
+        self.requested = None;
+        self.publish_pipeline();
+        self.request_preview();
+    }
+
     fn apply_pipeline_inspector(&mut self,action:&str){
         let Some(node)=self.selected_pipeline_node()else{return;};
         if ClipPipeline::is_protected(&node.id){self.pipeline_error("Clip source and output are managed by the timeline".into());return;}
@@ -366,9 +391,17 @@ impl Controller {
         if !window.get_nodes_open(){return;}
         let active=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()));
         if active!=self.pipeline_editor.clip{
+            self.pipeline_editor.monitor = None;
             self.pipeline_editor.clip=active.clone();self.pipeline_editor.selected.clear();self.pipeline_editor.edge=None;self.pipeline_editor.port=None;self.pipeline_editor.error.clear();
         }
         let mut graph=active.as_deref().and_then(|id|self.document.clip(id)).map(|clip|clip.pipeline.graph().clone()).unwrap_or_default();
+        if self.pipeline_editor.monitor.as_ref().is_some_and(|(_, id)| !graph.nodes.iter().any(|node| node.id == *id)) {
+            self.pipeline_editor.monitor = None;
+        }
+        let monitor_label = self.pipeline_editor.monitor.as_ref()
+            .and_then(|(_, id)| graph.nodes.iter().find(|node| node.id == *id))
+            .map(|node| node.data.label.as_str());
+        window.set_pipeline_monitor_label(monitor_label.unwrap_or_default().into());
         self.pipeline_editor.selected.retain(|id|graph.nodes.iter().any(|n|&n.id==id));
         for node in &mut graph.nodes { node.data.extra.insert("expanded".into(),serde_json::json!(false)); }
         let projection=GraphViewModel::from_graph(&graph,&self.pipeline_editor.selected);

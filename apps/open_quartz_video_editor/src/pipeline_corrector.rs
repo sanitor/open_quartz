@@ -9,12 +9,21 @@ impl Controller {
     }
 
     pub(in crate::controller) fn pipeline_preview_for(&self, clip_id: &str) -> Option<ClipPipeline> {
-        let state = self.pipeline_editor.corrector.as_ref()?;
-        (state.clip == clip_id && state.revision == self.document.revision
-            && self.selected_clip.as_deref() == Some(clip_id)
-            && self.pipeline_editor.selected.len() == 1
-            && self.pipeline_editor.selected.contains(&state.node))
-            .then(|| state.preview.clone()).flatten()
+        let draft = self.pipeline_editor.corrector.as_ref().and_then(|state| {
+            (state.clip == clip_id && state.revision == self.document.revision
+                && self.selected_clip.as_deref() == Some(clip_id)
+                && self.pipeline_editor.selected.len() == 1
+                && self.pipeline_editor.selected.contains(&state.node))
+                .then(|| state.preview.clone()).flatten()
+        });
+        if !self.playing && self.window.upgrade().is_some_and(|window| window.get_nodes_open()) {
+            if let Some((clip, node)) = &self.pipeline_editor.monitor {
+                if clip == clip_id {
+                    return draft.as_ref().unwrap_or(&self.document.clip(clip_id)?.pipeline).monitor_tap(node).ok();
+                }
+            }
+        }
+        draft
     }
 
     pub(super) fn publish_pipeline_corrector(&mut self, node: Option<&ProjectNode>) {

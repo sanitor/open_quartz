@@ -593,6 +593,7 @@ export component EditorWindow inherits Window {
     callback pipeline_port_dropped(string, string, bool, float, float, float);
     callback pipeline_edge_selected(string);
     callback pipeline_add_effect(int);
+    in property <string> pipeline_monitor_label;
     callback pipeline_action(string);
     callback pipeline_label_draft_changed(string);
     callback pipeline_shader_draft_changed(string);
@@ -968,7 +969,12 @@ export component EditorWindow inherits Window {
                     horizontal-stretch: 1; background: #101213;
                     VerticalLayout {
                         spacing: 0px;
-                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: root.nodes_open ? "Final · " + root.selected_clip_name : "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } if !root.nodes_open: ToolButton { label: "TRANSFORM"; glyph: "⛶"; selected: root.show_transform; clicked => { editor_focus.focus(); root.show_transform = !root.show_transform; root.monitor_gesture("cancel", "", 0, 0, 0); } }
+                        HorizontalLayout { height: 44px; padding-left: 14px; padding-right: 14px; Text { text: root.nodes_open ? (root.pipeline_monitor_label == "" ? "Final · " + root.selected_clip_name : "Node · " + root.pipeline_monitor_label) : "Preview"; color: root.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } if !root.nodes_open: ToolButton { label: "TRANSFORM"; glyph: "⛶"; selected: root.show_transform; clicked => { editor_focus.focus(); root.show_transform = !root.show_transform; root.monitor_gesture("cancel", "", 0, 0, 0); } }
+                            if root.nodes_open: Button {
+                                text: root.pipeline_monitor_label == "" ? "View selected node" : "View final output";
+                                enabled: root.pipeline_monitor_label != "" || root.pipeline_selection_count == 1;
+                                clicked => { root.pipeline_action(root.pipeline_monitor_label == "" ? "show-selected-node" : "show-program"); }
+                            }
                             if root.nodes_open: Button {
                                 text: "Grade versions"; enabled: root.grade_available;
                                 clicked => { root.grades_open = true; }

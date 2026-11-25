@@ -1393,6 +1393,7 @@ impl Controller {
             Ok(playback) => self.audio = playback,
             Err(error) => { self.status(error); return; }
         }
+        self.pipeline_editor.monitor = None;
         self.playing = true;
         self.requested = None;
         self.refresh();

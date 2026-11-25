@@ -185,6 +185,24 @@ impl ClipPipeline {
     }
 
     /// Insert a factory shader into the selected serial connection, preserving downstream fan-out.
+    /// Reconnect the protected output to a monitor tap in a transient copy.
+    pub fn monitor_tap(&self, id: &str) -> Result<Self, String> {
+        let mut graph = self.graph.clone();
+        let port = graph.nodes.iter().find(|node| node.id == id && node.id != OUTPUT_ID)
+            .and_then(|node| node.data.outputs.iter().find(|port| port.data_type == DataType::Vec4))
+            .or_else(|| graph.nodes.iter().find(|node| node.id == id && node.id == SOURCE_ID)
+                .and_then(|node| node.data.outputs.first()))
+            .ok_or("Select a node with an image output")?;
+        let port = port.id.clone();
+        let edge = graph.edges.iter_mut().find(|edge| edge.target == OUTPUT_ID)
+            .ok_or("Connect the clip output first")?;
+        edge.source = id.to_owned();
+        edge.source_handle = port;
+        let mut candidate = self.clone();
+        candidate.replace_graph(graph)?;
+        Ok(candidate)
+    }
+
     pub fn add_serial(&mut self, after: &str, code: &str, label: &str) -> Result<String, String> {
         self.add_serial_factory(after, |position| NodeFactoryRequest::Shader {
             position: Some(position), code: code.to_owned(), label: label.to_owned(),

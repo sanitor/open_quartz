@@ -625,6 +625,23 @@ try {
     await click('SAVE'); await waitState('Project saved');
     await close();
   }, { core: true });
+  await step('Monitor the source and an intermediate node without changing the saved output', async () => {
+    const path = join(output, 'monitor-tap.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); const { id: first } = await addEffect('Invert'); await waitColor('cyan');
+    await selectNode(first); await addEffect('Invert'); await waitColor('red');
+    await selectNode(first); await click('View selected node'); await waitColor('cyan');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.notEqual(graph.edges.find(edge => edge.target === 'output').source, first);
+    await click('View final output'); await waitColor('red');
+    await selectNode('video'); await click('View selected node'); await waitColor('red');
+    await click('View final output'); await waitColor('red');
+    await close();
+  }, { core: true });
   report.passed = true;
 } catch (error) {
   report.error = error.stack;
