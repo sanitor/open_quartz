@@ -28,7 +28,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             start_pts: None,
             time_base: Rational::new(1, 1)?,
             fps: None,
-            hdr_transfer: None,
+            camera_log: None, hdr_transfer: None,
             has_audio: false,
             audio: None,
             online: true,
@@ -49,7 +49,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 id: new_id("asset", 0), name, path, fingerprint: fingerprint(&canonical)?,
                 size_bytes: metadata.len(), still: false, width: 0, height: 0, duration_pts: audio.duration_pts,
                 start_pts: Some(audio.start_pts), time_base: audio.time_base, fps: None,
-                hdr_transfer: None, has_audio: true, audio: Some(audio), online: true,
+                camera_log: None, hdr_transfer: None, has_audio: true, audio: Some(audio), online: true,
             });
         }
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
@@ -91,6 +91,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 .average_frame_rate
                 .map(|fps| Rational::new(fps.numerator, fps.denominator))
                 .transpose()?,
+            camera_log: None,
             hdr_transfer: match frame.frame.frame.color().transfer {
                 oq_media::TransferFunction::Pq => Some(HdrTransfer::Pq),
                 oq_media::TransferFunction::Hlg => Some(HdrTransfer::Hlg),

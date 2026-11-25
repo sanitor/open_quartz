@@ -1,6 +1,7 @@
 //! CoreVideo/Metal plane import and same-queue GPU color conversion.
 //! Native owners and shared import credits survive until queue completion.
 use std::{collections::HashMap, ffi::c_void, ptr, sync::{Arc, Mutex}};
+use crate::operators::CameraLog;
 
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::{MTLTexture, MTLTextureType};
@@ -183,6 +184,12 @@ impl GpuBackend {
     /// Atomically reserves shared credit; false means retry after GPU progress.
     /// Fatal validation/import failures never masquerade as temporary fullness.
     pub(crate) fn try_upload_videotoolbox(&self, frame: &VideoToolboxFrame, output: &TextureHandle) -> Result<bool, String> {
+        self.try_upload_camera_frame(frame, output, None)
+    }
+
+    pub(crate) fn try_upload_camera_frame(
+        &self, frame: &VideoToolboxFrame, output: &TextureHandle, camera: Option<CameraLog>,
+    ) -> Result<bool, String> {
         let (width, height) = (frame.width(), frame.height());
         let limit = self.device.limits().max_texture_dimension_2d;
         if width == 0 || height == 0 || width > limit || height > limit || output.width != width || output.height != height || !matches!(output.format, TextureFormat::Rgba8Unorm | TextureFormat::Rgba16Float) {
@@ -257,9 +264,10 @@ impl GpuBackend {
         };
         let managed = output.format == TextureFormat::Rgba16Float;
         let key = u16::from(((format * 6 + matrix * 2 + u8::from(color.full_range)) * 4 + transfer) * 3 + primaries)
-            + if managed { 216 } else { 0 };
+            + if managed { 216 } else { 0 }
+            + camera.map_or(0, |profile| profile.index() as u16 * 432);
         let (layout, pipeline) = state.pipelines.entry(key).or_insert_with(|| {
-            create_pipeline(&self.device, format, matrix, color.full_range, transfer, primaries, managed)
+            create_pipeline(&self.device, format, matrix, color.full_range, transfer, primaries, managed, camera)
         });
         let view0 = textures[0].as_ref().unwrap().create_view(&Default::default());
         let view1 = textures[if format == 2 { 0 } else { 1 }].as_ref().unwrap().create_view(&Default::default());
@@ -296,7 +304,7 @@ fn videotoolbox_bytes(frame: &VideoToolboxFrame) -> Result<usize, String> {
     Ok(bytes)
 }
 
-fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, transfer: u8, primaries: u8, managed: bool) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, transfer: u8, primaries: u8, managed: bool, camera: Option<CameraLog>) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let (kr, kb) = match matrix { 0 => (0.299f64, 0.114f64), 1 => (0.2126, 0.0722), _ => (0.2627, 0.0593) };
     let kg = 1.0 - kr - kb;
     let (scale, y_offset, y_range, c_mid, c_range) = match (format, full) {
@@ -305,7 +313,7 @@ fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, tr
         (_, false) => (255.0, 16.0, 219.0, 128.0, 224.0),
         _ => (255.0, 0.0, 255.0, 128.0, 255.0),
     };
-    let conversion = if format == 2 { "return vec4f(output_color(textureLoad(y_tex,p,0).rgb),1.0);".to_owned() } else { format!("let y = (textureLoad(y_tex,p,0).r * {scale} - {y_offset}) / {y_range}; let chroma = (textureLoad(uv_tex,c,0).rg * {scale} - vec2f({c_mid})) / {c_range}; let rgb = vec3f(y + {rv} * chroma.y, y - {gu} * chroma.x - {gv} * chroma.y, y + {bu} * chroma.x); return vec4f(output_color({channel}),1.0);", rv=2.0*(1.0-kr), gu=2.0*kb*(1.0-kb)/kg, gv=2.0*kr*(1.0-kr)/kg, bu=2.0*(1.0-kb), channel=if managed && transfer < 2 { "rgb" } else { "clamp(rgb, vec3f(0.0), vec3f(1.0))" }) };
+    let conversion = if format == 2 { "return vec4f(output_color(textureLoad(y_tex,p,0).rgb),1.0);".to_owned() } else { format!("let y = (textureLoad(y_tex,p,0).r * {scale} - {y_offset}) / {y_range}; let chroma = (textureLoad(uv_tex,c,0).rg * {scale} - vec2f({c_mid})) / {c_range}; let rgb = vec3f(y + {rv} * chroma.y, y - {gu} * chroma.x - {gv} * chroma.y, y + {bu} * chroma.x); return vec4f(output_color({channel}),1.0);", rv=2.0*(1.0-kr), gu=2.0*kb*(1.0-kb)/kg, gv=2.0*kr*(1.0-kr)/kg, bu=2.0*(1.0-kb), channel=if camera.is_some() || (managed && transfer < 2) { "rgb" } else { "clamp(rgb, vec3f(0.0), vec3f(1.0))" }) };
     let decode_transfer = match transfer {
         1 => {
         "let linear = select(pow(max((v + vec3f(0.055)) / 1.055, vec3f(0.0)), vec3f(2.4)), v / 12.92, v <= vec3f(0.04045));"
@@ -324,7 +332,8 @@ fn create_pipeline(device: &wgpu::Device, format: u8, matrix: u8, full: bool, tr
     let display = if transfer >= 2 {
         "let luminance = max(dot(rgb709, vec3f(0.2126, 0.7152, 0.0722)), 0.0); let mapped = rgb709 / (1.0 + luminance);"
     } else { "let mapped = rgb709;" };
-    let transfer = if managed { format!(r#"
+    let transfer = if let Some(camera) = camera { camera_transfer(camera, full, managed) }
+    else if managed { format!(r#"
         {decode_transfer}
         {gamut}
         return vec3f(dot(rgb709, vec3f(0.613128899, 0.339517308, 0.047353793)),
@@ -351,6 +360,40 @@ fn output_color(v: vec3f) -> vec3f {{ {transfer} }}
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("videotoolbox-pipeline-layout"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("videotoolbox-pipeline"), layout: Some(&pipeline_layout), vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() }, fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: if managed { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba8Unorm }, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }), primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
     (layout, pipeline)
+}
+
+fn camera_transfer(profile: CameraLog, full: bool, managed: bool) -> String {
+    // The surface range belongs to YCbCr. S-Log3's equation consumes the
+    // recorded code, so restore limited-range RGB codes before the inverse.
+    let recorded = if full { "v" } else { "(v * 876.0 + 64.0) / 1023.0" };
+    let decode = match profile {
+        CameraLog::SonySLog2 => format!(
+            "let encoded = ({recorded} * 1023.0 - 64.0) / 876.0; \
+             let linear = select((encoded - 0.03000122285) / (3.5388127854 / 0.9), \
+             (pow(vec3f(10.0), (encoded - 0.646596) / 0.432699) - 0.037584) * (0.9 * 219.0 / 155.0), \
+             encoded >= vec3f(26.0 / 876.0));"
+        ),
+        _ => format!(
+            "let code = {recorded} * 1023.0; \
+             let linear = select((code - 95.0) * (0.01125 / (171.2102946929 - 95.0)), \
+             0.19 * pow(vec3f(10.0), (code - 420.0) / 261.5) - 0.01, code >= vec3f(171.2102946929));"
+        ),
+    };
+    // Linear Sony primaries → AP1 with CAT02 D65→D60 adaptation.
+    let gamut = match profile {
+        CameraLog::SonySLog3Cine => "vec3f(dot(linear, vec3f(0.934517052, 0.143641683, -0.078158735)), dot(linear, vec3f(-0.050526660, 1.261609212, -0.211082552)), dot(linear, vec3f(-0.024503019, -0.030671048, 1.055174067)))",
+        _ => "vec3f(dot(linear, vec3f(1.089798218, -0.032765047, -0.057033172)), dot(linear, vec3f(-0.031171867, 1.182936689, -0.151764822)), dot(linear, vec3f(-0.003263585, -0.001569851, 1.004833436)))",
+    };
+    let output = if managed { "return ap1;" } else { r#"
+        let rgb = vec3f(dot(ap1, vec3f(1.7048586763, -0.6217160219, -0.0831426544)),
+            dot(ap1, vec3f(-0.1300768242, 1.1407357748, -0.0106589506)),
+            dot(ap1, vec3f(-0.0239640729, -0.1289755083, 1.1529395812)));
+        let luma = max(dot(rgb, vec3f(0.2126, 0.7152, 0.0722)), 0.0);
+        let mapped = rgb / (1.0 + luma);
+        return clamp(select(1.055 * pow(max(mapped, vec3f(0.0)), vec3f(1.0/2.4)) - vec3f(0.055),
+            mapped * 12.92, mapped <= vec3f(0.0031308)), vec3f(0.0), vec3f(1.0));
+    "# };
+    format!("{decode} let ap1 = {gamut}; {output}")
 }
 
 #[cfg(test)]

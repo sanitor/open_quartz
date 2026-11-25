@@ -101,6 +101,8 @@ pub struct GpuExecutor {
     textures: HashMap<String, TextureHandle>,
     sampling: HashMap<String, (TextureFilter, TextureWrap, Arc<wgpu::Sampler>)>,
     output_domains: HashMap<String, crate::operators::ColorDomain>,
+    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    camera_logs: HashMap<String, crate::operators::CameraLog>,
 }
 
 impl GpuExecutor {
@@ -112,6 +114,8 @@ impl GpuExecutor {
             textures: HashMap::new(),
             sampling: HashMap::new(),
             output_domains: HashMap::new(),
+            #[cfg(all(target_os = "macos", feature = "native-video"))]
+            camera_logs: HashMap::new(),
         }
     }
     fn resolve_source<'a>(&'a self, mut node_id: &'a str) -> Option<&'a str> {
@@ -252,19 +256,20 @@ impl GpuExecutor {
         if width == 0 || height == 0 || width > limit || height > limit {
             return Err(GpuExecutionError::for_node(node_id, "invalid video dimensions"));
         }
+        let camera = self.camera_logs.get(node_id).copied();
         let recreate = !self.video_texture_matches(node_id, width, height);
         if recreate {
             // Keep the previous graph input intact if another session consumes
             // the shared credit between preflight and the atomic reservation.
             let Some(texture) = self.backend.try_create_video_texture(width, height, self.video_texture_format(node_id))
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))? else { return Ok(false); };
-            let uploaded = self.backend.try_upload_videotoolbox(frame, &texture)
+            let uploaded = self.backend.try_upload_camera_frame(frame, &texture, camera)
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))?;
             if uploaded { self.textures.insert(node_id.to_owned(), texture); }
             Ok(uploaded)
         } else {
             let texture = self.textures.get(node_id).expect("texture exists when not recreated");
-            self.backend.try_upload_videotoolbox(frame, texture)
+            self.backend.try_upload_camera_frame(frame, texture, camera)
                 .map_err(|message| GpuExecutionError::for_node(node_id, message))
         }
     }
@@ -500,6 +505,8 @@ impl GpuExecutor {
             textures: self.textures.clone(),
             sampling: self.sampling.clone(),
             output_domains: self.output_domains.clone(),
+            #[cfg(all(target_os = "macos", feature = "native-video"))]
+            camera_logs: self.camera_logs.clone(),
         };
         if !staged.sync_plan_in_place(plan, source_sizes)? { return Ok(None); }
         Ok(Some(staged))
@@ -511,6 +518,8 @@ impl GpuExecutor {
         source_sizes: &HashMap<String, (u32, u32)>,
     ) -> Result<bool, GpuExecutionError> {
         self.output_domains = plan.nodes.iter().map(|node| (node.id.clone(), node.output_domain)).collect();
+        #[cfg(all(target_os = "macos", feature = "native-video"))]
+        { self.camera_logs = plan.nodes.iter().filter_map(|node| node.camera_log.map(|profile| (node.id.clone(), profile))).collect(); }
         let mut sizes = source_sizes.clone();
         let mut descriptors = HashMap::new();
         let (mut total_surfaces, mut total_bytes) = (0usize, 0u64);

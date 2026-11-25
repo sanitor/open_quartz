@@ -3,6 +3,30 @@
 pub const HDR_COLOR_VERSION: u32 = 1;
 pub const REFERENCE_WHITE_NITS: f64 = 203.0;
 
+/// Explicit camera gamut and transfer pairs. The project never guesses these
+/// from the codec, sample depth or Rec.709 container fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraLog {
+    SonySLog3Cine,
+    SonySLog3,
+    SonySLog2,
+}
+
+impl CameraLog {
+    pub const OPTIONS: [Self; 3] = [Self::SonySLog3Cine, Self::SonySLog3, Self::SonySLog2];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SonySLog3Cine => "Sony S-Log3 / S-Gamut3.Cine",
+            Self::SonySLog3 => "Sony S-Log3 / S-Gamut3",
+            Self::SonySLog2 => "Sony S-Log2 / S-Gamut",
+        }
+    }
+
+    pub fn index(self) -> usize { self as usize + 1 }
+}
+
 const PQ_M1: f64 = 2610.0 / 16384.0;
 const PQ_M2: f64 = 2523.0 / 32.0;
 const PQ_C1: f64 = 3424.0 / 4096.0;

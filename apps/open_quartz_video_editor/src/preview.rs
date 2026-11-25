@@ -606,6 +606,11 @@ fn pipeline_graph(
 fn graph(request: &PreviewRequest) -> Result<open_quartz::Graph, String> {
     if request.managed_output || !request.layers.is_empty() { return composition::graph(request); }
     let mut graph = pipeline_graph(&request.pipeline, request.width, request.height)?;
+    if let Some(asset) = &request.asset {
+        if let Some(source) = graph.nodes.iter_mut().find(|node| node.id == SOURCE_ID) {
+            source.data.camera_log = asset.camera_log;
+        }
+    }
     let code = if let Some(asset) = &request.asset {
         let t = request.transform;
         if graph.edges.iter().any(|edge| edge.target == OUTPUT_ID && edge.source == SOURCE_ID) {

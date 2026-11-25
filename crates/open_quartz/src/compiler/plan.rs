@@ -61,6 +61,7 @@ pub struct NodeExecutionPlan {
     pub shader: Option<Arc<CompiledShader>>,
     pub structured: Option<StructuredOperatorPlan>,
     pub output_domain: ColorDomain,
+    pub camera_log: Option<crate::operators::CameraLog>,
     pub validation_errors: Vec<WgslCompilationError>,
     pub feedback: bool,
 }
@@ -308,6 +309,7 @@ pub fn build_execution_plan_with_options(
             shader,
             structured,
             output_domain,
+            camera_log: node.data.camera_log,
             validation_errors,
             feedback,
         });

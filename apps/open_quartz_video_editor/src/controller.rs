@@ -510,6 +510,20 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_camera_log_changed(move |index| {
+            if let Some(this) = weak.upgrade() {
+                let mut controller = this.borrow_mut();
+                let Some(id) = controller.selected_asset.clone() else { return; };
+                let profile = (index > 0).then(|| open_quartz::operators::CameraLog::OPTIONS.get(index as usize - 1).copied()).flatten();
+                let result = controller.document.set_camera_log(&id, profile);
+                if let Err(error) = result { controller.status(error); return; }
+                controller.pause();
+                controller.requested = None;
+                controller.refresh();
+                controller.request_preview();
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_managed_color_changed(move |enabled| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -2449,9 +2463,12 @@ impl Controller {
             .as_ref()
             .and_then(|id| self.document.asset(id))
         {
+            window.set_camera_log_available(asset.has_video());
+            window.set_camera_log_index(asset.camera_log.map_or(0, |profile| profile.index() as i32));
             window.set_selected_asset_name(asset.name.clone().into());
             window.set_selected_asset_details(asset_details(asset).into());
         } else {
+            window.set_camera_log_available(false);
             window.set_selected_asset_name("No media selected".into());
             window.set_selected_asset_details(
                 "Import video, audio, PNG or JPEG".into(),
@@ -2645,11 +2662,13 @@ fn asset_details(asset: &MediaAsset) -> String {
     if !asset.has_video() {
         return audio.unwrap_or_default();
     }
-    let color = match asset.hdr_transfer {
-        Some(crate::document::HdrTransfer::Pq) => " · BT.2020 PQ · 10-bit",
-        Some(crate::document::HdrTransfer::Hlg) => " · BT.2020 HLG · 10-bit",
-        None => "",
-    };
+    let color = if let Some(profile) = asset.camera_log {
+        format!(" · {} (override)", profile.label())
+    } else { match asset.hdr_transfer {
+        Some(crate::document::HdrTransfer::Pq) => " · BT.2020 PQ · 10-bit".into(),
+        Some(crate::document::HdrTransfer::Hlg) => " · BT.2020 HLG · 10-bit".into(),
+        None => String::new(),
+    } };
     format!(
         "{} × {} · {} · {}{color}",
         asset.width,

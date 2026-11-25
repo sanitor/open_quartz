@@ -32,6 +32,7 @@ fn node(id: &str, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
             clock: None,
             managed_color: false,
             managed_display: false,
+            camera_log: None,
             input_data_type: Some(DataType::Float),
             input_mode: Some(InputMode::System),
             image_data_url: None,

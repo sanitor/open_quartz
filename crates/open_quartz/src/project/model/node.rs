@@ -108,6 +108,8 @@ pub struct NodeData {
     pub managed_color: bool,
     #[serde(skip)]
     pub managed_display: bool,
+    #[serde(skip)]
+    pub camera_log: Option<crate::operators::CameraLog>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,6 +215,8 @@ struct NodeDataWire {
     managed_color: bool,
     #[serde(skip)]
     managed_display: bool,
+    #[serde(skip)]
+    camera_log: Option<crate::operators::CameraLog>,
     color_corrector: Option<crate::operators::ColorCorrectorConfig>,
     input_data_type: Option<super::DataType>,
     input_mode: Option<InputMode>,
@@ -350,6 +354,7 @@ impl Default for NodeData {
             clock: None,
             managed_color: false,
             managed_display: false,
+            camera_log: None,
             color_corrector: None,
             input_data_type: None,
             input_mode: None,

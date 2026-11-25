@@ -40,7 +40,7 @@ pub use mask::{Mask, MaskShape};
 #[path = "document_grades.rs"]
 mod grades;
 pub use grades::GradeVersions;
-const SCHEMA_VERSION: u32 = 24;
+const SCHEMA_VERSION: u32 = 25;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -121,6 +121,8 @@ pub struct MediaAsset {
     pub fps: Option<Rational>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr_transfer: Option<HdrTransfer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_log: Option<open_quartz::operators::CameraLog>,
     pub has_audio: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioAsset>,
@@ -136,7 +138,7 @@ impl MediaAsset {
     }
 
     pub fn proxy_eligible(&self) -> bool {
-        self.online && self.has_video() && self.hdr_transfer.is_none()
+        self.online && self.has_video() && self.hdr_transfer.is_none() && self.camera_log.is_none()
     }
 
     pub fn source_duration_frames(&self, fps: Rational) -> Result<u64, String> {
@@ -736,6 +738,14 @@ impl EditorDocument {
         })
     }
     /// Frame positions stay fixed; source ranges are revalidated at the new rate.
+    pub fn set_camera_log(&mut self, id: &str, profile: Option<open_quartz::operators::CameraLog>) -> Result<(), String> {
+        self.transact(|data| {
+            let asset = data.assets.iter_mut().find(|asset| asset.id == id && asset.has_video()).ok_or("Select a video source")?;
+            asset.camera_log = profile;
+            Ok(())
+        })
+    }
+
     pub fn set_managed_color(&mut self, enabled: bool) -> Result<(), String> {
         self.transact(|data| {
             data.managed_color = enabled;
@@ -1457,6 +1467,7 @@ mod tests {
                 numerator: 30,
                 denominator: 1,
             }),
+            camera_log: None,
             hdr_transfer: None,
             has_audio: false,
             audio: None,

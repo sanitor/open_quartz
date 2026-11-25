@@ -449,6 +449,9 @@ export component EditorWindow inherits Window {
     in property <string> playback_summary;
     in property <bool> can_undo: false;
     in property <bool> can_redo: false;
+    in property <bool> camera_log_available;
+    in-out property <int> camera_log_index;
+    callback camera_log_changed(int);
     in property <string> selected_asset_name: "No media selected";
     in property <string> selected_asset_details: "Import a local H.264 or HEVC clip";
     in property <string> selected_clip_name: "No clip selected";
@@ -933,6 +936,12 @@ export component EditorWindow inherits Window {
                                 }
                             }
                             Rectangle { height: 80px; background: #151719; VerticalLayout { padding: 12px; spacing: 5px; Text { text: root.selected_asset_name; color: root.text; font-size: 12px; font-weight: 600; overflow: elide; } Text { text: root.selected_asset_details; color: root.secondary; font-size: 11px; wrap: word-wrap; } } }
+                            if root.camera_log_available: ComboBox {
+                                accessible-label: "Input color"; current-index <=> root.camera_log_index;
+                                model: ["Auto (metadata)", "Sony S-Log3 / S-Gamut3.Cine", "Sony S-Log3 / S-Gamut3", "Sony S-Log2 / S-Gamut"];
+                                selected => { root.camera_log_changed(self.current-index); }
+                            }
+
                         }
                         if root.library_tab == "nodes": ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;

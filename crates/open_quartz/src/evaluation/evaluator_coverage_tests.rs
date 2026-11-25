@@ -92,6 +92,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
         shader: None,
         structured: None,
         output_domain: crate::operators::ColorDomain::LegacySrgb,
+        camera_log: None,
         validation_errors: vec![],
         feedback: false,
     };

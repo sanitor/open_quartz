@@ -114,7 +114,8 @@ pub(super) fn configuration(request: &PreviewRequest) -> Result<PreviewConfigura
                 .map_or("", |layer| layer.track_name.as_str());
             return Err(format!("{track} Media offline: {} — use Relink", asset.name));
         }
-        sources.insert(node, (asset.path.clone(), asset.fingerprint.clone()));
+        let interpretation = asset.camera_log.map_or(0, |profile| profile.index());
+        sources.insert(node, (asset.path.clone(), format!("{}:{interpretation}", asset.fingerprint)));
     }
     let mut images = BTreeMap::new();
     collect_images(request, "", &mut images)?;

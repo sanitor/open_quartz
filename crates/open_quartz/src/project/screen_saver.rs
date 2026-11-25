@@ -133,6 +133,7 @@ fn screen_saver_resample_node(position: Position, width: u32, height: u32) -> Pr
             clock: None,
             managed_color: false,
             managed_display: false,
+            camera_log: None,
             input_data_type: None,
             input_mode: None,
             image_data_url: None,

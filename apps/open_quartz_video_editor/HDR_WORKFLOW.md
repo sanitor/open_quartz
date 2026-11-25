@@ -72,3 +72,15 @@ the project has SDR proxies enabled.
 
 The input fixture checks that a one-stop exposure adjustment occurs before
 the SDR view, then verifies undo, redo and reopening at the same pixel level.
+
+## Sony camera input
+
+Select a video in Library and use **Input color** to override the source
+interpretation. The three presets are **S-Log3 / S-Gamut3.Cine**, **S-Log3 /
+S-Gamut3**, and **S-Log2 / S-Gamut**. The choice is stored with the asset and
+applies in the source monitor, on the timeline, and in exports. **Auto** restores
+metadata-based interpretation. The GPU decodes the logarithmic transfer, adapts
+the gamut and white point to linear AP1, and applies the SDR view when needed.
+Camera log sources use the original media to avoid baking the transform into a
+proxy. Reference tests use synthetic video patches. The S-Log2 coefficients
+follow the [OCIO ACES Sony CLF generator](https://opencolorio.readthedocs.io/projects/config-aces/en/stable/_modules/opencolorio_config_aces/clf/transforms/sony/generate.html).

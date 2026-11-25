@@ -184,7 +184,7 @@ impl EditorDocument {
                     fingerprint: asset_id, size_bytes: 0, still: false,
                     width: child.width, height: child.height, duration_pts: Some(duration),
                     start_pts: Some(0), time_base: child_clock, fps: Some(child.fps),
-                    hdr_transfer: None, has_audio: false, audio: None, online: true,
+                    camera_log: None, hdr_transfer: None, has_audio: false, audio: None, online: true,
                 });
             }
             data.tracks[track_index].clips.push(clip);

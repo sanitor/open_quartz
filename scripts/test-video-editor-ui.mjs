@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 24);
+   assert.equal(data.schema_version, 25);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -2221,7 +2221,7 @@ try{
    }] }];
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
    // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
-   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 24);
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 25);
    fixture.data.tracks[0].clips[0].spatial_keys = [
      { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
      { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
@@ -2425,7 +2425,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 24);
+   assert.equal(saved.schema_version, 25);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');
@@ -2924,6 +2924,47 @@ try{
    await click('SAVE'); await waitState('Project saved'); await close();
    assert.equal(JSON.parse(await readFile(project, 'utf8')).data.managed_color, true);
    await launch(project); await waitState('clips 1'); await check(115, 133); await close();
+ }, { core: true });
+ await step('Override Sony Log input, reset to Auto, and reopen the saved interpretation', async () => {
+   const path = join(output, 'sony-log-reference.mp4');
+   mediaCommand(['-f', 'lavfi', '-i',
+     "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum=420:cb=512:cr=512",
+     '-frames:v', '12', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
+     '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
+     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-y', path]);
+   await launch(); await importMedia(path); await waitState('assets 1');
+   const choice = () => client.find({ label: 'Input color', role: 'Combobox' });
+   const check = (min, max) => client.waitFor(async () => {
+     const pixels = decodePng(await client.screenshot());
+     const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+     const win = await client.windowProperties();
+     const scale = pixels.width / (win.size.width / (win.scaleFactor || 1));
+     const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2) * scale);
+     const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * scale);
+     const level = pixels.pixels[(y * pixels.width + x) * pixels.channels];
+     return level >= min && level <= max;
+   }, { description: `Sony monitor level ${min}–${max}` });
+   const select = async (keys, label) => {
+     await client.click(await choice());
+     for (const key of keys) await client.key(key);
+     await client.key('\n');
+     await client.waitFor(async () => (await choice()).accessibleValue === label,
+       { description: `selected ${label}` });
+   };
+   assert.equal((await choice()).accessibleValue, 'Auto (metadata)');
+   await check(114, 120);
+   await select(['\uf701'], 'Sony S-Log3 / S-Gamut3.Cine'); await check(105, 112);
+   await select(['\uf701'], 'Sony S-Log3 / S-Gamut3'); await check(105, 112);
+   await select(['\uf701'], 'Sony S-Log2 / S-Gamut'); await check(129, 138);
+   await select(['\uf700','\uf700','\uf700'], 'Auto (metadata)'); await check(114, 120);
+   await select(['\uf701'], 'Sony S-Log3 / S-Gamut3.Cine');
+   assert.match((await assetCard('sony-log-reference.mp4')).accessibleDescription, /S-Gamut3.Cine \(override\)/);
+   const project = join(output, 'sony-input.oqvideo.json');
+   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved'); await close();
+   await launch(project); await waitState('assets 1');
+   await client.click(await assetCard('sony-log-reference.mp4')); await check(105, 112);
+   assert.equal((await choice()).accessibleValue, 'Sony S-Log3 / S-Gamut3.Cine');
+   await close();
  }, { core: true });
  report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

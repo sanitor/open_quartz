@@ -159,8 +159,11 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             if node.id == SOURCE_ID && nested.is_some() { continue; }
             let mut node = node.clone();
             node.data.clock = clock.clone();
-            if request.managed_output && node.id == SOURCE_ID && matches!(&layer.source, LayerSource::Video { .. }) {
-                node.data.managed_color = true;
+            if node.id == SOURCE_ID {
+                if let LayerSource::Video { asset, .. } = &layer.source {
+                    node.data.managed_color = request.managed_output;
+                    node.data.camera_log = asset.camera_log;
+                }
             }
             if let Some(effects) = &layer.effects {
                 let start = (i128::from(effects.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
