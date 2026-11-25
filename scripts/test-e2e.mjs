@@ -6,16 +6,24 @@ const [tier, ...extra] = process.argv.slice(2);
 if (extra.length || !['smoke', 'full'].includes(tier)) {
   throw new Error('Usage: node scripts/test-e2e.mjs smoke|full');
 }
-if (process.platform !== 'darwin') {
-  throw new Error('The repository-wide E2E suites require macOS with Metal and VideoToolbox. Use the individual Desktop commands on other supported hosts.');
+if (!['darwin', 'win32'].includes(process.platform)) {
+  throw new Error('The repository-wide E2E suites require macOS or Windows. Use the individual Desktop commands on other supported hosts.');
 }
 
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 const options = tier === 'smoke' ? ['--smoke'] : [];
-const suites = [
+const desktopSuites = [
   ['Desktop interactions', 'scripts/desktop.mjs', 'test-ui'],
   ['Desktop catalog shaders', 'scripts/desktop.mjs', 'test-ui-shaders'],
   ['Desktop Color Corrector', 'scripts/desktop.mjs', 'test-ui-corrector'],
+];
+const studioPreviewSuites = [
+  ['Video Editor still image graphs', 'scripts/video-editor.mjs', 'test-ui-stills'],
+  ['Video Editor independent audio', 'scripts/video-editor.mjs', 'test-ui-audio'],
+  ['Video Editor native video preview', 'scripts/video-editor.mjs', 'test-ui-preview'],
+];
+const suites = process.platform === 'win32' ? [...desktopSuites, ...studioPreviewSuites] : [
+  ...desktopSuites,
   ['Video Editor Edit and Nodes', 'scripts/video-editor.mjs', 'test-ui'],
   ['Resident inference', 'scripts/desktop.mjs', 'test-inference'],
 ];

@@ -24,6 +24,8 @@ macOS 和 Windows 运行同一组预览测试。硬件测试需要可用的 Meta
 
 GitHub Actions 的 **Desktop hardware preview parity** 工作流可手动运行，对两平台运行相同的 Open Quartz 桌面冒烟测试和 Studio 预览用例。Windows runner 需要交互桌面、GPU、音频设备、MSVC 和 LLVM，并带有 `openquartz-video-gpu` 标签。
 
+Windows 可用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e:full` 运行 Open Quartz 桌面及 Studio 静帧、音频和硬件视频预览。macOS 套件还覆盖 MP4 导出和 GPU 驻留推理。
+
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 
 macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio2` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。

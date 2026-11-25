@@ -208,7 +208,7 @@ pub fn configure_runtime() -> Result<(), String> {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod tests {
     use super::*;
     #[test]
@@ -216,18 +216,15 @@ mod tests {
         configure_runtime().unwrap();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("audio-video.mp4");
+        let video = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4");
         let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
         let output = std::process::Command::new(ffmpeg)
             .env_remove("DYLD_LIBRARY_PATH")
             .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(video)
             .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=white:s=64x64:r=30",
                 "-f",
                 "lavfi",
                 "-i",
@@ -235,9 +232,7 @@ mod tests {
                 "-t",
                 "1",
                 "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
+                "copy",
                 "-c:a",
                 "aac",
                 "-y",
