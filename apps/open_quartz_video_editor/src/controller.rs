@@ -2741,6 +2741,10 @@ mod native_dialog_tests {
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
             motion: MotionEditor::default(),
+            timeline_viewport: TimelineViewport::default(),
+            timeline_window_dirty: false,
+            timeline_video_model: Rc::new(VecModel::default()),
+            timeline_audio_model: Rc::new(VecModel::default()),
             timeline_capture: None,
             displayed_ticket: None,
         };

@@ -98,6 +98,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
     assert!(engine
         .resolve_uniforms(&bare_plan, &node("bare", "math"), &frame)
         .is_empty());
+    let mut clock_node = node("clock", "shader");
     for (name, expected) in [
         ("iTime", vec![1.5]),
         ("iTimeDelta", vec![0.25]),
@@ -107,15 +108,25 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
         ("iResolution", frame.resolution.to_vec()),
         ("unknown", vec![0.0]),
     ] {
-        assert_eq!(builtin_value(name, &bare_plan, &frame), expected);
+        assert_eq!(builtin_value(name, &bare_plan, &clock_node, &frame), expected);
     }
     let mut first_frame = frame.clone();
     first_frame.frame = 1;
-    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![0.0]);
+    assert_eq!(builtin_value("iFrame", &bare_plan, &clock_node, &first_frame), vec![0.0]);
     first_frame.frame = 2;
-    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![1.0]);
+    assert_eq!(builtin_value("iFrame", &bare_plan, &clock_node, &first_frame), vec![1.0]);
     first_frame.frame = 0;
-    assert_eq!(builtin_value("iFrame", &bare_plan, &first_frame), vec![0.0]);
+    assert_eq!(builtin_value("iFrame", &bare_plan, &clock_node, &first_frame), vec![0.0]);
+    clock_node.data.clock = Some(crate::project::NodeClock {
+        root_origin: 0.0,
+        local_origin: 0.25,
+        steps: vec![crate::project::ClockStep {
+            parent_start: 1.0, source_start: 0.0, speed: 2.0, child_fps: 4.0,
+        }],
+    });
+    assert_eq!(builtin_value("iTime", &bare_plan, &clock_node, &frame), vec![0.75]);
+    assert_eq!(builtin_value("iTimeDelta", &bare_plan, &clock_node, &frame), vec![0.5]);
+    assert_eq!(builtin_value("iFrame", &bare_plan, &clock_node, &frame), vec![4.0]);
     let target_plan = NodeExecutionPlan {
         target: Some(TargetSpec {
             width: 20,
@@ -142,7 +153,7 @@ fn executor_private_uniform_system_builtin_and_json_helpers_cover_variants() {
     assert_eq!(uniforms["missingUpstream"], vec![0.0]);
     assert_eq!(uniforms["missingLiteral"], vec![0.0]);
     assert_eq!(
-        builtin_value("iResolution", &target_plan, &frame),
+        builtin_value("iResolution", &target_plan, &clock_node, &frame),
         vec![20.0, 30.0, 1.0]
     );
 

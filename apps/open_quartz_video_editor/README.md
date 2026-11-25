@@ -130,9 +130,9 @@ npm run test:video-editor:ui
 npm run test:video-editor:coverage
 ```
 
-`npm run test:video-editor:ui:smoke` executes the shared Edit and Nodes cases marked as core. The full UI and coverage commands execute every case in both suites.
+`npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例。`npm run test:video-editor:ui` 和覆盖率命令执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
 
-`npm run test:video-editor:ui` runs timeline and Nodes native-window suites. The Nodes suite verifies decoded GPU effect pixels, port reconnect, shader/uniform edits, shared undo/redo, per-clip isolation and save/reopen. The Rust behavior suite includes worker clock/prefill, exact seek supersession, gap/cut final-frame retirement, hysteresis and full-extent budget arithmetic. This change did not run the coverage gate; historical coverage results are not a new pass claim.
+Rust 测试覆盖嵌套节点时钟、时间线窗口边界、GPU 帧预热和精确定位。原生 UI 还检查拖动后的持久化、效果前后的真实 GPU 像素和独立解码的交付文件。覆盖率命令将 Rust 测试与原生 UI 的插桩结果合并至 `test-results/phase6/editor-coverage.json`。
 
 Timeline-window acceptance includes 30-second media plus, 900-frame clips at default/maximum zoom, fit-to-sequence, fractional-scale trims, undo and persistence. Nodes-window acceptance uses actual red/blue H.264 fixtures and checks final monitor pixels; graph callback forwarding alone is not treated as success.
 
