@@ -1814,7 +1814,7 @@ impl Controller {
         let data = &self.document.data;
         let tracks = data.audio_tracks.iter().map(|track| AudioTrackRow {
             id: track.id.clone().into(), name: track.name.clone().into(), muted: track.muted,
-            locked: track.locked, gain: (track.gain * 100.0).round().to_string().into(),
+            locked: track.locked, sync_ripple: track.sync_ripple, gain: (track.gain * 100.0).round().to_string().into(),
         }).collect::<Vec<_>>();
         reconcile(&self.audio_track_model, tracks, |row| row.id.as_str(), |a, b| a == b);
         let scale = f64::from(data.fps.numerator) / f64::from(data.fps.denominator)
@@ -1977,6 +1977,7 @@ impl Controller {
             id: track.id.clone().into(),
             name: track.name.clone().into(),
             selected: track.id == self.selected_track,
+            sync_ripple: track.sync_ripple,
             visible: track.visible,
             locked: track.locked,
         }).collect();

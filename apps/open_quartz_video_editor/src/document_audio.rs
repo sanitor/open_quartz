@@ -22,6 +22,8 @@ pub struct AudioTrack {
     pub name: String,
     pub muted: bool,
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sync_ripple: bool,
     pub gain: f32,
     pub clips: Vec<AudioClip>,
 }
@@ -285,6 +287,7 @@ impl ProjectData {
                     name: format!("Audio {}", self.audio_tracks.len() + 1),
                     muted: false,
                     locked: false,
+                    sync_ripple: false,
                     gain: 1.0,
                     clips: Vec::new(),
                 });
@@ -334,6 +337,65 @@ pub(super) fn validate_locked_links(old: &ProjectData, new: &ProjectData) -> Res
 }
 
 impl ProjectData {
+    pub(super) fn ripple_independent_audio(
+        &mut self, frames: Range<u64>, edit: RippleEdit, revision: u64,
+    ) -> Result<(), String> {
+        let from = self.fps.frame_to_sample(frames.start)?;
+        let to = self.fps.frame_to_sample(frames.end)?;
+        let duration = to - from;
+        let cut = if edit == RippleEdit::Insert { from } else { to };
+        for track in self.audio_tracks.iter_mut().filter(|track| track.sync_ripple) {
+            let original = std::mem::take(&mut track.clips);
+            let mut edited = Vec::with_capacity(original.len());
+            for clip in original {
+                let AudioPlacement::Independent { start, duration: length, source } = clip.placement else {
+                    edited.push(clip);
+                    continue;
+                };
+                let end = start.checked_add(length).ok_or("Audio timeline range overflow")?;
+                if end <= from {
+                    edited.push(clip);
+                    continue;
+                }
+                if track.locked {
+                    return Err(format!("{} is locked", track.name));
+                }
+                if start < from {
+                    let mut left = clip.clone();
+                    left.placement = AudioPlacement::Independent { start, duration: from - start, source };
+                    left.fade_out = 0;
+                    limit_fades(&mut left, from - start);
+                    edited.push(left);
+                }
+                if end > cut {
+                    let right_start = start.max(cut);
+                    let right_length = end - right_start;
+                    let position = if edit == RippleEdit::Insert {
+                        right_start.checked_add(duration).ok_or("Audio timeline range overflow")?
+                    } else {
+                        right_start - duration
+                    };
+                    let mut right = clip;
+                    if start < from {
+                        right.id = new_id("audio-clip", revision);
+                    }
+                    if right_start != start {
+                        right.fade_in = 0;
+                    }
+                    limit_fades(&mut right, right_length);
+                    right.placement = AudioPlacement::Independent {
+                        start: position,
+                        duration: right_length,
+                        source: trim_audio_source(source, start, right_start, right.speed_percent)?,
+                    };
+                    edited.push(right);
+                }
+            }
+            track.clips = edited;
+        }
+        Ok(())
+    }
+
     fn writable_audio(&self, id: &str) -> Result<(usize, usize), String> {
         for (lane, track) in self.audio_tracks.iter().enumerate() {
             if let Some(index) = track.clips.iter().position(|clip| clip.id == id) {
@@ -577,6 +639,7 @@ impl EditorDocument {
             match action {
                 "mute" => track.muted = !track.muted,
                 "lock" => track.locked = !track.locked,
+                "sync-ripple" => track.sync_ripple = !track.sync_ripple,
                 "gain" => {
                     track.gain = value
                         .trim()
@@ -597,6 +660,39 @@ impl EditorDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synced_audio_uses_sample_boundaries_and_preserves_retimed_source_positions() {
+        let mut project = ProjectData::default();
+        project.fps = Rational::new(30_000, 1001).unwrap();
+        project.audio_tracks.push(AudioTrack {
+            id: "sync-audio".into(),
+            name: "Audio".into(),
+            muted: false,
+            locked: false,
+            sync_ripple: true,
+            gain: 1.0,
+            clips: vec![AudioClip {
+                id: "sync-input".into(),
+                asset_id: "source".into(),
+                gain: 1.0,
+                fade_in: 100,
+                fade_out: 200,
+                speed_percent: 150,
+                placement: AudioPlacement::Independent { start: 1, duration: 10_000, source: 20 },
+            }],
+        });
+        project.ripple_independent_audio(2..3, RippleEdit::Insert, 0).unwrap();
+        let lane = &project.audio_tracks[0];
+        let [left, right] = lane.clips.as_slice() else { panic!("Expected two audio fragments"); };
+        assert_eq!(left.placement, AudioPlacement::Independent { start: 1, duration: 3202, source: 20 });
+        assert_eq!((left.fade_in, left.fade_out), (100, 0));
+        assert_eq!(right.placement, AudioPlacement::Independent { start: 4805, duration: 6798, source: 4823 });
+        assert_eq!((right.fade_in, right.fade_out), (0, 200));
+        project.ripple_independent_audio(2..3, RippleEdit::Remove, 1).unwrap();
+        assert_eq!(project.audio_tracks[0].clips[1].placement,
+            AudioPlacement::Independent { start: 3203, duration: 6798, source: 4823 });
+    }
 
     #[test]
     fn non_integer_fps_audio_boundaries_are_computed_from_origin() {

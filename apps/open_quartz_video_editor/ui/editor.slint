@@ -22,8 +22,8 @@ component NodeEffectTile inherits Rectangle {
     tile := TouchArea { accessible-role: button; accessible-label: "Add " + root.effect.label + " node"; enabled: root.enabled; clicked => { root.clicked(); } }
 }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
-export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool }
-export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, gain: string }
+export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool }
+export struct AudioTrackRow { id: string, name: string, muted: bool, locked: bool, sync_ripple: bool, gain: string }
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
@@ -365,13 +365,14 @@ component TrackButton inherits Rectangle {
     in property <string> glyph;
     in property <string> label;
     in property <bool> enabled: true;
+    in property <bool> selected: false;
     callback clicked();
     horizontal-stretch: 1;
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
-    background: hit.has-hover ? #3b474b : transparent;
+    background: root.selected ? #316055 : hit.has-hover ? #3b474b : transparent;
     Text { text: root.glyph; width: parent.width; height: parent.height; color: root.enabled ? #cee1df : #657073; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
     hit := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
 }
@@ -1294,6 +1295,12 @@ export component EditorWindow inherits Window {
                                     TrackButton { glyph: "↓"; label: "Move " + track.name + " down"; enabled: index + 1 < root.tracks.length && !track.locked; clicked => { root.track_action(track.id, "down", ""); } }
                                     TrackButton { glyph: "×"; label: "Delete empty " + track.name; enabled: root.tracks.length > 1 && !track.locked; clicked => { root.track_action(track.id, "delete", ""); } }
                                 }
+                                TrackButton {
+                                    x: 5px; y: 65px; width: 42px; height: 17px; glyph: "Sync"; selected: track.sync_ripple;
+                                    label: "Ripple sync " + track.name;
+                                    accessible-description: track.sync_ripple ? "Ripple sync enabled" : "Ripple sync disabled";
+                                    clicked => { root.track_action(track.id, "sync-ripple", ""); }
+                                }
                             }
                             for track[index] in root.audio_tracks: Rectangle {
                                 y: (root.tracks.length + index) * 84px + timeline_scroll.content-y;
@@ -1305,6 +1312,12 @@ export component EditorWindow inherits Window {
                                     TrackButton { glyph: track.muted ? "×" : "♪"; label: (track.muted ? "Unmute " : "Mute ") + track.name; clicked => { root.audio_track_action(track.id, "mute", ""); } }
                                     TrackButton { glyph: track.locked ? "◆" : "◇"; label: (track.locked ? "Unlock " : "Lock ") + track.name; clicked => { root.audio_track_action(track.id, "lock", ""); } }
                                     LineEdit { text: track.gain; accessible-label: track.name + " gain (%)"; accepted(value) => { root.audio_track_action(track.id, "gain", value); } }
+                                }
+                                TrackButton {
+                                    x: 5px; y: 64px; width: 42px; height: 17px; glyph: "Sync"; selected: track.sync_ripple;
+                                    label: "Ripple sync " + track.name;
+                                    accessible-description: track.sync_ripple ? "Ripple sync enabled" : "Ripple sync disabled";
+                                    clicked => { root.audio_track_action(track.id, "sync-ripple", ""); }
                                 }
                             }
                             if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px + timeline_scroll.content-y - 1px; height: 2px; width: parent.width; background: root.accent; }

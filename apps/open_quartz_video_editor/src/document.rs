@@ -23,8 +23,9 @@ pub use transition::DissolveSide;
 mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
+use timing::RippleEdit;
 pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAMPLE_RATE};
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 14;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, SpatialKey};
@@ -189,6 +190,8 @@ pub struct VideoTrack {
     pub visible: bool,
     pub locked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub sync_ripple: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub subtitles: bool,
     pub clips: Vec<Clip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,7 +200,7 @@ pub struct VideoTrack {
 fn is_false(value: &bool) -> bool { !value }
 impl VideoTrack {
     fn new(id: String, name: String) -> Self {
-        Self { id, name, visible: true, locked: false, subtitles: false, clips: Vec::new(), dissolves: Vec::new() }
+        Self { id, name, visible: true, locked: false, sync_ripple: false, subtitles: false, clips: Vec::new(), dissolves: Vec::new() }
     }
 
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
@@ -454,7 +457,7 @@ impl EditorDocument {
         self.transact(|data| {
             match placement {
                 Placement::EmptySpace(_) => {}
-                Placement::Insert(frame) => data.insert_space(track, frame, duration, revision)?,
+                Placement::Insert(frame) => data.ripple_tracks(track, frame..clip.timeline_end()?, RippleEdit::Insert, revision)?,
                 Placement::Overwrite(frame) => data.clear_range(track, frame, clip.timeline_end()?, revision)?,
             }
             data.tracks[track].clips.push(clip);
@@ -530,6 +533,7 @@ impl EditorDocument {
             match action {
                 "visible" => track.visible = !track.visible,
                 "lock" => track.locked = !track.locked,
+                "sync-ripple" => track.sync_ripple = !track.sync_ripple,
                 "rename" => { track.require_unlocked()?; track.name = value.trim().into(); }
                 "delete" => {
                     track.require_unlocked()?;

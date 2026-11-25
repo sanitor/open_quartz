@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 13);
+   assert.equal(data.schema_version, 14);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -660,6 +660,91 @@ try{
    await click('Insert');
    await waitState('Cannot place audio on Audio 2');
    assert((await state()).includes('clips 1'));
+   await close();
+ });
+ const syncFixture = async name => {
+   const fixture = JSON.parse(await readFile(audioProject, 'utf8'));
+   const videoFixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const [primary] = fixture.data.tracks;
+   const [original] = primary.clips;
+   for (const [assetName, id, trackName] of [
+     ['background.mp4', 'sync-picture', 'Sync Picture'],
+     ['foreground.mp4', 'standalone-picture', 'Standalone Picture'],
+   ]) {
+     const asset = videoFixture.data.assets.find(item => item.name === assetName);
+     fixture.data.assets.push(asset);
+     fixture.data.tracks.push({ ...primary, id, name: trackName,
+       clips: [{ ...original, id: id + '-clip', asset_id: asset.id, source_in_pts: asset.start_pts }],
+     });
+   }
+   Object.assign(fixture.data.audio_tracks[1].clips[0].placement, { start: 0, duration: 48000, source: 0 });
+   const path = join(output, name);
+   await writeFile(path, JSON.stringify(fixture));
+   return path;
+ };
+ const syncButton = name => client.find({ label: `Ripple sync ${name}`, role: 'Button' });
+ const scrollRippleTracks = async deltaY => {
+   const view = await client.find({ id: 'EditorWindow::timeline_scroll' });
+   await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId,
+     deltaX: 0, deltaY, position: center(view) });
+ };
+ await step('Ripple insert and delete split the opted-in picture and independent audio together', async () => {
+   const seed = await syncFixture('ripple-sync.oqvideo.json');
+   await launch(seed); await waitState('clips 3');
+   await click('FIT TIMELINE');
+   assert.equal((await syncButton('Sync Picture')).accessibleDescription, 'Ripple sync disabled');
+   await client.click(await syncButton('Sync Picture'));
+   assert.equal((await syncButton('Sync Picture')).accessibleDescription, 'Ripple sync enabled');
+   await scrollRippleTracks(-380);
+   await client.click(await syncButton('Audio 2'));
+   assert.equal((await syncButton('Audio 2')).accessibleDescription, 'Ripple sync enabled');
+   await scrollRippleTracks(380);
+   for (let i = 0; i < 10; i++) await click('NEXT');
+   await waitState('playhead 10 frames');
+   await client.click(await assetCard('linked-tone.mp4'));
+   await waitState('source PTS 0 ns');
+   await sourceJump(2, 66666667); await click('Mark Out');
+   await sourceAudioTrack(1, 'Video only');
+   await click('Insert'); await waitState('clips 6');
+   assert.deepEqual(await positions('linked-tone.mp4'), [[0, 10], [10, 3], [13, 80]]);
+   assert.deepEqual(await positions('background.mp4'), [[0, 10], [13, 80]]);
+   await click('SAVE'); await waitState('Project saved');
+   const inserted = JSON.parse(await readFile(seed, 'utf8')).data;
+   const [untouched] = inserted.tracks.find(track => track.id === 'standalone-picture').clips;
+   assert.deepEqual([untouched.timeline_start, untouched.duration], [0, 90]);
+   const audioRegions = async () => {
+     const data = JSON.parse(await readFile(seed, 'utf8')).data;
+     return data.audio_tracks[1].clips.map(clip => clip.placement);
+   };
+   assert.deepEqual(await audioRegions(), [
+     { kind: 'independent', start: 0, duration: 16000, source: 0 },
+     { kind: 'independent', start: 20800, duration: 32000, source: 16000 },
+   ]);
+   await click('Ripple delete'); await waitState('clips 5');
+   assert.deepEqual(await positions('background.mp4'), [[0, 10], [10, 80]]);
+   await click('SAVE'); await waitState('Project saved');
+   assert.equal((await audioRegions())[1].start, 16000);
+   await click('UNDO'); await waitState('clips 6');
+   assert.deepEqual(await positions('background.mp4'), [[0, 10], [13, 80]]);
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+   await launch(seed); await waitState('clips 6');
+   assert.equal((await syncButton('Sync Picture')).accessibleDescription, 'Ripple sync enabled');
+   await scrollRippleTracks(-380);
+   assert.equal((await syncButton('Audio 2')).accessibleDescription, 'Ripple sync enabled');
+   await close();
+ }, { core: true });
+ await step('A locked participating track rejects ripple deletion as one edit', async () => {
+   const path = await syncFixture('ripple-sync-locked.oqvideo.json');
+   await launch(path); await waitState('clips 3');
+   await click('FIT TIMELINE');
+   await client.click(await syncButton('Sync Picture'));
+   await click('Lock Sync Picture');
+   await client.click(await item('linked-tone.mp4'));
+   await click('Ripple delete'); await waitState('Sync Picture is locked');
+   assert.deepEqual(await positions('linked-tone.mp4'), [[0, 90]]);
+   assert.deepEqual(await positions('background.mp4'), [[0, 90]]);
+   await click('SAVE'); await waitState('Project saved');
    await close();
  });
  await step('Insert, ripple delete, overwrite and roll the cut on the native timeline', async () => {

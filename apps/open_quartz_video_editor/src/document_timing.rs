@@ -4,6 +4,9 @@ use super::{
 };
 use std::{collections::HashSet, ops::Range};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RippleEdit { Insert, Remove }
+
 #[derive(Clone, Copy)]
 pub enum Placement {
     EmptySpace(Option<u64>),
@@ -192,6 +195,33 @@ impl ProjectData {
         Ok(())
     }
 
+    pub(super) fn ripple_tracks(
+        &mut self, active: usize, frames: Range<u64>, edit: RippleEdit, revision: u64,
+    ) -> Result<(), String> {
+        let duration = frames.end - frames.start;
+        for index in 0..self.tracks.len() {
+            let track = &self.tracks[index];
+            if index != active && (!track.sync_ripple || !track.clips.iter().any(|clip| {
+                clip.timeline_end().is_ok_and(|end| end > frames.start)
+            })) {
+                continue;
+            }
+            track.require_unlocked()?;
+            match edit {
+                RippleEdit::Insert => self.insert_space(index, frames.start, duration, revision)?,
+                RippleEdit::Remove => {
+                    self.clear_range(index, frames.start, frames.end, revision)?;
+                    for clip in &mut self.tracks[index].clips {
+                        if clip.timeline_start >= frames.end {
+                            clip.timeline_start -= duration;
+                        }
+                    }
+                }
+            }
+        }
+        self.ripple_independent_audio(frames, edit, revision)
+    }
+
     pub(super) fn clear_range(
         &mut self,
         track: usize,
@@ -234,16 +264,12 @@ impl EditorDocument {
     }
 
     pub fn ripple_delete(&mut self, clip_id: &str) -> Result<(), String> {
+        let revision = self.revision;
         self.transact(|data| {
             let (track, index) = data.writable_clip(clip_id)?;
-            let duration = data.tracks[track].clips[index].duration;
-            data.remove_video(track, index..index + 1);
-            // The lane is ordered and non-overlapping, so all following starts
-            // are at least one removed duration from the timeline origin.
-            for clip in &mut data.tracks[track].clips[index..] {
-                clip.timeline_start -= duration;
-            }
-            Ok(())
+            let clip = &data.tracks[track].clips[index];
+            let frames = clip.timeline_start..clip.timeline_end()?;
+            data.ripple_tracks(track, frames, RippleEdit::Remove, revision)
         })
     }
 
