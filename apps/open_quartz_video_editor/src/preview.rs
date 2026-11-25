@@ -5,6 +5,7 @@ use open_quartz::execution::{
     PreparedNativeGraph,
 };
 use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
+use open_quartz::project::ClockStep;
 use open_quartz::outputs::{FrameStamp, PlaybackCapabilities};
 use open_quartz::rendering::{RenderDevice, StableFrame, StableFrameBudget};
 use slint::wgpu_30::WGPUConfiguration;
@@ -51,6 +52,7 @@ enum LayerSource {
     Video { asset: MediaAsset, source_ns: u64 },
     Title(Title),
     Still(MediaAsset),
+    Nested { request: Box<PreviewRequest>, project: Arc<ProjectData>, clock: ClockStep },
 }
 
 #[cfg(target_os = "macos")]
@@ -59,9 +61,15 @@ impl PreviewRequest {
         if let Some(asset) = &mut self.asset {
             update(asset);
         }
+        self.update_video_assets(&mut update);
+    }
+
+    fn update_video_assets(&mut self, update: &mut impl FnMut(&mut MediaAsset)) {
         for layer in &mut self.layers {
-            if let LayerSource::Video { asset, .. } = &mut layer.source {
-                update(asset);
+            match &mut layer.source {
+                LayerSource::Video { asset, .. } => update(asset),
+                LayerSource::Nested { request, .. } => request.update_video_assets(update),
+                _ => {}
             }
         }
     }
@@ -118,6 +126,20 @@ pub fn sequence_request(
     mut pipeline_override: impl FnMut(&str) -> Option<ClipPipeline>,
     transform_override: Option<(&str, ClipTransform)>,
 ) -> Result<PreviewRequest, String> {
+    build_sequence_request(project, ticket, revision, frame, &mut pipeline_override, transform_override, false)
+}
+
+fn nested_frame(clip: &document::Clip, asset: &MediaAsset, frame: u64, fps: Rational) -> Result<u64, String> {
+    let offset = i128::from(frame) - i128::from(clip.timeline_start);
+    let (ticks, _, _) = document::shifted_source(clip, offset, fps, asset.time_base)?;
+    u64::try_from(ticks).map_err(|_| "Nested frame precedes the source sequence".into())
+}
+
+fn build_sequence_request(
+    project: &ProjectData, ticket: u64, revision: u64, frame: u64,
+    pipeline_override: &mut dyn FnMut(&str) -> Option<ClipPipeline>,
+    transform_override: Option<(&str, ClipTransform)>, nested: bool,
+) -> Result<PreviewRequest, String> {
     let mut layers = Vec::new();
     for input in project.video_inputs(frame) {
         let (track, clip) = (input.track, input.clip);
@@ -126,7 +148,23 @@ pub fn sequence_request(
         } else {
             let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id)
                 .ok_or_else(|| format!("{}: missing clip media", track.name))?;
-            if asset.still {
+            if let Some(id) = asset.sequence_source() {
+                let child = project.sequence_project(id)?;
+                let frame = nested_frame(clip, asset, frame, project.fps)?;
+                let child_request = build_sequence_request(&child, ticket, revision, frame, &mut |_| None, None, true)?;
+                let child_fps = f64::from(child.fps.numerator) / f64::from(child.fps.denominator);
+                let recorded_fps = f64::from(asset.time_base.denominator) / f64::from(asset.time_base.numerator);
+                let source_start = (clip.source_in_pts as f64
+                    + clip.source_subtick_numerator as f64 / clip.source_subtick_denominator as f64) / child_fps;
+                let parent_start = clip.timeline_start as f64 * f64::from(project.fps.denominator)
+                    / f64::from(project.fps.numerator);
+                LayerSource::Nested {
+                    request: Box::new(child_request), project: Arc::new(child), clock: ClockStep {
+                        parent_start, source_start, child_fps,
+                        speed: (f64::from(clip.speed_percent) / 100.0) * (recorded_fps / child_fps),
+                    },
+                }
+            } else if asset.still {
                 LayerSource::Still(asset.clone())
             } else {
                 LayerSource::Video { asset: asset.clone(), source_ns: document::extended_source_time_ns(asset, clip, frame, project.fps)? }
@@ -188,7 +226,7 @@ pub fn sequence_request(
     // Retimed clips use the sequence clock for window admission and a
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
-        if project.tracks.len() == 1 && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
+        if !nested && project.tracks.len() == 1 && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
@@ -207,32 +245,76 @@ pub fn sequence_request(
 }
 
 fn sequence_region_end(project: &ProjectData, frame: u64, end: u64) -> u64 {
-    project.tracks.iter().filter(|track| track.visible)
-        .filter_map(|track| track.next_video_boundary(frame)).min().unwrap_or(end).min(end)
+    let mut boundary = project.tracks.iter().filter(|track| track.visible)
+        .filter_map(|track| track.next_video_boundary(frame)).min().unwrap_or(end).min(end);
+    for input in project.video_inputs(frame) {
+        let clip = input.clip;
+        let Some(asset) = project.assets.iter().find(|asset| asset.id == clip.asset_id) else { continue; };
+        let Some(id) = asset.sequence_source() else { continue; };
+        let result = (|| -> Result<u64, String> {
+            let child = project.sequence_project(id)?;
+            let start = nested_frame(clip, asset, frame, project.fps)?;
+            if start >= child.duration_frames() { return Ok(boundary); }
+            let end = sequence_region_end(&child, start, child.duration_frames());
+            let (mut low, mut high) = (frame + 1, boundary);
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if nested_frame(clip, asset, middle, project.fps)? < end { low = middle + 1; }
+                else { high = middle; }
+            }
+            Ok(low)
+        })();
+        if let Ok(end) = result { boundary = end; }
+    }
+    boundary
 }
 fn sequence_region(project: &ProjectData, ticket: u64, revision: u64, frame: u64, end: u64) -> Result<(PreviewRequest, u64), String> {
     Ok((sequence_request(project, ticket, revision, frame, |_| None, None)?,
         sequence_region_end(project, frame, end)))
 }
 fn sequence_source_times(project: &ProjectData, request: &PreviewRequest, frame: u64) -> Result<(u64, BTreeMap<String, u64>), String> {
-    let mut times = BTreeMap::new();
-    for input in project.video_inputs(frame) {
-        let clip = input.clip;
-        if clip.title.is_some() { continue; }
-        let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
-        if asset.still { continue; }
-        let source_ns = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
-        if request.asset.is_some() {
-            times.insert(SOURCE_ID.into(), source_ns);
-            return Ok((source_ns, times));
+    // Fast-path isolated video keeps its own source clock.
+    if request.asset.is_some() {
+        for input in project.video_inputs(frame) {
+            let clip = input.clip;
+            let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
+            let source = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
+            return Ok((source, [(SOURCE_ID.into(), source)].into_iter().collect()));
         }
-        times.insert(composition::source_id(&clip.id), source_ns);
     }
+    let mut times = BTreeMap::new();
+    collect_source_times(project, request, frame, "", &mut times)?;
+
     let timeline_ns = if request.layers.is_empty() { 0 } else {
         project.fps.frames_to_ns(frame)?.checked_sub(request.animation_origin_ns())
             .ok_or("Frame precedes its animation origin")?
     };
     Ok((timeline_ns, times))
+}
+
+fn collect_source_times(
+    project: &ProjectData, request: &PreviewRequest, frame: u64,
+    prefix: &str, times: &mut BTreeMap<String, u64>,
+) -> Result<(), String> {
+    for input in project.video_inputs(frame) {
+        let clip = input.clip;
+        if clip.title.is_some() { continue; }
+        let asset = project.assets.iter().find(|asset| asset.id == clip.asset_id).ok_or("Clip media is missing")?;
+        if asset.sequence_source().is_some() {
+            let layer = request.layers.iter().find(|layer| layer.clip_id == clip.id)
+                .ok_or("Nested clip changed outside its prepared region")?;
+            let LayerSource::Nested { request, project: child, .. } = &layer.source else {
+                return Err("Prepared layer does not contain its nested clip".into());
+            };
+            let frame = nested_frame(clip, asset, frame, project.fps)?;
+            let prefix = format!("{prefix}{}", composition::namespace(&clip.id, ""));
+            collect_source_times(child, request, frame, &prefix, times)?;
+        } else if !asset.still {
+            let source = document::extended_source_time_ns(asset, clip, frame, project.fps)?;
+            times.insert(format!("{prefix}{}", composition::source_id(&clip.id)), source);
+        }
+    }
+    Ok(())
 }
 
 impl PreviewRequest {
@@ -249,12 +331,26 @@ impl PreviewRequest {
     }
 
     fn sources(&self) -> impl Iterator<Item = (String, &MediaAsset, u64)> {
-        self.asset.iter().map(|asset| (SOURCE_ID.into(), asset, self.source_ns))
-            .chain(self.layers.iter().filter_map(|layer| {
-                let LayerSource::Video { asset, source_ns } = &layer.source else { return None; };
-                Some((composition::source_id(&layer.clip_id), asset, *source_ns))
-            }))
+        let mut sources = Vec::new();
+        self.collect_sources("", &mut sources);
+        sources.into_iter()
     }
+
+    fn collect_sources<'a>(&'a self, prefix: &str, sources: &mut Vec<(String, &'a MediaAsset, u64)>) {
+        if let Some(asset) = &self.asset {
+            sources.push((format!("{prefix}{SOURCE_ID}"), asset, self.source_ns));
+        }
+        for layer in &self.layers {
+            match &layer.source {
+                LayerSource::Video { asset, source_ns } =>
+                    sources.push((format!("{prefix}{}", composition::source_id(&layer.clip_id)), asset, *source_ns)),
+                LayerSource::Nested { request, .. } =>
+                    request.collect_sources(&format!("{prefix}{}", composition::namespace(&layer.clip_id, "")), sources),
+                _ => {}
+            }
+        }
+    }
+
 }
 
 pub struct PreviewUpdate {

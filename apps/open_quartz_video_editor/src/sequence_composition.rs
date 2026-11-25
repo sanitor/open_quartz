@@ -1,4 +1,4 @@
-use open_quartz::project::{Edge, Graph, InputMode, NodeFactoryRequest};
+use open_quartz::project::{Edge, Graph, InputMode, NodeClock, NodeFactoryRequest};
 
 use super::{ClipAnimation, LayerSource, OpacityAnimation, PreviewRequest, OUTPUT_ID, SOURCE_ID};
 use crate::animation_key::Keyframe;
@@ -41,13 +41,20 @@ fn clip_function<V: Copy>(
     animated_function(name, "vec4f", &animation.keys, seconds, format_value)
 }
 
+pub(super) fn namespace(clip: &str, id: &str) -> String {
+    format!("{}:{clip}/{id}", clip.len())
+}
 pub(super) fn source_id(clip: &str) -> String {
-    format!("{}:{clip}/{SOURCE_ID}", clip.len())
+    namespace(clip, SOURCE_ID)
 }
 
 /// Lower the current timeline stack into the existing graph executor. The
 /// protected clip outputs are replaced by one program output for all layers.
 pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
+    composition(request, None)
+}
+
+fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Graph, String> {
     let mut result = Graph::default();
     let mut bindings = String::new();
     let mut draws = String::new();
@@ -69,15 +76,51 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
     }
     for (index, layer) in slots.iter().enumerate() {
         let clip = layer.pipeline.graph();
-        let namespace = |id: &str| format!("{}:{}/{id}", layer.clip_id.len(), layer.clip_id);
+        let namespace = |id: &str| namespace(&layer.clip_id, id);
+        let nested = if let LayerSource::Nested { request, clock: step, .. } = &layer.source {
+            let mut child_clock = clock.clone().unwrap_or(NodeClock {
+                root_origin: origin as f64 / 1.0e9, steps: Vec::new(), local_origin: 0.0,
+            });
+            child_clock.steps.push(*step);
+            child_clock.local_origin = request.animation_origin_ns() as f64 / 1.0e9;
+            let mut program = composition(request, Some(child_clock))?;
+            let nested_output = program.nodes.iter().find(|node| node.id == OUTPUT_ID)
+                .ok_or("Nested program has no output")?;
+            let output_port = nested_output.data.outputs.first().ok_or("Nested program has no output port")?;
+            let source = (namespace(OUTPUT_ID), namespace(&output_port.id));
+            for node in &mut program.nodes {
+                node.id = namespace(&node.id);
+                for port in node.data.inputs.iter_mut().chain(&mut node.data.outputs) {
+                    port.id = namespace(&port.id);
+                }
+            }
+            for edge in &mut program.edges {
+                edge.id = namespace(&edge.id);
+                edge.source = namespace(&edge.source);
+                edge.source_handle = namespace(&edge.source_handle);
+                edge.target = namespace(&edge.target);
+                edge.target_handle = namespace(&edge.target_handle);
+            }
+            result.nodes.extend(program.nodes);
+            result.edges.extend(program.edges);
+            Some(source)
+        } else { None };
+        let mapped_source = |source: &str, port: &str| {
+            if source == SOURCE_ID {
+                if let Some(source) = &nested { return source.clone(); }
+            }
+            (namespace(source), namespace(port))
+        };
         let edge = clip
             .edges
             .iter()
             .find(|edge| edge.target == OUTPUT_ID)
             .ok_or_else(|| format!("{} has no connected output", layer.track_name))?;
-        inputs.push((namespace(&edge.source), namespace(&edge.source_handle)));
+        inputs.push(mapped_source(&edge.source, &edge.source_handle));
         for node in clip.nodes.iter().filter(|node| node.id != OUTPUT_ID) {
+            if node.id == SOURCE_ID && nested.is_some() { continue; }
             let mut node = node.clone();
+            node.data.clock = clock.clone();
             if let Some(effects) = &layer.effects {
                 let start = (i128::from(effects.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
                 for animated in effects.keys.iter().filter(|entry| entry.node == node.id) {
@@ -105,8 +148,7 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
         for edge in clip.edges.iter().filter(|edge| edge.target != OUTPUT_ID) {
             let mut edge = edge.clone();
             edge.id = namespace(&edge.id);
-            edge.source = namespace(&edge.source);
-            edge.source_handle = namespace(&edge.source_handle);
+            (edge.source, edge.source_handle) = mapped_source(&edge.source, &edge.source_handle);
             edge.target = namespace(&edge.target);
             edge.target_handle = namespace(&edge.target_handle);
             result.edges.push(edge);
@@ -202,6 +244,9 @@ fn bezier_progress(t: f32, points: vec4f) -> f32 {
     return cubic_unit((low + high) / 2.0, points.y, points.w);
 }
 "#);
+    let result_color = if clock.is_some() {
+        "return vec4f(encoded(result / max(alpha, 0.00001)), alpha);"
+    } else { "return vec4f(encoded(result), 1.0);" };
     let code = format!("{bindings}
 {animation_code}
 const canvas = vec2f({}.0, {}.0);
@@ -219,12 +264,14 @@ fn encoded(c:vec3f) -> vec3f {{
 }}
 @fragment fn main(@location(0) uv:vec2f) -> @location(0) vec4f {{
     var result = vec3f(0.0);
+    var alpha = 0.0;
     for (var order = 0; order < {}; order++) {{
         var track_pixel = vec4f(0.0);
         {draws}
         result = track_pixel.rgb + result * (1.0 - track_pixel.a);
+        alpha = track_pixel.a + alpha * (1.0 - track_pixel.a);
     }}
-    return vec4f(encoded(result), 1.0);
+    {result_color}
 }}", request.width, request.height, tracks.len());
     let (mut output, _) = crate::clip_pipeline::project(Graph::default())
         .create_graph_node(
@@ -238,10 +285,15 @@ fn encoded(c:vec3f) -> vec3f {{
             0,
         )
         .map_err(|error| error.to_string())?;
+    if slots.is_empty() {
+        // This generated graph has no external uniforms or textures in a gap.
+        output.data.inputs.clear();
+    }
     output.id = OUTPUT_ID.into();
     output.data.width = Some(request.width);
     output.data.height = Some(request.height);
     output.data.auto_size = Some(false);
+    output.data.clock = clock;
     output.data.uniforms = parameters;
     for (index, (source, source_handle)) in inputs.into_iter().enumerate() {
         let target = output

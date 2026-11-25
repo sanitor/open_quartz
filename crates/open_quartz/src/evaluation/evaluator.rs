@@ -298,14 +298,15 @@ impl GraphEvaluator {
         let Some(shader) = &node_plan.shader else {
             return uniforms;
         };
+        let time = node.data.clock.as_ref().map_or(inputs.time, |clock| clock.sample(inputs.time).0);
         for name in shader.uniform_bindings.keys() {
             let value = if node_plan.builtin_ports.contains(name) {
-                builtin_value(name, node_plan, inputs)
+                builtin_value(name, node_plan, node, inputs)
             } else if let Some(source_id) = node_plan.upstream.get(name) {
                 self.upstream_scalar(source_id, inputs)
                     .unwrap_or_else(|| vec![0.0])
             } else if let Some(value) = node.data.uniform_animations.get(name)
-                .and_then(|keys| crate::project::model::sample_uniform(keys, inputs.time))
+                .and_then(|keys| crate::project::model::sample_uniform(keys, time))
             {
                 vec![value]
             } else {
@@ -326,10 +327,14 @@ impl GraphEvaluator {
         }
         let source = self.nodes.iter().find(|node| node.id == source_id)?;
         if let Some(system_source) = source.data.system_source {
+            let timing = source.data.clock.as_ref().map(|clock| {
+                let (time, frame) = clock.sample(inputs.time);
+                (time, time - clock.sample(inputs.time - inputs.delta).0, frame)
+            });
             return Some(match system_source {
-                SystemSource::Time => vec![inputs.time as f32],
-                SystemSource::TimeDelta => vec![inputs.delta as f32],
-                SystemSource::Frame => vec![inputs.frame as f32],
+                SystemSource::Time => vec![timing.map_or(inputs.time, |timing| timing.0) as f32],
+                SystemSource::TimeDelta => vec![timing.map_or(inputs.delta, |timing| timing.1) as f32],
+                SystemSource::Frame => vec![timing.map_or(inputs.frame as f64, |timing| timing.2) as f32],
                 SystemSource::Mouse => inputs.mouse.to_vec(),
                 SystemSource::Resolution => inputs.resolution.to_vec(),
             });
@@ -399,12 +404,15 @@ fn command_for(
     }
 }
 
-fn builtin_value(name: &str, plan: &NodeExecutionPlan, inputs: &FrameInputs) -> Vec<f32> {
+fn builtin_value(name: &str, plan: &NodeExecutionPlan, node: &ProjectNode, inputs: &FrameInputs) -> Vec<f32> {
+    let clock = node.data.clock.as_ref();
     match name {
-        "iTime" => vec![inputs.time as f32],
-        "iTimeDelta" => vec![inputs.delta as f32],
+        "iTime" => vec![clock.map_or(inputs.time, |clock| clock.sample(inputs.time).0) as f32],
+        "iTimeDelta" => vec![clock.map_or(inputs.delta, |clock| {
+            clock.sample(inputs.time).0 - clock.sample(inputs.time - inputs.delta).0
+        }) as f32],
         // PlaybackSession frames count rendered frames from one; Shadertoy iFrame starts at zero.
-        "iFrame" => vec![inputs.frame.saturating_sub(1) as f32],
+        "iFrame" => vec![clock.map_or(inputs.frame.saturating_sub(1) as f64, |clock| clock.sample(inputs.time).1) as f32],
         "iDate" => inputs.date.to_vec(),
         "iMouse" => inputs.mouse.to_vec(),
         "iResolution" => plan

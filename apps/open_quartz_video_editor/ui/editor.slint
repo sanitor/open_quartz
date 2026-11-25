@@ -637,10 +637,12 @@ export component EditorWindow inherits Window {
         root.file_submit(kind, path);
     }
     in property <[string]> sequence_names;
+    in property <[string]> nested_source_names;
+    in-out property <int> nested_source_choice;
     in property <string> active_sequence_name;
     in-out property <int> sequence_choice;
     callback sequence_slot(string, int, string);
-    private property <bool> settings_open: false;
+    in-out property <bool> settings_open: false;
     in-out property <string> draft_width;
     in-out property <string> draft_height;
     in-out property <string> draft_fps_numerator;
@@ -1612,7 +1614,7 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 480px; height: 552px; background: root.panel;
+                width: 480px; height: 586px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
@@ -1633,6 +1635,17 @@ export component EditorWindow inherits Window {
                         text: self.sequence_label; accessible-label: "Sequence name";
                         changed sequence_label => { self.text = self.sequence_label; }
                         accepted(value) => { root.sequence_slot("rename", 0, value); }
+                    }
+                    if root.nested_source_names.length > 0: HorizontalLayout {
+                        spacing: 6px;
+                        ComboBox {
+                            accessible-label: "Nested sequence source"; model: root.nested_source_names;
+                            current-index <=> root.nested_source_choice;
+                        }
+                        Button {
+                            text: "Nest at playhead";
+                            clicked => { root.sequence_slot("nest", root.nested_source_choice, ""); }
+                        }
                     }
                     Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Width (pixels)"; color: root.secondary; font-size: 12px; }

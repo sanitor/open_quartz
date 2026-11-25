@@ -23,9 +23,18 @@ struct MixClip {
     cross_out: Option<Range<u64>>,
 }
 
+struct NestedMix {
+    mixer: Box<AudioMix>,
+    start: u64,
+    end: u64,
+    source: u128,
+    speed: u16,
+}
+
 pub struct AudioMix {
     clips: Vec<MixClip>,
     readers: HashMap<usize, RateReader>,
+    nested: Vec<NestedMix>,
     cancel: Arc<AtomicBool>,
     scratch: Vec<StereoSample>,
     track_output: Vec<StereoSample>,
@@ -39,13 +48,30 @@ impl AudioMix {
         cancel: Arc<AtomicBool>,
         samples: Option<&Range<u64>>,
     ) -> Result<Option<Self>, String> {
-        if !project
-            .audio_tracks
-            .iter()
-            .any(|track| !track.clips.is_empty())
-        {
-            return Ok(None);
+        let has_audio_track = project.audio_tracks.iter().any(|track| !track.clips.is_empty());
+        let mut nested = Vec::new();
+        for track in project.tracks.iter().filter(|track| track.visible) {
+            for clip in &track.clips {
+                let Some(asset) = project.assets.iter().find(|asset| asset.id == clip.asset_id) else { continue; };
+                let Some(id) = asset.sequence_source() else { continue; };
+                let start = project.fps.frame_to_sample(clip.timeline_start)?;
+                let end = project.fps.frame_to_sample(clip.timeline_end()?)?;
+                let from = samples.map_or(start, |range| start.max(range.start));
+                let to = samples.map_or(end, |range| end.min(range.end));
+                if from >= to { continue; }
+                let source_ns = crate::document::source_time_ns(asset, clip, clip.timeline_start, project.fps)?;
+                let source = (u128::from(source_ns) * 4_800_000 + 500_000_000) / 1_000_000_000;
+                let first = source + u128::from(from - start) * u128::from(clip.speed_percent);
+                let last = source + u128::from(to - 1 - start) * u128::from(clip.speed_percent);
+                let range = u64::try_from(first / 100).map_err(|_| "Nested audio offset overflow")?
+                    ..u64::try_from(last.div_ceil(100) + 1).map_err(|_| "Nested audio end overflow")?;
+                let child = project.sequence_project(id)?;
+                if let Some(mixer) = Self::new(&child, cancel.clone(), Some(&range))? {
+                    nested.push(NestedMix { mixer: Box::new(mixer), start, end, source, speed: clip.speed_percent });
+                }
+            }
         }
+        if !has_audio_track && nested.is_empty() { return Ok(None); }
         let mut clips = Vec::new();
         let has_solo = project.audio_tracks.iter().any(|track| track.solo);
         for (track_index, track) in project.audio_tracks.iter().enumerate() {
@@ -114,6 +140,7 @@ impl AudioMix {
         Ok(Some(Self {
             clips,
             readers: HashMap::new(),
+            nested,
             cancel,
             scratch: vec![[0.0; 2]; MAX_AUDIO_BLOCK],
             track_output: vec![[0.0; 2]; MAX_AUDIO_BLOCK],
@@ -123,11 +150,14 @@ impl AudioMix {
     }
 
     pub fn sources(&self) -> impl Iterator<Item = &PathBuf> {
-        self.clips
-            .iter()
-            .map(|clip| &clip.path)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+        let mut sources = BTreeSet::new();
+        self.collect_sources(&mut sources);
+        sources.into_iter()
+    }
+
+    fn collect_sources<'a>(&'a self, sources: &mut BTreeSet<&'a PathBuf>) {
+        sources.extend(self.clips.iter().map(|clip| &clip.path));
+        for nested in &self.nested { nested.mixer.collect_sources(sources); }
     }
 
     pub fn render(&mut self, start: u64, output: &mut [StereoSample]) -> Result<(), MediaError> {
@@ -207,6 +237,12 @@ impl AudioMix {
         if let Some(track) = active_track {
             sum_track(track_output, output, &mut self.track_peaks[track]);
         }
+        for nested in &mut self.nested {
+            let from = start.max(nested.start);
+            let to = end.min(nested.end);
+            if from >= to { continue; }
+            nested.render(from, &mut output[(from - start) as usize..(to - start) as usize], &mut self.scratch)?;
+        }
         self.output_peak = 0.0;
         for sample in output.iter_mut().flatten() {
             self.output_peak = self.output_peak.max(sample.abs());
@@ -226,5 +262,32 @@ fn sum_track(source: &[StereoSample], output: &mut [StereoSample], peak: &mut f3
             *peak = peak.max(sample.abs());
             *sum += sample;
         }
+    }
+}
+
+
+impl NestedMix {
+    fn render(&mut self, from: u64, output: &mut [StereoSample], scratch: &mut [StereoSample]) -> Result<(), MediaError> {
+        let speed = u128::from(self.speed);
+        let mut position = self.source + u128::from(from - self.start) * speed;
+        // Allow one interpolation sample on each side of the requested support.
+        let batch = (((MAX_AUDIO_BLOCK - 2) as u128 * 100) / speed).max(1) as usize;
+        for destination in output.chunks_mut(batch) {
+            let first = position / 100;
+            let last = position + (destination.len() - 1) as u128 * speed;
+            let len = (last.div_ceil(100) - first + 1) as usize;
+            self.mixer.render(u64::try_from(first).map_err(|_| "Nested audio position overflow")?, &mut scratch[..len])?;
+            for sample in destination {
+                let at = (position / 100 - first) as usize;
+                let fraction = (position % 100) as f32 / 100.0;
+                for channel in 0..2 {
+                    let current = scratch[at][channel];
+                    let next = if fraction == 0.0 { current } else { scratch[at + 1][channel] };
+                    sample[channel] += current + (next - current) * fraction;
+                }
+                position += speed;
+            }
+        }
+        Ok(())
     }
 }

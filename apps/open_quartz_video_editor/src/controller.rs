@@ -1029,7 +1029,7 @@ impl Controller {
         let Some(asset) = self
             .selected_asset
             .clone()
-            .or_else(|| self.document.data.assets.first().map(|a| a.id.clone()))
+            .or_else(|| self.document.data.assets.iter().find(|asset| asset.sequence_source().is_none()).map(|a| a.id.clone()))
         else {
             self.status("Import a media file first");
             return;
@@ -1318,6 +1318,21 @@ impl Controller {
     }
     fn sequence_slot(&mut self, action: &str, index: i32, label: &str) {
         self.pause();
+        if action == "nest" {
+            let sequence = self.document.data.sequence_list().get(index as usize + 1)
+                .map(|(id, _)| (*id).to_owned());
+            let Some(id) = sequence else { return; };
+            let track = self.selected_track.clone();
+            match self.document.place_sequence(&id, &track, self.playhead) {
+                Ok(clip) => {
+                    if let Some(window) = self.window.upgrade() { window.set_settings_open(false); }
+                    self.focus_placed_clip(None, &track, clip);
+                    self.status("Nested sequence placed");
+                }
+                Err(error) => self.status(error),
+            }
+            return;
+        }
         let previous = self.document.data.sequence_id.clone();
         let result = match action {
             "create" => self.document.add_sequence(false),
@@ -1361,6 +1376,12 @@ impl Controller {
         let names: Vec<slint::SharedString> = slots.iter().map(|(_, label)| (*label).into()).collect();
         if window.get_sequence_names().iter().ne(names.iter().cloned()) {
             window.set_sequence_names(ModelRc::new(VecModel::from(names)));
+        }
+        let source_names: Vec<slint::SharedString> = self.document.data.sequence_list()
+            .into_iter().skip(1).map(|(_, label)| label.into()).collect();
+        if window.get_nested_source_names().iter().ne(source_names.iter().cloned()) {
+            window.set_nested_source_names(ModelRc::new(VecModel::from(source_names)));
+            window.set_nested_source_choice(0);
         }
         if let Some(index) = slots.iter().position(|(id, _)| *id == self.document.data.sequence_id) {
             window.set_sequence_choice(index as i32);
@@ -1585,7 +1606,7 @@ impl Controller {
         self.selected_clip = None;
         self.extra_selection.clear();
         self.selected_audio = None;
-        self.selected_asset = self.document.data.assets.first().map(|asset| asset.id.clone());
+        self.selected_asset = self.document.data.assets.iter().find(|asset| asset.sequence_source().is_none()).map(|asset| asset.id.clone());
         self.asset_preview = false;
         self.requested = None;
         self.refresh();
@@ -2130,7 +2151,7 @@ impl Controller {
             .data
             .assets
             .iter()
-            .filter(|asset| asset.name.to_lowercase().contains(&search))
+            .filter(|asset| asset.sequence_source().is_none() && asset.name.to_lowercase().contains(&search))
             .map(|asset| {
                 let thumbnail = self.thumbnails.get(&asset.id);
                 AssetRow {

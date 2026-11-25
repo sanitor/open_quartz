@@ -6,7 +6,7 @@ mod inference;
 mod port;
 mod project;
 
-pub use animation::{Curve, UniformAnimationKey};
+pub use animation::{ClockStep, Curve, NodeClock, UniformAnimationKey};
 pub(crate) use animation::sample_uniform;
 pub use error::{SdkError, SdkErrorCode};
 pub use id::{NodeId, PortId, PortKey, ProjectId, ResourceId, SubscriptionId};

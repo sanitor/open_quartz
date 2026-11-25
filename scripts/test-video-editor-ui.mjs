@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 18);
+   assert.equal(data.schema_version, 19);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1968,6 +1968,63 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Nest a live sequence at the playhead and export its internal cuts and audio', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const sound = JSON.parse(await readFile(audioProject, 'utf8')).data;
+   const independent = sound.audio_tracks.find(track => track.clips.some(clip => clip.placement.kind === 'independent'));
+   const tone = independent.clips.find(clip => clip.placement.kind === 'independent');
+   const toneAsset = sound.assets.find(asset => asset.id === tone.asset_id);
+   fixture.data.assets.push(toneAsset);
+   fixture.data.audio_tracks = [{ ...independent, clips: [{
+     ...tone, placement: { ...tone.placement, start: 0, duration: 28800 },
+   }] }];
+   fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
+   // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 19);
+   fixture.data.tracks[0].clips[0].spatial_keys = [
+     { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
+     { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
+   ];
+   fixture.data.sequence_name = 'Picture and sound';
+   const seed = join(output, 'nested-sequence.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('assets 3; clips 3');
+   await click('SEQUENCE'); await click('New sequence'); await waitState('clips 0');
+   await click('Nest at playhead'); await waitState('clips 1');
+   await expectColor('blue');
+   for (let i = 0; i < 3; i++) await click('NEXT');
+   await expectColor('red');
+   await click('NEXT'); await expectColor('blue');
+   await click('PLAY'); await waitState('playhead 17 frames'); await expectColor('red');
+   const path = join(output, 'nested-sequence.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const stride = 320 * 180 * 3;
+   const bytes = mediaCommand(['-i', path, '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 20 });
+   assert.equal(bytes.length, 18 * stride);
+   for (const [frame, channel] of [[0, 2], [3, 0], [4, 2], [7, 2], [10, -1], [12, 0]]) {
+     const at = frame * stride + (90 * 320 + 160) * 3;
+     for (let rgb = 0; rgb < 3; rgb++) {
+       assert(rgb === channel ? bytes[at + rgb] > 225 : bytes[at + rgb] < 25, `nested frame ${frame} channel ${rgb}`);
+     }
+   }
+   assert(amplitude(pcm(path), 0.1, 880) > 0.02);
+   await click('SAVE'); await waitState('Project saved'); await close();
+   await launch(seed); await waitState('clips 1'); await expectColor('blue');
+   const chooseChild = async (label, key) => {
+     const combo = () => client.find({ label: 'Active sequence', role: 'Combobox' });
+     await client.click(await combo()); await client.key(key); await client.key('\n');
+     await client.waitFor(async () => (await combo()).accessibleValue === label,
+       { description: `active sequence ${label}` });
+   };
+   await click('SEQUENCE'); await chooseChild('Picture and sound', '\uf700'); await waitState('clips 3');
+   await click('Nest at playhead'); await waitState('cannot contain itself');
+   await click('Cancel');
+   await client.click(await item('background.mp4')); await click('DELETE'); await waitState('clips 2');
+   await click('SEQUENCE'); await chooseChild('Sequence 1', '\uf701'); await click('Cancel');
+   await waitState('clips 1'); await expectColor('black');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ }, { core: true });
  await step('Create, rename, duplicate and reopen independent sequences sharing one media library', async () => {
    const seed = join(output, 'sequence-switch.oqvideo.json');
    await writeFile(seed, await readFile(exportProject));
@@ -2118,7 +2175,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 18);
+   assert.equal(saved.schema_version, 19);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

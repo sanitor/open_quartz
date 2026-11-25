@@ -112,27 +112,33 @@ impl ExportSequence for Sequence {
     }
 }
 
-fn video_source_ids<'a>(
-    project: &'a ProjectData,
+fn video_source_ids(
+    project: &ProjectData,
     end: u64,
     cadence: &Cadence,
     total: u64,
     cancel: &AtomicBool,
-) -> Result<BTreeSet<&'a str>, String> {
+) -> Result<BTreeSet<String>, String> {
     let mut ids = BTreeSet::new();
     let mut output_frame = 0;
     while output_frame < total && !cancel.load(Ordering::Acquire) {
         let frame = cadence.sample(output_frame)?;
-        ids.extend(project.video_inputs(frame).filter_map(|input| {
-            input
-                .clip
-                .title
-                .is_none()
-                .then_some(input.clip.asset_id.as_str())
-        }));
+        let request = super::sequence_request(project, 0, 0, frame, |_| None, None)?;
+        ids.extend(request.sources().map(|(_, asset, _)| asset.id.clone()));
+        collect_stills(&request, &mut ids);
         output_frame = cadence.boundary(sequence_region_end(project, frame, end))?;
     }
     Ok(ids)
+}
+
+fn collect_stills(request: &super::PreviewRequest, assets: &mut BTreeSet<String>) {
+    for layer in &request.layers {
+        match &layer.source {
+            super::LayerSource::Still(asset) => { assets.insert(asset.id.clone()); }
+            super::LayerSource::Nested { request, .. } => collect_stills(request, assets),
+            _ => {}
+        }
+    }
 }
 
 fn run(

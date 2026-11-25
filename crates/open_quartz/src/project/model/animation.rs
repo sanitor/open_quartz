@@ -91,4 +91,52 @@ mod tests {
         keys[0].curve = Curve::Bezier { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 };
         assert!((sample_uniform(&keys, 1.5).unwrap() - 4.0).abs() < 0.001);
     }
+
+    #[test]
+    fn nested_clock_quantizes_each_source_before_passing_time_to_its_child() {
+        let clock = NodeClock {
+            root_origin: 2.0 / 30.0,
+            steps: vec![
+                ClockStep { parent_start: 1.0 / 30.0, source_start: 0.0, speed: 1.0, child_fps: 24.0 },
+                ClockStep { parent_start: 0.0, source_start: 0.0, speed: 2.0, child_fps: 30.0 },
+            ],
+            local_origin: 1.0 / 30.0,
+        };
+        assert_eq!(clock.sample(0.0).1, 0.0);
+        let (time, frame) = clock.sample(1.0 / 30.0 - 0.000_000_000_6);
+        assert_eq!(frame, 2.0);
+        assert!((time - 1.0 / 30.0).abs() < f64::EPSILON);
+    }
+
+}
+
+
+/// Runtime clock for a node inside one or more nested timeline compositions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeClock {
+    pub root_origin: f64,
+    pub steps: Vec<ClockStep>,
+    pub local_origin: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClockStep {
+    pub parent_start: f64,
+    pub source_start: f64,
+    pub speed: f64,
+    pub child_fps: f64,
+}
+
+impl NodeClock {
+    pub(crate) fn sample(&self, root: f64) -> (f64, f64) {
+        let mut time = root + self.root_origin;
+        let mut frame = 0.0;
+        for step in &self.steps {
+            time = step.source_start + (time - step.parent_start) * step.speed;
+            // Timeline timestamps are transported as integer nanoseconds.
+            frame = ((time + 1.0e-9) * step.child_fps).floor().max(0.0);
+            time = frame / step.child_fps;
+        }
+        (time - self.local_origin, frame)
+    }
 }

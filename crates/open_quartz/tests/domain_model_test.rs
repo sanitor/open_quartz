@@ -29,6 +29,7 @@ fn node(id: &str, inputs: Vec<Port>, outputs: Vec<Port>) -> ProjectNode {
             outputs,
             uniforms: Map::<String, Value>::new(),
             uniform_animations: Default::default(),
+            clock: None,
             input_data_type: Some(DataType::Float),
             input_mode: Some(InputMode::System),
             image_data_url: None,

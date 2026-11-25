@@ -315,7 +315,7 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4');
     await waitNodeCount(2); await snapshot('01-nodes-default-red', 'red');
     originalData = await save(true);
-    assert.equal(originalData.schema_version, 18);
+    assert.equal(originalData.schema_version, 19);
     assert.deepEqual(originalData.tracks.flatMap(track => track.clips).map(clip => [clip.timeline_start, clip.duration]), [[0, 90], [90, 90]]);
   }, { core: true });
   await step('Source and output remain selectable, read-only and non-deletable', async () => {

@@ -34,7 +34,7 @@ pub use effect_motion::EffectKeys;
 #[path = "document_sequences.rs"]
 mod sequences;
 pub use sequences::TimelineSequence;
-const SCHEMA_VERSION: u32 = 18;
+const SCHEMA_VERSION: u32 = 19;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -117,7 +117,7 @@ impl MediaAsset {
     }
 
     pub fn has_video(&self) -> bool {
-        self.has_visual() && !self.still
+        self.has_visual() && !self.still && self.sequence_source().is_none() && self.sequence_source().is_none()
     }
 
     pub fn source_duration_frames(&self, fps: Rational) -> Result<u64, String> {
@@ -797,6 +797,7 @@ impl EditorDocument {
         let path = parent.join(path.file_name().ok_or("Project filename is missing")?);
         let mut snapshot = self.data.clone();
         for asset in &mut snapshot.assets {
+            if asset.sequence_source().is_some() { continue; }
             asset.path = stored_asset_path(&parent, Path::new(&asset.path));
         }
         let serialized = serde_json::to_vec_pretty(&ProjectFile {
@@ -842,6 +843,7 @@ impl EditorDocument {
         let mut data = decode_project_file(&bytes)?;
         let parent = path.parent().unwrap_or(Path::new("."));
         for asset in &mut data.assets {
+            if asset.sequence_source().is_some() { continue; }
             let asset_path = PathBuf::from(&asset.path);
             let resolved = if asset_path.is_absolute() {
                 asset_path
@@ -992,6 +994,10 @@ fn migrate_keyframes(project: &mut serde_json::Value) -> Result<(), String> {
 
 fn validate(data: &ProjectData) -> Result<(), String> {
     data.validate_sequence_slots()?;
+    validate_timeline(data)
+}
+
+fn validate_timeline(data: &ProjectData) -> Result<(), String> {
     if data.schema_version != SCHEMA_VERSION {
         return Err("Unsupported in-memory project schema".into());
     }
@@ -1006,6 +1012,13 @@ fn validate(data: &ProjectData) -> Result<(), String> {
     for asset in &data.assets {
         if asset.id.is_empty() || !ids.insert(asset.id.as_str()) {
             return Err("Missing or duplicate media asset ID".into());
+        }
+        if asset.sequence_source().is_some()
+            && (!asset.path.is_empty() || asset.fingerprint != asset.id || asset.size_bytes != 0
+                || !asset.has_visual() || asset.start_pts != Some(0) || asset.still
+                || asset.has_audio || asset.audio.is_some() || !asset.online)
+        {
+            return Err("Invalid nested sequence source metadata".into());
         }
         Rational::new(asset.time_base.numerator, asset.time_base.denominator)?;
         if let Some(fps) = asset.fps {
@@ -1145,7 +1158,7 @@ fn gcd128(mut a: i128, mut b: i128) -> i128 {
     }
     a.max(1)
 }
-fn shifted_source(
+pub(super) fn shifted_source(
     clip: &Clip,
     frames: i128,
     fps: Rational,

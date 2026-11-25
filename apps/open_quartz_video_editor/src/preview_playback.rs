@@ -117,9 +117,20 @@ pub(super) fn configuration(request: &PreviewRequest) -> Result<PreviewConfigura
         sources.insert(node, (asset.path.clone(), asset.fingerprint.clone()));
     }
     let mut images = BTreeMap::new();
+    collect_images(request, "", &mut images)?;
+    Ok(PreviewConfiguration { sources, images, graph: graph(request)? })
+}
+
+fn collect_images(
+    request: &PreviewRequest, prefix: &str, images: &mut BTreeMap<String, StaticImage>,
+) -> Result<(), String> {
     for layer in &request.layers {
         let image = match &layer.source {
             LayerSource::Video { .. } => continue,
+            LayerSource::Nested { request, .. } => {
+                collect_images(request, &format!("{prefix}{}", composition::namespace(&layer.clip_id, "")), images)?;
+                continue;
+            }
             LayerSource::Title(title) => StaticImage::Title {
                 title: title.clone(), width: request.width, height: request.height,
             },
@@ -130,9 +141,9 @@ pub(super) fn configuration(request: &PreviewRequest) -> Result<PreviewConfigura
                 StaticImage::File(asset.clone())
             }
         };
-        images.insert(composition::source_id(&layer.clip_id), image);
+        images.insert(format!("{prefix}{}", composition::source_id(&layer.clip_id)), image);
     }
-    Ok(PreviewConfiguration { sources, images, graph: graph(request)? })
+    Ok(())
 }
 
 pub(super) fn prepare_region(
