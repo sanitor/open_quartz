@@ -13,9 +13,11 @@ import { writeHtmlReport } from './slint-ui-report.mjs';
 // injected: every saved node, edge and parameter originates in the native UI.
 const args = process.argv.slice(2);
 const smoke = args.includes('--smoke');
-const positional = args.filter(arg => arg !== '--smoke');
-assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke]');
-const tier = smoke ? 'smoke' : 'full';
+const stillOnly = args.includes('--still-only');
+const positional = args.filter(arg => !['--smoke', '--still-only'].includes(arg));
+assert(!smoke || !stillOnly, 'Choose either --smoke or --still-only');
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke|--still-only]');
+const tier = stillOnly ? 'still-only' : smoke ? 'smoke' : 'full';
 const output = resolve(process.env.VIDEO_EDITOR_NODES_TEST_OUTPUT || `test-results/clip-pipeline/nodes-ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`);
 const binary = resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg = resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -309,7 +311,32 @@ async function primaryKey(text) {
   try { await client.key(text); } finally { await client.key(primary, 'Release'); }
 }
 
-try {
+async function stillImageRoundTrip() {
+  await step('The same clip graph applies an effect to a still image and survives reopening', async () => {
+    const image = join(output, 'red-still.png');
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x180',
+      '-frames:v', '1', '-c:v', 'png', '-threads', '1', '-y', image],
+    { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
+    await launch();
+    await fileAction('IMPORT', image, 'Import media'); await waitState('assets 1');
+    await waitColor('red');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red-still.png');
+    await waitNodeCount(2);
+    await selectNode('video');
+    await addEffect('Invert');
+    await waitNodeCount(3); await snapshot('28-still-inverted', 'cyan');
+    const saved = join(output, 'still-pipeline.oqvideo.json');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    await close();
+    await launch(saved); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red-still.png');
+    await waitNodeCount(3); await waitColor('cyan');
+    await close();
+  }, { core: true });
+}
+
+async function runVideoCases() {
   const red = generate('red.mp4', 'red'), blue = generate('blue.mp4', 'blue');
   await step('Create two real hardware-decoded clips through the native UI', async () => {
     await launch(); await waitState('assets 0; clips 0');
@@ -572,28 +599,7 @@ try {
     assert.deepEqual(await save(), correctorSaved, 'Pausing and cancelling must not change accepted clip parameters');
     await close();
   });
-  await step('The same clip graph applies an effect to a still image and survives reopening', async () => {
-    const image = join(output, 'red-still.png');
-    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x180',
-      '-frames:v', '1', '-c:v', 'png', '-threads', '1', '-y', image],
-    { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
-    await launch();
-    await fileAction('IMPORT', image, 'Import media'); await waitState('assets 1');
-    await waitColor('red');
-    await click('ADD CLIP'); await waitState('clips 1');
-    await click('Nodes workspace'); await selectClip('red-still.png');
-    await waitNodeCount(2);
-    await selectNode('video');
-    await addEffect('Invert');
-    await waitNodeCount(3); await snapshot('28-still-inverted', 'cyan');
-    const saved = join(output, 'still-pipeline.oqvideo.json');
-    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
-    await close();
-    await launch(saved); await waitState('clips 1');
-    await click('Nodes workspace'); await selectClip('red-still.png');
-    await waitNodeCount(3); await waitColor('cyan');
-    await close();
-  });
+  if (!smoke) await stillImageRoundTrip();
   if (smoke) await close();
   await step('Duplicate, switch and remove independent grade versions on a clip', async () => {
     const path = join(output, 'grade-versions.oqvideo.json');
@@ -880,6 +886,11 @@ try {
     await selectNode(invert.id); await click('Enable node'); await waitColor('cyan');
     await click('SAVE'); await waitState('Project saved'); await close();
   }, { core: true });
+}
+
+try {
+  if (stillOnly) await stillImageRoundTrip();
+  else await runVideoCases();
   report.passed = true;
 } catch (error) {
   report.error = error.stack;

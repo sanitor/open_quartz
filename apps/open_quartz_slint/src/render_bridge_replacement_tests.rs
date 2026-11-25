@@ -10,10 +10,12 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("red.mp4");
-    let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
+    let ffmpeg = fixture_ffmpeg();
     assert!(std::process::Command::new(ffmpeg).args([
         "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-        "color=c=red:s=64x64:r=10", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
+        "color=c=red:s=64x64:r=10", "-t", "2",
+        "-vf", "scale=in_color_matrix=bt601:out_color_matrix=bt709",
+        "-colorspace", "bt709", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
     ]).arg(&path).status().unwrap().success());
     let sdk = OpenQuartz::new(Environment::headless());
     let mut project = sdk.create_project("Retained playback");
@@ -51,6 +53,7 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
     bridge.set_graph(graph.clone(), BTreeMap::new(), true).unwrap();
     let accepted = wait_for(&bridge, "initial texture", &|update| update.texture.is_some());
     let revision = accepted.rendered_revision.unwrap();
+    drop(accepted);
     wait_for(&bridge, "video node preview", &|update| update.previews.as_ref().is_some_and(|previews| previews.contains_key(&video.id)));
 
     let mut invalid_graph = graph.clone();
@@ -79,6 +82,7 @@ fn rejected_graph_replacements_keep_playback_revision_and_video_source() {
         drop(rejected);
         let continuing = wait_for(&bridge, "continued texture after rejection", &|update| update.texture.is_some());
         assert_eq!(continuing.rendered_revision, Some(revision));
+        drop(continuing);
         bridge.set_playback("pause").unwrap();
         bridge.capture_png(video.id.clone(), capture.clone()).unwrap()
             .recv_timeout(Duration::from_secs(5)).unwrap().unwrap();

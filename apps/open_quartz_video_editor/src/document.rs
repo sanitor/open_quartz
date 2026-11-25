@@ -1383,7 +1383,7 @@ pub(super) fn extended_source_time_ns(
 }
 fn stored_asset_path(project_dir: &Path, path: &Path) -> String {
     if !path.is_absolute() {
-        return path.to_string_lossy().into_owned();
+        return portable_relative_asset_path(path);
     }
     let base = project_dir.components().collect::<Vec<_>>();
     let target = path.components().collect::<Vec<_>>();
@@ -1398,7 +1398,15 @@ fn stored_asset_path(project_dir: &Path, path: &Path) -> String {
     for component in &target[shared..] {
         relative.push(component.as_os_str());
     }
-    relative.to_string_lossy().into_owned()
+    portable_relative_asset_path(&relative)
+}
+fn portable_relative_asset_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
 }
 pub fn fingerprint(path: &Path) -> Result<String, String> {
     fingerprint_until(path, || false)

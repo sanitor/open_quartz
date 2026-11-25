@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
 use windows_graphics::core::Interface;
 
 use windows_graphics::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, WAIT_OBJECT_0};
@@ -311,6 +312,9 @@ fn detach_video_subresource(
             .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
             .map_err(|error| format!("Cannot create D3D12 detach command list: {error}"))?;
         let mut description = source.GetDesc();
+        let source_plane_stride =
+            u32::from(description.MipLevels) * u32::from(description.DepthOrArraySize);
+        let destination_plane_stride = u32::from(description.MipLevels);
         description.DepthOrArraySize = 1;
         description.Flags = D3D12_RESOURCE_FLAG_NONE;
         let heap = D3D12_HEAP_PROPERTIES {
@@ -330,14 +334,14 @@ fn detach_video_subresource(
             .map_err(|error| format!("Cannot allocate detached D3D12 video resource: {error}"))?;
         let detached =
             detached.ok_or_else(|| "D3D12 returned no detached video resource".to_owned())?;
-        let source_location = D3D12_TEXTURE_COPY_LOCATION {
+        let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(source.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 SubresourceIndex: subresource_index,
             },
         };
-        let destination_location = D3D12_TEXTURE_COPY_LOCATION {
+        let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(detached.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
@@ -345,6 +349,12 @@ fn detach_video_subresource(
             },
         };
         list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
+        // NV12 and P010 use distinct subresources for luma and interleaved chroma.
+        source_location.Anonymous.SubresourceIndex = subresource_index + source_plane_stride;
+        destination_location.Anonymous.SubresourceIndex = destination_plane_stride;
+        list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
+        std::mem::ManuallyDrop::drop(&mut source_location.pResource);
+        std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
         list.Close()
             .map_err(|error| format!("Cannot close D3D12 detach command list: {error}"))?;
         queue.ExecuteCommandLists(&[Some(
@@ -385,6 +395,8 @@ pub struct D3d12VideoFrame {
     pub subresource_index: u32,
     pub format: D3d12VideoFormat,
     array_layers: u32,
+    luma_coefficients: [f32; 2],
+    full_range: bool,
 }
 
 unsafe impl Send for D3d12VideoFrame {}
@@ -459,7 +471,40 @@ impl D3d12VideoFrame {
             subresource_index: imported_subresource,
             format,
             array_layers: imported_array_layers,
+            luma_coefficients: if height <= 576 { [0.299, 0.114] } else { [0.2126, 0.0722] },
+            full_range: false,
         })
+    }
+
+    #[cfg(feature = "native-video-d3d12")]
+    pub(crate) fn set_color(&mut self, coefficients: Option<[f32; 2]>, full_range: bool) {
+        if let Some(coefficients) = coefficients {
+            self.luma_coefficients = coefficients;
+        }
+        self.full_range = full_range;
+    }
+
+    fn conversion_parameters(&self) -> [f32; 8] {
+        let (normalized_codes, max_code, black, luma_span, center, chroma_span) = match self.format {
+            D3d12VideoFormat::Nv12 => (255.0, 255.0, 16.0, 219.0, 128.0, 224.0),
+            D3d12VideoFormat::P010 => (65535.0 / 64.0, 1023.0, 64.0, 876.0, 512.0, 896.0),
+        };
+        let (black, luma_span, chroma_span) = if self.full_range {
+            (0.0, max_code, max_code)
+        } else {
+            (black, luma_span, chroma_span)
+        };
+        let [kr, kb] = self.luma_coefficients;
+        [
+            black / normalized_codes,
+            normalized_codes / luma_span,
+            center / normalized_codes,
+            normalized_codes / chroma_span,
+            kr,
+            kb,
+            0.0,
+            0.0,
+        ]
     }
 }
 impl GpuBackend {
@@ -528,8 +573,17 @@ impl GpuBackend {
             ..Default::default()
         });
         let (layout, pipeline) = self
-            .p010_converter
-            .get_or_init(|| create_p010_pipeline(&self.device));
+            .d3d12_yuv_converter
+            .get_or_init(|| create_d3d12_yuv_pipeline(&self.device));
+        let mut parameters = [0; 32];
+        for (bytes, parameter) in parameters.chunks_exact_mut(4).zip(frame.conversion_parameters()) {
+            bytes.copy_from_slice(&parameter.to_ne_bytes());
+        }
+        let conversion = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("open-quartz-d3d12-yuv-color"),
+            contents: &parameters,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("open-quartz-d3d12-yuv-bindings"),
             layout,
@@ -541,6 +595,10 @@ impl GpuBackend {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&uv_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: conversion.as_entire_binding(),
                 },
             ],
         });
@@ -578,13 +636,13 @@ impl GpuBackend {
     }
 }
 
-fn create_p010_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+fn create_d3d12_yuv_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("open-quartz-p010-converter"),
-        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(P010_CONVERTER)),
+        label: Some("open-quartz-d3d12-yuv-converter"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(D3D12_YUV_CONVERTER)),
     });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("open-quartz-p010-layout"),
+        label: Some("open-quartz-d3d12-yuv-layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -606,15 +664,25 @@ fn create_p010_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(32),
+                },
+                count: None,
+            },
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("open-quartz-p010-pipeline-layout"),
+        label: Some("open-quartz-d3d12-yuv-pipeline-layout"),
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("open-quartz-p010-pipeline"),
+        label: Some("open-quartz-d3d12-yuv-pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -641,17 +709,23 @@ fn create_p010_pipeline(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::
     (layout, pipeline)
 }
 
-const P010_CONVERTER: &str = r#"
+const D3D12_YUV_CONVERTER: &str = r#"
 struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> O { var o: O; let x = f32(i / 2u) * 4.0 - 1.0; let y = f32(i % 2u) * 4.0 - 1.0; o.p = vec4f(x,y,0,1); o.uv = vec2f((x+1.0)*0.5,(1.0-y)*0.5); return o; }
 @group(0) @binding(0) var y_tex: texture_2d<f32>;
 @group(0) @binding(1) var uv_tex: texture_2d<f32>;
+struct ColorConversion { range: vec4f, luma: vec4f }
+@group(0) @binding(2) var<uniform> conversion: ColorConversion;
 @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let ys = textureDimensions(y_tex); let p = vec2i(clamp(uv * vec2f(ys), vec2f(0.0), vec2f(ys - 1u)));
   let c = vec2i(clamp(uv * vec2f(textureDimensions(uv_tex)), vec2f(0.0), vec2f(textureDimensions(uv_tex) - 1u)));
-  let y = (textureLoad(y_tex,p,0).r * 1023.0 - 64.0) / 876.0;
-  let u = textureLoad(uv_tex,c,0).r * 1023.0 / 896.0 - 0.5;
-  let v = textureLoad(uv_tex,c,0).g * 1023.0 / 896.0 - 0.5;
-  return vec4f(clamp(vec3f(y + 1.5748*v, y - 0.1873*u - 0.4681*v, y + 1.8556*u), vec3f(0.0), vec3f(1.0)), 1.0);
+  let y = (textureLoad(y_tex, p, 0).r - conversion.range.x) * conversion.range.y;
+  let chroma = (textureLoad(uv_tex, c, 0).rg - vec2f(conversion.range.z)) * conversion.range.w;
+  let kr = conversion.luma.x;
+  let kb = conversion.luma.y;
+  let r = y + 2.0 * (1.0 - kr) * chroma.y;
+  let b = y + 2.0 * (1.0 - kb) * chroma.x;
+  let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+  return vec4f(clamp(vec3f(r, g, b), vec3f(0.0), vec3f(1.0)), 1.0);
 }
 "#;

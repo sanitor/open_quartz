@@ -15,6 +15,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn shared_pipeline_displays_real_video_black_gaps_and_retains_previous_frame_after_cut() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -78,6 +79,7 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn obsolete_seek_is_never_published_as_newer_request_and_offline_is_an_error() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -161,6 +163,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn clip_effect_pixels_are_isolated_and_graph_edits_reuse_the_hardware_source() {
         crate::media::configure_runtime().unwrap();
         let render = pollster::block_on(RenderDevice::new()).unwrap().0;
@@ -266,6 +269,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn effects_follow_native_size_and_contain_the_actual_upstream_aspect() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -340,6 +344,7 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn worker_play_snapshot_reports_progress_and_exact_seek_cancels_its_window() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -389,6 +394,7 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn playback_crosses_gap_and_cut_epochs_and_retires_the_exact_last_frame() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -438,6 +444,7 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn two_native_sources_keep_independent_pts_and_blend_in_linear_light() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _, _) = PreviewBridge::new().unwrap();

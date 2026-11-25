@@ -175,15 +175,16 @@ pub fn configure_runtime() -> Result<(), String> {
         return Ok(());
     }
     let mut candidates = Vec::<PathBuf>::new();
+    let ffmpeg = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
-            candidates.push(parent.join("runtime/ffmpeg"));
-            candidates.push(parent.join("../Resources/runtime/ffmpeg"));
+            candidates.push(parent.join("runtime").join(ffmpeg));
+            candidates.push(parent.join("../Resources/runtime").join(ffmpeg));
         }
     }
     // Development-only resolution; distributed runtime is owned by the application bundle.
     candidates
-        .push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../open_quartz_slint/runtime/ffmpeg"));
+        .push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../open_quartz_slint/runtime").join(ffmpeg));
     if let Some(path) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         std::env::set_var("OPEN_QUARTZ_FFMPEG_PATH", path);
         Ok(())

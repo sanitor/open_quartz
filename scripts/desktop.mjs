@@ -128,8 +128,8 @@ async function prepareRuntime() {
     }
     await cp(join(helperRuntime, 'ffmpeg-shared', 'doc'), join(runtime, 'ffmpeg-doc'), { recursive: true });
     await cp(join(helperRuntime, 'ffmpeg-shared', 'LICENSE.txt'), join(runtime, 'FFMPEG-LICENSE.txt'));
-    const url = 'https://github.com/microsoft/onnxruntime/releases/download/v1.21.0/Microsoft.ML.OnnxRuntime.DirectML.1.21.0.nupkg';
-    const archive = await download(url, 'ort-directml-1.21.0.nupkg', 'f1f7dd0b6a568ff6e79be3822d591faffb3ae0f7f0aaf58ee3d7bd1d9f0e6edc');
+    const url = 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.21.0/microsoft.ml.onnxruntime.directml.1.21.0.nupkg';
+    const archive = await download(url, 'ort-directml-1.21.0.nupkg', '12bed6e1e870f30e0150e039ebb6853da32eba381eda1c373faeeb17168785e6');
     const extracted = join(cache, 'ort-directml-1.21.0');
     await unpack(archive, extracted);
     await copyRequired(join(extracted, 'runtimes', 'win-x64', 'native', ortName), join(runtime, ortName));
@@ -346,6 +346,12 @@ if (mode === 'prepare') {
 } else if (mode === 'test-inference-performance') {
   await run(process.execPath, ['scripts/inference-performance.mjs'], { env });
 } else if (mode === 'test') {
+  if (platform === 'win32') {
+    // The redistributable LGPL runtime can decode H.264. The test fixture
+    // generator uses a separate encoder and is never copied into the package.
+    const { default: installer } = await import('@ffmpeg-installer/ffmpeg');
+    env.OPEN_QUARTZ_TEST_FFMPEG_PATH = installer.path;
+  }
   await run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
 } else {
   if (platform === 'win32') {

@@ -1194,7 +1194,7 @@ fn decode_d3d12_frames(
         }
         let raw = unsafe { &*decoded.as_ptr() };
         let descriptor = unsafe { &*(raw.data[0] as *const FfmpegD3d12Frame) };
-        let frame = unsafe {
+        let mut frame = unsafe {
             D3d12VideoFrame::from_raw(
                 descriptor.texture,
                 descriptor.sync.fence,
@@ -1207,6 +1207,16 @@ fn decode_d3d12_frames(
                 info.d3d12_detach_required,
             )?
         };
+        use ffmpeg_next::color::{Range, Space};
+        let coefficients = match decoded.color_space() {
+            Space::BT709 => Some([0.2126, 0.0722]),
+            Space::BT470BG | Space::SMPTE170M => Some([0.299, 0.114]),
+            Space::SMPTE240M => Some([0.212, 0.087]),
+            Space::BT2020NCL => Some([0.2627, 0.0593]),
+            Space::FCC => Some([0.30, 0.11]),
+            _ => None,
+        };
+        frame.set_color(coefficients, decoded.color_range() == Range::JPEG);
         unsafe { ffmpeg_next::ffi::av_frame_unref(decoded.as_mut_ptr()) };
         let mut current = slot
             .lock()

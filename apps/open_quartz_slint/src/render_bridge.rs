@@ -3,6 +3,13 @@
 mod replacement_tests;
 
 #[cfg(test)]
+fn fixture_ffmpeg() -> std::path::PathBuf {
+    std::env::var_os("OPEN_QUARTZ_TEST_FFMPEG_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| open_quartz::media::native::find_ffmpeg().unwrap())
+}
+
+#[cfg(test)]
 #[path = "inference_render_tests.rs"]
 mod inference_tests;
 
@@ -1182,7 +1189,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
         let path = std::env::temp_dir().join(format!("oq-standalone-{}.mp4",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
+        let ffmpeg = fixture_ffmpeg();
         assert!(std::process::Command::new(ffmpeg).args([
             "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
             "testsrc2=size=64x64:rate=10:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
@@ -1229,7 +1236,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("open-quartz-video-preview-{}",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&directory).unwrap();
-        let ffmpeg = open_quartz::media::native::find_ffmpeg().unwrap();
+        let ffmpeg = fixture_ffmpeg();
         let red = directory.join("red.mp4");
         let blue = directory.join("blue.mp4");
         for (path, color) in [(&red, "red"), (&blue, "blue")] {

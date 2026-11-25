@@ -7,9 +7,13 @@ import { packageVideoEditor } from './package-video-editor.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const [mode='dev',...args]=process.argv.slice(2);
-if(!['dev','test','test-ui','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-ui [--smoke] | test-coverage | build | package');
+if(!['dev','test','test-ui','test-ui-stills','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-ui [--smoke] | test-ui-stills | test-coverage | build | package');
 if(mode==='test-ui' && (args.length>1 || args.some(arg=>arg!=='--smoke')))throw Error('Expected test-ui [--smoke]');
-if(process.platform!=='darwin')throw Error('The precise resident video editor currently requires macOS VideoToolbox. No CPU video fallback is provided.');
+const windows = process.platform === 'win32' && process.arch === 'x64';
+if (process.platform !== 'darwin' && !windows) throw Error('Video Editor supports macOS and Windows x64.');
+if (windows && ['test-ui', 'test-coverage', 'package'].includes(mode)) {
+  throw Error(`Video Editor ${mode} currently requires the macOS VideoToolbox media backend.`);
+}
 async function run(command,arguments_,env=process.env){
   await new Promise((accept,reject)=>{
     const child=spawn(command,arguments_,{cwd:root,stdio:'inherit',env});
@@ -21,7 +25,11 @@ async function run(command,arguments_,env=process.env){
 await prepareMediaSdk();
 if(mode!=='package')await run(process.execPath,['scripts/copy-ffmpeg.mjs']);
 const sdk=join(mediaSdk,'lib');
-const env={...process.env,OPEN_QUARTZ_FFMPEG_PATH:join(root,'apps/open_quartz_slint/runtime/ffmpeg'),DYLD_LIBRARY_PATH:[sdk,process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(delimiter)};
+const env = {
+  ...process.env,
+  OPEN_QUARTZ_FFMPEG_PATH: join(root, 'apps/open_quartz_slint/runtime', windows ? 'ffmpeg.exe' : 'ffmpeg'),
+};
+if (!windows) env.DYLD_LIBRARY_PATH = [sdk, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(delimiter);
 const manifest=join(root,'apps/open_quartz_video_editor/Cargo.toml');
 if(mode==='dev')await run('cargo',['run','--locked','--manifest-path',manifest,'--',...args],env);
 if(mode==='test')await run('cargo',['test','--locked','--manifest-path',manifest,'--','--test-threads=1'],env);
@@ -43,9 +51,14 @@ async function runEditorUi(binary, options, testEnv) {
   }
   if (failures.length) throw new AggregateError(failures, 'Video Editor UI failed');
 }
-if(mode==='test-ui'){
+if(mode==='test-ui' || mode==='test-ui-stills'){
   await run('cargo',['build','--locked','--manifest-path',manifest,'--features','ui-automation'],env);
-  await runEditorUi(join(root,'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor'), args, env);
+  const binary = join(root, 'apps/open_quartz_video_editor/target/debug', windows ? 'open_quartz_video_editor.exe' : 'open_quartz_video_editor');
+  if (mode === 'test-ui-stills') {
+    await run(process.execPath, ['scripts/test-video-editor-nodes-ui.mjs', binary, '--still-only'], env);
+  } else {
+    await runEditorUi(binary, args, env);
+  }
 }
 if(mode==='test-coverage'){
   await run('cargo',['llvm-cov','--manifest-path',manifest,'--locked','--no-report','--','--test-threads=1'],env);

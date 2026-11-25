@@ -46,11 +46,15 @@ function rendererPixels(png, preview, windowProperties, width, height) {
   assert.ok(fit >= 1, `Renderer preview too small for ${width}×${height} texel sampling`);
   const left = (preview.absolutePosition?.x ?? 0) + (preview.size.width - width * fit) / 2;
   const top = (preview.absolutePosition?.y ?? 0) + (preview.size.height - height * fit) / 2;
+  // The Windows renderer snaps the origin to a physical pixel, while
+  // retaining the fractional scaling of the fitted image.
+  const physicalLeft = process.platform === 'win32' ? Math.round(left * sx) : left * sx;
+  const physicalTop = process.platform === 'win32' ? Math.round(top * sy) : top * sy;
   const pixels = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const px = Math.floor((left + (x + 0.5) * fit) * sx);
-      const py = Math.floor((top + (y + 0.5) * fit) * sy);
+      const px = Math.floor(physicalLeft + (x + 0.5) * fit * sx);
+      const py = Math.floor(physicalTop + (y + 0.5) * fit * sy);
       assert.ok(px >= 0 && py >= 0 && px < screenshot.width && py < screenshot.height, 'Renderer image lies outside screenshot');
       const source = (py * screenshot.width + px) * screenshot.channels;
       const target = (y * width + x) * 4;
@@ -61,7 +65,7 @@ function rendererPixels(png, preview, windowProperties, width, height) {
       pixels[target + 3] = 255;
     }
   }
-  return { width, height, pixels, roi: { left: left * sx, top: top * sy, width: width * fit * sx, height: height * fit * sy }, screenshotWidth: screenshot.width, screenshotHeight: screenshot.height };
+  return { width, height, pixels, roi: { left: physicalLeft, top: physicalTop, width: width * fit * sx, height: height * fit * sy }, screenshotWidth: screenshot.width, screenshotHeight: screenshot.height };
 }
 
 /**

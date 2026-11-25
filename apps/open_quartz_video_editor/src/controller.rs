@@ -2772,6 +2772,7 @@ mod native_dialog_tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
     fn worker_owns_playback_clock_and_clip_cuts_but_exact_seek_supersedes() {
         crate::media::configure_runtime().unwrap();
         let (preview, _configuration, _) = PreviewBridge::new().unwrap();

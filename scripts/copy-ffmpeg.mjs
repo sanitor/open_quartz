@@ -11,9 +11,10 @@ const runtimeDir = resolve(root, 'apps', 'open_quartz_slint', 'runtime');
 await mkdir(runtimeDir, { recursive: true });
 
 if (process.platform === 'win32' && process.arch === 'x64') {
-  const archiveRoot = 'ffmpeg-n9.0.2-36-g6882969ce9-win64-lgpl-shared-9.0';
-  const assetUrl = `https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-27-18-38/${archiveRoot}.zip`;
-  const digest = 'f70e43c4f5670fbbf2dc4eb667b0d6b3743d68386f766c08bb2e0ec3edece398';
+  // Upstream retains month-end builds longer than the rolling daily snapshots.
+  const archiveRoot = 'ffmpeg-n9.0.2-39-g7adfbe40dc-win64-lgpl-shared-9.0';
+  const assetUrl = `https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/${archiveRoot}.zip`;
+  const digest = 'e907b01fa4783913151237e37df2a10fa97d99a1598a021bf59d4ae62ffed4c0';
   const cacheDir = resolve(root, 'node_modules', '.cache', 'open-quartz');
   await mkdir(cacheDir, { recursive: true });
   const archive = resolve(cacheDir, `ffmpeg-shared-${digest}.zip`);

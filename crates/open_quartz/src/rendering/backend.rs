@@ -34,7 +34,7 @@ pub struct GpuBackend {
     #[cfg(test)]
     pub(crate) readback_fault: AtomicU8,
     #[cfg(windows)]
-    pub(crate) p010_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
+    pub(crate) d3d12_yuv_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
     #[cfg(all(target_os = "macos", feature = "native-video"))]
     pub(crate) videotoolbox_importer: OnceLock<Result<super::videotoolbox::VideoToolboxImporter, String>>,
 }
@@ -51,7 +51,7 @@ impl GpuBackend {
             #[cfg(test)]
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
-            p010_converter: Arc::new(OnceLock::new()),
+            d3d12_yuv_converter: Arc::new(OnceLock::new()),
             #[cfg(all(target_os = "macos", feature = "native-video"))]
             videotoolbox_importer: OnceLock::new(),
         }
@@ -68,7 +68,7 @@ impl GpuBackend {
             #[cfg(test)]
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
-            p010_converter: Arc::new(OnceLock::new()),
+            d3d12_yuv_converter: Arc::new(OnceLock::new()),
             #[cfg(all(target_os = "macos", feature = "native-video"))]
             videotoolbox_importer: OnceLock::new(),
         }
