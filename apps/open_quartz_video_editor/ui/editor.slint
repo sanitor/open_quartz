@@ -950,11 +950,23 @@ export component EditorWindow inherits Window {
                                     Rectangle { vertical-stretch: 1; }
                                 }
                             }
-                            Rectangle { height: 80px; background: #151719; VerticalLayout { padding: 12px; spacing: 5px; Text { text: root.selected_asset_name; color: root.text; font-size: 12px; font-weight: 600; overflow: elide; } Text { text: root.selected_asset_details; color: root.secondary; font-size: 11px; wrap: word-wrap; } } }
-                            if root.camera_log_available: ComboBox {
-                                accessible-label: "Input color"; current-index <=> root.camera_log_index;
-                                model: ["Auto (metadata)", "Sony S-Log3 / S-Gamut3.Cine", "Sony S-Log3 / S-Gamut3", "Sony S-Log2 / S-Gamut"];
-                                selected => { root.camera_log_changed(self.current-index); }
+                            Rectangle {
+                                height: 80px; background: #151719;
+                                VerticalLayout {
+                                    padding: root.camera_log_available ? 8px : 12px;
+                                    spacing: root.camera_log_available ? 3px : 5px;
+                                    Text { text: root.selected_asset_name; color: root.text; font-size: 12px; font-weight: 600; overflow: elide; }
+                                    Text {
+                                        text: root.selected_asset_details; color: root.secondary; font-size: 11px;
+                                        wrap: root.camera_log_available ? no-wrap : word-wrap;
+                                        overflow: elide;
+                                    }
+                                    if root.camera_log_available: ComboBox {
+                                        accessible-label: "Input color"; current-index <=> root.camera_log_index;
+                                        model: ["Auto (metadata)", "Sony S-Log3 / S-Gamut3.Cine", "Sony S-Log3 / S-Gamut3", "Sony S-Log2 / S-Gamut"];
+                                        selected => { root.camera_log_changed(self.current-index); }
+                                    }
+                                }
                             }
 
                         }

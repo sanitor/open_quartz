@@ -89,7 +89,7 @@ the SDR view, then verifies undo, redo and reopening at the same pixel level.
 
 ## Sony camera input
 
-Select a video in Library and use **Input color** to override the source
+Select a video in Library and use **Input color** in its asset details to override the source
 interpretation. The three presets are **S-Log3 / S-Gamut3.Cine**, **S-Log3 /
 S-Gamut3**, and **S-Log2 / S-Gamut**. The choice is stored with the asset and
 applies in the source monitor, on the timeline, and in exports. **Auto** restores

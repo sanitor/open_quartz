@@ -1579,10 +1579,12 @@ try{
    const moved = join(output, 'moved-overlay.asset');
    await rename(overlay, moved);
    await launch(stillProject); await waitState('clips 2');
+   assert.equal((await client.byLabel('Input color', { role: 'Combobox' })).length, 1);
    const card = await assetCard('overlay.png');
    assert(card.accessibleDescription.endsWith('; offline'));
    await client.click(card);
    await waitState('Media offline');
+   assert.equal((await client.byLabel('Input color', { role: 'Combobox' })).length, 0);
    await fileAction('RELINK', moved, 'Relink media');
    await client.waitFor(async () => (await assetCard('overlay.png')).accessibleDescription.endsWith('; online'),
      { description: 'the matching relocated image is online' });
