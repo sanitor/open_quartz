@@ -15,6 +15,9 @@ use std::time::Duration;
 mod pipeline_editor;
 #[path = "monitor_transform.rs"]
 mod monitor_transform;
+#[path = "motion_editor.rs"]
+mod motion_editor;
+use motion_editor::MotionEditor;
 use monitor_transform::MonitorGesture;
 use pipeline_editor::{PipelineCommand, PipelineEditor};
 
@@ -79,6 +82,7 @@ pub struct Controller {
     extra_selection: BTreeSet<String>,
     selected_track: String,
     monitor_gesture: Option<MonitorGesture>,
+    motion: MotionEditor,
     timeline_capture: Option<(String, u64)>,
     displayed_ticket: Option<u64>,
     asset_preview: bool,
@@ -143,6 +147,7 @@ impl Controller {
             extra_selection: BTreeSet::new(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
+            motion: MotionEditor::default(),
             timeline_capture: None,
             displayed_ticket: None,
             asset_preview: false,
@@ -409,6 +414,12 @@ impl Controller {
             }
         });
         Self::connect_monitor(this, window);
+        let weak = Rc::downgrade(this);
+        window.on_motion_action(move |action, index, delta, extend| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().motion_action(&action, index, delta, extend);
+            }
+        });
         let weak = Rc::downgrade(this);
         window.on_clip_timing_changed(move |field, value| {
             if let Some(controller) = weak.upgrade() {
@@ -1995,6 +2006,7 @@ impl Controller {
             self.audio_destination = AudioDestination::Automatic;
         }
         self.refresh_source();
+        self.refresh_motion();
         #[cfg(target_os = "macos")]
         self.refresh_proxy_controls();
         if !self.document.is_dirty() {
@@ -2215,6 +2227,7 @@ impl Controller {
         window.set_project_dirty(self.document.is_dirty());
     }
     fn clear_images(&mut self) {
+        self.motion = MotionEditor::default();
         self.source_marks.clear();
         self.audio_destination = AudioDestination::Automatic;
         #[cfg(target_os = "macos")]
@@ -2422,6 +2435,7 @@ mod native_dialog_tests {
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
+            motion: MotionEditor::default(),
             timeline_capture: None,
             displayed_ticket: None,
         };

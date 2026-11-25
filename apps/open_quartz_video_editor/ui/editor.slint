@@ -28,6 +28,7 @@ export struct AudioClipRow { id: string, lane: int, name: string, start: float, 
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
 export struct SnapResult { delta: int, frame: int }
+export struct MotionKeyRow { index: int, frame: int, selected: bool }
 export struct MarkerRow { frame: int, name: string }
 export struct DissolveRow { lane: int, start: float, duration: float, description: string }
 
@@ -495,6 +496,15 @@ export component EditorWindow inherits Window {
     in property <bool> spatial_key_enabled;
     in property <bool> on_spatial_key;
     in property <bool> eased_spatial_key;
+    in property <bool> motion_open;
+    in property <bool> motion_has_selection;
+    in property <bool> motion_can_paste;
+    in property <bool> motion_writable;
+    in property <int> motion_start;
+    in property <int> motion_duration;
+    in property <[MotionKeyRow]> motion_keys;
+    in-out property <int> motion_channel_index;
+    callback motion_action(string, int, int, bool);
     in property <bool> on_crop_key;
     in property <bool> crop_editable;
     in property <string> crop_left;
@@ -1436,7 +1446,53 @@ export component EditorWindow inherits Window {
                             }
                         }
                     }
+                    if root.motion_open: VerticalLayout {
+                        height: 104px; spacing: 4px; padding: 6px;
+                        HorizontalLayout {
+                            spacing: 5px;
+                            ComboBox {
+                                width: 126px; model: ["Transform", "Opacity", "Crop"];
+                                accessible-label: "Animation property";
+                                current-index <=> root.motion_channel_index;
+                                selected => { root.motion_action("channel", self.current-index, 0, false); }
+                            }
+                            Button { text: "Copy keyframes"; enabled: root.motion_has_selection; clicked => { root.motion_action("copy", 0, 0, false); } }
+                            Button { text: "Paste keyframes"; enabled: root.motion_can_paste && root.motion_writable; clicked => { root.motion_action("paste", 0, 0, false); } }
+                            Button { text: "Delete keyframes"; enabled: root.motion_has_selection && root.motion_writable; clicked => { root.motion_action("delete", 0, 0, false); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        key_rail := Rectangle {
+                            background: #22292d; border-radius: 4px; vertical-stretch: 1;
+                            accessible-role: groupbox; accessible-label: "Clip keyframe track";
+                            property <float> scale: max(0.0001, (self.width - 24px) / 1px / max(1, root.motion_duration - 1));
+                            Rectangle { x: 12px; y: parent.height / 2; width: parent.width - 24px; height: 1px; background: #6f827e; }
+                            for key in root.motion_keys: Rectangle {
+                                property <int> offset: 0;
+                                x: 5px + (key.frame - root.motion_start + self.offset) * key_rail.scale * 1px;
+                                y: (parent.height - self.height) / 2; width: 14px; height: 22px;
+                                Text { width: parent.width; height: parent.height; text: "◆"; color: key.selected ? #ffd789 : root.accent; horizontal-alignment: center; vertical-alignment: center; }
+                                ClipGestureArea {
+                                    zoom: key_rail.scale; cancel_token: root.cancel_token;
+                                    accessible-role: button; accessible-label: "Keyframe " + key.frame;
+                                    accessible-description: key.selected ? "Selected" : "Unselected";
+                                    began => { editor_focus.focus(); }
+                                    preview(delta, x, y) => { if root.motion_writable { parent.offset = delta; } }
+                                    finished(delta, x, y) => {
+                                        parent.offset = 0;
+                                        if delta != 0 && root.motion_writable { root.motion_action("move", key.index, delta, false); }
+                                        else { root.motion_action("select", key.index, 0, self.additive); }
+                                    }
+                                    cancelled => { parent.offset = 0; }
+                                }
+                            }
+                        }
+                    }
                     Rectangle { height: 30px; background: #151719; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.clips.length + " video · " + root.audio_clips.length + " audio · " + root.sequence_duration + " frames"; color: root.secondary; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } if root.selection_size > 1: Text { text: root.selection_size + " selected"; color: root.accent; font-size: 11px; vertical-alignment: center; }
+                        Button {
+                            text: root.motion_open ? "Hide keyframes" : "Show keyframes";
+                            enabled: root.selected_clip_id != "";
+                            clicked => { editor_focus.focus(); root.motion_action("toggle", 0, 0, false); }
+                        }
                         if root.marker_here: LineEdit { width: 156px; text: root.marker_name; accessible-label: "Marker name"; accepted(value) => { root.marker_name_changed(value); } }
                         Button { text: root.marker_here ? "Remove marker" : "Add marker"; enabled: root.sequence_duration > 0; clicked => { editor_focus.focus(); root.project_action("toggle-marker"); } }
                         Text { text: root.audio_level; color: root.secondary; font-size: 11px; vertical-alignment: center; } } }

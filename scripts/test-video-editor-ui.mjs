@@ -1861,6 +1861,56 @@ try{
  const spatialProject = join(output, 'spatial.oqvideo.json');
  const transformControl = async (label, value) => enter(await clipControl(label), value);
  const spatialButton = async label => client.click(await clipControl(label, 'Button'));
+ await step('Select, drag, copy, paste and delete a group of timeline keyframes', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const track = fixture.data.tracks.find(track => track.clips.some(clip =>
+     fixture.data.assets.find(asset => asset.id === clip.asset_id)?.name === 'background.mp4'));
+   const [clip] = track.clips;
+   clip.duration = 12;
+   clip.crop_keys = [
+     { time: 0, value: { left: 0, top: 0, right: 0, bottom: 0 } },
+     { time: 3, value: { left: 0.8, top: 0, right: 0, bottom: 0 } },
+   ];
+   fixture.data.tracks = [track];
+   const seed = join(output, 'keyframe-track.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 1');
+   await client.click(await item('background.mp4'));
+   await click('Show keyframes');
+   const channel = await client.find({ label: 'Animation property', role: 'Combobox' });
+   await client.click(channel);
+   await client.key('\uf701'); await client.key('\uf701'); await client.key('\n');
+   await client.waitFor(async () => (await client.properties(channel.handle)).accessibleValue === 'Crop',
+     { description: 'the crop parameter track is active' });
+   const key = async frame => (await buttons(`Keyframe ${frame}`))[0];
+   await client.click(await key(0));
+   await client.click(await key(3), { modifiers: { shift: true } });
+   assert.equal((await key(0)).accessibleDescription, 'Selected');
+   assert.equal((await key(3)).accessibleDescription, 'Selected');
+   await click('Copy keyframes');
+   const rail = await client.find({ label: 'Clip keyframe track' });
+   const first = await key(0);
+   const origin = center(first);
+   await client.drag(first, { x: origin.x + 2 * (rail.size.width - 24) / 11, y: origin.y });
+   assert(await key(2)); assert(await key(5));
+   await click('UNDO');
+   assert(await key(0)); assert(await key(3));
+   for (let i = 0; i < 6; i++) await click('NEXT');
+   await click('Paste keyframes');
+   assert(await key(6)); assert(await key(9));
+   await client.click(await key(6));
+   await client.click(await key(9), { modifiers: { shift: true } });
+   await click('Delete keyframes');
+   assert(!(await key(6))); assert(!(await key(9)));
+   await click('UNDO');
+   assert(await key(6)); assert(await key(9));
+   await click('SAVE'); await waitState('Project saved');
+   const stored = JSON.parse(await readFile(seed, 'utf8')).data.tracks[0].clips[0].crop_keys;
+   assert.deepEqual(stored.map(key => key.time), [0, 3, 6, 9]);
+   await click('Hide keyframes');
+   assert.equal((await client.byLabel('Clip keyframe track')).length, 0);
+   await close();
+ }, { core: true });
  await step('Migrate legacy animations and keyframe crop in the monitor and export', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.schema_version = 15; fixture.data.schema_version = 15;

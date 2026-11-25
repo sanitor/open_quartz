@@ -25,6 +25,9 @@ pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
 use timing::RippleEdit;
 pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAMPLE_RATE};
+#[path = "document_motion.rs"]
+mod motion;
+pub use motion::{MotionChannel, MotionPoint};
 const SCHEMA_VERSION: u32 = 16;
 #[path = "document_spatial.rs"]
 mod spatial;
