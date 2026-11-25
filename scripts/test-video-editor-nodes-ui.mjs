@@ -277,7 +277,7 @@ async function step(name, run, { core = false } = {}) {
 }
 function generate(name, color) {
   const path = join(output, name);
-  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=320x180:r=30`, '-vf', 'scale=in_color_matrix=bt601:out_color_matrix=bt709', '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-y', path], {
+  execFileSync(process.env.OPEN_QUARTZ_TEST_FFMPEG_PATH || ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=320x180:r=30`, '-vf', 'scale=in_color_matrix=bt601:out_color_matrix=bt709', '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-y', path], {
     env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' },
   });
   return path;

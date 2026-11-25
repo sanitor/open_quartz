@@ -21,6 +21,7 @@ const tier = deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : preview
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
+const framePassthrough = process.platform === 'win32' ? ['-fps_mode', 'passthrough'] : ['-vsync', '0'];
 await mkdir(output,{recursive:true});
 const report={passed:false,tier,steps:[],screenshots:[],launches:[],caseDefinitions:[]};
 const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
@@ -607,7 +608,7 @@ async function runVideoCases() {
    assert.match(metadata.stderr, /Video: h264[^\n]*320x180[^\n]*30 fps/);
    const width = 320, height = 180, stride = width * height * 3;
    const pixels = execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', exported,
-     '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+     '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
      { env: ffmpegEnv, maxBuffer: stride * 24 });
    assert.equal(pixels.length, stride * 18, 'every sequence frame encoded once at canvas size');
    const colors = { red: [255, 0, 0], blue: [0, 0, 255], black: [0, 0, 0] };
@@ -671,7 +672,11 @@ async function runVideoCases() {
  const audioProject = join(output, 'audio.oqvideo.json');
  const audioOutput = join(output, 'audio-mix.mp4');
  const mediaEnv = { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' };
- const mediaCommand = (args, options = {}) => execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', ...args], { env: mediaEnv, ...options });
+ const mediaCommand = (args, options = {}) => {
+   const encoder = args.some(arg => typeof arg === 'string' && /^libx26[45]/.test(arg));
+   return execFileSync(encoder ? (process.env.OPEN_QUARTZ_TEST_FFMPEG_PATH || ffmpeg) : ffmpeg,
+     ['-hide_banner', '-loglevel', 'error', ...args], { env: mediaEnv, ...options });
+ };
  const pcm = path => {
    const bytes = mediaCommand(['-i', path, '-map', '0:a:0', '-f', 'f32le', '-ac', '2', '-ar', '48000', '-'],
      { maxBuffer: 4 * 1024 * 1024 });
@@ -868,7 +873,7 @@ async function runVideoCases() {
    await exportRange(path, 12, 26); await waitState('Export complete');
    assert((await state()).includes('playhead 0 frames'), 'export range did not seek or trim the project');
    const stride = 320 * 180 * 3;
-   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0',
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough,
      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 18 });
    assert.equal(pixels.length, stride * 14, 'the exclusive end produces exactly fourteen frames');
    for (let index = 0; index < 14; index++) {
@@ -1326,7 +1331,7 @@ async function runVideoCases() {
    ]);
    const exportPath = join(output, 'opacity.mp4');
    await fileAction('EXPORT', exportPath, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', exportPath, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const pixels = mediaCommand(['-i', exportPath, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const stride = 320 * 180 * 3;
    assert.equal(pixels.length, stride * 3);
    for (const [frame, color] of [[0, [0, 0, 255]], [1, [188, 0, 188]], [2, [255, 0, 0]]]) {
@@ -1388,7 +1393,7 @@ async function runVideoCases() {
    assert(audio.length / 2 >= 48000 && audio.length / 2 < 49024);
    assert(amplitude(audio, 0.1, 880) > 0.04);
    assert(amplitude(audio, 0.1, 440) < 0.008);
-   const video = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+   const video = mediaCommand(['-i', exported, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
      { maxBuffer: 8 * 1024 * 1024 });
    const stride = 320 * 180 * 3;
    assert.equal(video.length, stride * 30);
@@ -1507,7 +1512,7 @@ async function runVideoCases() {
    assert.deepEqual(saved.tracks[0].dissolves, [{ outgoing: outgoing.id, incoming: incoming.id, frames: 4 }]);
    const exported = join(output, 'dissolve.mp4');
    await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
      { maxBuffer: 4 * 1024 * 1024 });
    const stride = 320 * 180 * 3;
    assert.equal(pixels.length, stride * 12);
@@ -1551,7 +1556,7 @@ async function runVideoCases() {
    await launch(transition); await waitState('clips 2');
    const clipped = join(output, 'range-dissolve.mp4');
    await exportRange(clipped, 5, 7); await waitState('Export complete');
-   const frames = path => mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const frames = path => mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const stride = 320 * 180 * 3;
    const blended = frames(clipped);
    assert.equal(blended.length, 2 * stride);
@@ -1641,7 +1646,7 @@ async function runVideoCases() {
    await expectColor('blue');
    const exported = join(output, 'title.mp4');
    await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
      { maxBuffer: 4 * 1024 * 1024 });
    const stride = 320 * 180 * 3;
    assert.equal(pixels.length, stride * 6);
@@ -1771,7 +1776,7 @@ async function runVideoCases() {
 
    const exported = join(output, 'burned-subtitles.mp4');
    await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
      { maxBuffer: 4 * 1024 * 1024 });
    const stride = 320 * 180 * 3;
    assert.equal(pixels.length, stride * 10);
@@ -1877,7 +1882,7 @@ async function runVideoCases() {
    await expectColor('blue');
    const exported = join(output, 'still-overlay.mp4');
    await fileAction('EXPORT', exported, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24',
+   const pixels = mediaCommand(['-i', exported, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24',
      '-f', 'rawvideo', '-'], { maxBuffer: 4 * 1024 * 1024 });
    const stride = 320 * 180 * 3;
    assert.equal(pixels.length, stride * 10);
@@ -2122,7 +2127,7 @@ async function runVideoCases() {
      { env: mediaEnv, encoding: 'utf8' });
    assert.equal(metadata.status, 0, metadata.stderr);
    assert.match(metadata.stderr, /Video: h264[^\n]*1280x720[^\n]*24 fps/);
-   const frames = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+   const frames = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-vf', 'scale=32:18',
      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const stride = 32 * 18 * 3;
    assert.equal(frames.length, 8 * stride);
@@ -2256,7 +2261,7 @@ async function runVideoCases() {
    await click('PREVIOUS'); await waitState('playhead 1 frames'); await expectColor('blue');
    const path = join(output, 'bezier-curve.mp4');
    await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-vf', 'scale=32:18',
      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const center = (32 * 18 + 9 * 32 + 16) * 3;
    assert(pixels[center + 2] > 200 && pixels[center] < 25, 'the second output frame is blue');
@@ -2684,7 +2689,7 @@ async function runVideoCases() {
    await click('PLAY'); await waitState('playhead 4 frames'); await expectColor('blue');
    const path = join(output, 'effect-animated.mp4');
    await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-vf', 'scale=32:18',
      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const center = frame => pixels.subarray((frame * 32 * 18 + 9 * 32 + 16) * 3,
      (frame * 32 * 18 + 9 * 32 + 16) * 3 + 3);
@@ -2728,7 +2733,7 @@ async function runVideoCases() {
    assert.equal((await clipControl('Crop left (%)')).accessibleValue, '45.000');
    const path = join(output, 'animated-crop.mp4');
    await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-vf', 'scale=32:18',
      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
    const dominant = frame => {
      const offset = frame * 32 * 18 * 3 + (9 * 32 + 16) * 3;
@@ -2784,7 +2789,7 @@ async function runVideoCases() {
      [[0, 0, true], [8, 0.4, false]]);
    const path = join(output, 'eased-crop.mp4');
    await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: 4 * 1024 * 1024 });
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', ...framePassthrough, '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: 4 * 1024 * 1024 });
    const width = 320, stride = width * 180 * 3;
    assert.equal(pixels.length, stride * 12);
    const color = (frame, x, y) => {
