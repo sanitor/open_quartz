@@ -12,23 +12,13 @@ if (!['darwin', 'win32'].includes(process.platform)) {
 
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 const options = tier === 'smoke' ? ['--smoke'] : [];
-const desktopSuites = [
+const suites = [
   ['Desktop interactions', 'scripts/desktop.mjs', 'test-ui'],
   ['Desktop catalog shaders', 'scripts/desktop.mjs', 'test-ui-shaders'],
   ['Desktop Color Corrector', 'scripts/desktop.mjs', 'test-ui-corrector'],
-];
-const studioPreviewSuites = [
-  ['Video Editor still image graphs', 'scripts/video-editor.mjs', 'test-ui-stills'],
-  ['Video Editor independent audio', 'scripts/video-editor.mjs', 'test-ui-audio'],
-  ['Video Editor native video preview', 'scripts/video-editor.mjs', 'test-ui-preview'],
-  ['Video Editor hardware MP4 delivery', 'scripts/video-editor.mjs', 'test-ui-delivery'],
-];
-const inferenceSuite = ['Resident inference', 'scripts/desktop.mjs', 'test-inference'];
-const suites = process.platform === 'win32' ? [...desktopSuites, ...studioPreviewSuites, inferenceSuite] : [
-  ...desktopSuites,
   ['Video Editor Edit and Nodes', 'scripts/video-editor.mjs', 'test-ui'],
   ['Video Editor hardware MP4 delivery', 'scripts/video-editor.mjs', 'test-ui-delivery'],
-  inferenceSuite,
+  ['Resident inference', 'scripts/desktop.mjs', 'test-inference'],
 ];
 
 const failures = [];

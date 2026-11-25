@@ -22,9 +22,9 @@ macOS 和 Windows 运行同一组预览测试。硬件测试需要可用的 Meta
 - `npm run test:video-editor:ui:preview` 验证剪辑、像素、源 PTS、工程重开、关联 AAC 和 HDR 色调映射。
 - `npm run test:video-editor:ui:stills` 和 `npm run test:video-editor:ui:audio` 验证静态图片和独立音频。
 
-GitHub Actions 的 **Desktop hardware preview parity** 工作流可手动运行，对两平台运行相同的 Open Quartz 桌面冒烟测试和 Studio 预览用例。Windows runner 需要交互桌面、GPU、音频设备、MSVC 和 LLVM，并带有 `openquartz-video-gpu` 标签。
+GitHub Actions 的 **Desktop hardware parity** 工作流可手动运行，对两平台运行同一套全量端到端测试。Windows runner 需要交互桌面、GPU、音频设备、MSVC 和 LLVM，并带有 `openquartz-video-gpu` 标签。
 
-Windows 可用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e:full` 运行 Open Quartz 桌面及 Studio 静帧、音频、硬件视频预览和 MP4 导出。macOS 套件还覆盖 GPU 驻留推理。
+Windows 和 macOS 共用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`，覆盖 Open Quartz 桌面、GPU 驻留推理、Studio 静帧、音频、硬件视频预览和 MP4 导出。
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 
@@ -159,7 +159,7 @@ npm run test:video-editor:ui:preview
 npm run test:video-editor:ui:delivery
 ```
 
-macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例，或用 `npm run test:video-editor:ui` 和 `npm run test:video-editor:coverage` 执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
+Windows 和 macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例，或用 `npm run test:video-editor:ui` 和 `npm run test:video-editor:coverage` 执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
 
 Rust 测试覆盖嵌套节点时钟、时间线窗口边界、GPU 帧预热和精确定位。原生 UI 还检查拖动后的持久化、效果前后的真实 GPU 像素和独立解码的交付文件。覆盖率命令将 Rust 测试与原生 UI 的插桩结果合并至 `test-results/phase6/editor-coverage.json`。
 
