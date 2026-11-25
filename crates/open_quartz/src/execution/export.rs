@@ -83,16 +83,17 @@ pub trait ExportSequence: Send + Sync {
 /// Drive it on the job's render owner, not an application UI callback.
 /// Completed means drain + trailer + fsync + atomic commit, not accepted input.
 pub struct ExportJob {
-    pipeline: FramePipeline,
-    converter: Nv12Converter,
+    // Release codec references and encoder surfaces before the rendering device.
     encoder: Mp4Encoder,
+    converted: VecDeque<(u64, ConvertedFrame)>,
+    converter: Nv12Converter,
+    pipeline: FramePipeline,
     config: ExportConfig,
     identities: Vec<SourceFileIdentity>,
     active_sources: Vec<SourceFileIdentity>,
     sequence: Option<Box<dyn ExportSequence>>,
     region_end: u64,
     frames: VecDeque<(u64, StableFrame)>,
-    converted: VecDeque<(u64, ConvertedFrame)>,
     next_request: u64,
     epoch: u64,
     drain_requested: bool,

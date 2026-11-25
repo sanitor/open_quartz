@@ -61,8 +61,10 @@ impl Drop for ExportLease {
 
 /// Fixed GPU conversion working set shared with the hardware encoder.
 pub struct Nv12Converter {
-    gpu: D3d12ColorConverter,
+    // FFmpeg returns these COM resources to its pool during destruction. Keep
+    // the rendering backend alive through the last surface release.
     slots: Vec<Arc<ExportSlot>>,
+    gpu: D3d12ColorConverter,
     budget: Arc<FrameBudget>,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
     trace_enabled: bool,
