@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 #[path = "document_audio.rs"]
@@ -22,7 +23,7 @@ pub use transition::DissolveSide;
 mod animation;
 pub use animation::OpacityKey;
 pub use timing::{normal_speed, valid_speed, Placement};
-pub use audio::{AudioAsset, AudioInterval, AudioPlacement, SAMPLE_RATE};
+pub use audio::{AudioAsset, AudioDestination, AudioInterval, AudioPlacement, SAMPLE_RATE};
 const SCHEMA_VERSION: u32 = 13;
 #[path = "document_spatial.rs"]
 mod spatial;
@@ -107,6 +108,11 @@ impl MediaAsset {
 
     pub fn has_video(&self) -> bool {
         self.has_visual() && !self.still
+    }
+
+    pub fn source_duration_frames(&self, fps: Rational) -> Result<u64, String> {
+        let ticks = self.duration_pts.ok_or("Exact placement requires a known video duration")?;
+        duration_frames(ticks, self.time_base, fps)
     }
 }
 
@@ -383,6 +389,13 @@ impl EditorDocument {
     }
 
     pub fn place_visual(&mut self, asset_id: &str, track: &str, placement: Placement) -> Result<String, String> {
+        self.place_visual_range(asset_id, track, placement, None, &AudioDestination::Automatic)
+    }
+
+    pub fn place_visual_range(
+        &mut self, asset_id: &str, track: &str, placement: Placement,
+        source_range: Option<Range<u64>>, audio: &AudioDestination,
+    ) -> Result<String, String> {
         let track = self.data.track_index(track)?;
         self.data.tracks[track].require_unlocked()?;
         if self.data.tracks[track].subtitles {
@@ -396,12 +409,16 @@ impl EditorDocument {
         let duration = if asset.still {
             self.data.fps.ns_to_frames_floor(3_000_000_000)?.max(1)
         } else {
-            let ticks = asset.duration_pts.ok_or("Exact placement requires a known video duration")?;
-            duration_frames(ticks, asset.time_base, self.data.fps)?
+            asset.source_duration_frames(self.data.fps)?
         };
         if duration == 0 {
             return Err("Media is shorter than one sequence frame".into());
         }
+        let source = source_range.unwrap_or(0..duration);
+        if source.end > duration || source.start >= source.end {
+            return Err("Source range must lie inside the media and contain at least one frame".into());
+        }
+        let duration = source.end - source.start;
         let start = match placement {
             Placement::EmptySpace(None) => first_gap(&self.data.tracks[track].clips, duration)?,
             Placement::EmptySpace(Some(frame)) | Placement::Insert(frame) | Placement::Overwrite(frame) => frame,
@@ -412,11 +429,11 @@ impl EditorDocument {
         } else {
             asset.start_pts.ok_or("Precise placement requires a known source presentation timestamp")?
         };
-        let has_audio = asset.audio.is_some();
+        let has_audio = asset.audio.is_some() && *audio != AudioDestination::VideoOnly;
         let revision = self.revision;
-        let clip = Clip {
+        let mut clip = Clip {
             id: id.clone(),
-            asset_id: asset.id,
+            asset_id: asset.id.clone(),
             title: None,
             timeline_start: start,
             duration,
@@ -431,6 +448,9 @@ impl EditorDocument {
             spatial_keys: Vec::new(),
             pipeline: ClipPipeline::default(),
         };
+        if source.start != 0 {
+            advance_source(&mut clip, i128::from(source.start), self.data.fps, asset.time_base)?;
+        }
         self.transact(|data| {
             match placement {
                 Placement::EmptySpace(_) => {}
@@ -439,7 +459,7 @@ impl EditorDocument {
             }
             data.tracks[track].clips.push(clip);
             data.tracks[track].clips.sort_by_key(|clip| clip.timeline_start);
-            if has_audio { data.link_audio(revision, asset_id, id.clone())?; }
+            if has_audio { data.link_audio(revision, asset_id, id.clone(), audio)?; }
             Ok(())
         })?;
         Ok(id)

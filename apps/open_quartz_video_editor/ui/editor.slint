@@ -462,6 +462,17 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_source_in: "0";
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
+    in property <bool> source_visible;
+    in property <bool> source_can_previous;
+    in property <bool> source_can_next;
+    in property <bool> source_marks_set;
+    in property <bool> source_has_audio;
+    in property <string> source_frame;
+    in property <string> source_range;
+    in property <[string]> source_audio_tracks;
+    in-out property <int> source_audio_index;
+    callback source_action(string, string);
+    callback source_audio_changed(int);
     in-out property <float> timeline_zoom: 16;
     private property <bool> timeline_snap_enabled: true;
     private property <int> timeline_snap_frame: -1;
@@ -933,6 +944,35 @@ export component EditorWindow inherits Window {
                                 }
                                 moved => {
                                     if self.armed && root.show_transform { root.monitor_pointer("move", self.handle, self.mouse-x, self.mouse-y); }
+                                }
+                            }
+                        }
+                        if root.source_visible: VerticalLayout {
+                            padding-left: 8px; padding-right: 8px; spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                ToolButton { label: "Previous source frame"; glyph: "|◀"; active: root.source_can_previous; clicked => { root.source_action("previous", ""); } }
+                                LineEdit {
+                                    in property <string> cursor_text: root.source_frame;
+                                    width: 63px; text: self.cursor_text; accessible-label: "Source monitor frame";
+                                    changed cursor_text => { self.text = self.cursor_text; }
+                                    accepted(value) => { root.source_action("seek", value); }
+                                }
+                                ToolButton { label: "Next source frame"; glyph: "▶|"; active: root.source_can_next; clicked => { root.source_action("next", ""); } }
+                                Button { text: "Mark In"; clicked => { root.source_action("in", ""); } }
+                                Button { text: "Mark Out"; clicked => { root.source_action("out", ""); } }
+                                Button { text: "Clear marks"; enabled: root.source_marks_set; clicked => { root.source_action("clear", ""); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text { text: root.source_range; color: root.secondary; font-size: 12px; vertical-alignment: center; }
+                                Rectangle { horizontal-stretch: 1; }
+                                if root.source_has_audio: ComboBox {
+                                    width: 142px; accessible-label: "Source audio destination";
+                                    model: root.source_audio_tracks;
+                                    current-index <=> root.source_audio_index;
+                                    selected => { root.source_audio_changed(self.current-index); }
                                 }
                             }
                         }

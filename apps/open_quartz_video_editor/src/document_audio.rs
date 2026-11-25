@@ -234,12 +234,21 @@ pub(super) fn validate_audio(data: &ProjectData) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum AudioDestination {
+    #[default]
+    Automatic,
+    VideoOnly,
+    Track(String),
+}
+
 impl ProjectData {
     fn insert_audio(
         &mut self,
         revision: u64,
         asset_id: &str,
         placement: AudioPlacement,
+        destination: &AudioDestination,
     ) -> Result<(), String> {
         let clip = AudioClip {
             id: new_id("audio-clip", revision),
@@ -251,14 +260,23 @@ impl ProjectData {
             placement,
         };
         let range = clip.interval(self)?;
-        let target = self.audio_tracks.iter().position(|track| {
-            !track.locked
-                && track.clips.iter().all(|other| {
-                    other
-                        .interval(self)
-                        .is_ok_and(|other| range.end <= other.start || range.start >= other.end)
-                })
-        });
+        let can_place = |track: &AudioTrack| {
+            !track.locked && track.clips.iter().all(|other| {
+                other.interval(self)
+                    .is_ok_and(|other| range.end <= other.start || range.start >= other.end)
+            })
+        };
+        let target = if let AudioDestination::Track(id) = destination {
+            let index = self.audio_tracks.iter().position(|track| track.id == *id)
+                .ok_or("The target audio track no longer exists")?;
+            let track = &self.audio_tracks[index];
+            if !can_place(track) {
+                return Err(format!("Cannot place audio on {} because it is locked or overlaps another clip", track.name));
+            }
+            Some(index)
+        } else {
+            self.audio_tracks.iter().position(can_place)
+        };
         let index = match target {
             Some(index) => index,
             None => {
@@ -282,8 +300,9 @@ impl ProjectData {
         revision: u64,
         asset_id: &str,
         video_id: String,
+        destination: &AudioDestination,
     ) -> Result<(), String> {
-        self.insert_audio(revision, asset_id, AudioPlacement::Linked { video_id })
+        self.insert_audio(revision, asset_id, AudioPlacement::Linked { video_id }, destination)
     }
 
     pub(super) fn split_link(&mut self, revision: u64, original: &str, right: String) {
@@ -543,6 +562,7 @@ impl EditorDocument {
                     duration,
                     source,
                 },
+                &AudioDestination::Automatic,
             )
         })
     }

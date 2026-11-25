@@ -1,5 +1,5 @@
 use crate::delivery::ExportOptions;
-use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
+use crate::document::{self, AudioDestination, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, SnapResult, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
@@ -17,6 +17,24 @@ mod pipeline_editor;
 mod monitor_transform;
 use monitor_transform::MonitorGesture;
 use pipeline_editor::{PipelineCommand, PipelineEditor};
+
+#[derive(Clone, Copy)]
+struct SourceMarks {
+    fps: Rational,
+    cursor: u64,
+    start: Option<u64>,
+    end: Option<u64>,
+}
+
+impl SourceMarks {
+    fn new(fps: Rational) -> Self {
+        Self { fps, cursor: 0, start: None, end: None }
+    }
+
+    fn range(self, duration: u64) -> Option<Range<u64>> {
+        self.start.or(self.end).map(|_| self.start.unwrap_or(0)..self.end.unwrap_or(duration))
+    }
+}
 
 enum IoResult {
     Import(u64, Result<MediaAsset, String>),
@@ -62,6 +80,8 @@ pub struct Controller {
     timeline_capture: Option<(String, u64)>,
     displayed_ticket: Option<u64>,
     asset_preview: bool,
+    source_marks: HashMap<String, SourceMarks>,
+    audio_destination: AudioDestination,
     playhead: u64,
     playing: bool,
     requested: Option<(u64, u64, bool)>,
@@ -124,6 +144,8 @@ impl Controller {
             timeline_capture: None,
             displayed_ticket: None,
             asset_preview: false,
+            source_marks: HashMap::new(),
+            audio_destination: AudioDestination::Automatic,
             playhead: 0,
             playing: false,
             requested: None,
@@ -269,6 +291,24 @@ impl Controller {
         window.on_seek_frame(move |frame| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().seek(frame.max(0) as u64);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_source_action(move |action, value| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().source_action(&action, &value);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_source_audio_changed(move |index| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                controller.audio_destination = match index {
+                    0 => AudioDestination::Automatic,
+                    1 => AudioDestination::VideoOnly,
+                    index => controller.document.data.audio_tracks.get((index - 2) as usize)
+                        .map_or(AudioDestination::Automatic, |track| AudioDestination::Track(track.id.clone())),
+                };
             }
         });
         let weak = Rc::downgrade(this);
@@ -496,7 +536,11 @@ impl Controller {
         self.pause();
         let track = self.selected_track.clone();
         let placement = if insert { Placement::Insert(self.playhead) } else { Placement::Overwrite(self.playhead) };
-        match self.document.place_visual(&asset, &track, placement) {
+        let range = self.document.asset(&asset).filter(|item| item.has_video()).and_then(|item| {
+            let duration = item.source_duration_frames(self.document.data.fps).ok()?;
+            self.source_state(&asset).range(duration)
+        });
+        match self.document.place_visual_range(&asset, &track, placement, range, &self.audio_destination) {
             Ok(clip) => self.focus_placed_clip(Some(&asset), &track, clip),
             Err(error) => self.status(error),
         }
@@ -1195,6 +1239,85 @@ impl Controller {
         }
     }
 
+    fn source_state(&self, id: &str) -> SourceMarks {
+        let fps = self.document.data.fps;
+        self.source_marks.get(id).copied().filter(|state| state.fps == fps)
+            .unwrap_or_else(|| SourceMarks::new(fps))
+    }
+
+    fn source_action(&mut self, action: &str, value: &str) {
+        let Some(asset) = self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
+            .filter(|asset| asset.has_video() && asset.online && self.asset_preview) else { return; };
+        let id = asset.id.clone();
+        let Ok(duration) = asset.source_duration_frames(self.document.data.fps) else { return; };
+        if duration == 0 { return; }
+        let mut marks = self.source_state(&id);
+        let seek = match action {
+            "previous" => { marks.cursor = marks.cursor.saturating_sub(1); true }
+            "next" => { marks.cursor = marks.cursor.saturating_add(1).min(duration - 1); true }
+            "seek" => match value.trim().parse::<u64>() {
+                Ok(frame) if frame < duration => { marks.cursor = frame; true }
+                _ => { self.status("Source frame must be inside the available range"); return; }
+            },
+            "in" if marks.cursor < marks.end.unwrap_or(duration) => {
+                marks.start = Some(marks.cursor);
+                false
+            }
+            "out" if marks.cursor >= marks.start.unwrap_or(0) => {
+                marks.end = Some(marks.cursor + 1);
+                false
+            }
+            "clear" => {
+                marks.start = None;
+                marks.end = None;
+                false
+            }
+            "in" | "out" => { self.status("Source In must precede the exclusive Out"); return; }
+            _ => return,
+        };
+        self.source_marks.insert(id, marks);
+        self.refresh_source();
+        if seek {
+            self.requested = None;
+            self.request_preview();
+        }
+    }
+
+    fn refresh_source(&self) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let source = self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
+            .filter(|asset| asset.online && asset.has_video() && self.asset_preview)
+            .and_then(|asset| {
+                let duration = asset.source_duration_frames(self.document.data.fps).ok()?;
+                (duration > 0).then(|| (self.source_state(&asset.id), duration, asset.audio.is_some()))
+            });
+        window.set_source_visible(source.is_some());
+        if let Some((marks, duration, audio)) = source {
+            window.set_source_frame(marks.cursor.to_string().into());
+            window.set_source_can_previous(marks.cursor > 0);
+            window.set_source_can_next(marks.cursor + 1 < duration);
+            window.set_source_marks_set(marks.start.or(marks.end).is_some());
+            let range = marks.range(duration).unwrap_or(0..duration);
+            window.set_source_range(format!("Source {}–{} / {} frames", range.start, range.end, duration).into());
+            window.set_source_has_audio(audio);
+            if audio {
+                let tracks = &self.document.data.audio_tracks;
+                let labels = ["Auto audio track".into(), "Video only".into()].into_iter()
+                    .chain(tracks.iter().map(|track| track.name.clone().into())).collect::<Vec<slint::SharedString>>();
+                if window.get_source_audio_tracks().iter().ne(labels.iter().cloned()) {
+                    window.set_source_audio_tracks(ModelRc::new(VecModel::from(labels)));
+                }
+                let index = match &self.audio_destination {
+                    AudioDestination::Automatic => 0,
+                    AudioDestination::VideoOnly => 1,
+                    AudioDestination::Track(id) => tracks.iter().position(|track| track.id == *id)
+                        .map_or(0, |index| index + 2),
+                };
+                window.set_source_audio_index(index as i32);
+            }
+        }
+    }
+
     fn request_preview(&mut self) {
         if self.playing {
             if self.requested.is_some_and(|(revision, _, asset)| revision == self.document.revision && !asset) { return; }
@@ -1220,8 +1343,13 @@ impl Controller {
         let plan = if self.asset_preview {
             self.selected_asset.as_ref().and_then(|id| self.document.asset(id)).cloned()
                 .ok_or_else(|| "Select a media asset".to_owned())
-                .map(|asset| asset_request(asset, self.ticket, self.document.revision, self.playhead,
-                    self.document.data.width, self.document.data.height))
+                .and_then(|asset| {
+                    let source_ns = self.document.data.fps.frames_to_ns(self.source_state(&asset.id).cursor)?;
+                    let mut request = asset_request(asset, self.ticket, self.document.revision, self.playhead,
+                        self.document.data.width, self.document.data.height);
+                    request.source_ns = source_ns;
+                    Ok(request)
+                })
         } else {
             sequence_request(&self.document.data, self.ticket, self.document.revision, self.playhead,
                 |id| self.pipeline_preview_for(id),
@@ -1743,6 +1871,12 @@ impl Controller {
             return;
         };
         self.refresh_recovery();
+        if matches!(&self.audio_destination, AudioDestination::Track(id)
+            if !self.document.data.audio_tracks.iter().any(|track| track.id == *id))
+        {
+            self.audio_destination = AudioDestination::Automatic;
+        }
+        self.refresh_source();
         #[cfg(target_os = "macos")]
         self.refresh_proxy_controls();
         if !self.document.is_dirty() {
@@ -1964,6 +2098,8 @@ impl Controller {
         }
     }
     fn clear_images(&mut self) {
+        self.source_marks.clear();
+        self.audio_destination = AudioDestination::Automatic;
         #[cfg(target_os = "macos")]
         {
             self.proxies = Default::default();
@@ -2149,6 +2285,7 @@ mod native_dialog_tests {
             window: slint::Weak::default(), document, preview, backend,
             io_send, io_receive, ui_send, ui_receive, generation: 0, ticket: 0,
             selected_asset: None, selected_clip: Some(first), asset_preview: false,
+            source_marks: HashMap::new(), audio_destination: AudioDestination::Automatic,
             selected_audio: None,
             extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,

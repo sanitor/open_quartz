@@ -593,6 +593,75 @@ try{
    const [, start, duration] = /Timeline start (\d+) frames; duration (\d+) frames/.exec(clip.accessibleDescription);
    return [Number(start), Number(duration)];
  }).sort(([start], [other]) => start - other);
+ const sourceSetup = async (name, locked) => {
+   const seed = JSON.parse(await readFile(audioProject, 'utf8'));
+   const [video] = seed.data.tracks;
+   seed.data.tracks.unshift({ ...video, id: 'source-target-v2', name: 'Source Video', clips: [] });
+   Object.assign(seed.data.audio_tracks[1], { locked, clips: [] });
+   const path = join(output, name);
+   await writeFile(path, JSON.stringify(seed));
+   await launch(path); await waitState('clips 1');
+   await click('Reorder Source Video');
+   await client.click(await assetCard('linked-tone.mp4'));
+   await waitState('source PTS 0 ns');
+ };
+ const sourceFrame = () => client.find({ label: 'Source monitor frame', role: 'TextInput' });
+ const sourceJump = async (frame, pts) => {
+   await enter(await sourceFrame(), frame);
+   await waitState(`source PTS ${pts} ns`);
+ };
+ const sourceAudioTrack = async (steps, name) => {
+   const box = () => client.find({ label: 'Source audio destination', role: 'Combobox' });
+   await client.click(await box());
+   for (let step = 0; step < steps; step++) await client.key('\uf701');
+   await client.key('\n');
+   assert.equal((await box()).accessibleValue, name);
+ };
+ await step('Mark a source range, insert it to selected audio and video tracks, then overwrite video only', async () => {
+   await sourceSetup('source-in-out.oqvideo.json', false);
+   await sourceJump(5, 166666667);
+   await click('Mark In');
+   await click('Next source frame'); await waitState('source PTS 200000000 ns');
+   await click('Previous source frame'); await waitState('source PTS 166666667 ns');
+   await sourceJump(14, 466666667);
+   await click('Mark Out');
+   assert.equal((await sourceFrame()).accessibleValue, '14');
+   await sourceAudioTrack(3, 'Audio 2');
+   await click('NEXT'); await waitState('playhead 1 frames');
+   await click('Insert'); await waitState('clips 2');
+   const path = join(output, 'source-track-target.oqvideo.json');
+   await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+   const inserted = JSON.parse(await readFile(path, 'utf8')).data;
+   const original = inserted.assets.find(asset => asset.name === 'linked-tone.mp4');
+   const [clip] = inserted.tracks.find(track => track.id === 'source-target-v2').clips;
+   assert.equal(clip.timeline_start, 1);
+   assert.equal(clip.duration, 10);
+   assert.equal(clip.source_in_pts, original.start_pts + original.time_base.denominator / 6);
+   assert.deepEqual(inserted.audio_tracks[1].clips.map(audio => audio.placement.video_id), [clip.id]);
+   await client.click(await assetCard('linked-tone.mp4'));
+   await waitState('source PTS 466666667 ns');
+   const audioBox = await client.find({ label: 'Source audio destination', role: 'Combobox' });
+   await client.click(audioBox);
+   await client.key('\uf700'); await client.key('\uf700'); await client.key('\n');
+   await click('Overwrite'); await waitState('audio clips 1');
+   await click('SAVE'); await waitState('Project saved');
+   const replaced = JSON.parse(await readFile(path, 'utf8')).data;
+   assert.equal(replaced.tracks.find(track => track.id === 'source-target-v2').clips[0].duration, 10);
+   assert.deepEqual(replaced.audio_tracks[1].clips, []);
+   await close();
+ }, { core: true });
+ await step('Reject reversed source marks and an insertion into a locked audio target', async () => {
+   await sourceSetup('source-locked.oqvideo.json', true);
+   await sourceJump(8, 266666667); await click('Mark In');
+   await sourceJump(2, 66666667); await click('Mark Out');
+   await waitState('Source In must precede the exclusive Out');
+   await click('Clear marks');
+   await sourceAudioTrack(3, 'Audio 2');
+   await click('Insert');
+   await waitState('Cannot place audio on Audio 2');
+   assert((await state()).includes('clips 1'));
+   await close();
+ });
  await step('Insert, ripple delete, overwrite and roll the cut on the native timeline', async () => {
    const short = generate(outgoing, 'blue', 0.5);
    await launch(audioProject);
