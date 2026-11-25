@@ -1,4 +1,4 @@
-//! Compare serial CPU-transfer and resident Metal SR3 completion latency.
+//! Compare serial CPU-transfer and resident GPU SR3 completion latency.
 //! Usage: resident_benchmark MODEL.onnx REPORT.json [--samples N] [--warmup N]
 use open_quartz::inference::{
     run_image_task_with_request_and_metrics, InferenceImageMetrics, InferenceSession,
@@ -213,16 +213,21 @@ fn main() -> Result<()> {
     let model_hash = model.plan.source_sha256.clone();
     let mut cpu = InferenceSession::from_memory(&bytes)?;
     let cpu_plan = serde_json::to_value(cpu.plan())?;
+    let (backend, backends) = if cfg!(windows) {
+        (wgpu::Backend::Dx12, wgpu::Backends::DX12)
+    } else {
+        (wgpu::Backend::Metal, wgpu::Backends::METAL)
+    };
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL, ..wgpu::InstanceDescriptor::new_without_display_handle()
+        backends, ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let info = adapter.get_info();
-    if info.backend != wgpu::Backend::Metal || info.device_type == wgpu::DeviceType::Cpu {
-        return Err("Hardware Metal adapter required; fallback forbidden".into());
+    if info.backend != backend || info.device_type == wgpu::DeviceType::Cpu {
+        return Err(format!("Hardware {backend:?} adapter required").into());
     }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("shared benchmark Metal device"),
+        label: Some("shared benchmark render device"),
         ..Default::default()
     }))?;
     let (device, queue) = (Arc::new(device), Arc::new(queue));
@@ -269,7 +274,7 @@ fn main() -> Result<()> {
                 "postprocess": stage(&cpu_samples, |s| s.postprocess), "uploadAndFence": stage(&cpu_samples, |s| s.upload) },
             "verification": verification,
             "gpuExecutionTimeMs": null,
-            "gpuExecutionTimeReason": "not measured; external Metal marker counters were stale/nonmonotonic in qualification",
+            "gpuExecutionTimeReason": "Only submission completion wall time is sampled",
             "residentHostImageBytes": counters.host_image_bytes,
             "residentCumulativeSubmissions": counters.submissions }));
     }
@@ -278,7 +283,8 @@ fn main() -> Result<()> {
         "samplesPerPathPerSize": samples, "warmupPerPathPerSize": warmup,
         "residentHostImageBytes": gpu.counters().host_image_bytes, "cases": cases,
         "method": "Release; sequential single-frame completion latency; three alternating blocks; old=preallocated staging GPU readback + existing CPU image pipeline/ORT defaults + upload to preallocated texture/empty submit/fence; new=resident submit + actual submission completion wait + release lease. Source generation, model preparation, verification, UI and decoding excluded. Submission-completion wall latency is authoritative; GPU execution time is not measured. Serial equivalent FPS is not UI FPS.",
-        "methodFlags": { "sameMetalDeviceAndQueue": true, "sourceGeneratedOnGpu": true,
+        "methodFlags": { "sameMetalDeviceAndQueue": backend == wgpu::Backend::Metal,
+            "sameRenderDeviceAndQueue": true, "sourceGeneratedOnGpu": true,
             "sourceCopyDst": false, "fp32": true, "cpuOrtDefaults": true,
             "runtimeGpuFallback": false, "preallocatedCpuStagingAndUploadTexture": true,
             "verificationEveryOutputByte": true, "verificationOutsideMeasurements": true,
@@ -289,7 +295,7 @@ fn main() -> Result<()> {
             "Network always 224x224 -> 672x672; output source*3 uses reconstruction/resizing",
             "CPU uses retained current reference pipeline and default ORT session, not a historical binary",
             "CPU stage metrics do not partition all wrapper overhead; upload stage includes completion fence",
-            "GPU execution time is not measured; external Metal marker counters were stale/nonmonotonic in qualification"] });
+            "Only submission completion wall time is sampled"] });
     std::fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
     println!("Wrote {report_path}");
     Ok(())

@@ -1,8 +1,8 @@
-//! One-artifact CPU roundtrip versus resident Metal completion benchmark.
+//! One-artifact CPU roundtrip versus resident GPU completion benchmark.
 //!
 //! Usage: catalog_benchmark MODEL_ID MODEL.onnx REPORT.json [--width 1280]
 //!        [--height 720] [--warmup 2] [--samples 10]
-//! Run with native-runtime,native-onnx in release mode. SR3 retains its separate
+//! Run with native-runtime,native-onnx in release mode and add native-dml on Windows. SR3 retains its separate
 //! resident_benchmark. All explicit diagnostic reads below are outside samples.
 use open_quartz::inference::{
     detect_postprocess, run_image_task_with_request_and_metrics, Detection,
@@ -573,13 +573,18 @@ fn run(args: &Args, report: &mut Value) -> Result<()> {
     }
     drop(bytes);
     drop(graph);
+    let (backend, backends) = if cfg!(windows) {
+        (wgpu::Backend::Dx12, wgpu::Backends::DX12)
+    } else {
+        (wgpu::Backend::Metal, wgpu::Backends::METAL)
+    };
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL, ..wgpu::InstanceDescriptor::new_without_display_handle()
+        backends, ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let info = adapter.get_info();
-    if info.backend != wgpu::Backend::Metal || info.device_type == wgpu::DeviceType::Cpu {
-        return Err("Hardware Metal adapter required; fallback forbidden".into());
+    if info.backend != backend || info.device_type == wgpu::DeviceType::Cpu {
+        return Err(format!("Hardware {backend:?} adapter required").into());
     }
     let mut limits = wgpu::Limits::default();
     if args.model_id == "realesrgan-x4" {
@@ -596,7 +601,7 @@ fn run(args: &Args, report: &mut Value) -> Result<()> {
     report["requestedLimits"] = json!({"maxStorageBufferBindingSize": limits.max_storage_buffer_binding_size,
         "maxBufferSize": limits.max_buffer_size, "maxTextureDimension2d": limits.max_texture_dimension_2d});
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("shared catalog benchmark Metal device"), required_limits: limits, ..Default::default()
+        label: Some("shared catalog benchmark render device"), required_limits: limits, ..Default::default()
     }))?;
     let (device, queue) = (Arc::new(device), Arc::new(queue));
     let mut gpu = CatalogGpuSession::prepare(device.clone(), queue.clone(), model,
@@ -673,7 +678,8 @@ fn main() -> Result<()> {
         "thresholds": {"score": SCORE, "iou": IOU}, "parity": {},
         "gpuExecutionTimeMs": null,
         "method": "One artifact and source size per process; serial single-frame completion latency; up to three alternating path-only blocks. CPU=preallocated source staging/readback + actual image task preprocessing/default ORT CPU/postprocessing + preallocated texture upload and submission completion fence. GPU=resident submit + actual submission completion wait + release output lease. Source generation, preparation and diagnostic reads excluded. Completion wall latency, not GPU-only execution time or application FPS.",
-        "methodFlags": {"sameMetalDeviceAndQueue": true, "sourceGeneratedOnGpu": true, "sourceCopyDst": false,
+        "methodFlags": {"sameMetalDeviceAndQueue": !cfg!(windows), "sameRenderDeviceAndQueue": true,
+            "sourceGeneratedOnGpu": true, "sourceCopyDst": false,
             "fp32OriginalGraph": true, "cpuOrtDefaults": true, "runtimeGpuFallback": false,
             "preallocatedCpuStagingAndUploadTexture": true, "verificationOutsideMeasurements": true,
             "verificationEveryOutputByte": true, "rawModelVerificationEveryValue": true,

@@ -19,7 +19,8 @@ await mkdir(directory, { recursive: true });
 const report = { passed: false, startedAt: new Date().toISOString(), cases: [],
   method: 'Serial completion wall latency; independent processes, one artifact per catalog model. FP32 original graphs, GPU gradient, 3 warmups and 30 samples/path; parity outside measurement. No UI FPS or GPU timestamp claim; no wall-time threshold on shared runners.' };
 try {
-  assert.equal(process.platform, 'darwin', 'Performance regression requires hardware Metal on macOS');
+  assert.ok(['darwin', 'win32'].includes(process.platform), 'Performance regression requires hardware Metal or Direct3D 12');
+  const features = process.platform === 'win32' ? 'native-runtime,native-onnx,native-dml' : 'native-runtime,native-onnx';
   const manifest = JSON.parse(await readFile(process.env.OPEN_QUARTZ_INFERENCE_E2E_MANIFEST || join(output, 'manifest.json'), 'utf8'));
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.models.length, manifest.catalog.length, 'Every catalog model needs its pinned artifact');
@@ -28,7 +29,7 @@ try {
     assert.ok(model, `Missing ${descriptor.id}`);
     assert.equal(createHash('sha256').update(await readFile(model.path)).digest('hex'), model.sha256, `${descriptor.id} model bytes changed`);
     const path = join(directory, `${descriptor.id}.json`);
-    const args = ['run', '--offline', '--locked', '--release', '-p', 'open_quartz', '--features', 'native-runtime,native-onnx', '--example'];
+    const args = ['run', '--locked', '--release', '-p', 'open_quartz', '--features', features, '--example'];
     if (descriptor.id === 'super-resolution-3x') {
       args.push('resident_benchmark', '--', model.path, path);
     } else {
