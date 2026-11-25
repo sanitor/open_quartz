@@ -774,7 +774,18 @@ try {
     const lut = join(output, 'green-look.cube');
     const invalid = join(output, 'bad.cube');
     const path = join(output, 'lut.oqvideo.json');
-    await writeFile(lut, 'LUT_3D_SIZE 2\n' + '0.339517308 0.916365764 0.109567717\n'.repeat(8));
+    const size = smoke ? 2 : 33;
+    const rows = [];
+    for (let blue = 0; blue < size; blue++) {
+      for (let green = 0; green < size; green++) {
+        for (let red = 0; red < size; red++) {
+          const gain = 0.45 + 0.92 * red / (size - 1);
+          rows.push([0.339517308, 0.916365764, 0.109567717]
+            .map(value => (gain * value).toFixed(8)).join(' '));
+        }
+      }
+    }
+    await writeFile(lut, `LUT_3D_SIZE ${size}\n${rows.join('\n')}\n`);
     await writeFile(invalid, 'LUT_3D_SIZE 2\n0 0 0\n');
     await launch();
     await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
