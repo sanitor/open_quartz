@@ -342,7 +342,7 @@ impl CatalogGpuSession {
         #[cfg(feature = "gpu-diagnostics")]
         let diagnostic=slot.logits.as_ref();
         #[cfg(not(feature = "gpu-diagnostics"))]
-        let diagnostic=None;
+        let diagnostic: Option<&NativeBuffer> = None;
         #[cfg(all(windows, feature = "dml-resident"))]
         {
             // Initialize WGPU tracking before the imported DirectML writes.
