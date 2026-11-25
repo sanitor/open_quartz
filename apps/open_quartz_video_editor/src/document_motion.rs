@@ -1,5 +1,5 @@
 use super::*;
-use crate::animation_key::Keyframe;
+use crate::animation_key::{Curve, Keyframe};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MotionChannel {
@@ -33,6 +33,22 @@ impl MotionPoint {
             Self::Transform(key) => key.time.into(),
             Self::Opacity(key) => key.time.into(),
             Self::Crop(key) => key.time.into(),
+        }
+    }
+
+    pub fn curve(self) -> Curve {
+        match self {
+            Self::Transform(key) => key.curve,
+            Self::Opacity(key) => key.curve,
+            Self::Crop(key) => key.curve,
+        }
+    }
+
+    pub fn set_curve(&mut self, curve: Curve) {
+        match self {
+            Self::Transform(key) => key.curve = curve,
+            Self::Opacity(key) => key.curve = curve,
+            Self::Crop(key) => key.curve = curve,
         }
     }
 

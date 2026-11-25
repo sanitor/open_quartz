@@ -415,6 +415,12 @@ impl Controller {
         });
         Self::connect_monitor(this, window);
         let weak = Rc::downgrade(this);
+        window.on_motion_curve_handle(move |handle, x, y| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().adjust_motion_handle(handle, x, y);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_motion_action(move |action, index, delta, extend| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().motion_action(&action, index, delta, extend);

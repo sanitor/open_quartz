@@ -8,6 +8,8 @@ pub enum Curve {
     #[default]
     Linear,
     Smooth,
+    Hold,
+    Bezier { x1: f32, y1: f32, x2: f32, y2: f32 },
 }
 
 impl Curve {
@@ -19,15 +21,43 @@ impl Curve {
         match self {
             Self::Linear => unit,
             Self::Smooth => unit * unit * (3.0 - 2.0 * unit),
+            Self::Hold => 0.0,
+            Self::Bezier { x1, y1, x2, y2 } => {
+                if unit <= 0.0 || unit >= 1.0 { return unit; }
+                let (mut low, mut high) = (0.0, 1.0);
+                for _ in 0..16 {
+                    let middle = (low + high) / 2.0;
+                    if cubic(middle, f64::from(x1), f64::from(x2)) < unit { low = middle; }
+                    else { high = middle; }
+                }
+                cubic((low + high) / 2.0, f64::from(y1), f64::from(y2))
+            }
         }
     }
 
-    pub fn wgsl(self) -> &'static str {
+    pub fn wgsl(self) -> String {
         match self {
-            Self::Linear => "t",
-            Self::Smooth => "t * t * (3.0 - 2.0 * t)",
+            Self::Linear => "t".into(),
+            Self::Smooth => "t * t * (3.0 - 2.0 * t)".into(),
+            Self::Hold => "0.0".into(),
+            Self::Bezier { x1, y1, x2, y2 } => format!(
+                "bezier_progress(t, vec4f({x1:.9e}, {y1:.9e}, {x2:.9e}, {y2:.9e}))"
+            ),
         }
     }
+
+    pub fn valid(self) -> bool {
+        match self {
+            Self::Bezier { x1, y1, x2, y2 } =>
+                x1 <= x2 && [x1, y1, x2, y2].into_iter().all(|value| (0.0..=1.0).contains(&value)),
+            _ => true,
+        }
+    }
+}
+
+fn cubic(t: f64, first: f64, second: f64) -> f64 {
+    let remainder = 1.0 - t;
+    3.0 * remainder * remainder * t * first + 3.0 * remainder * t * t * second + t * t * t
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -95,6 +125,6 @@ pub fn validate<Time: Ord, Value>(
     valid: impl Fn(&Value) -> bool,
 ) -> bool {
     keys.len() <= MAX_KEYS
-        && keys.iter().all(|key| valid(&key.value))
+        && keys.iter().all(|key| valid(&key.value) && key.curve.valid())
         && keys.windows(2).all(|pair| pair[0].time < pair[1].time)
 }

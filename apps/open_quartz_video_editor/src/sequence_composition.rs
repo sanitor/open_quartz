@@ -173,6 +173,23 @@ pub(super) fn graph(request: &PreviewRequest) -> Result<Graph, String> {
             }}\n"
         ));
     }
+    animation_code.push_str(r#"
+fn cubic_unit(t: f32, first: f32, second: f32) -> f32 {
+    let r = 1.0 - t;
+    return 3.0 * r * r * t * first + 3.0 * r * t * t * second + t * t * t;
+}
+fn bezier_progress(t: f32, points: vec4f) -> f32 {
+    if (t <= 0.0 || t >= 1.0) { return t; }
+    var low = 0.0;
+    var high = 1.0;
+    for (var step = 0; step < 16; step = step + 1) {
+        let middle = (low + high) / 2.0;
+        if (cubic_unit(middle, points.x, points.z) < t) { low = middle; }
+        else { high = middle; }
+    }
+    return cubic_unit((low + high) / 2.0, points.y, points.w);
+}
+"#);
     let code = format!("{bindings}
 {animation_code}
 const canvas = vec2f({}.0, {}.0);

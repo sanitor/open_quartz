@@ -1911,6 +1911,63 @@ try{
    assert.equal((await client.byLabel('Clip keyframe track')).length, 0);
    await close();
  }, { core: true });
+ await step('Set Hold and Bezier and drag both tangent handles with matching export pixels', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const [upper, , lower] = fixture.data.tracks;
+   upper.clips = upper.clips.slice(0, 1);
+   Object.assign(upper.clips[0], { timeline_start: 0, duration: 5 });
+   upper.clips[0].transform.scale = 1;
+   upper.clips[0].crop_keys = [
+     { time: 0, value: { left: 0, top: 0, right: 0, bottom: 0 } },
+     { time: 4, value: { left: 0.95, top: 0, right: 0, bottom: 0 } },
+   ];
+   lower.clips[0].duration = 5;
+   fixture.data.tracks = [upper, lower];
+   const seed = join(output, 'bezier-curve.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 2');
+   await client.click(await item('foreground.mp4'));
+   await click('Show keyframes');
+   const choose = async (label, keys, value) => {
+     const box = () => client.find({ label, role: 'Combobox' });
+     await client.click(await box());
+     for (const key of keys) await client.key(key);
+     await client.key('\n');
+     await client.waitFor(async () => (await box()).accessibleValue === value,
+       { description: `interpolation choice ${value}` });
+   };
+   await choose('Animation property', ['\uf701', '\uf701'], 'Crop');
+   await click('Keyframe 0');
+   await choose('Keyframe interpolation', ['\uf700'], 'Hold');
+   for (let i = 0; i < 3; i++) await click('NEXT');
+   await expectColor('red');
+   await click('NEXT'); await expectColor('blue');
+   await choose('Keyframe interpolation', ['\uf701'], 'Linear');
+   await click('PREVIOUS'); await expectColor('blue');
+   await click('PREVIOUS'); await expectColor('red');
+   await choose('Keyframe interpolation', ['\uf701', '\uf701'], 'Bezier');
+   const plot = await client.find({ label: 'Bezier curve' });
+   const graph = plot.absolutePosition;
+   const dragHandle = async (label, x, y) => client.drag(await client.find({ label, role: 'Button' }), {
+     x: graph.x + x * plot.size.width,
+     y: graph.y + (1 - y) * plot.size.height,
+   });
+   await dragHandle('First Bezier handle', 0.10, 0.90);
+   await dragHandle('Second Bezier handle', 0.35, 0.95);
+   await click('PREVIOUS'); await waitState('playhead 1 frames'); await expectColor('blue');
+   const path = join(output, 'bezier-curve.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', path, '-map', '0:v:0', '-vsync', '0', '-vf', 'scale=32:18',
+     '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   const center = (32 * 18 + 9 * 32 + 16) * 3;
+   assert(pixels[center + 2] > 200 && pixels[center] < 25, 'the second output frame is blue');
+   await click('SAVE'); await waitState('Project saved');
+   const key = JSON.parse(await readFile(seed, 'utf8')).data.tracks[0].clips[0].crop_keys[0];
+   for (const [property, expected] of Object.entries({ x1: 0.10, y1: 0.90, x2: 0.35, y2: 0.95 })) {
+     assert(Math.abs(key.curve.bezier[property] - expected) < 0.04, property);
+   }
+   await close();
+ }, { core: true });
  await step('Migrate legacy animations and keyframe crop in the monitor and export', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.schema_version = 15; fixture.data.schema_version = 15;

@@ -62,6 +62,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。
 - **Crop** 四个百分比字段裁切片段画面，保留原来的摆放位置。用 **Add transform keyframe** 在当前序列帧记录位置、缩放和旋转。建立关键帧后，在片段内改这些属性或拖预览手柄会更新当前位置的关键帧。在关键帧上可切换到下一帧的线性或缓入缓出插值，也可删除关键帧。
 - 选中片段后点击 **Show keyframes**，可在时间线下切换变换、透明度和裁切轨道。单击选择关键帧，Shift 点击增减选择。拖动已选关键帧会成组移动，**Copy / Paste / Delete keyframes** 支持批量操作，粘贴以播放头为起点。移动、粘贴和删除各占一个撤销步骤。
+- 选中一个有后继的关键帧，即可为这一段选择 **Hold、Linear、Smooth** 或 **Bezier**。选择 Bezier 后可拖动两个控制柄，调整时间与数值变化。每次松手提交一个可撤销编辑。
 - **Add crop keyframe** 可记录当前片段的四个裁切值。建立关键帧后，在片段内编辑裁切字段会更新对应帧，**Remove crop keyframe** 删除当前关键帧。裁切沿用片段时间，预览和导出都按相邻关键帧插值。
 - 选中视频片段并把播放头移到片段内，即可在 Inspector 的 **Opacity (%)** 下用 **Add opacity keyframe** 添加透明度关键帧。曲线启用后，修改透明度会在当前帧新增或更新关键帧。**Remove opacity keyframe** 删除当前关键帧。相邻关键帧之间线性插值，曲线两端保持端点值。
 
