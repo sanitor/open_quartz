@@ -1,4 +1,6 @@
 mod app_controller;
+#[cfg(all(windows, feature = "ui-automation"))]
+mod automation_input;
 mod corrector_editor;
 mod graph_clipboard;
 mod graph_view_model;
@@ -75,6 +77,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // callback and normal teardown instead of killing the process with SIGTERM.
     #[cfg(feature = "ui-automation")]
     if std::env::var_os("OPEN_QUARTZ_UI_CLOSE_STDIN").is_some() {
+        #[cfg(windows)]
+        automation_input::isolate_pointer(window.window());
         let weak = window.as_weak();
         std::thread::spawn(move || {
             let mut command = String::new();

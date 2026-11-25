@@ -41,12 +41,24 @@ async function buttons(label) {
   }, { description: `stable controls for ${label}` });
 }
 async function click(label,last=false){const items=await buttons(label);assert(items.length,`Missing UI button ${label}`);await client.click(last?items.at(-1):items[0]);}
-async function fileAction(action,path,submit){await click(action);await client.setValue(await client.find({label:'File path',role:'TextInput'}),path);await click(submit,true);}
+async function fileAction(action, path, submit) {
+  await click(action);
+  const input = await client.waitFor(async () => {
+    const fields = await client.byLabel('File path', { role: 'TextInput' });
+    return fields.length === 1 && fields[0];
+  }, { description: `${action} file dialog` });
+  await client.setValue(input, path);
+  await click(submit, true);
+}
 const timeline=async name=>(await buttons(name)).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await buttons(name)).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
 async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='magenta'?r>220&&b>220&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
+async function expectColor(color) {
+  await client.waitFor(async () => previewHasColor(await client.screenshot(), color),
+    { description: `composited ${color} pixels` });
+}
 async function step(name, run, { core = false } = {}) {
   if (smoke && !core) return;
   report.caseDefinitions.push({ id: name, title: name, description: 'Native UI actions and observable results', screenshotPrefixes: [] });
@@ -294,6 +306,37 @@ async function proxyRoundTrip() {
  });
 }
 
+async function proxyCacheAndCancellation() {
+ await step('Reuse the verified proxy after reopening and cancel a proxy batch', async () => {
+   const proxyDirectory = join(output, 'proxies');
+   const entries = async () => (await readdir(proxyDirectory)).sort();
+   const cached = (await entries()).filter(name => /^[a-f0-9]{64}\.mp4$/.test(name));
+   assert.equal(cached.length, 1);
+   await launch(join(output, 'proxy-vfr.oqvideo.json'));
+   await waitState('clips 1');
+   await client.click(await assetCard('source-time.mp4'));
+   await click('Prepare proxy'); await waitState('Proxy ready');
+   assert.deepEqual((await entries()).filter(name => /^[a-f0-9]{64}\.mp4$/.test(name)), cached);
+
+   const red = generate('proxy-batch-red.mp4', 'red', 12, 30, '1920x1080');
+   const blue = generate('proxy-batch-blue.mp4', 'blue', 12, 30, '1920x1080');
+   await click('Import files');
+   const input = await client.find({ label: 'Import file paths', role: 'TextInput' });
+   await client.setValue(input, [red, blue].join('\n'));
+   await click('Import selected files'); await waitState('Imported 2');
+   await click('Prepare all proxies');
+   await click('Cancel proxy'); await waitState('Proxy batch cancelled');
+   const remaining = await entries();
+   assert(cached.every(name => remaining.includes(name)), 'Cancellation removed a verified cached proxy');
+   assert(!remaining.some(name => name.startsWith('.building')), 'Cancellation left a partial proxy file');
+   await client.click(await assetCard('proxy-batch-blue.mp4'));
+   await expectColor('blue');
+   await fileAction('SAVE AS', join(output, 'proxy-cancel.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   await close();
+ });
+}
+
 async function runVideoCases() {
   const red = generate('red.mp4', 'red'), blue = generate('blue.mp4', 'blue');
  await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await click('EXPORT');await waitState('Add media to the timeline before exporting');await snapshot('01-empty');}, { core: true });
@@ -336,7 +379,14 @@ async function runVideoCases() {
  await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.tracks.flatMap(track => track.clips).map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.tracks.flatMap(track => track.clips)[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();}, { core: true });
  await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));}, { core: true });
  await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await buttons('red.mp4')).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await buttons('red.mp4')).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();}, { core: true });
- if (previewOnly) { await linkedAudioPreview(); await hdrPreviewRoundTrip(); await maskTrackingRoundTrip(); await proxyRoundTrip(); return; }
+ if (previewOnly) {
+   await linkedAudioPreview();
+   await hdrPreviewRoundTrip();
+   await maskTrackingRoundTrip();
+   await proxyRoundTrip();
+   await proxyCacheAndCancellation();
+   return;
+ }
  await step('Long media plus preserves full duration beyond GPU texture limits',async()=>{
   const longMedia=generate('long.mp4','red',30);
   const longProject=join(output,'long.oqvideo.json');
@@ -382,10 +432,6 @@ async function runVideoCases() {
  const multiProject = join(output, 'multitrack.oqvideo.json');
  const background = generate('background.mp4', 'blue', 5, 30, '1920x1080');
  const foreground = generate('foreground.mp4', 'red', 5, 24, '1920x1080');
- const expectColor = async color => {
-   await client.waitFor(async () => previewHasColor(await client.screenshot(), color),
-     { description: `composited ${color} pixels` });
- };
  const item = async name => (await timeline(name))[0];
  await step('Drag media to the upper video track and render both layers', async () => {
    await launch();

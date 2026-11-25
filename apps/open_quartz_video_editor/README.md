@@ -42,7 +42,7 @@ cargo run --release --manifest-path apps/open_quartz_video_editor/Cargo.toml -- 
 
 缓冲按[异步阶段与图内资源生命周期](DESIGN.md#stage-queues-resource-lifetimes)组织。[多轨同帧汇合](DESIGN.md#same-frame-track-join)由同一帧需求协调所有活动视频源。带声音的序列播放由音频设备驱动画面时间。
 
-窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭；视频硬件运行路径的平台限制不变。关闭按钮仍走未保存工程确认。
+窗口使用无边框模式，将窗口控件并入最上方业务顶栏，支持顶栏拖动和边缘缩放。与节点编辑器共用自绘按钮：macOS 默认左侧关闭/最小化/最大化，其他平台默认右侧最小化/最大化/关闭。关闭按钮仍走未保存工程确认。
 
 沿用同一位置配置，默认 `platform`，也可强制指定：
 
@@ -135,7 +135,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 27，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
-**音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
+**音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放以输出设备时钟为准，底部显示输出电平。时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 
 **独听与混音**。轨头 **Solo** 让选中的独听轨参与监听与导出，仍可使用轨道静音。轨头显示每轨电平，底部输出读数的 **clipping** 表示合成信号超过满幅。相邻音频可在左侧片段的 **Audio crossfade (samples)** 输入交叉淡化长度，输入 0 移除。首版交叉淡化适用于原速片段，两段原片需要留出切点延伸所需的声音。
 
@@ -153,12 +153,12 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 ```sh
 npm run test:video-editor
-npm run test:video-editor:ui:smoke
-npm run test:video-editor:ui
-npm run test:video-editor:coverage
+npm run test:video-editor:ui:stills
+npm run test:video-editor:ui:audio
+npm run test:video-editor:ui:preview
 ```
 
-`npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例。`npm run test:video-editor:ui` 和覆盖率命令执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
+macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例，或用 `npm run test:video-editor:ui` 和 `npm run test:video-editor:coverage` 执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
 
 Rust 测试覆盖嵌套节点时钟、时间线窗口边界、GPU 帧预热和精确定位。原生 UI 还检查拖动后的持久化、效果前后的真实 GPU 像素和独立解码的交付文件。覆盖率命令将 Rust 测试与原生 UI 的插桩结果合并至 `test-results/phase6/editor-coverage.json`。
 
@@ -166,4 +166,4 @@ Timeline-window acceptance includes 30-second media plus, 900-frame clips at def
 
 原生播放测量：`node scripts/measure-video-editor-playback.mjs <ui-automation-binary> <project.oqvideo.json> <output-dir> [seconds]`。实际8K素材/完整质量/单与双Corrector测量、预算与计数解释见[8K实测记录](DESIGN.md#eight-k-playback-evidence)；原始数据在`test-results/window-playback/`。不把viewport尺寸、时钟推进或worker提交当真实图像交付。
 
-报告和复查文件位于`test-results/phase6/ui-*/`及`test-results/clip-pipeline/nodes-ui-*/`：HTML/JSON报告、截图、工程、生成素材和关闭日志。Windows/Linux尚未完成原生硬件窗口验收；原仓库SDK 100% gate保持原阈值和排除规则。
+HTML 和 JSON 报告、截图、工程、生成素材和关闭日志保存在 `test-results/phase6/ui-*/` 及 `test-results/clip-pipeline/nodes-ui-*/`。

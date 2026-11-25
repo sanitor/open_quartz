@@ -22,6 +22,9 @@ mod output_queue;
 mod timeline_viewport;
 mod color_scope;
 mod color_lut;
+#[cfg(all(windows, feature = "ui-automation"))]
+#[path = "../../open_quartz_slint/src/automation_input.rs"]
+mod automation_input;
 #[path = "../../open_quartz_slint/src/graph_view_model.rs"]
 mod graph_view_model;
 #[path = "../../open_quartz_slint/src/graph_clipboard.rs"]
@@ -90,6 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     #[cfg(feature = "ui-automation")]
     if std::env::var_os("OPEN_QUARTZ_UI_CLOSE_STDIN").is_some() {
+        #[cfg(windows)]
+        automation_input::isolate_pointer(window.window());
         let weak = window.as_weak();
         std::thread::spawn(move || {
             let mut line = String::new();
