@@ -3,6 +3,9 @@
 use super::*;
 use crate::artifact::ArtifactInterface;
 
+const BACKEND: wgpu::Backend = if cfg!(windows) { wgpu::Backend::Dx12 } else { wgpu::Backend::Metal };
+const BACKENDS: wgpu::Backends = if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::METAL };
+
 // Full production geometry, with one center-tap path through every convolution.
 // The nine final channels repeat luma, so pixelshuffle must preserve a solid RGB
 // source (within one byte for the documented BT.601 coefficient approximation).
@@ -286,13 +289,14 @@ fn assert_counters(session: &GpuImageSession, submissions: u64) {
 }
 
 #[test]
-fn metal_resident_numeric_resources_and_device_lifecycle() {
+#[cfg_attr(windows, ignore = "requires native DX12 hardware")]
+fn resident_numeric_resources_and_device_lifecycle() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL, ..wgpu::InstanceDescriptor::new_without_display_handle()
+            backends: BACKENDS, ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.expect("hardware Metal adapter required");
-        assert_eq!(adapter.get_info().backend, wgpu::Backend::Metal);
+        assert_eq!(adapter.get_info().backend, BACKEND);
         assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
         // The production device and queue come from the same, single request.
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.expect("Metal device");
@@ -371,13 +375,14 @@ fn metal_resident_numeric_resources_and_device_lifecycle() {
 }
 
 #[test]
-fn metal_resident_dense_tiled_numeric_parity() {
+#[cfg_attr(windows, ignore = "requires native DX12 hardware")]
+fn resident_dense_tiled_numeric_parity() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL, ..wgpu::InstanceDescriptor::new_without_display_handle()
+            backends: BACKENDS, ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.expect("hardware Metal adapter required");
-        assert_eq!(adapter.get_info().backend, wgpu::Backend::Metal);
+        assert_eq!(adapter.get_info().backend, BACKEND);
         assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.expect("Metal device");
         let (device, queue) = (Arc::new(device), Arc::new(queue));
@@ -421,9 +426,11 @@ fn metal_resident_dense_tiled_numeric_parity() {
     });
 }
 
+#[cfg(target_os = "macos")]
 #[path = "gpu_boundary_tests.rs"]
 mod boundary_tests;
 
+#[cfg(target_os = "macos")]
 #[path = "catalog_gpu_behavior_tests.rs"]
 mod catalog_behavior;
 

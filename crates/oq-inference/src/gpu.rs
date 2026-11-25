@@ -205,8 +205,7 @@ pub struct GpuImageSession {
 
 impl GpuImageSession {
     /// Prepare with the matching device/queue pair supplied by the renderer.
-    /// Only a real Metal adapter is accepted; no software/alternate backend can
-    /// be reported as the resident Metal execution provider.
+    /// Uses a hardware render device on its platform's native backend.
     /// wgpu does not expose a queue's parent device; the pair must originate from
     /// the same adapter `request_device` call. Native input texture ownership is
     /// independently validated by `bind_input` before any inference submission.
@@ -220,11 +219,15 @@ impl GpuImageSession {
         #[cfg(target_os = "macos")]
         // SAFETY: inspect only backend presence; never access or destroy the HAL
         // resource. The temporary guard is immediately dropped, which is allowed.
-        let native_metal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.is_some();
-        #[cfg(not(target_os = "macos"))]
-        let native_metal = false;
-        if !native_metal || adapter.backend != wgpu::Backend::Metal || adapter.device_type == wgpu::DeviceType::Cpu {
-            return Err(GpuError::UnsupportedBackend(format!("requires native hardware Metal on macOS, got {:?} {:?}", adapter.backend, adapter.device_type)));
+        let native = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.is_some()
+            && adapter.backend == wgpu::Backend::Metal;
+        #[cfg(windows)]
+        let native = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_some()
+            && adapter.backend == wgpu::Backend::Dx12;
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let native = false;
+        if !native || adapter.device_type == wgpu::DeviceType::Cpu {
+            return Err(GpuError::UnsupportedBackend(format!("requires native hardware Metal or Direct3D 12, got {:?} {:?}", adapter.backend, adapter.device_type)));
         }
         validate_limits(&device)?;
 
@@ -603,7 +606,6 @@ fn finish_validation(scope: wgpu::ErrorScopeGuard) -> Result<(), GpuError> {
     }
 }
 
-// Real hardware acceptance is explicitly disabled outside native macOS Metal.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 #[path = "gpu_tests.rs"]
 mod gpu_tests;
