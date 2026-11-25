@@ -149,25 +149,20 @@ async function prepareRuntime() {
     await requireFile(join(helperRuntime, 'ffmpeg-shared', 'lib', 'avcodec.lib'));
     await copyWindowsCrt(runtime);
   } else {
-    const assets = {
-      'darwin-arm64': ['osx-arm64', '5c3f2064ee97eb7774e87f396735c8eada7287734f1bb7847467ad30d4036115'],
-      'darwin-x64': ['osx-x86_64', '8305afd2d75ee5702844a23b099d41885af30ad3d1b4cf3d8d795e3d8c1f9396'],
-      'linux-x64': ['linux-x64', '7485c7e7aac6501b27e353dcbe068e45c61ab51fbaf598d13970dfae669d20bf'],
-      'linux-arm64': ['linux-aarch64', '4508084bde1232ee1ab4b6fad2155be0ea2ccab1c1aae9910ddb3fb68a60805e'],
-    };
-    const [asset, digest] = assets[`${platform}-${arch}`];
-    const name = `onnxruntime-${asset}-1.21.0`;
-    const url = `https://github.com/microsoft/onnxruntime/releases/download/v1.21.0/${name}.tgz`;
-    const extracted = join(cache, name);
-    await unpack(await download(url, `${name}.tgz`, digest), extracted);
-    const source = join(extracted, name);
-    for (const file of await readdir(join(source, 'lib'))) {
-      if (file.endsWith('.dylib') || /\.so(?:\.[\d.]+)?$/.test(file)) {
-        await copyRequired(join(source, 'lib', file), join(runtime, file));
-      }
+    const url = 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.21.0/microsoft.ml.onnxruntime.1.21.0.nupkg';
+    const digest = '359b4782cfa2e288e6c4bbb9da1c231b085fb8e0d149faf8c3c843f54576559b';
+    const extracted = join(cache, 'ort-cpu-1.21.0');
+    await unpack(await download(url, 'ort-cpu-1.21.0.nupkg', digest), extracted);
+    const rid = `${platform === 'darwin' ? 'osx' : 'linux'}-${arch}`;
+    const source = join(extracted, 'runtimes', rid, 'native');
+    const library = platform === 'darwin' ? 'libonnxruntime.dylib' : 'libonnxruntime.so';
+    await copyRequired(join(source, library), join(runtime, ortName));
+    if (platform === 'linux') {
+      const provider = 'libonnxruntime_providers_shared.so';
+      await copyRequired(join(source, provider), join(runtime, provider));
     }
-    await copyRequired(join(source, 'LICENSE'), join(runtime, 'ONNXRUNTIME-LICENSE.txt'));
-    await copyRequired(join(source, 'ThirdPartyNotices.txt'), join(runtime, 'ONNXRUNTIME-NOTICES.txt'));
+    await copyRequired(join(extracted, 'LICENSE'), join(runtime, 'ONNXRUNTIME-LICENSE.txt'));
+    await copyRequired(join(extracted, 'ThirdPartyNotices.txt'), join(runtime, 'ONNXRUNTIME-NOTICES.txt'));
     await writeFile(join(runtime, 'ONNXRUNTIME-SOURCE.txt'), `${url}\nSHA-256: ${digest}\n`);
   }
   await requireFile(join(runtime, ortName));
