@@ -162,7 +162,7 @@ fn malformed_configs_are_rejected_including_disabled_stages_and_unknown_versions
         assert!(serde_json::from_value::<ColorCorrectorConfig>(json).is_err());
     }
     let mut unknown=serde_json::to_value(ColorCorrectorConfig::default()).unwrap();
-    unknown["curves"]=serde_json::json!({"enabled":true});
+    unknown["unknownStage"]=serde_json::json!({"enabled":true});
     assert!(serde_json::from_value::<ColorCorrectorConfig>(unknown).is_err());
     let mut unknown_stage=serde_json::to_value(ColorCorrectorConfig::default()).unwrap();
     unknown_stage["primaries"]["secret"]=serde_json::json!(0);
@@ -196,5 +196,21 @@ fn rgb_mixer_preserves_signed_headroom_and_alpha() {
     assert_eq!(managed(&config, pixel), pixel);
     config.reset_stage(ColorCorrectorStage::RgbMixer);
     config.set_stage_enabled(ColorCorrectorStage::RgbMixer, true);
+    assert!(config.is_identity());
+}
+
+
+#[test]
+fn curves_interpolate_in_stops_with_independent_channels_and_signed_headroom() {
+    let mut config = ColorCorrectorConfig::default();
+    config.curves.master = [0.0, 0.0, 1.0, 1.0];
+    config.curves.red = [0.0, 0.0, 1.0, 1.0];
+    let result = managed(&config, [0.18, 0.18, -4.0, 0.2]);
+    for (actual, expected) in result.into_iter().zip([0.72, 0.36, -8.0, 0.2]) { close(actual, expected); }
+    let midpoint = 0.18 / 2.0;
+    close(managed(&config, [midpoint; 4])[1], midpoint * 2.0_f32.sqrt());
+    let plan = lower_color_corrector(&config, ColorDomain::AcesCgLinear).unwrap();
+    assert_eq!(plan.parameters["cc_curves"].len(), 16);
+    config.curves.enabled = false;
     assert!(config.is_identity());
 }

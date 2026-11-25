@@ -238,6 +238,8 @@ async function previewMatches(png, color) {
       : color === 'magenta' ? r > 225 && g < 25 && b > 225
       : color === 'neutral-mid' ? r >= 100 && r <= 165 && Math.abs(r-g) < 10 && Math.abs(r-b) < 10
       : color === 'masked-cyan' ? r < 20 && g >= 75 && g < 165 && b >= 75 && b < 165
+      : color === 'middle-gray' ? r >= 123 && r <= 132 && Math.abs(r-g) < 4 && Math.abs(r-b) < 4
+      : color === 'dark-gray' ? r >= 59 && r <= 73 && Math.abs(r-g) < 4 && Math.abs(r-b) < 4
       : color === 'mixed-red' ? r < 120 && g > 35
       : color === 'dim-green' ? r < 25 && g >= 45 && g <= 155 && b < 25
       : false;
@@ -696,6 +698,39 @@ try {
     await click('UNDO'); await waitColor('masked-cyan');
     await close(); await launch(path); await waitState('clips 1');
     await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('masked-cyan');
+    await close();
+  }, { core: true });
+  await step('Shape master and per-channel curves from the native grade inspector', async () => {
+    const path = join(output, 'curves.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); const shader = await addEffect('Custom Shader');
+    await selectNode(shader.id);
+    await setShader(GREEN.replace('vec4f(0.0, 1.0, 0.0, 1.0)', 'vec4f(0.5, 0.5, 0.5, 1.0)'));
+    await waitColor('middle-gray');
+    const corrector = await addEffect('Color Corrector'); await selectNode(corrector.id);
+    await client.activate(await revealInspector('Corrector palette Curves', 'Button'));
+    const edit = async (label, value) => {
+      const field = await revealInspector(label);
+      await client.click(field); await client.setValue(field, value); await client.key('\n');
+    };
+    await edit('Corrector Mid grey (+0 EV)', '-2'); await waitColor('dark-gray');
+    for (const channel of ['Red', 'Green', 'Blue', 'Master']) {
+      await client.activate(await revealInspector(`Corrector curve ${channel}`, 'Button'));
+      const field = await revealInspector('Corrector Mid grey (+0 EV)');
+      assert.equal(Number(field.accessibleValue), channel === 'Master' ? -2 : 0);
+    }
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.deepEqual(graph.nodes.find(node => node.id === corrector.id).data.colorCorrector.curves.master, [0, 0, -2, 0]);
+    await client.click(await revealInspector('Curves enabled', 'Checkbox')); await waitColor('middle-gray');
+    await client.click(await revealInspector('Curves enabled', 'Checkbox')); await waitColor('dark-gray');
+    await client.activate(await revealInspector('Reset Curves', 'Button')); await waitColor('middle-gray');
+    await click('UNDO'); await waitColor('dark-gray');
+    await close(); await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('dark-gray');
     await close();
   }, { core: true });
   report.passed = true;

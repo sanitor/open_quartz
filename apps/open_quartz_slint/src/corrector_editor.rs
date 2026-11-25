@@ -54,8 +54,8 @@ impl CorrectorDraft {
         ((r - (g + b) * 0.5) / 0.75, (g - b) / 0.8660254)
     }
     pub fn stages(&self) -> ModelRc<crate::CorrectorStage> {
-        let values = [Stage::Primaries, Stage::HdrZones, Stage::RgbMixer].into_iter().map(|stage| crate::CorrectorStage {
-            key: stage_key(stage).into(), label: match stage { Stage::Primaries => "Primaries", Stage::HdrZones => "HDR Zones", Stage::RgbMixer => "RGB Mixer" }.into(),
+        let values = [Stage::Primaries, Stage::HdrZones, Stage::RgbMixer, Stage::Curves].into_iter().map(|stage| crate::CorrectorStage {
+            key: stage_key(stage).into(), label: match stage { Stage::Primaries => "Primaries", Stage::HdrZones => "HDR Zones", Stage::RgbMixer => "RGB Mixer", Stage::Curves => "Curves" }.into(),
             active: self.config.stage_enabled(stage),
         }).collect::<Vec<_>>();
         update_model(&self.stages, values);
@@ -109,6 +109,7 @@ impl CorrectorDraft {
                 candidate.reset_stage(Stage::Primaries);
                 candidate.reset_stage(Stage::HdrZones);
                 candidate.reset_stage(Stage::RgbMixer);
+                candidate.reset_stage(Stage::Curves);
             }
             "reset" => candidate.reset_stage(parse_stage(key)?),
             _ => return Err(format!("Unknown Corrector action: {action}")),
@@ -132,9 +133,10 @@ fn field_tool(key: &str, stage: Stage) -> &str {
     match stage {
         Stage::Primaries => key.strip_suffix("_r").or_else(|| key.strip_suffix("_g")).or_else(|| key.strip_suffix("_b")).unwrap_or("basic"),
         Stage::RgbMixer => "matrix",
+        Stage::Curves => key.split('_').nth(1).unwrap_or("master"),
         Stage::HdrZones => key.strip_suffix("_exposure").or_else(|| key.strip_suffix("_saturation")).unwrap_or("ranges"),
     }
 }
-fn stage_key(stage: Stage) -> &'static str { match stage { Stage::Primaries => "primaries", Stage::HdrZones => "hdr_zones", Stage::RgbMixer => "rgb_mixer" } }
-fn parse_stage(key: &str) -> Result<Stage, String> { match key { "primaries" => Ok(Stage::Primaries), "hdr_zones" => Ok(Stage::HdrZones), "rgb_mixer" => Ok(Stage::RgbMixer), _ => Err(format!("Unknown Corrector stage: {key}")) } }
+fn stage_key(stage: Stage) -> &'static str { match stage { Stage::Primaries => "primaries", Stage::HdrZones => "hdr_zones", Stage::RgbMixer => "rgb_mixer", Stage::Curves => "curves" } }
+fn parse_stage(key: &str) -> Result<Stage, String> { match key { "primaries" => Ok(Stage::Primaries), "hdr_zones" => Ok(Stage::HdrZones), "rgb_mixer" => Ok(Stage::RgbMixer), "curves" => Ok(Stage::Curves), _ => Err(format!("Unknown Corrector stage: {key}")) } }
 fn parse_bool(value: &str) -> Result<bool, String> { match value { "true" => Ok(true), "false" => Ok(false), _ => Err("Expected true or false".into()) } }

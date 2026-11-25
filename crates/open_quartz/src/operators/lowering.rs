@@ -43,7 +43,7 @@ impl ColorCorrectorConfig {
         let alias = self.is_identity();
         Ok(OperatorStructuralKey { kind: "color_corrector", schema_version: self.schema_version,
             algorithm_version: self.algorithm_version,
-            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2) | (u8::from(!self.rgb_mixer.is_identity()) << 3),
+            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2) | (u8::from(!self.rgb_mixer.is_identity()) << 3) | (u8::from(!self.curves.is_identity()) << 4),
             alias, input_domain, output_domain: if alias { input_domain } else { ColorDomain::AcesCgLinear }, layout_version: 1 })
     }
     pub fn parameter_values(&self) -> Result<BTreeMap<String, Vec<f32>>, OperatorError> {
@@ -70,6 +70,10 @@ impl ColorCorrectorConfig {
             let columns = (0..3).flat_map(|column| [mixer.red[column], mixer.green[column], mixer.blue[column]]);
             values.insert("cc_mix".into(), columns.collect());
         }
+        if !self.curves.is_identity() {
+            let curves = &self.curves;
+            values.insert("cc_curves".into(), [curves.master, curves.red, curves.green, curves.blue].concat());
+        }
         Ok(values)
     }
     pub fn classify_update(&self, candidate: &Self, input_domain: ColorDomain) -> Result<OperatorUpdate, OperatorError> {
@@ -77,7 +81,8 @@ impl ColorCorrectorConfig {
         if key != candidate.structure_key(input_domain)? { return Ok(OperatorUpdate::Structural); }
         if !key.alias && ((self.primaries.enabled && self.primaries != candidate.primaries)
             || (self.hdr_zones.enabled && self.hdr_zones != candidate.hdr_zones)
-            || (!self.rgb_mixer.is_identity() && self.rgb_mixer != candidate.rgb_mixer)) { return Ok(OperatorUpdate::Parameters); }
+            || (!self.rgb_mixer.is_identity() && self.rgb_mixer != candidate.rgb_mixer)
+            || (!self.curves.is_identity() && self.curves != candidate.curves)) { return Ok(OperatorUpdate::Parameters); }
         Ok(OperatorUpdate::Unchanged)
     }
 }
@@ -86,7 +91,11 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
     let structural_key = config.structure_key(input_domain)?;
     let parameters = config.parameter_values()?;
     let parameter_types = parameters.keys().map(|key| {
-        (key.clone(), if key == "cc_mix" { "mat3".into() } else { "vec4".into() })
+        (key.clone(), match key.as_str() {
+            "cc_mix" => "mat3".into(),
+            "cc_curves" => "mat4".into(),
+            _ => "vec4".into(),
+        })
     }).collect();
     let mut shader_source = None;
     let mut alias = None;
@@ -95,11 +104,28 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
     } else {
         let mut shader = String::from("@group(0) @binding(0) var source: texture_2d<f32>;\n@group(0) @binding(1) var sourceSampler: sampler;\n");
         for (index,name) in parameters.keys().enumerate() {
-            let uniform = if name == "cc_mix" { "mat3x3f" } else { "vec4f" };
+            let uniform = match name.as_str() {
+                "cc_mix" => "mat3x3f",
+                "cc_curves" => "mat4x4f",
+                _ => "vec4f",
+            };
             shader.push_str(&format!("@group(0) @binding({}) var<uniform> {name}: {uniform};\n",index+2));
         }
         shader.push_str("fn cc_signed_pow(v:vec3<f32>,p:vec3<f32>)->vec3<f32>{return sign(v)*pow(abs(v),p);}\nfn cc_luma(v:vec3<f32>)->f32{return dot(v,vec3<f32>(0.2722287168,0.6740817658,0.0536895174));}\nfn cc_saturate(v:vec3<f32>,s:f32)->vec3<f32>{let y=cc_luma(v);return vec3<f32>(y)+(v-vec3<f32>(y))*s;}\n");
         if input_domain == ColorDomain::LegacySrgb { shader.push_str(WGSL_COLOR_TRANSFORMS); }
+        if !config.curves.is_identity() {
+            shader.push_str(r#"
+fn cc_curve_delta(stops: f32, points: vec4f) -> f32 {
+    if stops < -2.0 { return mix(points.x, points.y, smoothstep(-4.0, -2.0, stops)); }
+    if stops < 0.0 { return mix(points.y, points.z, smoothstep(-2.0, 0.0, stops)); }
+    return mix(points.z, points.w, smoothstep(0.0, 3.0, stops));
+}
+fn cc_curve_value(value: f32, points: vec4f) -> f32 {
+    let stops = log2(max(abs(value), 0.00000001) / 0.18);
+    return value * exp2(cc_curve_delta(stops, cc_curves[0]) + cc_curve_delta(stops, points));
+}
+"#);
+        }
         shader.push_str("@fragment fn main(@location(0) uv:vec2<f32>)->@location(0) vec4<f32>{\nlet sample=textureSample(source,sourceSampler,uv);\nvar c=sample.rgb;\n");
         if input_domain == ColorDomain::LegacySrgb { shader.push_str("c=cc_srgb_to_ap1(c);\n"); }
         if config.primaries.enabled {
@@ -113,6 +139,9 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
         }
         if !config.rgb_mixer.is_identity() {
             shader.push_str("c = cc_mix * c;\n");
+        }
+        if !config.curves.is_identity() {
+            shader.push_str("c = vec3f(cc_curve_value(c.r, cc_curves[1]), cc_curve_value(c.g, cc_curves[2]), cc_curve_value(c.b, cc_curves[3]));\n");
         }
         shader.push_str("return vec4<f32>(c,sample.a);\n}\n");
         shader_source = Some(shader);
@@ -193,9 +222,22 @@ pub fn evaluate_color_corrector(config: &ColorCorrectorConfig, input_domain: Col
         c = [mixer.red, mixer.green, mixer.blue].map(|row| row.into_iter().zip(c)
             .map(|(weight, value)| f64::from(weight) * value).sum());
     }
+    if !config.curves.is_identity() {
+        let curves = &config.curves;
+        for (value, points) in c.iter_mut().zip([curves.red, curves.green, curves.blue]) {
+            let stops = (value.abs().max(1e-8) / 0.18).log2();
+            *value *= (curve_delta(stops, curves.master) + curve_delta(stops, points)).exp2();
+        }
+    }
     let result=[c[0] as f32,c[1] as f32,c[2] as f32,pixel[3]];
     if result.iter().any(|v|!v.is_finite()) { return Err(OperatorError("ColorCorrector result exceeds finite f32 range".into())); }
     Ok(result)
+}
+fn curve_delta(stops: f64, points: [f32; 4]) -> f64 {
+    let anchors = [-4.0, -2.0, 0.0, 3.0];
+    let upper = anchors.partition_point(|anchor| *anchor <= stops).clamp(1, 3);
+    let mix = smoothstep(anchors[upper - 1], anchors[upper], stops);
+    f64::from(points[upper - 1]) * (1.0 - mix) + f64::from(points[upper]) * mix
 }
 fn luma(c:[f64;3])->f64 {c[0]*0.2722287168+c[1]*0.6740817658+c[2]*0.0536895174}
 fn signed_pow(v:f64,p:f64)->f64 {v.signum()*v.abs().powf(p)}

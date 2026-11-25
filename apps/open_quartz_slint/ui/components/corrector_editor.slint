@@ -69,6 +69,7 @@ export component CorrectorEditor inherits Rectangle {
     in property <string> error;
     in property <string> domain;
     callback edit(string, string, string, string);
+    private property <string> curve-channel: "master";
     private property <string> palette: "primaries";
     private property <string> primary-tool: "basic";
     private property <string> hdr-tool: "shadows";
@@ -140,13 +141,25 @@ export component CorrectorEditor inherits Rectangle {
                 }
             }
         }
+        if root.palette == "curves": VerticalLayout {
+            HorizontalLayout {
+                for channel in [{ key: "master", label: "Master" }, { key: "red", label: "Red" },
+                        { key: "green", label: "Green" }, { key: "blue", label: "Blue" }]: Button {
+                    text: channel.label;
+                    accessible-label: "Corrector curve " + channel.label;
+                    clicked => { root.curve-channel = channel.key; }
+                }
+            }
+            Text { text: "Exposure offsets around 18% gray. Master and channel offsets combine in stops.";
+                wrap: word-wrap; font-size: 10px; color: Theme.secondary; }
+        }
         if root.palette == "hdr_zones": Text { text: "Scene-linear luminance zones · ranges and softness in stops. Overlapping zones combine in fixed order."; wrap: word-wrap; font-size: 10px; color: Theme.secondary; }
         VerticalLayout {
             spacing: 0px;
             for field in root.fields: Rectangle {
-                height: field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.hdr-tool) ? 46px : 0px;
+                height: field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.palette == "curves" ? root.curve-channel : root.hdr-tool) ? 46px : 0px;
                 visible: self.height > 0px;
-                if field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.hdr-tool): VerticalLayout {
+                if field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.palette == "curves" ? root.curve-channel : root.hdr-tool): VerticalLayout {
                     spacing: 2px;
                 Text { text: field.label; color: Theme.secondary; font-size: 10px; overflow: elide; }
                 HorizontalLayout {

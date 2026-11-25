@@ -6,7 +6,7 @@ use super::OperatorError;
 pub enum ColorDomain { LegacySrgb, AcesCgLinear }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColorCorrectorStage { Primaries, HdrZones, RgbMixer }
+pub enum ColorCorrectorStage { Primaries, HdrZones, RgbMixer, Curves }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -87,6 +87,28 @@ impl RgbMixerConfig {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurveConfig {
+    pub enabled: bool,
+    pub master: [f32; 4],
+    pub red: [f32; 4],
+    pub green: [f32; 4],
+    pub blue: [f32; 4],
+}
+
+impl Default for CurveConfig {
+    fn default() -> Self {
+        Self { enabled: true, master: [0.0; 4], red: [0.0; 4], green: [0.0; 4], blue: [0.0; 4] }
+    }
+}
+
+impl CurveConfig {
+    pub(super) fn is_default(&self) -> bool { *self == Self::default() }
+
+    pub(super) fn is_identity(&self) -> bool { !self.enabled || self.is_default() }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ColorCorrectorWire {
     schema_version: u32,
     algorithm_version: u32,
@@ -95,6 +117,8 @@ struct ColorCorrectorWire {
     hdr_zones: HdrZonesConfig,
     #[serde(default)]
     rgb_mixer: RgbMixerConfig,
+    #[serde(default)]
+    curves: CurveConfig,
 }
 
 /// Version 1 order: WB → exposure → lift/gamma/gain/offset → contrast → HDR zones
@@ -109,18 +133,20 @@ pub struct ColorCorrectorConfig {
     pub hdr_zones: HdrZonesConfig,
     #[serde(skip_serializing_if = "RgbMixerConfig::is_default")]
     pub rgb_mixer: RgbMixerConfig,
+    #[serde(skip_serializing_if = "CurveConfig::is_default")]
+    pub curves: CurveConfig,
 }
 impl Default for ColorCorrectorConfig {
     fn default() -> Self {
         Self { schema_version: 1, algorithm_version: 1, enabled: true,
-            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default(), rgb_mixer: RgbMixerConfig::default() }
+            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default(), rgb_mixer: RgbMixerConfig::default(), curves: CurveConfig::default() }
     }
 }
 impl TryFrom<ColorCorrectorWire> for ColorCorrectorConfig {
     type Error = OperatorError;
     fn try_from(w: ColorCorrectorWire) -> Result<Self, Self::Error> {
         let config = Self { schema_version: w.schema_version, algorithm_version: w.algorithm_version,
-            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones, rgb_mixer: w.rgb_mixer };
+            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones, rgb_mixer: w.rgb_mixer, curves: w.curves };
         config.validate()?;
         Ok(config)
     }
@@ -193,6 +219,22 @@ pub const COLOR_CORRECTOR_FIELDS: &[ColorCorrectorField] = &[
     field!("mix_blue_red","Blue output from red",RgbMixer,-4.0,4.0,0.0,rgb_mixer.blue[0]),
     field!("mix_blue_green","Blue output from green",RgbMixer,-4.0,4.0,0.0,rgb_mixer.blue[1]),
     field!("mix_blue_blue","Blue output from blue",RgbMixer,-4.0,4.0,1.0,rgb_mixer.blue[2]),
+    field!("curve_master_shadows","Shadows (-4 EV)",Curves,-4.0,4.0,0.0,curves.master[0]),
+    field!("curve_master_low","Low mids (-2 EV)",Curves,-4.0,4.0,0.0,curves.master[1]),
+    field!("curve_master_middle","Mid grey (+0 EV)",Curves,-4.0,4.0,0.0,curves.master[2]),
+    field!("curve_master_highlights","Highlights (+3 EV)",Curves,-4.0,4.0,0.0,curves.master[3]),
+    field!("curve_red_shadows","Shadows (-4 EV)",Curves,-4.0,4.0,0.0,curves.red[0]),
+    field!("curve_red_low","Low mids (-2 EV)",Curves,-4.0,4.0,0.0,curves.red[1]),
+    field!("curve_red_middle","Mid grey (+0 EV)",Curves,-4.0,4.0,0.0,curves.red[2]),
+    field!("curve_red_highlights","Highlights (+3 EV)",Curves,-4.0,4.0,0.0,curves.red[3]),
+    field!("curve_green_shadows","Shadows (-4 EV)",Curves,-4.0,4.0,0.0,curves.green[0]),
+    field!("curve_green_low","Low mids (-2 EV)",Curves,-4.0,4.0,0.0,curves.green[1]),
+    field!("curve_green_middle","Mid grey (+0 EV)",Curves,-4.0,4.0,0.0,curves.green[2]),
+    field!("curve_green_highlights","Highlights (+3 EV)",Curves,-4.0,4.0,0.0,curves.green[3]),
+    field!("curve_blue_shadows","Shadows (-4 EV)",Curves,-4.0,4.0,0.0,curves.blue[0]),
+    field!("curve_blue_low","Low mids (-2 EV)",Curves,-4.0,4.0,0.0,curves.blue[1]),
+    field!("curve_blue_middle","Mid grey (+0 EV)",Curves,-4.0,4.0,0.0,curves.blue[2]),
+    field!("curve_blue_highlights","Highlights (+3 EV)",Curves,-4.0,4.0,0.0,curves.blue[3]),
 ];
 
 impl ColorCorrectorConfig {
@@ -223,10 +265,10 @@ impl ColorCorrectorConfig {
         Ok(())
     }
     pub fn stage_enabled(&self, stage: ColorCorrectorStage) -> bool {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled, ColorCorrectorStage::Curves => self.curves.enabled }
     }
     pub fn set_stage_enabled(&mut self, stage: ColorCorrectorStage, enabled: bool) {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled = enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled = enabled, ColorCorrectorStage::Curves => self.curves.enabled = enabled }
     }
     /// Reset parameters, preserving the independent bypass state.
     pub fn reset_stage(&mut self, stage: ColorCorrectorStage) {
@@ -241,6 +283,6 @@ impl ColorCorrectorConfig {
         }) && (!self.hdr_zones.enabled || {
             let z = &self.hdr_zones;
             [&z.blacks,&z.shadows,&z.darks,&z.lights,&z.highlights,&z.specular].iter().all(|z| z.exposure == 0.0 && z.saturation == 1.0)
-        }) && self.rgb_mixer.is_identity())
+        }) && self.rgb_mixer.is_identity() && self.curves.is_identity())
     }
 }
