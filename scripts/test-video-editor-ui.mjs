@@ -2944,6 +2944,43 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Deliver BT.2020 HLG Main10 with independently verified signal levels', async () => {
+   const input = join(output, 'hlg-split.mp4');
+   mediaCommand(['-f', 'lavfi', '-i',
+     "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum='if(lt(X,160),509,720)':cb=512:cr=512",
+     '-frames:v', '12', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
+     '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
+     '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-y', input]);
+   await launch();
+   await click('SEQUENCE');
+   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
+   await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
+   await click('Apply settings');
+   await importMedia(input); await waitState('assets 1');
+   await click('ADD CLIP'); await waitState('clips 1');
+   const path = join(output, 'hlg-out.mp4');
+   await click('EXPORT');
+   const profile = () => client.find({ label: 'Export color profile', role: 'Combobox' });
+   await client.click(await profile());
+   await client.key('\uf701'); await client.key('\uf701'); await client.key('\n');
+   assert.equal((await profile()).accessibleValue, 'HLG · BT.2020');
+   await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), '4');
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Export MP4'); await waitState('Export complete');
+   const probe = spawnSync(ffmpeg, ['-hide_banner', '-i', path, '-vf', 'showinfo', '-f', 'null', '-'], { env: mediaEnv, encoding: 'utf8' });
+   assert.equal(probe.status, 0, probe.stderr);
+   assert.match(probe.stderr, /hevc \(Main 10\).*yuv420p10le.*bt2020nc\/bt2020\/arib-std-b67/);
+   assert.match(probe.stderr, /n:\s*0\s+pts:\s*0\s+pts_time:0/);
+   const decoded = mediaCommand(['-i', path, '-an', '-pix_fmt', 'yuv420p10le', '-f', 'rawvideo', '-']);
+   assert.equal(decoded.length, 320 * 180 * 3 * 4);
+   for (const [x, expected] of [[100, 509], [220, 720]]) {
+     const actual = decoded.readUInt16LE((90 * 320 + x) * 2);
+     assert(Math.abs(actual - expected) <= 5, `expected HLG ${expected} at ${x}, got ${actual}`);
+   }
+   assert.equal((await readFile(path)).indexOf(Buffer.from('mdcv')), -1);
+   await fileAction('SAVE AS', join(output, 'hlg-export.oqvideo.json'), 'Save project');
+   await waitState('Project saved'); await close();
+ }, { core: true });
  await step('Switch a sequence to managed color and apply exposure before the SDR view', async () => {
    const fixture = JSON.parse(await readFile(join(output, 'hdr-export.oqvideo.json'), 'utf8'));
    fixture.data.tracks[0].clips[0].transform.exposure = -1;

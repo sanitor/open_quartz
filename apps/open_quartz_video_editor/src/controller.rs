@@ -1,7 +1,7 @@
 use crate::output_queue::{ExportSpec, OutputQueue, Phase as JobPhase};
 use crate::ExportJobRow;
 use crate::timeline_viewport::TimelineViewport;
-use crate::delivery::ExportOptions;
+use crate::delivery::{ExportColor, ExportOptions};
 use crate::document::{self, AudioDestination, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, SnapResult, TrackRow};
@@ -1702,7 +1702,7 @@ impl Controller {
                         resolution: window.get_export_resolution(),
                         frame_rate: window.get_export_frame_rate(),
                         quality: window.get_export_quality(),
-                        hdr10: window.get_export_profile() == 1,
+                        color: ExportColor::from_index(window.get_export_profile()),
                     };
                     let spec = ExportSpec {
                         project: self.document.data.clone(), revision: self.document.revision,

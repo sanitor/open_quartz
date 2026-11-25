@@ -609,13 +609,13 @@ impl Pipeline {
         unsafe {
             (*video.as_mut_ptr()).sw_pix_fmt = match profile {
                 EncoderProfile::Sdr => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NV12,
-                EncoderProfile::Hdr10 => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
+                EncoderProfile::Hdr10 | EncoderProfile::Hlg => ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
             };
         }
         let mut options = Dictionary::new();
         options.set("allow_sw", "0");
         options.set("require_sw", "0");
-        if profile == EncoderProfile::Hdr10 { options.set("profile", "main10"); }
+        if profile.is_hdr() { options.set("profile", "main10"); }
         let encoder = video
             .open_with(options)
             .map_err(|e| format!("Cannot open required VideoToolbox encoder: {e}"))?;
@@ -624,11 +624,11 @@ impl Pipeline {
             .map_err(|e| format!("Cannot add video stream: {e}"))?;
         stream.set_time_base((c.time_base.numerator, c.time_base.denominator));
         stream.set_parameters(&encoder);
-        if profile == EncoderProfile::Hdr10 {
+        if profile.is_hdr() {
             unsafe {
                 let parameters = (*stream.as_mut_ptr()).codecpar;
                 (*parameters).codec_tag = u32::from_le_bytes(*b"hvc1");
-                declare_mastering_display(parameters)?;
+                if profile == EncoderProfile::Hdr10 { declare_mastering_display(parameters)?; }
             }
         }
         let stream_index = stream.index();
@@ -780,6 +780,7 @@ fn color_tags(profile: EncoderProfile) -> (ffmpeg_next::color::Space, ffmpeg_nex
     match profile {
         EncoderProfile::Sdr => (Space::BT709, Primaries::BT709, Transfer::BT709),
         EncoderProfile::Hdr10 => (Space::BT2020NCL, Primaries::BT2020, Transfer::SMPTE2084),
+        EncoderProfile::Hlg => (Space::BT2020NCL, Primaries::BT2020, Transfer::ARIB_STD_B67),
     }
 }
 

@@ -16,11 +16,18 @@ extern "C" {
     ) -> i32;
     fn CVPixelBufferRetain(pixel_buffer: *mut c_void) -> *mut c_void;
     fn CVPixelBufferRelease(pixel_buffer: *mut c_void);
-    fn CVPixelBufferGetPixelFormatType(buffer: *mut c_void) -> u32;
     fn CVPixelBufferGetWidth(pixel_buffer: *mut c_void) -> usize;
     fn CVPixelBufferGetHeight(pixel_buffer: *mut c_void) -> usize;
     fn CVPixelBufferGetDataSize(pixel_buffer: *mut c_void) -> usize;
     fn CVPixelBufferGetIOSurface(pixel_buffer: *mut c_void) -> *mut c_void;
+    fn CVBufferSetAttachment(buffer: *mut c_void, key: *const c_void, value: *const c_void, mode: u32);
+    static kCVImageBufferTransferFunctionKey: *const c_void;
+    static kCVImageBufferColorPrimariesKey: *const c_void;
+    static kCVImageBufferYCbCrMatrixKey: *const c_void;
+    static kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ: *const c_void;
+    static kCVImageBufferTransferFunction_ITU_R_2100_HLG: *const c_void;
+    static kCVImageBufferColorPrimaries_ITU_R_2020: *const c_void;
+    static kCVImageBufferYCbCrMatrix_ITU_R_2020: *const c_void;
     static kCVPixelBufferIOSurfacePropertiesKey: *const c_void;
     static kCVPixelBufferMetalCompatibilityKey: *const c_void;
 }
@@ -44,10 +51,11 @@ extern "C" {
     static kCFBooleanTrue: *const c_void;
 }
 
-/// Retained IOSurface-backed NV12 VideoToolbox encoder input.
+/// Retained IOSurface-backed NV12 or P010 VideoToolbox encoder input.
 /// Clones preserve all opaque accounting leases without mapping either plane.
 pub struct EncoderSurface {
     pixel_buffer: *mut c_void,
+    profile: EncoderProfile,
     leases: [Option<Arc<dyn Any + Send + Sync>>; 2],
 }
 unsafe impl Send for EncoderSurface {}
@@ -59,6 +67,7 @@ impl Clone for EncoderSurface {
         }
         Self {
             pixel_buffer: self.pixel_buffer,
+            profile: self.profile,
             leases: self.leases.clone(),
         }
     }
@@ -129,16 +138,26 @@ impl EncoderSurface {
                 )
                 .into());
             }
+            let transfer = match profile {
+                EncoderProfile::Sdr => None,
+                EncoderProfile::Hdr10 => Some(kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ),
+                EncoderProfile::Hlg => Some(kCVImageBufferTransferFunction_ITU_R_2100_HLG),
+            };
+            if let Some(transfer) = transfer {
+                // kCVAttachmentMode_ShouldPropagate preserves these tags on the encoded sample.
+                CVBufferSetAttachment(pixel_buffer, kCVImageBufferTransferFunctionKey, transfer, 1);
+                CVBufferSetAttachment(pixel_buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, 1);
+                CVBufferSetAttachment(pixel_buffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, 1);
+            }
             Ok(Self {
                 pixel_buffer,
+                profile,
                 leases: [None, None],
             })
         }
     }
     pub fn profile(&self) -> EncoderProfile {
-        if unsafe { CVPixelBufferGetPixelFormatType(self.pixel_buffer) } == u32::from_be_bytes(*b"x420") {
-            EncoderProfile::Hdr10
-        } else { EncoderProfile::Sdr }
+        self.profile
     }
     pub fn width(&self) -> u32 {
         unsafe { CVPixelBufferGetWidth(self.pixel_buffer) as u32 }
@@ -178,15 +197,18 @@ pub enum EncoderProfile {
     #[default]
     Sdr,
     Hdr10,
+    Hlg,
 }
 
 impl EncoderProfile {
+    pub fn is_hdr(self) -> bool { self != Self::Sdr }
+
     fn pixel_format(self) -> u32 {
-        u32::from_be_bytes(match self { Self::Sdr => *b"420v", Self::Hdr10 => *b"x420" })
+        u32::from_be_bytes(if self.is_hdr() { *b"x420" } else { *b"420v" })
     }
 
     fn codec(self) -> &'static str {
-        match self { Self::Sdr => "h264_videotoolbox", Self::Hdr10 => "hevc_videotoolbox" }
+        if self.is_hdr() { "hevc_videotoolbox" } else { "h264_videotoolbox" }
     }
 }
 

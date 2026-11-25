@@ -76,7 +76,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **Nodes → Compare original** 从同一帧左侧显示原素材，右侧显示当前调色结果。拖动分界可检查局部或临时全屏旁路片段节点。比较在关闭、换片段或播放时结束。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。
-- MP4 色彩选项支持 **HDR10 PQ · BT.2020 / 1000 nits**，使用原始素材生成 HEVC Main10。适用范围与验收见 [HDR 工作流](HDR_WORKFLOW.md)。
+- MP4 色彩选项支持 **HDR10 PQ · BT.2020 / 1000 nits** 和 **HLG · BT.2020**，使用原始素材生成 HEVC Main10。适用范围与验收见 [HDR 工作流](HDR_WORKFLOW.md)。
 - 在 MP4 导出窗口可用 **Add to queue** 冻结当前序列、范围和编码选项。用 **Render queue** 查看任务、串行启动、取消或重试。任务保留在当前应用会话，继续剪辑不会改动已排队的版本。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。

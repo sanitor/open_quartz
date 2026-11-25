@@ -1913,7 +1913,7 @@ export component EditorWindow inherits Window {
                     Text { text: root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: root.file_dialog_kind == "import-files" ? "Paste one full file path per line, or use Browse." : root.file_dialog_kind == "relink-folder" ? "Paste a folder path, or use Browse to choose a folder." : "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
-                        text: (root.export_profile == 1 ? "HEVC Main10 · declared BT.2020 / 1000-nit target" : "H.264 MP4") + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
+                        text: (root.export_profile == 1 ? "HEVC Main10 · declared BT.2020 / 1000-nit target" : root.export_profile == 2 ? "HEVC Main10 · BT.2020 HLG" : "H.264 MP4") + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
                         color: root.secondary; font-size: 11px;
                     }
                     if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt": HorizontalLayout {
@@ -1935,7 +1935,7 @@ export component EditorWindow inherits Window {
                             spacing: 4px;
                             Text { text: "Output color"; color: root.secondary; font-size: 12px; }
                             ComboBox { accessible-label: "Export color profile"; current-index <=> root.export_profile;
-                                model: ["SDR Rec.709", "HDR10 PQ · BT.2020 / 1000 nits"]; }
+                                model: ["SDR Rec.709", "HDR10 PQ · BT.2020 / 1000 nits", "HLG · BT.2020"]; }
                         }
                         VerticalLayout {
                             spacing: 4px;

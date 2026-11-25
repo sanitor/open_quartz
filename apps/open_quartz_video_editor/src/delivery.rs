@@ -7,9 +7,26 @@ pub struct ExportOptions {
     pub resolution: i32,
     pub frame_rate: i32,
     pub quality: i32,
-    pub hdr10: bool,
+    pub color: ExportColor,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportColor {
+    #[default]
+    Sdr,
+    Hdr10,
+    Hlg,
+}
+
+impl ExportColor {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => Self::Hdr10,
+            2 => Self::Hlg,
+            _ => Self::Sdr,
+        }
+    }
+}
 impl ExportOptions {
     pub fn extent(self, width: u32, height: u32) -> (u32, u32) {
         let (max_w, max_h) = match self.resolution {

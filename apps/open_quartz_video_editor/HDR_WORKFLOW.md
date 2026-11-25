@@ -60,6 +60,17 @@ PQ sample values. A two-track render checks that 50% opacity over a
 one-stop darker background preserves the expected linear-light blend in the
 decoded HDR10 signal.
 
+## HLG export
+
+Select **HLG · BT.2020** to write a Main10 MP4 with the BT.2100 HLG transfer.
+The GPU converts the AP1 program to BT.2020 and applies the inverse display
+transform for the 1,000 cd/m² reference and gamma 1.2 before the HLG OETF.
+The file signals HLG in its HEVC and container color tags. The PQ mastering
+display box belongs to the HDR10 option. Both profiles retain the selected
+range when queued. The native E2E suite decodes HLG output independently
+and checks the transfer, exact frame count, zero-based PTS and two 10-bit
+luminance patches.
+
 ## Managed sequence monitoring
 
 Enable **Managed color · ACEScg** in Sequence settings to grade and composite
