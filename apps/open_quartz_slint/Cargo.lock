@@ -3858,6 +3858,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

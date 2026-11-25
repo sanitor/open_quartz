@@ -40,6 +40,7 @@ jobs:
       - run: npm run test:video-editor:ui:audio
       - run: npm run test:video-editor:ui:preview
       - run: npm run test:video-editor:ui:delivery
+      - run: npm run test:desktop:inference
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -49,4 +50,5 @@ jobs:
             test-results/slint-ui/
             test-results/phase6/
             test-results/clip-pipeline/
+            test-results/inference-e2e/
           if-no-files-found: warn

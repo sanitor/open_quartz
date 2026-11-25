@@ -34,7 +34,7 @@ static INITIALIZED: LazyLock<Result<(), String>> = LazyLock::new(|| {
         })
         .map_err(|error| error.to_string())
 });
-fn initialize() -> Result<(), InferenceError> {
+pub(crate) fn initialize() -> Result<(), InferenceError> {
     INITIALIZED
         .clone()
         .map_err(InferenceError::RuntimeUnavailable)
@@ -107,7 +107,7 @@ impl InferenceSession {
         profile_prefix: Option<&std::path::Path>,
     ) -> Result<Self, InferenceError> {
         policy.validate()?;
-        if policy.backend == BackendPreference::MetalGpu {
+        if policy.backend.is_resident_gpu() {
             return Err(InferenceError::InvalidModelInterface("resident Metal execution requires GpuImageSession, not host tensors".into()));
         }
         let source_interface = inspect_onnx(model)
@@ -200,7 +200,7 @@ impl InferenceSession {
                 "directml+cpu"
             }
             BackendPreference::OrtDirectMl => "directml",
-            BackendPreference::MetalGpu => return Err(InferenceError::InvalidModelInterface("resident execution cannot use ORT host tensors".into())),
+            BackendPreference::MetalGpu | BackendPreference::Dx12Gpu => return Err(InferenceError::InvalidModelInterface("resident execution cannot use ORT host tensors".into())),
             BackendPreference::Auto => "unknown",
         }
         .into();
@@ -942,7 +942,7 @@ fn build_session(
                 ));
             }
         }
-        BackendPreference::MetalGpu => {
+        BackendPreference::MetalGpu | BackendPreference::Dx12Gpu => {
             return Err(InferenceError::InvalidModelInterface("resident execution cannot use ORT host tensors".into()));
         }
         BackendPreference::Auto => {

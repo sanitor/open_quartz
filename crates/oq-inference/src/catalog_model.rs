@@ -23,6 +23,8 @@ const OPS: &[&str] = &[
 
 #[derive(Clone, Debug)]
 pub struct CatalogModel {
+    #[cfg(all(windows, feature = "dml-resident"))]
+    pub(crate) onnx: std::sync::Arc<[u8]>,
     pub plan: ModelPlan,
     pub model_id: String,
     pub graph_json: Vec<u8>,
@@ -189,7 +191,10 @@ impl CatalogModel {
             source_sha256: format!("{:x}", Sha256::digest(bytes)),
             source_byte_length: bytes.len() as u64, source_interface: interface,
         };
-        Ok(Self { plan, model_id: model_id.into(), graph_json, tensor_blob, input_shape, output_shape, output_name, output_dtype,
+        Ok(Self {
+            #[cfg(all(windows, feature = "dml-resident"))]
+            onnx: bytes.into(),
+            plan, model_id: model_id.into(), graph_json, tensor_blob, input_shape, output_shape, output_name, output_dtype,
             #[cfg(feature = "gpu-diagnostics")]
             diagnostic_logits_shape })
     }

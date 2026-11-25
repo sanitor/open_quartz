@@ -11,6 +11,8 @@ pub mod catalog_model;
 pub mod catalog_gpu;
 #[cfg(feature = "gpu")]
 mod catalog_detect;
+#[cfg(all(windows, feature = "dml-resident"))]
+mod dx12_catalog;
 #[cfg(feature = "gpu-diagnostics")]
 pub mod diagnostic_reference;
 use serde::{Deserialize, Serialize};
@@ -29,7 +31,18 @@ pub enum BackendPreference {
     OrtDirectMl,
     OrtCoreMl,
     MetalGpu,
+    Dx12Gpu,
 }
+impl BackendPreference {
+    pub const fn native_gpu() -> Self {
+        if cfg!(windows) { Self::Dx12Gpu } else { Self::MetalGpu }
+    }
+
+    pub const fn is_resident_gpu(self) -> bool {
+        matches!(self, Self::MetalGpu | Self::Dx12Gpu)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FallbackPolicy {
@@ -63,12 +76,12 @@ pub struct ExecutionPolicy {
 impl ExecutionPolicy {
     /// The application-resident compute path has no permitted host payload fallback.
     pub const fn resident() -> Self {
-        Self { backend: BackendPreference::MetalGpu, fallback: FallbackPolicy::Forbid,
+        Self { backend: BackendPreference::native_gpu(), fallback: FallbackPolicy::Forbid,
             residency: ResidencyPolicy::RequireResident, placement: PlacementPolicy::AcceleratorOnly }
     }
 
     pub fn validate(&self) -> Result<(), InferenceError> {
-        if self.backend == BackendPreference::MetalGpu
+        if self.backend.is_resident_gpu()
             || (self.backend == BackendPreference::Auto && self.residency == ResidencyPolicy::RequireResident
                 && self.placement == PlacementPolicy::AcceleratorOnly) {
             if self.fallback != FallbackPolicy::Forbid {
@@ -93,6 +106,7 @@ pub enum InferenceProvider {
     DirectMl,
     CoreMl,
     Metal,
+    Dx12,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InferenceOptions {
@@ -115,6 +129,7 @@ impl From<InferenceOptions> for ExecutionPolicy {
                 InferenceProvider::DirectMl => BackendPreference::OrtDirectMl,
                 InferenceProvider::CoreMl => BackendPreference::OrtCoreMl,
                 InferenceProvider::Metal => BackendPreference::MetalGpu,
+                InferenceProvider::Dx12 => BackendPreference::Dx12Gpu,
             },
             fallback: if value.allow_cpu_fallback {
                 FallbackPolicy::AllowCpu
@@ -162,20 +177,20 @@ pub fn select_execution_plan(
     capabilities: &InferenceCapabilities,
 ) -> Result<ExecutionPlan, InferenceError> {
     policy.validate()?;
-    if policy.backend == BackendPreference::MetalGpu || policy.residency == ResidencyPolicy::RequireResident {
+    if policy.backend.is_resident_gpu() || policy.residency == ResidencyPolicy::RequireResident {
         return Err(InferenceError::InvalidModelInterface(
-            "Metal GPU execution requires GpuImageSession on the render device, not a host tensor session".into(),
+            "Resident GPU execution requires GpuImageSession on the render device, not a host tensor session".into(),
         ));
     }
     let wants_dml = match policy.backend {
         BackendPreference::Auto => capabilities.direct_ml,
         BackendPreference::OrtDirectMl => true,
-        BackendPreference::OrtCpu | BackendPreference::OrtCoreMl | BackendPreference::MetalGpu => false,
+        BackendPreference::OrtCpu | BackendPreference::OrtCoreMl | BackendPreference::MetalGpu | BackendPreference::Dx12Gpu => false,
     };
     let wants_core_ml = match policy.backend {
         BackendPreference::Auto => !wants_dml && capabilities.core_ml,
         BackendPreference::OrtCoreMl => true,
-        BackendPreference::OrtCpu | BackendPreference::OrtDirectMl | BackendPreference::MetalGpu => false,
+        BackendPreference::OrtCpu | BackendPreference::OrtDirectMl | BackendPreference::MetalGpu | BackendPreference::Dx12Gpu => false,
     };
     let mut fallback_reason = None;
     let backend = if wants_dml && capabilities.direct_ml {
@@ -219,7 +234,7 @@ pub fn select_execution_plan(
                 vec![InferenceProvider::CoreMl]
             }
         }
-        BackendPreference::Auto | BackendPreference::OrtCpu | BackendPreference::MetalGpu => vec![InferenceProvider::Cpu],
+        BackendPreference::Auto | BackendPreference::OrtCpu | BackendPreference::MetalGpu | BackendPreference::Dx12Gpu => vec![InferenceProvider::Cpu],
     };
     Ok(ExecutionPlan {
         requested_policy: *policy,

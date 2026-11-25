@@ -2341,7 +2341,7 @@ impl AppController {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        let options = vec!["Metal GPU", "Auto Hardware"];
+        let options = vec![native_inference_backend_label(), "Auto Hardware"];
         window.set_inspector_inference_backend_options(slint::ModelRc::new(
             slint::VecModel::from(options.into_iter().map(slint::SharedString::from).collect::<Vec<_>>()),
         ));
@@ -2349,6 +2349,7 @@ impl AppController {
             Ok(policy) => {
                 let (index, backend) = match policy.backend {
                     BackendPreference::MetalGpu => (0, "Metal GPU"),
+                    BackendPreference::Dx12Gpu => (0, "Direct3D 12 GPU"),
                     BackendPreference::Auto => (1, "Auto Hardware"),
                     BackendPreference::OrtCpu => (-1, "Rejected legacy CPU backend"),
                     BackendPreference::OrtDirectMl => (-1, "Rejected legacy DirectML EP backend"),
@@ -2373,7 +2374,7 @@ impl AppController {
             }
             Err(error) => {
                 window.set_inspector_inference_backend_index(-1);
-                window.set_inspector_inference_policy_summary(format!("{error}\nSelect Metal GPU or Auto Hardware to explicitly replace the saved policy with resident GPU execution.").into());
+                window.set_inspector_inference_policy_summary(format!("{error}\nSelect the native GPU or Auto Hardware to explicitly replace the saved policy with resident GPU execution.").into());
                 window.set_inspector_inference_policy_valid(false);
             }
         }
@@ -3512,13 +3513,17 @@ fn inference_policy(data: &open_quartz::NodeData) -> Result<ExecutionPolicy, Str
     open_quartz::resources::effective_inference_policy(&serialized)
 }
 
+fn native_inference_backend_label() -> &'static str {
+    if cfg!(windows) { "Direct3D 12 GPU" } else { "Metal GPU" }
+}
+
 fn inference_policy_validation(policy: &ExecutionPolicy) -> (bool, String) {
-    if !matches!(policy.backend, BackendPreference::MetalGpu | BackendPreference::Auto)
+    if !policy.backend.is_resident_gpu() && policy.backend != BackendPreference::Auto
         || policy.fallback != FallbackPolicy::Forbid
         || policy.residency != ResidencyPolicy::RequireResident
         || policy.placement != PlacementPolicy::AcceleratorOnly
     {
-        return (false, "\nSaved host policy is not supported in production. Select Metal GPU or Auto Hardware to explicitly require resident GPU buffers, accelerator-only placement, and no CPU fallback.".into());
+        return (false, "\nSaved host policy is not supported in production. Select the native GPU or Auto Hardware to explicitly require resident GPU buffers, accelerator-only placement, and no CPU fallback.".into());
     }
     match policy.validate() {
         Ok(()) => (true, String::new()),
@@ -3534,7 +3539,7 @@ fn inference_policy_edit(
     // inspecting/loading a saved policy never silently weakens or repairs it.
     let mut policy = ExecutionPolicy::resident();
     policy.backend = match backend {
-        0 => BackendPreference::MetalGpu,
+        0 => BackendPreference::native_gpu(),
         1 => BackendPreference::Auto,
         _ => return Err("Unsupported inference backend choice".to_owned()),
     };
@@ -4237,7 +4242,7 @@ mod tests {
             let original = rejected;
             let (valid, error) = super::inference_policy_validation(&rejected);
             assert!(!valid);
-            assert!(error.contains("Select Metal GPU or Auto Hardware"), "{error}");
+            assert!(error.contains("Select the native GPU or Auto Hardware"), "{error}");
             assert_eq!(rejected, original);
         }
     }

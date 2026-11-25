@@ -1,5 +1,7 @@
-//! GPU-only image ingress and presentation around a native Metal graph.
-use std::{ffi::{c_char, c_void, CStr}, ptr::NonNull, sync::Arc, time::Instant};
+//! GPU-only image ingress and presentation around the native graph.
+use std::{sync::Arc, time::Instant};
+#[cfg(target_os = "macos")]
+use std::{ffi::{c_char, c_void, CStr}, ptr::NonNull};
 use crate::{catalog_model::CatalogModel, gpu::{GpuCounters, GpuDeviceOwner, GpuError, OutputLease}, gpu_model::ModelPlan};
 
 #[derive(Clone, Copy, Debug)]
@@ -14,24 +16,65 @@ unsafe extern "C" {
     fn oq_catalog_buffer_release(buffer:*mut c_void);
     fn oq_catalog_graph_encode(graph:*mut c_void,queue:*mut c_void,input:*mut c_void,output:*mut c_void,diagnostic:*mut c_void,error:*mut c_char,cap:usize)->i32;
 }
+#[cfg(target_os = "macos")]
 fn native_error(error:&[c_char])->GpuError {
     // Native ABI always terminates its fixed-capacity error string.
     GpuError::Validation(unsafe{CStr::from_ptr(error.as_ptr())}.to_string_lossy().into_owned())
 }
+#[cfg(target_os = "macos")]
 struct NativeGraph(NonNull<c_void>);
+#[cfg(all(windows, feature = "dml-resident"))]
+struct NativeGraph {
+    graph: crate::dx12_catalog::Graph,
+    input: (String, Vec<usize>),
+    output: (String, Vec<usize>),
+    diagnostic: Option<(String, Vec<usize>)>,
+}
+#[cfg(not(any(target_os = "macos", all(windows, feature = "dml-resident"))))]
+struct NativeGraph;
 // Graph execution is serialized by &mut CatalogGpuSession on the render thread.
+#[cfg(target_os = "macos")]
 unsafe impl Send for NativeGraph {}
 impl NativeGraph {
     #[cfg(target_os="macos")]
-    fn new(device:&wgpu::Device,model:&CatalogModel)->Result<Self,GpuError> {
+    fn new(device:&wgpu::Device,model:&CatalogModel,_input:&[usize],_output:&[usize])->Result<Self,GpuError> {
         let native=unsafe{device.as_hal::<wgpu::hal::api::Metal>()}.ok_or(GpuError::WrongDevice)?;
         let raw=objc2::rc::Retained::as_ptr(native.raw_device()) as *mut c_void;
         let mut error=[0 as c_char;4096];
         let graph=unsafe{oq_catalog_graph_create(raw,model.graph_json.as_ptr(),model.graph_json.len(),model.tensor_blob.as_ptr(),model.tensor_blob.len(),error.as_mut_ptr(),error.len())};
         NonNull::new(graph).map(Self).ok_or_else(||native_error(&error))
     }
-    #[cfg(not(target_os="macos"))]
-    fn new(_: &wgpu::Device,_:&CatalogModel)->Result<Self,GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires native Metal on macOS".into()))}
+    #[cfg(not(any(target_os="macos", all(windows, feature="dml-resident"))))]
+    fn new(_: &wgpu::Device,_:&CatalogModel,_:&[usize],_:&[usize])->Result<Self,GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires native Metal on macOS".into()))}
+    #[cfg(all(windows, feature = "dml-resident"))]
+    fn new(device: &wgpu::Device, model: &CatalogModel, input: &[usize], output: &[usize]) -> Result<Self, GpuError> {
+        #[cfg(not(feature = "gpu-diagnostics"))]
+        let diagnostic = None;
+        #[cfg(feature = "gpu-diagnostics")]
+        let mut diagnostic = None;
+        #[cfg(feature = "gpu-diagnostics")]
+        if let Some(shape) = &model.diagnostic_logits_shape {
+            let descriptor: serde_json::Value = serde_json::from_slice(&model.graph_json)
+                .map_err(|error| GpuError::Validation(error.to_string()))?;
+            let name = descriptor["diagnostic_output"]["name"].as_str()
+                .ok_or_else(|| GpuError::Validation("missing diagnostic output name".into()))?;
+            diagnostic = Some((name.to_owned(), shape.clone()));
+        }
+        let (bytes, name) = crate::dx12_catalog::specialize(model, input, output,
+            diagnostic.as_ref().map(|(name, shape): &(String, Vec<usize>)| (name.as_str(), shape.as_slice())))?;
+        let graph = crate::dx12_catalog::Graph::new(device, &bytes)?;
+        Ok(Self { graph, input: (model.plan.input_name.clone(), input.to_vec()), output: (name, output.to_vec()), diagnostic })
+    }
+    #[cfg(all(windows, feature = "dml-resident"))]
+    fn encode(&mut self, _: &wgpu::Queue, input: &NativeBuffer, output: &NativeBuffer, diagnostic: Option<&NativeBuffer>) -> Result<(), GpuError> {
+        let destination = (self.output.0.as_str(), self.output.1.as_slice(), output.buffer.as_ref());
+        let source = (self.input.0.as_str(), self.input.1.as_slice(), input.buffer.as_ref());
+        match (&self.diagnostic, diagnostic) {
+            (Some((name, shape)), Some(buffer)) => self.graph.encode(source, &[destination, (name, shape, &buffer.buffer)]),
+            (None, None) => self.graph.encode(source, &[destination]),
+            _ => Err(GpuError::Validation("DirectML diagnostic binding does not match the graph".into())),
+        }
+    }
     #[cfg(target_os="macos")]
     fn encode(&mut self,queue:&wgpu::Queue,input:&NativeBuffer,output:&NativeBuffer,diagnostic:Option<&NativeBuffer>)->Result<(),GpuError>{
         let native=unsafe{queue.as_hal::<wgpu::hal::api::Metal>()}.ok_or(GpuError::WrongDevice)?;
@@ -40,13 +83,21 @@ impl NativeGraph {
         let result=unsafe{oq_catalog_graph_encode(self.0.as_ptr(),raw,input.raw.as_ptr(),output.raw.as_ptr(),diagnostic.map_or(std::ptr::null_mut(),|b|b.raw.as_ptr()),error.as_mut_ptr(),error.len())};
         if result==0 {Err(native_error(&error))}else{Ok(())}
     }
-    #[cfg(not(target_os="macos"))]
+    #[cfg(not(any(target_os="macos", all(windows, feature="dml-resident"))))]
     fn encode(&mut self,_:&wgpu::Queue,_:&NativeBuffer,_:&NativeBuffer,_:Option<&NativeBuffer>)->Result<(),GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires Metal".into()))}
 }
+#[cfg(target_os = "macos")]
 impl Drop for NativeGraph {fn drop(&mut self){#[cfg(target_os="macos")]unsafe{oq_catalog_graph_release(self.0.as_ptr())}}}
-struct NativeBuffer {raw:NonNull<c_void>, buffer:Arc<wgpu::Buffer>}
+struct NativeBuffer {
+    #[cfg(target_os = "macos")]
+    raw: NonNull<c_void>,
+    buffer: Arc<wgpu::Buffer>,
+}
 // Immutable Objective-C handles; all mutable payload access is GPU command work.
-unsafe impl Send for NativeBuffer {} unsafe impl Sync for NativeBuffer {}
+#[cfg(target_os = "macos")]
+unsafe impl Send for NativeBuffer {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for NativeBuffer {}
 impl NativeBuffer {
     #[cfg(target_os="macos")]
     fn new(device:&wgpu::Device,bytes:u64)->Result<Self,GpuError>{
@@ -60,9 +111,22 @@ impl NativeBuffer {
         let buffer=unsafe{device.create_buffer_from_hal::<wgpu::hal::api::Metal>(hal,&wgpu::BufferDescriptor{label:Some("private native graph tensor"),size:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})};
         Ok(Self{raw,buffer:Arc::new(buffer)})
     }
-    #[cfg(not(target_os="macos"))]
+    #[cfg(all(windows, feature = "dml-resident"))]
+    fn new(device: &wgpu::Device, bytes: u64) -> Result<Self, GpuError> {
+        if bytes == 0 || bytes > device.limits().max_buffer_size || bytes > u64::from(device.limits().max_storage_buffer_binding_size) {
+            return Err(GpuError::DeviceLimit(format!("resident tensor requires {bytes} GPU bytes")));
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("private DirectML graph tensor"), size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Ok(Self { buffer: Arc::new(buffer) })
+    }
+    #[cfg(not(any(target_os="macos", all(windows, feature="dml-resident"))))]
     fn new(_:&wgpu::Device,_:u64)->Result<Self,GpuError>{Err(GpuError::UnsupportedBackend("catalog residency requires Metal".into()))}
 }
+#[cfg(target_os = "macos")]
 impl Drop for NativeBuffer{fn drop(&mut self){#[cfg(target_os="macos")]unsafe{oq_catalog_buffer_release(self.raw.as_ptr())}}}
 
 struct Slot {
@@ -114,9 +178,10 @@ fn entry(binding:u32,buffer:&wgpu::Buffer)->wgpu::BindGroupEntry<'_>{wgpu::BindG
 fn buffer_bytes(shape:&[usize])->Result<u64,GpuError>{shape.iter().try_fold(4u64,|n,&v|n.checked_mul(v as u64)).filter(|n|*n>0).ok_or_else(||GpuError::InvalidImage("resident tensor shape overflow".into()))}
 impl CatalogGpuSession {
     pub fn prepare(device:Arc<wgpu::Device>,queue:Arc<wgpu::Queue>,model:CatalogModel,options:CatalogOptions)->Result<Self,GpuError>{
-        if device.adapter_info().backend!=wgpu::Backend::Metal||device.adapter_info().device_type==wgpu::DeviceType::Cpu{return Err(GpuError::UnsupportedBackend("catalog graph requires native hardware Metal".into()));}
+        let expected = if cfg!(all(windows, feature = "dml-resident")) { wgpu::Backend::Dx12 } else { wgpu::Backend::Metal };
+        if device.adapter_info().backend != expected || device.adapter_info().device_type == wgpu::DeviceType::Cpu { return Err(GpuError::UnsupportedBackend(format!("catalog graph requires native hardware {expected:?}"))); }
         if !options.score_threshold.is_finite()||!options.iou_threshold.is_finite()||!(0.0..=1.0).contains(&options.score_threshold)||!(0.0..=1.0).contains(&options.iou_threshold){return Err(GpuError::InvalidImage("invalid detection thresholds".into()));}
-        let native=NativeGraph::new(&device,&model)?;
+        let native=NativeGraph::new(&device,&model,&model.input_shape,&model.output_shape)?;
         let input=NativeBuffer::new(&device,buffer_bytes(&model.input_shape)?)?;
         let kind=match model.model_id.as_str(){"realesrgan-x4"=>0,"u2netp"|"modnet"=>1,"midas-small"=>2,"yolo26n-sem"=>3,"yolov8n"=>4,_=>return Err(GpuError::UnsupportedModel(model.model_id))};
         let preprocess=pipeline(&device,include_str!("gpu/catalog_preprocess.wgsl"),"main");
@@ -208,7 +273,7 @@ impl CatalogGpuSession {
         model_json["inputs"][0]["shape"]=serde_json::json!(input_shape);model_json["outputs"][0]["shape"]=serde_json::json!(output_shape);
         // Recompile only on a source-size transition; original weights/metadata stay intact.
         let old_json=std::mem::replace(&mut self.model.graph_json,serde_json::to_vec(&model_json).map_err(|e|GpuError::InvalidImage(e.to_string()))?);
-        let native=match NativeGraph::new(&self.owner.device,&self.model){Ok(n)=>n,Err(e)=>{self.model.graph_json=old_json;return Err(e)}};
+        let native=match NativeGraph::new(&self.owner.device,&self.model,&input_shape,&output_shape){Ok(n)=>n,Err(e)=>{self.model.graph_json=old_json;return Err(e)}};
         let input=NativeBuffer::new(&self.owner.device,buffer_bytes(&input_shape)?)?;
         self.native=native;self.input=input;self.model.input_shape=input_shape;self.model.output_shape=output_shape;
         if self.frame_allocator.is_some(){self.persistent_frame_lease=persistent_frame_lease;}
@@ -274,11 +339,20 @@ impl CatalogGpuSession {
         };
         let mut encoder=self.owner.device.create_command_encoder(&Default::default());
         {let mut pass=encoder.begin_compute_pass(&Default::default());pass.set_pipeline(&self.preprocess);pass.set_bind_group(0,&self.bindings[binding_index].pre,&[]);pass.dispatch_workgroups((self.model.input_shape[3]as u32).div_ceil(8),(self.model.input_shape[2]as u32).div_ceil(8),1);}
-        self.owner.queue.submit([encoder.finish()]);
         #[cfg(feature = "gpu-diagnostics")]
         let diagnostic=slot.logits.as_ref();
         #[cfg(not(feature = "gpu-diagnostics"))]
         let diagnostic=None;
+        #[cfg(all(windows, feature = "dml-resident"))]
+        {
+            // Initialize WGPU tracking before the imported DirectML writes.
+            encoder.clear_buffer(&slot.raw.buffer, 0, None);
+            if let Some(buffer) = diagnostic { encoder.clear_buffer(&buffer.buffer, 0, None); }
+            encoder.transition_resources([&self.input, &slot.raw].into_iter().chain(diagnostic).map(|native|
+                wgpu::BufferTransition { buffer: native.buffer.as_ref(), state: wgpu::BufferUses::STORAGE_READ_WRITE }),
+                std::iter::empty());
+        }
+        self.owner.queue.submit([encoder.finish()]);
         self.native.encode(&self.owner.queue,&self.input,&slot.raw,diagnostic)?;
         let mut encoder=self.owner.device.create_command_encoder(&Default::default());
         if self.kind==2 {

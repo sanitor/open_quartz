@@ -49,7 +49,7 @@ fn model_preparation_preserves_source_facts_without_runtime_or_gpu() {
     let bytes = crate::inference::resident_test_model::sr3_model();
     let prepared = PreparedInferenceModel::from_memory(&bytes, config()).unwrap();
     let info = prepared.info();
-    assert_eq!(info.backend, "metal");
+    assert_eq!(info.backend, if cfg!(windows) { "dx12" } else { "metal" });
     assert_eq!(info.input_names, ["input"]);
     assert_eq!(info.output_names, ["output"]);
     assert_eq!(

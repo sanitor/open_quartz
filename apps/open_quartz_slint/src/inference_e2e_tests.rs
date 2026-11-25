@@ -10,10 +10,10 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 const ABS: f64 = 1e-3;
 const REL: f64 = 1e-3;
 
-// Separate processes are intentional: production must work with an invalid ORT
-// path; only the reference process may load the explicitly provided CPU runtime.
+// Separate processes keep the independent CPU reference out of production.
+// The Metal lane also verifies that no ONNX Runtime library is needed.
 #[test]
-#[ignore = "explicit seven-model Metal/VideoToolbox lane; pinned manifest required; ORT must be unavailable"]
+#[ignore = "explicit seven-model resident hardware lane; pinned manifest required"]
 fn inference_e2e_production() {
     let root = output_root();
     let mut report = json!({"schemaVersion":1,"suite":"inference-production","passed":false,
@@ -28,8 +28,11 @@ fn inference_e2e_production() {
         assert_eq!(catalog.len(), 7, "seven-model acceptance must be updated explicitly when catalog changes");
         assert_eq!(serde_json::from_value::<Vec<InferenceModelDescriptor>>(manifest["catalog"].clone()).unwrap(), catalog,
             "manifest must export complete current descriptors");
-        let ort = std::env::var("ORT_DYLIB_PATH").expect("driver must explicitly disable ORT in production process");
-        assert!(!Path::new(&ort).is_file(), "production proof requires unavailable ORT_DYLIB_PATH");
+        #[cfg(target_os = "macos")]
+        {
+            let ort = std::env::var("ORT_DYLIB_PATH").expect("driver must explicitly disable ORT in production process");
+            assert!(!Path::new(&ort).is_file(), "Metal production proof requires unavailable ORT_DYLIB_PATH");
+        }
         assert!(open_quartz::media::native::find_ffmpeg().is_ok(), "real video runtime prerequisite");
         for model in &selected_catalog() {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -190,9 +193,9 @@ fn load(bridge: &RenderBridge, graph: &TestGraph, path: &str, sha256: &str) {
     bridge.load_inference(graph.inference.clone(), path.to_owned()).unwrap();
     let update = wait_update(bridge, |u| u.inference.as_ref().and_then(|s| s.get(&graph.inference)).is_some_and(|s| s.attached));
     let state = &update.inference.as_ref().unwrap()[&graph.inference];
-    assert_eq!(state.backend, "metal");
+    assert_eq!(state.backend, if cfg!(windows) { "dx12" } else { "metal" });
     assert!(state.artifact.ends_with(&format!("SHA-256 {sha256}")), "loaded bytes must match the pinned model: {}", state.artifact);
-    for evidence in ["MetalGpu", "Gpu", "Device", "host pixel/tensor bytes: 0"] {
+    for evidence in [if cfg!(windows) { "Dx12Gpu" } else { "MetalGpu" }, "Gpu", "Device", "host pixel/tensor bytes: 0"] {
         assert!(state.execution.contains(evidence), "{}", state.execution);
     }
 }
@@ -231,7 +234,7 @@ fn run_model(model: &InferenceModelDescriptor, manifest: &Value, root: &Path, re
     let sha256 = manifest["models"].as_array().unwrap().iter().find(|entry| entry["id"] == model.id).unwrap()["sha256"].as_str().unwrap();
     let (mut bridge, configuration) = RenderBridge::initialize().expect("real hardware GPU prerequisite");
     let WGPUConfiguration::Manual { device, queue, adapter, .. } = &configuration else { panic!("must share Slint renderer device") };
-    assert_eq!(adapter.get_info().backend, wgpu::Backend::Metal);
+    assert_eq!(adapter.get_info().backend, if cfg!(windows) { wgpu::Backend::Dx12 } else { wgpu::Backend::Metal });
     assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
     let graph = test_graph(model, None);
     let source = image::open(manifest["fixtures"]["image"]["path"].as_str().unwrap()).unwrap().to_rgba8();
@@ -290,7 +293,8 @@ fn run_model(model: &InferenceModelDescriptor, manifest: &Value, root: &Path, re
     let prepared_video = wait_update(&bridge, |u| u.inference.as_ref().is_some_and(|s| s.get(&video.inference).is_none_or(|state| !state.attached && !state.loading))
         && u.status.as_ref().is_some_and(|s| s.contains("ffmpeg-")));
     let decoder = prepared_video.status.as_deref().unwrap();
-    assert!(decoder.contains("ffmpeg-videotoolbox") && !decoder.contains("fallback"), "hardware-video is required: {decoder}");
+    let decoder_name = if cfg!(windows) { "ffmpeg-d3d12va" } else { "ffmpeg-videotoolbox" };
+    assert!(decoder.contains(decoder_name) && !decoder.contains("fallback"), "hardware-video is required: {decoder}");
     report["videoDecoder"][&model.id] = json!(decoder);
     bridge.select_preview(Some(video.renderer.clone())).unwrap();
     assert_eq!(read_texture(device, queue, &held.texture), retained_pixels, "consumer lease must survive project replacement");

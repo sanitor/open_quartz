@@ -3,13 +3,13 @@ use super::*;
 /// Exercises the production background-preparation and render-worker path using
 /// the catalog's real image model. Main runs this explicitly after integration.
 #[test]
-#[ignore = "requires a Metal GPU and the cached super-resolution-3x.onnx model; no ORT library"]
+#[ignore = "requires a native hardware GPU and the cached super-resolution-3x.onnx model; no ORT library"]
 fn cached_image_model_runs_through_the_inference_render_worker() {
     run_cached_resident_image_model();
 }
 
 #[test]
-#[ignore = "explicit diagnostic: requires Metal, cached SR3 model, and ORT_DYLIB_PATH for CPU reference only"]
+#[ignore = "explicit diagnostic: requires a native hardware GPU, cached SR3 model, and ORT_DYLIB_PATH for CPU reference only"]
 fn cached_resident_image_matches_explicit_cpu_reference() {
     let (model_path, source, actual) = run_cached_resident_image_model();
     let bytes = std::fs::read(model_path).unwrap();
@@ -77,9 +77,18 @@ fn run_cached_resident_image_model() -> (PathBuf, Vec<u8>, image::RgbaImage) {
     let WGPUConfiguration::Manual { device, queue, adapter, .. } = &configuration else {
         panic!("production preview must share the exact rendering device and queue");
     };
-    assert_eq!(adapter.get_info().backend, wgpu::Backend::Metal);
+    assert_eq!(adapter.get_info().backend, if cfg!(windows) { wgpu::Backend::Dx12 } else { wgpu::Backend::Metal });
     let mut shared_output = None;
     bridge.set_graph(graph, images, false).unwrap();
+    let graph_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(result) = bridge.take_update().and_then(|update| update.graph_result) {
+            result.expect("inference test graph must prepare successfully");
+            break;
+        }
+        assert!(Instant::now() < graph_deadline, "render graph preparation timed out");
+        thread::sleep(Duration::from_millis(5));
+    }
     bridge.load_inference(inference.id.clone(), model_path.to_string_lossy().into_owned()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut saw_loading = false;
@@ -107,8 +116,8 @@ fn run_cached_resident_image_model() -> (PathBuf, Vec<u8>, image::RgbaImage) {
                     saw_loading |= state.loading;
                     if state.attached && !attached {
                         attached = true;
-                        assert_eq!(state.backend, "metal");
-                        assert!(state.execution.contains("MetalGpu"), "{}", state.execution);
+                        assert_eq!(state.backend, if cfg!(windows) { "dx12" } else { "metal" });
+                        assert!(state.execution.contains(if cfg!(windows) { "Dx12Gpu" } else { "MetalGpu" }), "{}", state.execution);
                         assert!(state.execution.contains("Gpu"), "{}", state.execution);
                         assert!(state.execution.contains("Device"), "{}", state.execution);
                         assert!(state.execution.contains("host pixel/tensor bytes: 0"), "{}", state.execution);

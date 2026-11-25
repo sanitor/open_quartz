@@ -352,7 +352,7 @@ mod resident {
                     input_stamp: completion.input_stamp.clone(), content_stamp: ContentStamp {
                         epoch: completion.input_stamp.epoch, timeline_ns: completion.input_stamp.timeline_ns, media_pts_ns: None }, outputs };
                 let event = InferenceOutputEvent { node_id: completion.node_id.clone(), width, height,
-                    backend: "metal".to_owned(), data: None };
+                    backend: if cfg!(windows) { "dx12" } else { "metal" }.to_owned(), data: None };
                 let subscription_id = self.event_subscriptions.get(&completion.node_id).cloned();
                 return Ok(Some(AcceptedInferenceCompletion { node_id: completion.node_id, image, envelope, event, subscription_id }));
             }

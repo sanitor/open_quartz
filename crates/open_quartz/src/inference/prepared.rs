@@ -46,11 +46,11 @@ pub struct PreparedInferenceModel {
 }
 
 pub(crate) fn validate_resident_policy(policy: &ExecutionPolicy) -> Result<(), String> {
-    if !matches!(policy.backend, BackendPreference::MetalGpu | BackendPreference::Auto)
+    if !policy.backend.is_resident_gpu() && policy.backend != BackendPreference::Auto
         || policy.fallback != FallbackPolicy::Forbid
         || policy.residency != ResidencyPolicy::RequireResident
         || policy.placement != PlacementPolicy::AcceleratorOnly {
-        return Err("Production inference requires hardware-resident Metal GPU execution, accelerator-only placement and no CPU fallback or host transfer".to_owned());
+        return Err("Production inference requires hardware-resident GPU execution, accelerator-only placement and no CPU fallback or host transfer".to_owned());
     }
     Ok(())
 }
@@ -76,14 +76,14 @@ impl PreparedInferenceModel {
     /// The historical DirectML option is incompatible with device-resident inference.
     pub fn open(path: &Path, config: InferenceConfig, prefer_direct_ml: bool) -> Result<Self, String> {
         if prefer_direct_ml {
-            return Err("Legacy DirectML host-transfer inference cannot satisfy hardware residency; select Metal GPU".to_owned());
+            return Err("Legacy DirectML host-transfer inference cannot satisfy hardware residency; select the native GPU backend".to_owned());
         }
         Self::open_with_policy(path, config)
     }
     pub fn open_with_policy(path: &Path, config: InferenceConfig) -> Result<Self, String> {
         validate_resident_config(&config)?;
-        if !cfg!(target_os = "macos") {
-            return Err("Metal GPU resident inference backend unavailable on this platform; CPU fallback forbidden".to_owned());
+        if !cfg!(any(target_os = "macos", windows)) {
+            return Err("Resident GPU inference backend unavailable on this platform; CPU fallback forbidden".to_owned());
         }
         let bytes = fs::read(path)
             .map_err(|error| format!("Cannot read inference model {}: {error}", path.display()))?;
@@ -215,12 +215,12 @@ pub(crate) fn resident_session_info(plan: &ModelPlan, config: &InferenceConfig) 
     Ok(InferenceSessionInfo {
         input_names: inputs.iter().map(|tensor| tensor.name.clone()).collect(),
         output_names: outputs.iter().map(|tensor| tensor.name.clone()).collect(),
-        backend: "metal".to_owned(),
+        backend: if cfg!(windows) { "dx12" } else { "metal" }.to_owned(),
         input_values: inputs.iter().map(|tensor| value_metadata(tensor, false)).collect(),
         output_values: outputs.iter().map(|tensor| value_metadata(tensor, false)).collect(),
         inputs, outputs, overridable_initializers,
         plan: oq_inference::ExecutionPlan { requested_policy: config.policy.clone(),
-            configured_backend: BackendPreference::MetalGpu, configured_providers: vec![oq_inference::InferenceProvider::Metal],
+            configured_backend: BackendPreference::native_gpu(), configured_providers: vec![if cfg!(windows) { oq_inference::InferenceProvider::Dx12 } else { oq_inference::InferenceProvider::Metal }],
             provider_placement: oq_inference::ProviderPlacement::Gpu, transfer_path: oq_inference::TransferPath::Device,
             fallback_reason: None },
         generation: SessionGeneration(NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)),

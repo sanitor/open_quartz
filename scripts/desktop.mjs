@@ -302,7 +302,7 @@ await prepareRuntime();
 const env = nativeEnv();
 let inferenceReferenceFailure;
 if (['test-inference', 'test-ui-inference', 'test-inference-performance'].includes(mode)) {
-  if (platform !== 'darwin') throw new Error('The seven-model resident E2E suite requires hardware Metal and VideoToolbox on macOS; CPU fallback is forbidden');
+  if (!['darwin', 'win32'].includes(platform)) throw new Error('The seven-model suite requires a native Metal or Direct3D 12 GPU');
   const output = resolve(env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT || join(root, 'test-results', smoke ? 'inference-e2e-smoke' : 'inference-e2e'));
   env.OPEN_QUARTZ_INFERENCE_E2E_OUTPUT = output;
   env.OPEN_QUARTZ_INFERENCE_E2E_MODEL = smoke ? 'u2netp' : '';
@@ -312,8 +312,10 @@ if (['test-inference', 'test-ui-inference', 'test-inference-performance'].includ
   }
   if (mode === 'test-inference') {
     const testArgs = ['test', '--locked', '--manifest-path', manifest, '--features', 'inference-e2e'];
+    const productionEnv = platform === 'darwin'
+      ? { ...env, ORT_DYLIB_PATH: join(output, 'forbidden-production-ort.dylib') } : env;
     await run('cargo', [...testArgs, 'inference_e2e_production', '--', '--ignored', '--test-threads=1'],
-      { env: { ...env, ORT_DYLIB_PATH: join(output, 'forbidden-production-ort.dylib') } });
+      { env: productionEnv });
     try {
       await run('cargo', [...testArgs, 'inference_e2e_reference', '--', '--ignored', '--test-threads=1'], { env });
     } catch (error) {

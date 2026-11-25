@@ -76,17 +76,64 @@ fn mask_model() -> Vec<u8> {
     .concat();
     [number(1, 8), message(7, &graph), message(8, &number(2, 13))].concat()
 }
+
+#[cfg(all(windows, feature = "dml-resident"))]
 #[test]
+#[ignore = "requires pinned ONNX catalog artifacts and hardware DirectML"]
+fn directml_runs_the_pinned_catalog_without_host_fallback() {
+    let models = std::path::PathBuf::from(std::env::var_os("OPEN_QUARTZ_TEST_CATALOG_DIR")
+        .expect("set OPEN_QUARTZ_TEST_CATALOG_DIR to the prepared models directory"));
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: BACKENDS,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let mut limits = wgpu::Limits::default();
+        limits.max_buffer_size = adapter.limits().max_buffer_size;
+        limits.max_storage_buffer_binding_size = adapter.limits().max_storage_buffer_binding_size;
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: limits, ..Default::default()
+        }).await.unwrap();
+        let (device, queue) = (Arc::new(device), Arc::new(queue));
+        let source = texture(&device, 32, 32, wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING);
+        generate(&device, &queue, &source, "pattern");
+        let mut failures = Vec::new();
+        for (id, side) in [
+            ("u2netp", 320), ("modnet", 512), ("midas-small", 256),
+            ("yolov8n", 640), ("yolo26n-sem", 640), ("realesrgan-x4", 32),
+        ] {
+            let result = (|| -> Result<(), String> {
+                let bytes = std::fs::read(models.join(format!("{id}.onnx"))).map_err(|error| error.to_string())?;
+                let model = CatalogModel::from_onnx(&bytes, id, side, side)?;
+                let mut session = CatalogGpuSession::prepare(device.clone(), queue.clone(), model, CatalogOptions::default())
+                    .map_err(|error| error.to_string())?;
+                session.prepare_output(32, 32).map_err(|error| error.to_string())?;
+                let result = session.submit_texture(&source, 32, 32).map_err(|error| error.to_string())?;
+                let pixels = readback_texture(&device, &queue, result.texture());
+                assert_eq!(pixels.len(), if id == "realesrgan-x4" { 128 * 128 * 4 } else { 32 * 32 * 4 });
+                assert_eq!(session.counters().host_image_bytes, 0);
+                Ok(())
+            })();
+            eprintln!("{id}: {result:?}");
+            if let Err(error) = result { failures.push(format!("{id}: {error}")); }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    });
+}
+#[test]
+#[cfg_attr(windows, ignore = "requires hardware DirectML")]
 fn catalog_mask_native_graph_keeps_source_rgb_and_bounded_alpha_leases_across_resize() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
+            backends: BACKENDS,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance
             .request_adapter(&Default::default())
             .await
-            .expect("hardware Metal required");
+            .expect("hardware resident GPU required");
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
         let (device, queue) = (Arc::new(device), Arc::new(queue));
         let bytes = mask_model();
@@ -282,16 +329,17 @@ fn read_buffer(
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "requires hardware DirectML")]
 fn catalog_depth_segmentation_and_detection_preserve_raw_tensor_and_presentation() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
+            backends: BACKENDS,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance
             .request_adapter(&Default::default())
             .await
-            .expect("hardware Metal required");
+            .expect("hardware resident GPU required");
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
         let (device, queue) = (Arc::new(device), Arc::new(queue));
         for (id, side, name, shape, dtype, values, expected) in [
@@ -472,16 +520,17 @@ fn reconstruction_model() -> Vec<u8> {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "requires hardware DirectML")]
 fn catalog_reconstruction_resizes_native_profile_without_overwriting_prior_output() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
+            backends: BACKENDS,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = instance
             .request_adapter(&Default::default())
             .await
-            .expect("hardware Metal required");
+            .expect("hardware resident GPU required");
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
         let (device, queue) = (Arc::new(device), Arc::new(queue));
         let bytes = reconstruction_model();

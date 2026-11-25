@@ -430,7 +430,7 @@ fn resident_dense_tiled_numeric_parity() {
 #[path = "gpu_boundary_tests.rs"]
 mod boundary_tests;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(windows, feature = "dml-resident")))]
 #[path = "catalog_gpu_behavior_tests.rs"]
 mod catalog_behavior;
 

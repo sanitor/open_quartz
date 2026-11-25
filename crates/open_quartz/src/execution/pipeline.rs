@@ -241,7 +241,8 @@ impl FramePipeline {
         capabilities: PlaybackCapabilities,
     ) -> Self {
         let inference_available =
-            cfg!(target_os = "macos") && render_device.info().backend == "Metal";
+            (cfg!(target_os = "macos") && render_device.info().backend == "Metal")
+                || (cfg!(windows) && render_device.info().backend == "Dx12");
         let inference_sampler =
             Arc::new(render_device.device().create_sampler(&Default::default()));
         let frame_budget = render_device.backend().frame_budget();
@@ -364,7 +365,7 @@ impl FramePipeline {
             })?;
             if !self.inference_available {
                 return Err(format!(
-                    "Inference node {} requires the supported Metal GPU backend",
+                    "Inference node {} requires a supported native GPU backend",
                     node.id
                 ));
             }

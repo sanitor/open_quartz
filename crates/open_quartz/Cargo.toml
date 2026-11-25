@@ -15,6 +15,7 @@ native-video = ["dep:oq-media", "dep:log", "dep:windows-graphics"]
 native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
 native-video-precise-d3d12 = ["native-video-d3d12", "oq-media/d3d12"]
 native-onnx = ["oq-inference/ort"]
+native-dml = ["native-runtime", "oq-inference/dml-resident"]
 model-cache = ["dep:reqwest", "dep:sha2"]
 inference-diagnostics = ["native-runtime", "oq-inference/gpu-diagnostics"]
 
