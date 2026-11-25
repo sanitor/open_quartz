@@ -225,18 +225,19 @@ export async function runInferenceScenarios({ endpoint, outputDir, projectPath, 
     await client.value(pointerScrollTool, { windowHandle: client.windowId, position: { x: scroll.absolutePosition.x + 4, y: scroll.absolutePosition.y + scroll.size.height / 2 }, deltaX: 0, deltaY });
   };
   const inspectorControl = async (label, role) => {
+    const scroll = await client.find({ id: 'Inspector::properties-scroll' });
+    const step = Math.max(1, Math.floor(scroll.size.height / 2));
     await scrollInspector(10_000);
-    for (let attempt = 0; attempt <= 24; attempt++) {
+    for (let attempt = 0; attempt <= 80; attempt++) {
       abort();
       const matches = await client.byLabel(label, { role, visible: false });
       assert.ok(matches.length <= 1, `Expected unique inspector control ${label}`);
       if (matches.length) {
         const control = matches[0];
-        const scroll = await client.find({ id: 'Inspector::properties-scroll' });
         const pos = center(control);
         if (pos.y >= scroll.absolutePosition.y + 8 && pos.y <= scroll.absolutePosition.y + scroll.size.height - 8) return control;
       }
-      if (attempt < 24) await scrollInspector(-160);
+      if (attempt < 80) await scrollInspector(-step);
     }
     throw new Error(`Inspector control ${label} not reachable through real scrolling`);
   };
