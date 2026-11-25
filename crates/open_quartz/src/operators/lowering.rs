@@ -43,7 +43,7 @@ impl ColorCorrectorConfig {
         let alias = self.is_identity();
         Ok(OperatorStructuralKey { kind: "color_corrector", schema_version: self.schema_version,
             algorithm_version: self.algorithm_version,
-            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2),
+            enabled_stages: u8::from(self.enabled) | (u8::from(self.primaries.enabled) << 1) | (u8::from(self.hdr_zones.enabled) << 2) | (u8::from(!self.rgb_mixer.is_identity()) << 3),
             alias, input_domain, output_domain: if alias { input_domain } else { ColorDomain::AcesCgLinear }, layout_version: 1 })
     }
     pub fn parameter_values(&self) -> Result<BTreeMap<String, Vec<f32>>, OperatorError> {
@@ -65,13 +65,19 @@ impl ColorCorrectorConfig {
             values.insert("cc_zones_c".into(), vec![z.darks.saturation,z.lights.saturation,z.highlights.saturation,z.specular.saturation]);
             values.insert("cc_zones_range".into(), vec![z.shadow_pivot,z.highlight_pivot,z.range,z.falloff]);
         }
+        if !self.rgb_mixer.is_identity() {
+            let mixer = &self.rgb_mixer;
+            let columns = (0..3).flat_map(|column| [mixer.red[column], mixer.green[column], mixer.blue[column]]);
+            values.insert("cc_mix".into(), columns.collect());
+        }
         Ok(values)
     }
     pub fn classify_update(&self, candidate: &Self, input_domain: ColorDomain) -> Result<OperatorUpdate, OperatorError> {
         let key = self.structure_key(input_domain)?;
         if key != candidate.structure_key(input_domain)? { return Ok(OperatorUpdate::Structural); }
         if !key.alias && ((self.primaries.enabled && self.primaries != candidate.primaries)
-            || (self.hdr_zones.enabled && self.hdr_zones != candidate.hdr_zones)) { return Ok(OperatorUpdate::Parameters); }
+            || (self.hdr_zones.enabled && self.hdr_zones != candidate.hdr_zones)
+            || (!self.rgb_mixer.is_identity() && self.rgb_mixer != candidate.rgb_mixer)) { return Ok(OperatorUpdate::Parameters); }
         Ok(OperatorUpdate::Unchanged)
     }
 }
@@ -79,7 +85,9 @@ impl ColorCorrectorConfig {
 pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorDomain) -> Result<LoweredOperator, OperatorError> {
     let structural_key = config.structure_key(input_domain)?;
     let parameters = config.parameter_values()?;
-    let parameter_types = parameters.keys().map(|key| (key.clone(),"vec4<f32>".into())).collect();
+    let parameter_types = parameters.keys().map(|key| {
+        (key.clone(), if key == "cc_mix" { "mat3".into() } else { "vec4".into() })
+    }).collect();
     let mut shader_source = None;
     let mut alias = None;
     if structural_key.alias {
@@ -87,7 +95,8 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
     } else {
         let mut shader = String::from("@group(0) @binding(0) var source: texture_2d<f32>;\n@group(0) @binding(1) var sourceSampler: sampler;\n");
         for (index,name) in parameters.keys().enumerate() {
-            shader.push_str(&format!("@group(0) @binding({}) var<uniform> {name}: vec4<f32>;\n",index+2));
+            let uniform = if name == "cc_mix" { "mat3x3f" } else { "vec4f" };
+            shader.push_str(&format!("@group(0) @binding({}) var<uniform> {name}: {uniform};\n",index+2));
         }
         shader.push_str("fn cc_signed_pow(v:vec3<f32>,p:vec3<f32>)->vec3<f32>{return sign(v)*pow(abs(v),p);}\nfn cc_luma(v:vec3<f32>)->f32{return dot(v,vec3<f32>(0.2722287168,0.6740817658,0.0536895174));}\nfn cc_saturate(v:vec3<f32>,s:f32)->vec3<f32>{let y=cc_luma(v);return vec3<f32>(y)+(v-vec3<f32>(y))*s;}\n");
         if input_domain == ColorDomain::LegacySrgb { shader.push_str(WGSL_COLOR_TRANSFORMS); }
@@ -101,6 +110,9 @@ pub fn lower_color_corrector(config: &ColorCorrectorConfig, input_domain: ColorD
         }
         if config.primaries.enabled {
             shader.push_str("let maximum=max(max(abs(c.r),abs(c.g)),abs(c.b));\nlet minimum=min(min(abs(c.r),abs(c.g)),abs(c.b));\nlet chroma=(maximum-minimum)/max(maximum,0.000001);\nc=cc_saturate(c,cc_finish.y*(1.0+cc_finish.z*(1.0-clamp(chroma,0.0,1.0))));\n");
+        }
+        if !config.rgb_mixer.is_identity() {
+            shader.push_str("c = cc_mix * c;\n");
         }
         shader.push_str("return vec4<f32>(c,sample.a);\n}\n");
         shader_source = Some(shader);
@@ -175,6 +187,11 @@ pub fn evaluate_color_corrector(config: &ColorCorrectorConfig, input_domain: Col
         let minimum=c.iter().map(|v|v.abs()).fold(f64::INFINITY,f64::min);
         let chroma=((maximum-minimum)/maximum.max(1e-6)).clamp(0.0,1.0);
         c=saturate(c,p.saturation as f64*(1.0+p.color_boost as f64*(1.0-chroma)));
+    }
+    if !config.rgb_mixer.is_identity() {
+        let mixer = &config.rgb_mixer;
+        c = [mixer.red, mixer.green, mixer.blue].map(|row| row.into_iter().zip(c)
+            .map(|(weight, value)| f64::from(weight) * value).sum());
     }
     let result=[c[0] as f32,c[1] as f32,c[2] as f32,pixel[3]];
     if result.iter().any(|v|!v.is_finite()) { return Err(OperatorError("ColorCorrector result exceeds finite f32 range".into())); }

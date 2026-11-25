@@ -266,7 +266,7 @@ pub fn build_execution_plan_with_options(
                     output_domain = lowered.output_domain;
                     let program = lowered.shader_source.map(|user_code| {
                         let mut ports = vec![CompilePort { label: "source".into(), data_type: "sampler2D".into() }];
-                        ports.extend(lowered.parameter_types.iter().map(|(label, _)| CompilePort { label: label.clone(), data_type: "vec4".into() }));
+                        ports.extend(lowered.parameter_types.iter().map(|(label, data_type)| CompilePort { label: label.clone(), data_type: data_type.clone() }));
                         Arc::new(compile_shader(&CompileRequest { user_code, input_ports: ports,
                             upstream_map: upstream.clone(), video_inputs: Vec::new(), target_format: "rgba16float".into() }))
                     });

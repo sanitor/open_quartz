@@ -6,7 +6,7 @@ use super::OperatorError;
 pub enum ColorDomain { LegacySrgb, AcesCgLinear }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColorCorrectorStage { Primaries, HdrZones }
+pub enum ColorCorrectorStage { Primaries, HdrZones, RgbMixer }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,12 +66,35 @@ impl Default for HdrZonesConfig {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RgbMixerConfig {
+    pub enabled: bool,
+    pub red: [f32; 3],
+    pub green: [f32; 3],
+    pub blue: [f32; 3],
+}
+
+impl Default for RgbMixerConfig {
+    fn default() -> Self {
+        Self { enabled: true, red: [1.0, 0.0, 0.0], green: [0.0, 1.0, 0.0], blue: [0.0, 0.0, 1.0] }
+    }
+}
+
+impl RgbMixerConfig {
+    pub(super) fn is_default(&self) -> bool { *self == Self::default() }
+
+    pub(super) fn is_identity(&self) -> bool { !self.enabled || self.is_default() }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ColorCorrectorWire {
     schema_version: u32,
     algorithm_version: u32,
     enabled: bool,
     primaries: PrimariesConfig,
     hdr_zones: HdrZonesConfig,
+    #[serde(default)]
+    rgb_mixer: RgbMixerConfig,
 }
 
 /// Version 1 order: WB → exposure → lift/gamma/gain/offset → contrast → HDR zones
@@ -84,18 +107,20 @@ pub struct ColorCorrectorConfig {
     pub enabled: bool,
     pub primaries: PrimariesConfig,
     pub hdr_zones: HdrZonesConfig,
+    #[serde(skip_serializing_if = "RgbMixerConfig::is_default")]
+    pub rgb_mixer: RgbMixerConfig,
 }
 impl Default for ColorCorrectorConfig {
     fn default() -> Self {
         Self { schema_version: 1, algorithm_version: 1, enabled: true,
-            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default() }
+            primaries: PrimariesConfig::default(), hdr_zones: HdrZonesConfig::default(), rgb_mixer: RgbMixerConfig::default() }
     }
 }
 impl TryFrom<ColorCorrectorWire> for ColorCorrectorConfig {
     type Error = OperatorError;
     fn try_from(w: ColorCorrectorWire) -> Result<Self, Self::Error> {
         let config = Self { schema_version: w.schema_version, algorithm_version: w.algorithm_version,
-            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones };
+            enabled: w.enabled, primaries: w.primaries, hdr_zones: w.hdr_zones, rgb_mixer: w.rgb_mixer };
         config.validate()?;
         Ok(config)
     }
@@ -159,6 +184,15 @@ pub const COLOR_CORRECTOR_FIELDS: &[ColorCorrectorField] = &[
     field!("highlight_pivot","Highlight center (stops)",HdrZones,-12.0,12.0,2.0,hdr_zones.highlight_pivot),
     field!("zone_range","Outer zone range (stops)",HdrZones,0.1,8.0,2.0,hdr_zones.range),
     field!("falloff","Zone falloff (stops)",HdrZones,0.1,8.0,2.0,hdr_zones.falloff),
+    field!("mix_red_red","Red output from red",RgbMixer,-4.0,4.0,1.0,rgb_mixer.red[0]),
+    field!("mix_red_green","Red output from green",RgbMixer,-4.0,4.0,0.0,rgb_mixer.red[1]),
+    field!("mix_red_blue","Red output from blue",RgbMixer,-4.0,4.0,0.0,rgb_mixer.red[2]),
+    field!("mix_green_red","Green output from red",RgbMixer,-4.0,4.0,0.0,rgb_mixer.green[0]),
+    field!("mix_green_green","Green output from green",RgbMixer,-4.0,4.0,1.0,rgb_mixer.green[1]),
+    field!("mix_green_blue","Green output from blue",RgbMixer,-4.0,4.0,0.0,rgb_mixer.green[2]),
+    field!("mix_blue_red","Blue output from red",RgbMixer,-4.0,4.0,0.0,rgb_mixer.blue[0]),
+    field!("mix_blue_green","Blue output from green",RgbMixer,-4.0,4.0,0.0,rgb_mixer.blue[1]),
+    field!("mix_blue_blue","Blue output from blue",RgbMixer,-4.0,4.0,1.0,rgb_mixer.blue[2]),
 ];
 
 impl ColorCorrectorConfig {
@@ -189,10 +223,10 @@ impl ColorCorrectorConfig {
         Ok(())
     }
     pub fn stage_enabled(&self, stage: ColorCorrectorStage) -> bool {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled }
     }
     pub fn set_stage_enabled(&mut self, stage: ColorCorrectorStage, enabled: bool) {
-        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled }
+        match stage { ColorCorrectorStage::Primaries => self.primaries.enabled = enabled, ColorCorrectorStage::HdrZones => self.hdr_zones.enabled = enabled, ColorCorrectorStage::RgbMixer => self.rgb_mixer.enabled = enabled }
     }
     /// Reset parameters, preserving the independent bypass state.
     pub fn reset_stage(&mut self, stage: ColorCorrectorStage) {
@@ -207,6 +241,6 @@ impl ColorCorrectorConfig {
         }) && (!self.hdr_zones.enabled || {
             let z = &self.hdr_zones;
             [&z.blacks,&z.shadows,&z.darks,&z.lights,&z.highlights,&z.specular].iter().all(|z| z.exposure == 0.0 && z.saturation == 1.0)
-        }))
+        }) && self.rgb_mixer.is_identity())
     }
 }

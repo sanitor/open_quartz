@@ -66,6 +66,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 在 Nodes 的 **Grade versions** 可复制、命名、切换和删除片段的调色方案。版本保存独立的片段节点图及其动画参数。活动版本立刻用于监视器和导出，可撤销版本操作。
 - 长时间线按窗口实例化片段控件。滚动会加载临近区间，拖拽结束时同步窗口。库、工程里的总片段数和编辑选择使用完整时间线。
 - **Library → Input color** 可按素材选择 Sony S-Log3 / S-Gamut3.Cine、S-Log3 / S-Gamut3 或 S-Log2 / S-Gamut。选择 **Auto** 恢复自动解释。
+- **Color Corrector → RGB Mixer** 在 ACEScg 中以 3×3 矩阵混合通道。每行控制一个输出通道，支持负系数、独立旁路、重置和撤销，保持 alpha 不变。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。
 - MP4 色彩选项支持 **HDR10 PQ · BT.2020 / 1000 nits**，使用原始素材生成 HEVC Main10。适用范围与验收见 [HDR 工作流](HDR_WORKFLOW.md)。

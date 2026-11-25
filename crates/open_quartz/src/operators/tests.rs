@@ -182,3 +182,19 @@ fn malformed_configs_are_rejected_including_disabled_stages_and_unknown_versions
         assert_eq!(config.field_value(descriptor.key),Some(descriptor.default));
     }
 }
+
+#[test]
+fn rgb_mixer_preserves_signed_headroom_and_alpha() {
+    let mut config = ColorCorrectorConfig::default();
+    config.rgb_mixer.red = [0.0, -2.0, 1.0];
+    config.rgb_mixer.green = [1.5, 0.0, 0.0];
+    let pixel = [2.0, -0.25, -1.0, 0.5];
+    assert_eq!(managed(&config, pixel), [-0.5, 3.0, -1.0, 0.5]);
+    let lowered = lower_color_corrector(&config, ColorDomain::AcesCgLinear).unwrap();
+    assert_eq!(lowered.parameters["cc_mix"], [0.0, 1.5, 0.0, -2.0, 0.0, 0.0, 1.0, 0.0, 1.0]);
+    config.set_stage_enabled(ColorCorrectorStage::RgbMixer, false);
+    assert_eq!(managed(&config, pixel), pixel);
+    config.reset_stage(ColorCorrectorStage::RgbMixer);
+    config.set_stage_enabled(ColorCorrectorStage::RgbMixer, true);
+    assert!(config.is_identity());
+}

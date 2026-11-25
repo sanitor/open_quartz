@@ -236,6 +236,7 @@ async function previewMatches(png, color) {
       : color === 'cyan' ? r < 35 && g > 220 && b > 220
       : color === 'green' ? r < 25 && g > 225 && b < 25
       : color === 'magenta' ? r > 225 && g < 25 && b > 225
+      : color === 'mixed-red' ? r < 120 && g > 35
       : color === 'dim-green' ? r < 25 && g >= 45 && g <= 155 && b < 25
       : false;
     if (matches) hits++;
@@ -640,6 +641,30 @@ try {
     await click('View final output'); await waitColor('red');
     await selectNode('video'); await click('View selected node'); await waitColor('red');
     await click('View final output'); await waitColor('red');
+    await close();
+  }, { core: true });
+  await step('Mix ACEScg channels in the native grade, bypass and reset the matrix', async () => {
+    const path = join(output, 'rgb-mixer.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); const corrector = await addEffect('Color Corrector');
+    await selectNode(corrector.id); await waitColor('red');
+    await client.activate(await revealInspector('Corrector palette RGB Mixer', 'Button'));
+    const coefficient = await revealInspector('Corrector Red output from red');
+    await client.click(coefficient); await client.setValue(coefficient, '0');
+    await waitColor('mixed-red'); await client.key('\n');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.deepEqual(graph.nodes.find(node => node.id === corrector.id).data.colorCorrector.rgbMixer.red, [0, 0, 0]);
+    await client.click(await revealInspector('RGB Mixer enabled', 'Checkbox')); await waitColor('red');
+    await client.click(await revealInspector('RGB Mixer enabled', 'Checkbox')); await waitColor('mixed-red');
+    await client.activate(await revealInspector('Reset RGB Mixer', 'Button')); await waitColor('red');
+    await click('UNDO'); await waitColor('mixed-red');
+    await close();
+    await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('mixed-red');
     await close();
   }, { core: true });
   report.passed = true;

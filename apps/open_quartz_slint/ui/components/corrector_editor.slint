@@ -144,9 +144,9 @@ export component CorrectorEditor inherits Rectangle {
         VerticalLayout {
             spacing: 0px;
             for field in root.fields: Rectangle {
-                height: field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.hdr-tool) ? 46px : 0px;
+                height: field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.hdr-tool) ? 46px : 0px;
                 visible: self.height > 0px;
-                if field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.hdr-tool): VerticalLayout {
+                if field.stage == root.palette && field.tool == (root.palette == "primaries" ? root.primary-tool : root.palette == "rgb_mixer" ? "matrix" : root.hdr-tool): VerticalLayout {
                     spacing: 2px;
                 Text { text: field.label; color: Theme.secondary; font-size: 10px; overflow: elide; }
                 HorizontalLayout {
