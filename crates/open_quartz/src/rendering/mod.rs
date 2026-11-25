@@ -1,6 +1,12 @@
 pub mod backend;
 #[cfg(windows)]
 pub mod dxgi;
+#[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+mod dxgi_encode;
+#[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
+mod encode_color;
+#[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+pub use self::{dxgi_encode::D3d12ColorConverter, encode_color::InputInterpretation};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device;
 pub mod executor;

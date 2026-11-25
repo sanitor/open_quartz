@@ -2,6 +2,7 @@
 use crate::{MediaError, RationalTimeBase};
 use ffmpeg_next::{codec, color, ffi, format::Pixel, frame::Video, Dictionary, Packet};
 use std::{collections::BTreeMap, ffi::c_void, ptr, ptr::NonNull};
+use windows_core::{IUnknown, Interface};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Profile {
@@ -11,6 +12,10 @@ pub enum Profile {
 }
 
 impl Profile {
+    pub fn is_hdr(self) -> bool {
+        self != Self::Sdr
+    }
+
     pub fn codec_name(self) -> &'static str {
         match self {
             Self::Sdr => "h264_d3d12va",
@@ -76,6 +81,13 @@ impl InputSurface {
     pub fn descriptor(&self) -> *const c_void {
         unsafe { (*self.0.as_ptr()).data[0].cast() }
     }
+
+    /// Native ID3D12Resource borrowed from this surface.
+    pub fn texture_ptr(&self) -> NonNull<c_void> {
+        // AVD3D12VAFrame begins with its retained ID3D12Resource pointer.
+        NonNull::new(unsafe { self.descriptor().cast::<*mut c_void>().read() })
+            .expect("FFmpeg-created D3D12 surface has no texture")
+    }
 }
 
 impl D3d12Encoder {
@@ -85,6 +97,36 @@ impl D3d12Encoder {
         time_base: RationalTimeBase,
         bitrate: usize,
         profile: Profile,
+    ) -> Result<Self, MediaError> {
+        Self::open_with_device(width, height, time_base, bitrate, profile, None)
+    }
+
+    /// Binds the encoder's native surfaces to an existing rendering device.
+    ///
+    /// # Safety
+    /// The pointer must be a live, borrowed ID3D12Device interface pointer.
+    /// The encoder acquires a COM reference for its own lifetime.
+    pub unsafe fn open_on_device(
+        width: u32,
+        height: u32,
+        time_base: RationalTimeBase,
+        bitrate: usize,
+        profile: Profile,
+        device: NonNull<c_void>,
+    ) -> Result<Self, MediaError> {
+        let borrowed = unsafe { IUnknown::from_raw_borrowed(&device.as_ptr()) }
+            .ok_or("Missing rendering device")?
+            .clone();
+        Self::open_with_device(width, height, time_base, bitrate, profile, Some(borrowed))
+    }
+
+    fn open_with_device(
+        width: u32,
+        height: u32,
+        time_base: RationalTimeBase,
+        bitrate: usize,
+        profile: Profile,
+        device: Option<IUnknown>,
     ) -> Result<Self, MediaError> {
         if width == 0
             || height == 0
@@ -99,18 +141,7 @@ impl D3d12Encoder {
             return Err("Invalid D3D12 encoder dimensions, time base or bitrate".into());
         }
         ffmpeg_next::init().map_err(|error| format!("FFmpeg init failed: {error}"))?;
-        let mut raw_device = ptr::null_mut();
-        let result = unsafe {
-            ffi::av_hwdevice_ctx_create(
-                &mut raw_device,
-                ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D12VA,
-                ptr::null(),
-                ptr::null_mut(),
-                0,
-            )
-        };
-        check(result, "Create D3D12 encoder device")?;
-        let device = Buffer(NonNull::new(raw_device).ok_or("Missing D3D12 device")?);
+        let device = create_device(device)?;
         let frames = Buffer(
             NonNull::new(unsafe { ffi::av_hwframe_ctx_alloc(device.0.as_ptr()) })
                 .ok_or("Cannot allocate D3D12 encoder frames context")?,
@@ -240,6 +271,36 @@ impl D3d12Encoder {
     }
 }
 
+fn create_device(shared: Option<IUnknown>) -> Result<Buffer, MediaError> {
+    let kind = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D12VA;
+    if let Some(shared) = shared {
+        let device = Buffer(
+            NonNull::new(unsafe { ffi::av_hwdevice_ctx_alloc(kind) })
+                .ok_or("Allocate FFmpeg D3D12 device")?,
+        );
+        let context = unsafe { &*device.0.as_ref().data.cast::<ffi::AVHWDeviceContext>() };
+        // ID3D12Device is the first member of AVD3D12VADeviceContext.
+        // The FFmpeg device owns and releases this COM reference, including
+        // when initialization fails.
+        unsafe { context.hwctx.cast::<*mut c_void>().write(shared.into_raw()) };
+        check(
+            unsafe { ffi::av_hwdevice_ctx_init(device.0.as_ptr()) },
+            "Initialize shared D3D12 encoder device",
+        )?;
+        return Ok(device);
+    }
+    let mut raw_device = ptr::null_mut();
+    check(
+        unsafe {
+            ffi::av_hwdevice_ctx_create(&mut raw_device, kind, ptr::null(), ptr::null_mut(), 0)
+        },
+        "Create D3D12 encoder device",
+    )?;
+    Ok(Buffer(
+        NonNull::new(raw_device).ok_or("Missing D3D12 device")?,
+    ))
+}
+
 fn check(result: i32, operation: &str) -> Result<(), MediaError> {
     if result < 0 {
         return Err(format!("{operation}: {}", ffmpeg_next::Error::from(result)).into());
@@ -260,8 +321,21 @@ mod tests {
         };
         let tick = ffmpeg_next::Rational(1, 30);
         let directory = tempfile::tempdir().unwrap();
+        let render_device = create_device(None).unwrap();
+        let context = unsafe {
+            &*render_device
+                .0
+                .as_ref()
+                .data
+                .cast::<ffi::AVHWDeviceContext>()
+        };
+        let device_ptr =
+            NonNull::new(unsafe { context.hwctx.cast::<*mut c_void>().read() }).unwrap();
         for profile in [Profile::Sdr, Profile::Hdr10, Profile::Hlg] {
-            let mut encoder = D3d12Encoder::open(320, 180, time_base, 1_000_000, profile).unwrap();
+            let mut encoder = unsafe {
+                D3d12Encoder::open_on_device(320, 180, time_base, 1_000_000, profile, device_ptr)
+            }
+            .unwrap();
             let parameters = encoder.parameters();
             let raw = unsafe { &*parameters.as_ptr() };
             let (space, primaries, transfer) = profile.color();

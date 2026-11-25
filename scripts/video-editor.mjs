@@ -43,6 +43,9 @@ if (mode === 'test' || mode === 'test-portable') {
   if (windows && mode === 'test') {
     await run('cargo', ['test', '--locked', '-p', 'oq-media', '--features', 'audio,d3d12',
       '--lib', '--test', 'decode_d3d12', '--', '--test-threads=1', '--include-ignored'], env);
+    await run('cargo', ['test', '--locked', '-p', 'open_quartz',
+      '--features', 'native-runtime,native-video-precise-d3d12', '--lib',
+      'converts_gpu_rgb_and_encodes_sdr_pq_and_hlg', '--', '--include-ignored'], env);
   }
 }
 if(mode==='build')await run('cargo',['build','--locked','--release','--manifest-path',manifest],env);
