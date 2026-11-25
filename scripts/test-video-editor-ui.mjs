@@ -2909,6 +2909,41 @@ try{
    await fileAction('SAVE AS', join(output, 'hdr-export.oqvideo.json'), 'Save project');
    await waitState('Project saved'); await close();
  }, { core: true });
+ await step('Composite two overlapping video tracks into a linear-light HDR10 export', async () => {
+   const fixture = JSON.parse(await readFile(join(output, 'hdr-export.oqvideo.json'), 'utf8'));
+   const base = fixture.data.tracks[0];
+   const top = structuredClone(base);
+   top.id += '-top'; top.name = 'Upper grade'; top.clips[0].id += '-top';
+   top.clips[0].transform.opacity = 0.5;
+   base.clips[0].transform.exposure = -1;
+   fixture.data.tracks.unshift(top);
+   const project = join(output, 'hdr-stack.oqvideo.json');
+   await writeFile(project, JSON.stringify(fixture));
+   await launch(project); await waitState('clips 2');
+   const path = join(output, 'hdr-stack.mp4');
+   await click('EXPORT');
+   await client.click(await client.find({ label: 'Export color profile', role: 'Combobox' }));
+   await client.key('\uf701'); await client.key('\n');
+   await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), '3');
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Export MP4'); await waitState('Export complete');
+   const decoded = mediaCommand(['-i', path, '-an', '-pix_fmt', 'yuv420p10le', '-f', 'rawvideo', '-']);
+   assert.equal(decoded.length, 320 * 180 * 3 * 3);
+   const pq = (code, gain) => {
+     const m1 = 2610 / 16384, m2 = 2523 / 32;
+     const c1 = 3424 / 4096, c2 = 2413 / 128, c3 = 2392 / 128;
+     const signal = ((code - 64) / 876) ** (1 / m2);
+     const luminance = (Math.max(signal - c1, 0) / (c2 - c3 * signal)) ** (1 / m1) * gain;
+     const power = luminance ** m1;
+     return 64 + 876 * ((c1 + c2 * power) / (1 + c3 * power)) ** m2;
+   };
+   for (const [x, original] of [[100, 509], [220, 720]]) {
+     const actual = decoded.readUInt16LE((90 * 320 + x) * 2);
+     assert(Math.abs(actual - pq(original, 0.75)) <= 5,
+       `expected linear-light 75% HDR blend at ${x}, got ${actual}`);
+   }
+   await close();
+ }, { core: true });
  await step('Switch a sequence to managed color and apply exposure before the SDR view', async () => {
    const fixture = JSON.parse(await readFile(join(output, 'hdr-export.oqvideo.json'), 'utf8'));
    fixture.data.tracks[0].clips[0].transform.exposure = -1;

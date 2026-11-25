@@ -157,9 +157,6 @@ fn run(
     progress: &Mutex<(String, Option<Phase>)>,
 ) -> Result<bool, String> {
     if options.hdr10 {
-        if project.tracks.iter().filter(|track| track.visible && !track.clips.is_empty()).count() > 1 {
-            return Err("HDR10 currently requires a single visible video track".into());
-        }
         for input in project.tracks.iter().filter(|track| track.visible).flat_map(|track| &track.clips) {
             if input.timeline_start >= frames.end || input.timeline_end()? <= frames.start { continue; }
             if project.assets.iter().find(|asset| asset.id == input.asset_id).is_some_and(|asset| asset.sequence_source().is_some()) {

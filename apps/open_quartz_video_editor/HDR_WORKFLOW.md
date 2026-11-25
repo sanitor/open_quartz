@@ -39,8 +39,9 @@ asset interpretation survives saving and reopening.
 
 ## HDR10 export
 
-In the MP4 export dialog select **HDR10 PQ · BT.2020 / 1000 nits** for a
-single visible video track. This declares a BT.2020/D65 1000 cd/m² mastering
+In the MP4 export dialog select **HDR10 PQ · BT.2020 / 1000 nits**. Visible
+video tracks composite in the linear timeline space. The preset declares a
+BT.2020/D65 1000 cd/m² mastering
 target and 0.005 cd/m² minimum. Use the preset for material mastered to that
 target. The encoder writes an MP4 mastering display box. The target omits
 MaxCLL and MaxFALL.
@@ -55,7 +56,9 @@ custom shader effects are rejected for this profile.
 The E2E case verifies Main10 and its BT.2020/PQ tags using an independent
 decoder, calculates the five-frame output range, checks the MP4 mastering
 box, and compares both decoded 10-bit luminance patches with the original
-PQ sample values.
+PQ sample values. A two-track render checks that 50% opacity over a
+one-stop darker background preserves the expected linear-light blend in the
+decoded HDR10 signal.
 
 ## Managed sequence monitoring
 
