@@ -223,7 +223,7 @@ fn build_sequence_request(
             clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
             blend: track.blend,
             transform: draft.unwrap_or(clip.transform),
-            pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
+            pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()).effective()?,
             speed_percent: clip.speed_percent,
             opacity, mask: clip.mask, crop: clip.crop, crop_animation, effects, spatial,
             dissolve,

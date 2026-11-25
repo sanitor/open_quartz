@@ -295,6 +295,13 @@ impl Controller {
         let Some(clip)=self.document.clip(&id)else{return;};
         let mut pipeline=clip.pipeline.clone();
         match action {
+            "bypass-selected-node" => {
+                let Some(node) = self.pipeline_editor.selected.first().filter(|_| self.pipeline_editor.selected.len() == 1) else { return; };
+                match pipeline.toggle_bypass(node) {
+                    Ok(()) => self.prepare_pipeline(pipeline, self.pipeline_editor.selected.clone()),
+                    Err(error) => self.pipeline_error(error),
+                }
+            }
             "compare-original" => {
                 self.pipeline_editor.monitor = None;
                 self.pipeline_editor.comparison = if self.pipeline_editor.comparison.is_some() { None } else { Some(0.5) };
@@ -484,6 +491,8 @@ impl Controller {
         let node=self.selected_pipeline_node();
         let editable=node.as_ref().is_some_and(|n|!ClipPipeline::is_protected(&n.id));
         window.set_pipeline_has_selection(node.is_some());
+        window.set_pipeline_can_bypass(self.pipeline_editor.selected.len() == 1 && node.as_ref().is_some_and(ClipPipeline::can_bypass));
+        window.set_pipeline_node_bypassed(node.as_ref().is_some_and(ClipPipeline::is_bypassed));
         window.set_pipeline_label_read_only(!editable);window.set_pipeline_shader_read_only(!editable || node.as_ref().is_some_and(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some() || ClipPipeline::is_lut(node)));window.set_pipeline_can_delete(editable);
         window.set_pipeline_selection_message(if self.pipeline_editor.clip.is_none(){"Select a timeline clip to edit its pipeline"}else{"Select a node to edit its parameters"}.into());
         window.set_pipeline_node_id(node.as_ref().map(|n|n.id.as_str()).unwrap_or_default().into());

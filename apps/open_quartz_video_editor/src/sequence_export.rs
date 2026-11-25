@@ -162,7 +162,7 @@ fn run(
             if project.assets.iter().find(|asset| asset.id == input.asset_id).is_some_and(|asset| asset.sequence_source().is_some()) {
                 return Err("Nested sequences are not available in HDR export".into());
             }
-            if input.pipeline.graph().nodes.iter().any(|node| node.id != super::SOURCE_ID && node.id != OUTPUT_ID
+            if input.pipeline.effective()?.graph().nodes.iter().any(|node| node.id != super::SOURCE_ID && node.id != OUTPUT_ID
                 && node.node_type != open_quartz::project::NodeType::ColorCorrector
                 && crate::clip_pipeline::BranchComposite::from_node(node).is_none()
                 && !crate::clip_pipeline::ClipPipeline::is_lut(node))

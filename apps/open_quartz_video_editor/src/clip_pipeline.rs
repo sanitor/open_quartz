@@ -120,6 +120,9 @@ impl ClipPipeline {
             if node.node_type != node.data.node_type {
                 return Err(format!("Node {} has inconsistent node types", node.id));
             }
+            if node.data.extra.get("clipBypass").is_some_and(|flag| flag.as_bool() != Some(true) || !Self::can_bypass(node)) {
+                return Err(format!("Node {} has an invalid clip bypass", node.id));
+            }
             if node.id == SOURCE_ID {
                 continue;
             }
@@ -230,6 +233,9 @@ impl ClipPipeline {
                     .validate(&module).map_err(|error| format!("Node {}: {error}", node.id))?;
             }
         }
+        let bypassed: Vec<_> = self.graph.nodes.iter().filter(|node| Self::is_bypassed(node))
+            .map(|node| node.id.clone()).collect();
+        if !bypassed.is_empty() { self.graph_without_nodes(&bypassed)?; }
         Ok(())
     }
 
@@ -247,6 +253,42 @@ impl ClipPipeline {
         let mut aggregate = project(self.graph.clone());
         aggregate.apply_graph_command(command, 0).map_err(|error| error.to_string())?;
         self.replace_graph(aggregate.to_file().graph)
+    }
+
+    pub fn is_bypassed(node: &ProjectNode) -> bool {
+        node.data.extra.get("clipBypass").and_then(serde_json::Value::as_bool).unwrap_or(false)
+    }
+
+    pub fn can_bypass(node: &ProjectNode) -> bool {
+        !Self::is_protected(&node.id)
+            && node.data.outputs.len() == 1
+            && node.data.outputs[0].data_type == DataType::Vec4
+            && node.data.inputs.iter().filter(|port| Self::bypass_input(node, port)).count() == 1
+    }
+
+    fn bypass_input(node: &ProjectNode, port: &open_quartz::project::Port) -> bool {
+        port.data_type == DataType::Sampler2d
+            && (BranchComposite::from_node(node).is_none() || port.label == "base")
+    }
+
+    pub fn toggle_bypass(&mut self, node_id: &str) -> Result<(), String> {
+        let mut candidate = self.clone();
+        let node = candidate.graph.nodes.iter_mut().find(|node| node.id == node_id)
+            .filter(|node| Self::can_bypass(node)).ok_or("Select one image node with a primary input")?;
+        if Self::is_bypassed(node) {
+            node.data.extra.remove("clipBypass");
+        } else {
+            node.data.extra.insert("clipBypass".into(), serde_json::Value::Bool(true));
+        }
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn effective(&self) -> Result<Self, String> {
+        let bypassed: Vec<_> = self.graph.nodes.iter().filter(|node| Self::is_bypassed(node)).map(|node| node.id.clone()).collect();
+        if bypassed.is_empty() { return Ok(self.clone()); }
+        Ok(Self { graph: self.graph_without_nodes(&bypassed)? })
     }
 
     /// Reconnect the protected output to a monitor tap in a transient copy.
@@ -367,6 +409,10 @@ impl ClipPipeline {
 
     /// Remove serial stages by bridging their sole image input; ambiguous merges are rejected.
     pub fn remove_nodes(&mut self, node_ids: &[String]) -> Result<(), String> {
+        self.replace_graph(self.graph_without_nodes(node_ids)?)
+    }
+
+    fn graph_without_nodes(&self, node_ids: &[String]) -> Result<Graph, String> {
         let selected = node_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
         for id in &selected {
             if Self::is_protected(id) {
@@ -383,8 +429,7 @@ impl ClipPipeline {
             let outgoing = graph.edges.iter().filter(|edge| edge.source == *id).cloned().collect::<Vec<_>>();
             let incoming = graph.edges.iter().filter(|edge| {
                 edge.target == *id && node.data.inputs.iter().any(|port| {
-                    port.id == edge.target_handle && port.data_type == DataType::Sampler2d
-                        && (BranchComposite::from_node(node).is_none() || port.label == "base")
+                    port.id == edge.target_handle && Self::bypass_input(node, port)
                 })
             }).cloned().collect::<Vec<_>>();
             let bridge = if outgoing.is_empty() || matches!(node.node_type, NodeType::Constant | NodeType::Math) {
@@ -404,7 +449,7 @@ impl ClipPipeline {
                 Ok(())
             }).map_err(|error| error.to_string())?;
         }
-        self.replace_graph(graph)
+        Ok(graph)
     }
 }
 

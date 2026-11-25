@@ -73,6 +73,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 监视器 **Color scope** 提供 RGB Parade 和 Vectorscope。RGB Parade 按画面横坐标分列显示各通道码值，Vectorscope 显示 Rec.709 Cb/Cr 分布。两者跟随监视器当前 SDR 图像。
 - **Color Corrector → RGB Mixer** 在 ACEScg 中以 3×3 矩阵混合通道。每行控制一个输出通道，支持负系数、独立旁路、重置和撤销，保持 alpha 不变。
 - 在 **Nodes** 监视器按 **Grab still** 固定当前画面的 SDR 参考图。参考图随工程保存，可在八张以内切换，通过 **Show still / Show live** 对照当前调色。删除参考图可撤销。
+- 在 **Nodes** 选中具有主图像输入的节点后，可用 **Bypass node / Enable node** 切换。旁路保留参数与连线，写入工程历史，监视、播放与导出共享该状态。
 - **Nodes → Compare original** 从同一帧左侧显示原素材，右侧显示当前调色结果。拖动分界可检查局部或临时全屏旁路片段节点。比较在关闭、换片段或播放时结束。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。

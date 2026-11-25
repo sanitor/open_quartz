@@ -600,6 +600,8 @@ export component EditorWindow inherits Window {
     in property <image> reference_image;
     callback reference_action(string, int);
     in property <string> pipeline_monitor_label;
+    in property <bool> pipeline_can_bypass;
+    in property <bool> pipeline_node_bypassed;
     in property <bool> pipeline_compare_active;
     in-out property <float> pipeline_split: 0.5;
     callback pipeline_compare_split(float);
@@ -1005,6 +1007,11 @@ export component EditorWindow inherits Window {
                                 text: root.pipeline_compare_active ? "Close comparison" : "Compare original";
                                 enabled: root.selected_clip_id != "";
                                 clicked => { root.pipeline_action("compare-original"); }
+                            }
+                            if root.pipeline_can_bypass: Button {
+                                text: root.pipeline_node_bypassed ? "Enable node" : "Bypass node";
+                                enabled: !root.pipeline_busy && !root.pipeline_inspector_dirty;
+                                clicked => { root.pipeline_action("bypass-selected-node"); }
                             }
                             if root.pipeline_compare_active: Text { text: "Original"; color: root.secondary; vertical-alignment: center; }
                             if root.pipeline_compare_active: Slider {

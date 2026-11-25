@@ -851,6 +851,24 @@ try {
     await click('Show still'); await waitColor('red'); await click('Show live'); await waitColor('cyan');
     await close();
   }, { core: true });
+  await step('Bypass one image node without losing authored settings or connections', async () => {
+    const path = join(output, 'bypass.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); const invert = await addEffect('Invert'); await waitColor('cyan');
+    await selectNode(invert.id); await click('Bypass node'); await waitColor('red'); await waitNodeCount(3);
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.equal(graph.nodes.find(node => node.id === invert.id).data.clipBypass, true);
+    assert.equal(graph.edges.find(edge => edge.target === 'output').source, invert.id);
+    await click('Enable node'); await waitColor('cyan'); await click('UNDO'); await waitColor('red');
+    await close(); await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('red');
+    await selectNode(invert.id); await click('Enable node'); await waitColor('cyan');
+    await click('SAVE'); await waitState('Project saved'); await close();
+  }, { core: true });
   report.passed = true;
 } catch (error) {
   report.error = error.stack;
