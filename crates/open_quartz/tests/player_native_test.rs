@@ -1,6 +1,5 @@
 use open_quartz::{DataType, Environment, NodeData, NodeType, OpenQuartz, OutputPolicy, PlayerState, Port,
 PortDirection, Position, ProjectNode, Resource, ResourceId, ResourceKind, ResourceSource,};
-use serde_json::Map;
 
 #[test]
 fn player_exposes_a_single_predictable_lifecycle() {
@@ -95,11 +94,6 @@ fn output_creates_an_owned_subscription_that_can_close_independently() {
         data: NodeData {
             node_type: NodeType::Input,
             label: "Source".into(),
-            template_name: None,
-            shader_template_id: None,
-            color_corrector: None,
-            shader_code: String::new(),
-            inputs: vec![],
             outputs: vec![Port {
                 id: "value".into(),
                 label: "value".into(),
@@ -108,44 +102,8 @@ fn output_creates_an_owned_subscription_that_can_close_independently() {
                 default_value: None,
                 description: None,
             }],
-            uniforms: Map::new(),
             input_data_type: Some(DataType::Float),
-            input_mode: None,
-            image_data_url: None,
-            image_width: None,
-            image_height: None,
-            fb_format: None,
-            fb_width: None,
-            fb_height: None,
-            fb_stride: None,
-            raw_data_url: None,
-            tex_filter: None,
-            tex_wrap: None,
-            width: None,
-            height: None,
-            auto_size: None,
-            out_format: None,
-            inference_model_id: None,
-            inference_score_threshold: None,
-            inference_iou_threshold: None,
-            inference_target_size: None,
-            inference_source: None,
-            inference_catalog_id: None,
-            inference_model_path: None,
-            inference_params: None,
-            inference_task: None,
-            inference_policy: None,
-            video_source_type: None,
-            video_url: None,
-            video_file_path: None,
-            video_device_id: None,
-            video_loop: None,
-            video_playback_rate: None,
-            system_source: None,
-            math_op: None,
-            feedback_enabled: None,
-            feedback_clear_color: None,
-            extra: Map::new(),
+            ..NodeData::default()
         },
     });
     let player = sdk.player(project.graph()).build().unwrap();
