@@ -290,6 +290,18 @@ impl ClipPipeline {
         })
     }
 
+    pub(crate) fn is_lut(node: &ProjectNode) -> bool {
+        node.data.shader_template_id.as_deref() == Some(crate::color_lut::TEMPLATE)
+            && node.data.shader_code.starts_with("\n// OpenQuartz embedded ACEScg CUBE\n")
+    }
+
+    pub fn add_lut(&mut self, after: &str, code: String, label: String) -> Result<String, String> {
+        self.add_serial_factory(after, None, |position| NodeFactoryRequest::Shader {
+            position: Some(position), code, label, template_name: None,
+            shader_template_id: Some(crate::color_lut::TEMPLATE.to_owned()),
+        })
+    }
+
     pub fn add_branch_composite(&mut self, after: &str, operation: BranchComposite) -> Result<String, String> {
         let (label, template, code, auxiliary) = operation.definition();
         let id = self.add_serial_factory(after, Some(auxiliary), |position| NodeFactoryRequest::Shader {

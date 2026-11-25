@@ -358,8 +358,8 @@ impl Controller {
     fn apply_pipeline_inspector(&mut self,action:&str){
         let Some(node)=self.selected_pipeline_node()else{return;};
         if ClipPipeline::is_protected(&node.id){self.pipeline_error("Clip source and output are managed by the timeline".into());return;}
-        if action == "apply-shader" && crate::clip_pipeline::BranchComposite::from_node(&node).is_some() {
-            self.pipeline_error("The compositor shader is read-only".into());
+        if action == "apply-shader" && (crate::clip_pipeline::BranchComposite::from_node(&node).is_some() || ClipPipeline::is_lut(&node)) {
+            self.pipeline_error("The generated shader is read-only".into());
             return;
         }
         let Some(draft)=self.pipeline_draft()else{return;};
@@ -389,6 +389,27 @@ impl Controller {
             }else{self.prepare_pipeline(pipeline,self.pipeline_editor.selected.clone());}
         },Err(e)=>self.pipeline_error(e)}
     }
+    pub(super) fn import_clip_lut(&mut self, path: &std::path::Path) {
+        if self.pipeline_has_drafts() {
+            self.status("Apply or discard the pending node drafts before importing a LUT");
+            return;
+        }
+        let Some(clip_id) = self.pipeline_editor.clip.as_deref() else { return; };
+        let Some(clip) = self.document.clip(clip_id) else { return; };
+        if self.document.clip_track(clip_id).is_some_and(|track| track.locked) {
+            self.status("Unlock the video track before adding a LUT");
+            return;
+        }
+        let after = self.pipeline_editor.selected.first().map(String::as_str).unwrap_or("output");
+        let label = path.file_stem().and_then(|name| name.to_str()).unwrap_or("CUBE LUT");
+        let mut pipeline = clip.pipeline.clone();
+        match crate::color_lut::Cube::open(path)
+            .and_then(|cube| pipeline.add_lut(after, cube.shader(), label.to_owned())) {
+            Ok(id) => self.prepare_pipeline(pipeline, BTreeSet::from([id])),
+            Err(error) => self.pipeline_error(error),
+        }
+    }
+
     fn prepare_pipeline(&mut self,pipeline:ClipPipeline,selection:BTreeSet<String>){
         let Some(clip)=self.pipeline_editor.clip.clone()else{return;};
         self.pause();self.pipeline_editor.error.clear();
@@ -462,7 +483,7 @@ impl Controller {
         let node=self.selected_pipeline_node();
         let editable=node.as_ref().is_some_and(|n|!ClipPipeline::is_protected(&n.id));
         window.set_pipeline_has_selection(node.is_some());
-        window.set_pipeline_label_read_only(!editable);window.set_pipeline_shader_read_only(!editable || node.as_ref().is_some_and(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some()));window.set_pipeline_can_delete(editable);
+        window.set_pipeline_label_read_only(!editable);window.set_pipeline_shader_read_only(!editable || node.as_ref().is_some_and(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some() || ClipPipeline::is_lut(node)));window.set_pipeline_can_delete(editable);
         window.set_pipeline_selection_message(if self.pipeline_editor.clip.is_none(){"Select a timeline clip to edit its pipeline"}else{"Select a node to edit its parameters"}.into());
         window.set_pipeline_node_id(node.as_ref().map(|n|n.id.as_str()).unwrap_or_default().into());
         window.set_pipeline_node_type(node.as_ref().map(|n|format!("{:?}",n.node_type)).unwrap_or_default().into());

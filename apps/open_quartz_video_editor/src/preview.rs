@@ -241,7 +241,7 @@ fn build_sequence_request(
     if let [layer] = layers.as_slice() {
         if !managed_output && !nested && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
-            && !layer.pipeline.graph().nodes.iter().any(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some())
+            && !layer.pipeline.graph().nodes.iter().any(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some() || ClipPipeline::is_lut(node))
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {
             let layer = layers.pop().expect("one preview layer");

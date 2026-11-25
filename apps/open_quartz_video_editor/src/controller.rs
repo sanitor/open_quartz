@@ -788,6 +788,7 @@ impl Controller {
                 Err(error) => self.status(error),
             },
             "import-srt" => self.path_dialog("srt"),
+            "lut" => self.path_dialog("lut"),
             "new" => {
                 if self.confirm_discard() {
                     self.pause();
@@ -991,6 +992,9 @@ impl Controller {
             "import" => rfd::FileDialog::new()
                 .add_filter("Supported media", &["mp4", "mov", "m4v", "mkv", "wav", "m4a", "aac", "png", "jpg", "jpeg"])
                 .pick_file(),
+            "lut" => rfd::FileDialog::new()
+                .add_filter("3D CUBE look-up table", &["cube"])
+                .pick_file(),
             "srt" => rfd::FileDialog::new()
                 .add_filter("SubRip subtitles", &["srt"])
                 .pick_file(),
@@ -1048,6 +1052,7 @@ impl Controller {
         }
         match kind {
             "import" => self.import_path(path),
+            "lut" => self.import_clip_lut(&path),
             "import-files" => {
                 let paths = path.to_string_lossy().lines().filter(|line| !line.trim().is_empty())
                     .map(PathBuf::from).collect::<Vec<_>>();

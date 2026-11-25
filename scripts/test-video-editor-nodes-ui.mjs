@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -765,6 +765,25 @@ try {
     assert.equal(graph.nodes.length, 3);
     await click('Close comparison'); await sides('cyan', 'cyan');
     assert.equal((await client.byLabel('Original comparison split', { role: 'Slider' })).length, 0);
+    await close();
+  }, { core: true });
+  await step('Import an embedded CUBE LUT and retain its grade after removing the file', async () => {
+    const lut = join(output, 'green-look.cube');
+    const invalid = join(output, 'bad.cube');
+    const path = join(output, 'lut.oqvideo.json');
+    await writeFile(lut, 'LUT_3D_SIZE 2\n' + '0.339517308 0.916365764 0.109567717\n'.repeat(8));
+    await writeFile(invalid, 'LUT_3D_SIZE 2\n0 0 0\n');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await selectNode('video');
+    await fileAction('Import CUBE LUT', invalid, 'Load CUBE LUT');
+    await waitState('CUBE sample count'); await waitNodeCount(2); await waitColor('red');
+    await fileAction('Import CUBE LUT', lut, 'Load CUBE LUT'); await waitNodeCount(3); await waitColor('green');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    await click('UNDO'); await waitColor('red'); await click('REDO'); await waitColor('green');
+    await close(); await unlink(lut); await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('green');
     await close();
   }, { core: true });
   report.passed = true;

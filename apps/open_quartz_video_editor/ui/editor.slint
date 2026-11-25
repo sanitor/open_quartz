@@ -952,6 +952,10 @@ export component EditorWindow inherits Window {
                             VerticalLayout {
                                 padding: 8px; spacing: 10px;
                                 Text { text: root.nodes_open ? "Add after selected node" : "Open Nodes workspace to add effects"; color: root.secondary; font-size: 11px; wrap: word-wrap; }
+                                if root.nodes_open: Button {
+                                    text: "Import CUBE LUT"; enabled: root.selected_clip_id != "" && !root.pipeline_busy && !root.pipeline_inspector_dirty;
+                                    clicked => { root.project_action("lut"); }
+                                }
                                 for group in root.pipeline_effect_groups: VerticalLayout {
                                     spacing: 5px;
                                     Text { text: group.label; color: root.accent; font-size: 10px; font-weight: 700; }
@@ -1877,7 +1881,7 @@ export component EditorWindow inherits Window {
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: root.file_dialog_kind == "import-files" ? "Paste one full file path per line, or use Browse." : root.file_dialog_kind == "relink-folder" ? "Paste a folder path, or use Browse to choose a folder." : "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
                         text: (root.export_profile == 1 ? "HEVC Main10 · declared BT.2020 / 1000-nit target" : "H.264 MP4") + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
@@ -1930,7 +1934,7 @@ export component EditorWindow inherits Window {
                         if root.file_dialog_kind != "import-files": LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "lut" ? "/path/to/grade.cube" : root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -1945,7 +1949,7 @@ export component EditorWindow inherits Window {
                             text: "Add to queue";
                             clicked => { root.file_dialog_open = false; editor_focus.focus(); root.file_submit("queue-export", root.file_path); }
                         }
-                        Button { text: root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

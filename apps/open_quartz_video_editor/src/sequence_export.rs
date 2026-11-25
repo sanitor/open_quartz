@@ -167,7 +167,8 @@ fn run(
             }
             if input.pipeline.graph().nodes.iter().any(|node| node.id != super::SOURCE_ID && node.id != OUTPUT_ID
                 && node.node_type != open_quartz::project::NodeType::ColorCorrector
-                && crate::clip_pipeline::BranchComposite::from_node(node).is_none())
+                && crate::clip_pipeline::BranchComposite::from_node(node).is_none()
+                && !crate::clip_pipeline::ClipPipeline::is_lut(node))
             {
                 return Err("HDR10 supports Color Corrector and clip composition. Remove legacy shader effects from the export range.".into());
             }

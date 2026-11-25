@@ -21,6 +21,7 @@ mod clip_pipeline;
 mod output_queue;
 mod timeline_viewport;
 mod color_scope;
+mod color_lut;
 #[path = "../../open_quartz_slint/src/graph_view_model.rs"]
 mod graph_view_model;
 #[path = "../../open_quartz_slint/src/graph_clipboard.rs"]

@@ -172,6 +172,10 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                     node.data.shader_code = node.data.shader_code.replace("0.27222872, 0.67408177, 0.05368952", "0.2126, 0.7152, 0.0722");
                 }
             }
+            if crate::clip_pipeline::ClipPipeline::is_lut(&node) {
+                node.data.managed_color = true;
+                node.data.normalize_legacy_inputs = true;
+            }
             if let Some(effects) = &layer.effects {
                 let start = (i128::from(effects.timeline_start_ns) - i128::from(origin)) as f64 / 1_000_000_000.0;
                 for animated in effects.keys.iter().filter(|entry| entry.node == node.id) {
@@ -287,7 +291,7 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                     break matches!(&layer.source, LayerSource::Video { .. } | LayerSource::Nested { .. });
                 }
                 let node = clip.nodes.iter().find(|node| node.id == id).ok_or("Missing layer color producer")?;
-                if crate::clip_pipeline::BranchComposite::from_node(node).is_some() { break true; }
+                if crate::clip_pipeline::BranchComposite::from_node(node).is_some() || crate::clip_pipeline::ClipPipeline::is_lut(node) { break true; }
                 let Some(corrector) = &node.data.color_corrector else { break false; };
                 if !corrector.is_identity() { break true; }
                 let incoming = clip.edges.iter().find(|edge| edge.target == id).ok_or("Missing Corrector source")?;
