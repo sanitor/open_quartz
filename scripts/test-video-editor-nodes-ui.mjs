@@ -236,6 +236,8 @@ async function previewMatches(png, color) {
       : color === 'cyan' ? r < 35 && g > 220 && b > 220
       : color === 'green' ? r < 25 && g > 225 && b < 25
       : color === 'magenta' ? r > 225 && g < 25 && b > 225
+      : color === 'neutral-mid' ? r >= 100 && r <= 165 && Math.abs(r-g) < 10 && Math.abs(r-b) < 10
+      : color === 'masked-cyan' ? r < 20 && g >= 75 && g < 165 && b >= 75 && b < 165
       : color === 'mixed-red' ? r < 120 && g > 35
       : color === 'dim-green' ? r < 25 && g >= 45 && g <= 155 && b < 25
       : false;
@@ -665,6 +667,35 @@ try {
     await close();
     await launch(path); await waitState('clips 1');
     await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('mixed-red');
+    await close();
+  }, { core: true });
+  await step('Blend two image branches and composite a luminance matte', async () => {
+    const path = join(output, 'compositing.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); const invert = await addEffect('Invert'); await waitColor('cyan');
+    await selectNode(invert.id); const blend = await addEffect('Blend'); await waitColor('neutral-mid');
+    await selectNode(blend.id);
+    const setAmount = async value => {
+      const field = await revealInspector('Uniform amount');
+      await client.setValue(field, value);
+      await client.activate(await revealInspector('Apply uniforms', 'Button'));
+    };
+    await setAmount('1'); await waitColor('red');
+    await client.activate(await port(invert.label, true));
+    const overlay = await client.find({ label: /^Input blend_\d+ overlay$/, role: 'Button', visible: false });
+    await client.activate(overlay); await waitColor('cyan');
+    await selectNode(blend.id); const mask = await addEffect('Luma Mask'); await waitColor('masked-cyan');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.equal(graph.edges.filter(edge => edge.target === blend.id && edge.source === invert.id).length, 2);
+    assert.equal(graph.edges.filter(edge => edge.target === mask.id).length, 2);
+    await selectNode(mask.id); await activate('Delete node'); await waitColor('cyan');
+    await click('UNDO'); await waitColor('masked-cyan');
+    await close(); await launch(path); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('masked-cyan');
     await close();
   }, { core: true });
   report.passed = true;

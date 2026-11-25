@@ -66,6 +66,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 在 Nodes 的 **Grade versions** 可复制、命名、切换和删除片段的调色方案。版本保存独立的片段节点图及其动画参数。活动版本立刻用于监视器和导出，可撤销版本操作。
 - 长时间线按窗口实例化片段控件。滚动会加载临近区间，拖拽结束时同步窗口。库、工程里的总片段数和编辑选择使用完整时间线。
 - **Library → Input color** 可按素材选择 Sony S-Log3 / S-Gamut3.Cine、S-Log3 / S-Gamut3 或 S-Log2 / S-Gamut。选择 **Auto** 恢复自动解释。
+- **Nodes → Blend** 提供底图与叠加图的两路图像输入；**Luma Mask** 用第二分支的亮度与 alpha 控制底图覆盖率。插入时第二路默认接 **Clip Source**，可拖线重接同片段的其他图像节点。**Amount** 控制混合强度。启用 ACEScg 时，两路在浮点工作域合成。
 - **Color Corrector → RGB Mixer** 在 ACEScg 中以 3×3 矩阵混合通道。每行控制一个输出通道，支持负系数、独立旁路、重置和撤销，保持 alpha 不变。
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。

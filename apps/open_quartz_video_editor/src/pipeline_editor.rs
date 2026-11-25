@@ -117,13 +117,20 @@ impl Controller {
         this.pipeline_editor.effects=crate::shader_catalog::presets().iter().filter(|preset|matches!(preset.category,"COLOR"|"FILTER"|"DISTORTION"|"BLEND")).collect::<Vec<_>>();
         this.pipeline_editor.effects.sort_by_key(|preset|if preset.category=="COLOR"{0}else{1});
         let mut groups=Vec::new();
-        for category in ["CUSTOM","COLOR","FILTER","DISTORTION","BLEND"] {
+        for category in ["CUSTOM","COMPOSITE","COLOR","FILTER","DISTORTION","BLEND"] {
             let mut effects:Vec<crate::PipelineEffect>=if category=="CUSTOM" { vec![crate::PipelineEffect { label:"Custom Shader".into(), index:-1, glyph:"ƒx".into() }] }
                 else { this.pipeline_editor.effects.iter().enumerate().filter(|(_,preset)|preset.category==category).map(|(index,preset)|crate::PipelineEffect {
                     label:preset.label.to_owned().into(), index:index as i32,
                     glyph:match category { "COLOR"=>"C", "FILTER"=>"F", "DISTORTION"=>"D", "BLEND"=>"B", _=>"□" }.into(),
                 }).collect() };
             if category=="COLOR" { effects.insert(0,crate::PipelineEffect { label:"Color Corrector".into(),index:-3,glyph:"C".into() }); }
+            if category == "BLEND" {
+                effects.retain(|effect| effect.label != "Blend");
+            }
+            if category == "COMPOSITE" {
+                effects.insert(0, crate::PipelineEffect { label: "Luma Mask".into(), index: -5, glyph: "M".into() });
+                effects.insert(0, crate::PipelineEffect { label: "Blend".into(), index: -4, glyph: "B".into() });
+            }
             let rows=effects.chunks(2).map(|pair|crate::PipelineEffectRow {
                 first:pair[0].clone(),
                 second:pair.get(1).cloned().unwrap_or_else(||crate::PipelineEffect { label:"".into(), index:-2, glyph:"".into() }),
@@ -219,7 +226,11 @@ impl Controller {
                 let Some(clip)=self.document.clip(&id)else{return;};
                 let mut pipeline=clip.pipeline.clone();
                 let after=self.pipeline_editor.selected.iter().next().map(String::as_str).unwrap_or(SOURCE_ID);
-                let result=if index==-3 { pipeline.add_corrector_serial(after) } else {
+                let result=if index==-3 { pipeline.add_corrector_serial(after) } else if index == -4 || index == -5 {
+                    let operation = if index == -4 { crate::clip_pipeline::BranchComposite::Blend }
+                        else { crate::clip_pipeline::BranchComposite::LumaMask };
+                    pipeline.add_branch_composite(after, operation)
+                } else {
                     let (code,label)=if index==-1 {("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f{return textureSample(image,imageSampler,uv);}","Custom Shader")}
                         else if let Some(effect)=self.pipeline_editor.effects.get(index as usize){(effect.code,effect.label)}else{return;};
                     pipeline.add_serial(after,code,label)
@@ -328,6 +339,10 @@ impl Controller {
     fn apply_pipeline_inspector(&mut self,action:&str){
         let Some(node)=self.selected_pipeline_node()else{return;};
         if ClipPipeline::is_protected(&node.id){self.pipeline_error("Clip source and output are managed by the timeline".into());return;}
+        if action == "apply-shader" && crate::clip_pipeline::BranchComposite::from_node(&node).is_some() {
+            self.pipeline_error("The compositor shader is read-only".into());
+            return;
+        }
         let Some(draft)=self.pipeline_draft()else{return;};
         let mut updated=node.clone();
         let result=(||->Result<(),String>{
@@ -425,7 +440,7 @@ impl Controller {
         let node=self.selected_pipeline_node();
         let editable=node.as_ref().is_some_and(|n|!ClipPipeline::is_protected(&n.id));
         window.set_pipeline_has_selection(node.is_some());
-        window.set_pipeline_label_read_only(!editable);window.set_pipeline_shader_read_only(!editable);window.set_pipeline_can_delete(editable);
+        window.set_pipeline_label_read_only(!editable);window.set_pipeline_shader_read_only(!editable || node.as_ref().is_some_and(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some()));window.set_pipeline_can_delete(editable);
         window.set_pipeline_selection_message(if self.pipeline_editor.clip.is_none(){"Select a timeline clip to edit its pipeline"}else{"Select a node to edit its parameters"}.into());
         window.set_pipeline_node_id(node.as_ref().map(|n|n.id.as_str()).unwrap_or_default().into());
         window.set_pipeline_node_type(node.as_ref().map(|n|format!("{:?}",n.node_type)).unwrap_or_default().into());

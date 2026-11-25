@@ -132,6 +132,7 @@ fn screen_saver_resample_node(position: Position, width: u32, height: u32) -> Pr
             uniform_animations: Default::default(),
             clock: None,
             managed_color: false,
+                normalize_legacy_inputs: false,
             managed_display: false,
             camera_log: None,
             input_data_type: None,

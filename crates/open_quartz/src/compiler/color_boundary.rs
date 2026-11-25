@@ -4,6 +4,8 @@ use super::shader::{compile_shader, CompilePort, CompileRequest, CompiledShader}
 
 pub(crate) const AP1_TO_SRGB: &str = "\nfn oq_ap1_to_srgb(value: vec4<f32>) -> vec4<f32> { return vec4<f32>(cc_ap1_to_srgb(value.rgb),value.a); }\n";
 
+const SRGB_TO_AP1: &str = "\nfn oq_srgb_to_ap1(value: vec4<f32>) -> vec4<f32> { return vec4<f32>(cc_srgb_to_ap1(value.rgb),value.a); }\n";
+
 pub(crate) fn display_program(label: &str, source: &str) -> CompiledShader {
     compile_shader(&CompileRequest {
         user_code: format!("{}{AP1_TO_SRGB}\n@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{ return oq_ap1_to_srgb(textureSample({label}, {label}Sampler, uv)); }}", crate::operators::WGSL_COLOR_TRANSFORMS),
@@ -17,16 +19,24 @@ pub(crate) fn display_program(label: &str, source: &str) -> CompiledShader {
 /// Locate actual WGSL image operations, including helper-function arguments.
 /// Comments, whitespace and unrelated identifiers cannot alter this boundary.
 pub(crate) fn convert_managed_samples(code: &str, managed: &HashSet<&str>) -> Result<String, String> {
-    if managed.is_empty() { return Ok(code.into()); }
+    convert_samples(code, managed, "oq_ap1_to_srgb", AP1_TO_SRGB)
+}
+
+pub(crate) fn convert_legacy_samples(code: &str, legacy: &HashSet<&str>) -> Result<String, String> {
+    convert_samples(code, legacy, "oq_srgb_to_ap1", SRGB_TO_AP1)
+}
+
+fn convert_samples(code: &str, selected: &HashSet<&str>, wrapper: &str, helper: &str) -> Result<String, String> {
+    if selected.is_empty() { return Ok(code.into()); }
     let module = naga::front::wgsl::parse_str(code).map_err(|error| error.emit_to_string(code))?;
     let mut arguments: Vec<Vec<u8>> = module.functions.iter().map(|(_, function)| vec![0; function.arguments.len()]).collect();
     for _ in 0..=module.functions.len() {
         let previous = arguments.clone();
         for (handle, function) in module.functions.iter() {
-            propagate_calls(&function.body, function, &previous[handle.index()], &module, managed, &mut arguments);
+            propagate_calls(&function.body, function, &previous[handle.index()], &module, selected, &mut arguments);
         }
         for entry in &module.entry_points {
-            propagate_calls(&entry.function.body, &entry.function, &[], &module, managed, &mut arguments);
+            propagate_calls(&entry.function.body, &entry.function, &[], &module, selected, &mut arguments);
         }
         if arguments == previous { break; }
     }
@@ -39,7 +49,7 @@ pub(crate) fn convert_managed_samples(code: &str, managed: &HashSet<&str>) -> Re
                 naga::Expression::ImageLoad { image, .. } => (*image, false),
                 _ => continue,
             };
-            let domain = image_domain(image, function, domains, &module, managed);
+            let domain = image_domain(image, function, domains, &module, selected);
             if domain == 3 { return Err("A shader texture helper cannot mix managed AP1 and legacy sRGB textures; use separate helpers".into()); }
             if domain != 2 { continue; }
             if gather { return Err("Managed AP1 textureGather requires an explicit color conversion before gathering channels".into()); }
@@ -57,10 +67,10 @@ pub(crate) fn convert_managed_samples(code: &str, managed: &HashSet<&str>) -> Re
         if !code.contains(&prefix) { break prefix; }
         generation += 1;
     };
-    let call = format!("{prefix}oq_ap1_to_srgb(");
+    let call = format!("{prefix}{wrapper}(");
     inserts.sort_by_key(|(position, _)| *position);
     let mut result = String::with_capacity(code.len() + crate::operators::WGSL_COLOR_TRANSFORMS.len()
-        + AP1_TO_SRGB.len() + inserts.len() * call.len() + prefix.len() * 16);
+        + helper.len() + inserts.len() * call.len() + prefix.len() * 16);
     let mut cursor = 0;
     for (position, opening) in inserts {
         result.push_str(&code[cursor..position]);
@@ -69,13 +79,13 @@ pub(crate) fn convert_managed_samples(code: &str, managed: &HashSet<&str>) -> Re
     }
     result.push_str(&code[cursor..]);
     append_namespaced_helpers(&mut result, crate::operators::WGSL_COLOR_TRANSFORMS, &prefix);
-    append_namespaced_helpers(&mut result, AP1_TO_SRGB, &prefix);
+    append_namespaced_helpers(&mut result, helper, &prefix);
     Ok(result)
 }
 
 fn append_namespaced_helpers(output: &mut String, snippet: &str, prefix: &str) {
     for token in snippet.split_inclusive(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-        if token.starts_with("cc_") || token.starts_with("oq_ap1_to_srgb") {
+        if token.starts_with("cc_") || token.starts_with("oq_ap1_to_srgb") || token.starts_with("oq_srgb_to_ap1") {
             output.push_str(prefix);
         }
         output.push_str(token);

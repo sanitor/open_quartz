@@ -106,6 +106,9 @@ pub struct NodeData {
     pub clock: Option<super::NodeClock>,
     #[serde(skip)]
     pub managed_color: bool,
+    /// Generated compositor consumes working-space textures on all of its inputs.
+    #[serde(skip)]
+    pub normalize_legacy_inputs: bool,
     #[serde(skip)]
     pub managed_display: bool,
     #[serde(skip)]
@@ -213,6 +216,8 @@ struct NodeDataWire {
     clock: Option<super::NodeClock>,
     #[serde(skip)]
     managed_color: bool,
+    #[serde(skip)]
+    normalize_legacy_inputs: bool,
     #[serde(skip)]
     managed_display: bool,
     #[serde(skip)]
@@ -353,6 +358,7 @@ impl Default for NodeData {
             uniform_animations: BTreeMap::new(),
             clock: None,
             managed_color: false,
+            normalize_legacy_inputs: false,
             managed_display: false,
             camera_log: None,
             color_corrector: None,

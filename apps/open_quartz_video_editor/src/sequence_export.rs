@@ -166,7 +166,8 @@ fn run(
                 return Err("Nested sequences are not available in HDR10 export".into());
             }
             if input.pipeline.graph().nodes.iter().any(|node| node.id != super::SOURCE_ID && node.id != OUTPUT_ID
-                && node.node_type != open_quartz::project::NodeType::ColorCorrector)
+                && node.node_type != open_quartz::project::NodeType::ColorCorrector
+                && crate::clip_pipeline::BranchComposite::from_node(node).is_none())
             {
                 return Err("HDR10 supports Color Corrector and clip composition. Remove legacy shader effects from the export range.".into());
             }

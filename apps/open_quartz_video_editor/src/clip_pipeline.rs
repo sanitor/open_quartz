@@ -14,6 +14,56 @@ pub const OUTPUT_ID: &str = "output";
 
 const OUTPUT_CODE: &str = "@fragment\nfn main(@location(0) uv: vec2f) -> @location(0) vec4f {\n    return textureSample(image, imageSampler, uv);\n}\n";
 
+#[derive(Clone, Copy)]
+pub enum BranchComposite { Blend, LumaMask }
+
+impl BranchComposite {
+    pub fn from_node(node: &ProjectNode) -> Option<Self> {
+        match (node.data.shader_template_id.as_deref(), node.data.shader_code.as_str()) {
+            (Some("oq-clip-blend-v1"), BLEND_CODE) => Some(Self::Blend),
+            (Some("oq-clip-luma-mask-v1"), MASK_CODE) => Some(Self::LumaMask),
+            _ => None,
+        }
+    }
+
+    fn definition(self) -> (&'static str, &'static str, &'static str, &'static str) {
+        match self {
+            Self::Blend => ("Blend", "oq-clip-blend-v1", BLEND_CODE, "overlay"),
+            Self::LumaMask => ("Luma Mask", "oq-clip-luma-mask-v1", MASK_CODE, "matte"),
+        }
+    }
+}
+
+const BLEND_CODE: &str = r#"
+@group(0) @binding(0) var base: texture_2d<f32>;
+@group(0) @binding(1) var baseSampler: sampler;
+@group(0) @binding(2) var overlay: texture_2d<f32>;
+@group(0) @binding(3) var overlaySampler: sampler;
+@group(0) @binding(4) var<uniform> amount: f32; // Overlay opacity, 0–1. Default 0.5
+@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
+    let b = textureSample(base, baseSampler, uv);
+    let o = textureSample(overlay, overlaySampler, uv);
+    let opacity = o.a * clamp(amount, 0.0, 1.0);
+    let alpha = opacity + b.a * (1.0 - opacity);
+    let rgb = (o.rgb * opacity + b.rgb * b.a * (1.0 - opacity)) / max(alpha, 0.0000001);
+    return vec4f(rgb, alpha);
+}
+"#;
+
+const MASK_CODE: &str = r#"
+@group(0) @binding(0) var base: texture_2d<f32>;
+@group(0) @binding(1) var baseSampler: sampler;
+@group(0) @binding(2) var matte: texture_2d<f32>;
+@group(0) @binding(3) var matteSampler: sampler;
+@group(0) @binding(4) var<uniform> amount: f32; // Matte strength, 0–1. Default 1
+@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
+    let b = textureSample(base, baseSampler, uv);
+    let m = textureSample(matte, matteSampler, uv);
+    let coverage = clamp(dot(m.rgb, vec3f(0.27222872, 0.67408177, 0.05368952)), 0.0, 1.0) * m.a;
+    return vec4f(b.rgb, b.a * mix(1.0, coverage, clamp(amount, 0.0, 1.0)));
+}
+"#;
+
 /// A clip-local static graph. All mutations validate a candidate before committing it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -184,7 +234,6 @@ impl ClipPipeline {
         self.replace_graph(aggregate.to_file().graph)
     }
 
-    /// Insert a factory shader into the selected serial connection, preserving downstream fan-out.
     /// Reconnect the protected output to a monitor tap in a transient copy.
     pub fn monitor_tap(&self, id: &str) -> Result<Self, String> {
         let mut graph = self.graph.clone();
@@ -203,20 +252,34 @@ impl ClipPipeline {
         Ok(candidate)
     }
 
+    /// Insert a factory shader into the selected serial connection, preserving downstream fan-out.
     pub fn add_serial(&mut self, after: &str, code: &str, label: &str) -> Result<String, String> {
-        self.add_serial_factory(after, |position| NodeFactoryRequest::Shader {
+        self.add_serial_factory(after, None, |position| NodeFactoryRequest::Shader {
             position: Some(position), code: code.to_owned(), label: label.to_owned(),
             template_name: Some(label.to_owned()), shader_template_id: None,
         })
     }
 
     pub fn add_corrector_serial(&mut self, after: &str) -> Result<String, String> {
-        self.add_serial_factory(after, |position| NodeFactoryRequest::ColorCorrector {
+        self.add_serial_factory(after, None, |position| NodeFactoryRequest::ColorCorrector {
             position: Some(position),
         })
     }
 
-    fn add_serial_factory(&mut self, after: &str, factory: impl FnOnce(Position) -> NodeFactoryRequest) -> Result<String, String> {
+    pub fn add_branch_composite(&mut self, after: &str, operation: BranchComposite) -> Result<String, String> {
+        let (label, template, code, auxiliary) = operation.definition();
+        let id = self.add_serial_factory(after, Some(auxiliary), |position| NodeFactoryRequest::Shader {
+            position: Some(position), code: code.to_owned(), label: label.to_owned(),
+            template_name: None, shader_template_id: Some(template.to_owned()),
+        })?;
+        let amount = match operation { BranchComposite::Blend => 0.5, BranchComposite::LumaMask => 1.0 };
+        if let Some(node) = self.graph.nodes.iter_mut().find(|node| node.id == id) {
+            node.data.uniforms.insert("amount".into(), serde_json::json!(amount));
+        }
+        Ok(id)
+    }
+
+    fn add_serial_factory(&mut self, after: &str, auxiliary: Option<&str>, factory: impl FnOnce(Position) -> NodeFactoryRequest) -> Result<String, String> {
         let before_output = after == OUTPUT_ID;
         let after = if after == OUTPUT_ID {
             self.graph.edges.iter().find(|edge| edge.target == OUTPUT_ID)
@@ -240,15 +303,23 @@ impl ClipPipeline {
             x: source.position.x + 240.0, y: source.position.y,
         }), 0).map_err(|error| error.to_string())?;
         let samplers = node.data.inputs.iter().filter(|port| port.data_type == DataType::Sampler2d).collect::<Vec<_>>();
-        if samplers.len() != 1 || node.data.outputs.len() != 1 {
+        if samplers.len() != 1 + usize::from(auxiliary.is_some()) || node.data.outputs.len() != 1 {
             return Err("Serial insertion requires exactly one image input and one fragment output".into());
         }
+        let auxiliary = auxiliary.map(|label| {
+            samplers.iter().find(|port| port.label == label).ok_or("Missing auxiliary image input")
+        }).transpose()?;
+        let primary = samplers.iter().find(|port| auxiliary.is_none_or(|aux| aux.id != port.id))
+            .ok_or("Missing primary image input")?;
         let mut graph = aggregate.to_file().graph;
         graph.edit(&mut |edit| {
             for edge in &downstream {
                 edit.disconnect(&edge.id)?;
             }
-            edit.connect(key(after, &source.data.outputs[0].id), key(&node.id, &samplers[0].id))?;
+            edit.connect(key(after, &source.data.outputs[0].id), key(&node.id, &primary.id))?;
+            if let Some(auxiliary) = auxiliary {
+                edit.connect(key(SOURCE_ID, "video_output"), key(&node.id, &auxiliary.id))?;
+            }
             for edge in &downstream {
                 edit.connect(key(&node.id, &node.data.outputs[0].id), key(&edge.target, &edge.target_handle))?;
             }
@@ -277,6 +348,7 @@ impl ClipPipeline {
             let incoming = graph.edges.iter().filter(|edge| {
                 edge.target == *id && node.data.inputs.iter().any(|port| {
                     port.id == edge.target_handle && port.data_type == DataType::Sampler2d
+                        && (BranchComposite::from_node(node).is_none() || port.label == "base")
                 })
             }).cloned().collect::<Vec<_>>();
             let bridge = if outgoing.is_empty() || matches!(node.node_type, NodeType::Constant | NodeType::Math) {
