@@ -25,6 +25,11 @@ pub struct AudioClock {
     track_peaks: Vec<AtomicU32>,
 }
 impl AudioClock {
+    #[cfg(test)]
+    pub(crate) fn set_played_samples(&self, samples: u64) {
+        self.played.store(samples, Ordering::Release);
+    }
+
     pub fn start(&self) {
         self.video_ready.store(true, Ordering::Release);
     }

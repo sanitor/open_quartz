@@ -395,6 +395,7 @@ mod tests {
     }
     #[test]
     #[ignore = "requires native hardware video playback"]
+    #[cfg(any(target_os = "macos", windows))]
     fn playback_crosses_gap_and_cut_epochs_and_retires_the_exact_last_frame() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -410,12 +411,17 @@ mod tests {
         next.id = "next-clip".into(); next.timeline_start = 4;
         next.transform.exposure = -1.0;
         document.data.tracks[0].clips.push(next);
+        let clock = Arc::new(crate::audio_output::AudioClock::default());
         bridge.play(PlaybackRequest { ticket: 1, revision: document.revision,
-            start_frame: 0, project: document.data, #[cfg(any(target_os = "macos", windows))] audio_clock: None }).unwrap();
+            start_frame: 0, project: document.data, audio_clock: Some(clock.clone()) }).unwrap();
         let first = wait(&bridge, 1);
         let first_epoch = first.epoch;
         assert!(first.image.is_ok(), "{}", first.image.err().unwrap());
         drop(first);
+        // Hold the media clock at the first gap frame until its GPU pixels
+        // have been observed, regardless of decoder and runner scheduling.
+        let samples_per_frame = u64::from(crate::document::SAMPLE_RATE) / 10;
+        clock.set_played_samples(2 * samples_per_frame);
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut saw_gap = false;
         loop {
@@ -428,6 +434,7 @@ mod tests {
                     assert!(pollster::block_on(bridge.backend.read_texture_rgba(
                         &frame.output().texture, 64, 64)).unwrap().chunks_exact(4).all(|pixel| pixel == [0, 0, 0, 255]));
                     saw_gap = true;
+                    clock.set_played_samples(5 * samples_per_frame);
                 }
                 if update.frame == 5 {
                     assert_eq!(update.actual_pts_ns, Some(100_000_000));
