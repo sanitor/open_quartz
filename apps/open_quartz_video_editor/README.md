@@ -16,6 +16,8 @@ npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 
 Windows x64 可运行 `dev:video-editor`、`build:video-editor` 和 `test:video-editor`。`npm run test:video-editor:ui:stills` 验证静态图片导入、片段节点效果和保存后重新打开工程。视频导入与精确寻帧、音频、代理媒体和 MP4 导出仍依赖 macOS 媒体后端。
 
+`npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
+
 macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio2` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。

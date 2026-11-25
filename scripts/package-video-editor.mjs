@@ -1,8 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { mediaSdk, version as mediaVersion } from './prepare-media-sdk.mjs';
+import { copyWindowsCrt } from './copy-windows-crt.mjs';
 
 const exec = promisify(execFile);
 const libraries = ['libavfilter.11.dylib', 'libavcodec.62.dylib', 'libavformat.62.dylib', 'libavutil.60.dylib',
@@ -28,8 +29,13 @@ export async function packageVideoEditor(root, binary) {
   const output = join(root, 'dist-desktop');
   await mkdir(output, { recursive: true });
   const stage = await mkdtemp(join(output, '.studio-'));
-  const archive = join(output, `OpenQuartz-Studio-${packageInfo.version}-macos-${process.arch}.zip`);
+  const platform = process.platform === 'win32' ? 'windows' : 'macos';
+  const archive = join(output, `OpenQuartz-Studio-${packageInfo.version}-${platform}-${process.arch}.zip`);
   try {
+    if (process.platform === 'win32') {
+      await packageWindows(root, binary, stage, archive);
+      return;
+    }
     const app = join(stage, 'OpenQuartz Studio.app');
     const contents = join(app, 'Contents');
     const runtime = join(contents, 'Resources', 'runtime');
@@ -94,14 +100,52 @@ export async function packageVideoEditor(root, binary) {
         || !cli.stdout.includes('--disable-gpl') || !cli.stdout.includes('--disable-nonfree')) {
       throw new Error('Unexpected FFmpeg build in the Studio bundle');
     }
-    const fixture = join(root, 'crates', 'oq-media', 'tests', 'source-time.mp4');
-    const remuxed = join(extracted, 'runtime-check.mp4');
-    await exec(helper, ['-v', 'error', '-i', fixture, '-map', '0:v:0', '-c:v', 'copy', remuxed], { cwd: extracted, env });
-    if (!(await stat(remuxed)).size) throw new Error('Packaged media runtime did not produce the fixture remux');
-    if (!(await stat(zip)).size) throw new Error('Studio archive is empty');
-    await rename(zip, archive);
-    console.log(`[video-editor] Verified archive: ${archive}`);
+    await verifyAndSaveArchive(root, helper, extracted, env, zip, archive);
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
+}
+
+async function packageWindows(root, binary, stage, archive) {
+  const name = 'OpenQuartz Studio';
+  const app = join(stage, name);
+  const source = join(root, 'apps', 'open_quartz_slint', 'runtime');
+  const sdk = join(source, 'ffmpeg-shared');
+  const runtime = join(app, 'runtime');
+  await mkdir(runtime, { recursive: true });
+  await copyFile(binary, join(app, basename(binary)));
+  await copyFile(join(root, 'LICENSE'), join(app, 'LICENSE.txt'));
+  await copyWindowsCrt(app);
+  const sdkBin = join(sdk, 'bin');
+  for (const file of await readdir(sdkBin)) {
+    if (file === 'ffmpeg.exe' || file.toLowerCase().endsWith('.dll')) {
+      await copyFile(join(sdkBin, file), join(runtime, file));
+    }
+  }
+  await cp(join(sdk, 'doc'), join(runtime, 'doc'), { recursive: true });
+  await copyFile(join(sdk, 'LICENSE.txt'), join(runtime, 'LICENSE.txt'));
+  await copyFile(join(source, 'FFMPEG-NOTICE.txt'), join(runtime, 'FFMPEG-NOTICE.txt'));
+
+  const zip = join(stage, 'studio.zip');
+  await run('tar.exe', ['-a', '-cf', zip, '-C', stage, name]);
+  const extracted = join(stage, 'verification');
+  await mkdir(extracted);
+  await run('tar.exe', ['-xf', zip, '-C', extracted]);
+  const env = { ...process.env };
+  delete env.OPEN_QUARTZ_FFMPEG_PATH;
+  const packaged = join(extracted, name);
+  const { stdout } = await exec(join(packaged, basename(binary)), ['--help'], { cwd: extracted, env });
+  if (!stdout.includes('OpenQuartz Studio')) throw new Error('Packaged Studio help did not run');
+  const ffmpeg = join(packaged, 'runtime', 'ffmpeg.exe');
+  await verifyAndSaveArchive(root, ffmpeg, extracted, env, zip, archive);
+}
+
+async function verifyAndSaveArchive(root, ffmpeg, extracted, env, zip, archive) {
+  const fixture = join(root, 'crates', 'oq-media', 'tests', 'source-time.mp4');
+  const remuxed = join(extracted, 'runtime-check.mp4');
+  await exec(ffmpeg, ['-v', 'error', '-i', fixture, '-map', '0:v:0', '-c:v', 'copy', remuxed], { cwd: extracted, env });
+  if (!(await stat(remuxed)).size) throw new Error('Packaged media runtime did not produce the fixture remux');
+  if (!(await stat(zip)).size) throw new Error('Studio archive is empty');
+  await rename(zip, archive);
+  console.log(`[video-editor] Verified archive: ${archive}`);
 }

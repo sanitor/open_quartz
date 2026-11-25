@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Native desktop runtime preparation, development, testing and portable packaging.
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyWindowsCrt } from './copy-windows-crt.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
@@ -146,27 +147,7 @@ async function prepareRuntime() {
     // FFMPEG_DIR is also required by ffmpeg-sys-next when Windows D3D12 is enabled.
     await requireFile(join(helperRuntime, 'ffmpeg-shared', 'include', 'libavcodec', 'avcodec.h'));
     await requireFile(join(helperRuntime, 'ffmpeg-shared', 'lib', 'avcodec.lib'));
-    const vswhere = join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
-      'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
-    const vs = execFileSync(vswhere, ['-latest', '-products', '*', '-requires',
-      'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'],
-    { encoding: 'utf8' }).trim();
-    if (!vs) throw new Error('Visual C++ x64 build tools/redist are required for portable Windows packaging');
-    const redistRoot = join(vs, 'VC', 'Redist', 'MSVC');
-    const versions = (await readdir(redistRoot)).filter((name) => /^\d+\.\d+\.\d+$/.test(name))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-    if (!versions.length) throw new Error(`No MSVC redistributable found in ${redistRoot}`);
-    const redistArch = join(redistRoot, versions[0], 'x64');
-    const crt = (await readdir(redistArch)).filter((name) => /^Microsoft\.VC\d+\.CRT$/.test(name))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
-    if (!crt) throw new Error(`No app-local VC++ CRT found in ${redistArch}`);
-    const redist = join(redistArch, crt);
-    for (const file of await readdir(redist)) {
-      if (file.toLowerCase().endsWith('.dll')) await copyRequired(join(redist, file), join(runtime, file));
-    }
-    for (const file of ['msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll']) {
-      await requireFile(join(runtime, file));
-    }
+    await copyWindowsCrt(runtime);
   } else {
     const assets = {
       'darwin-arm64': ['osx-arm64', '5c3f2064ee97eb7774e87f396735c8eada7287734f1bb7847467ad30d4036115'],

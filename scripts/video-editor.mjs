@@ -11,7 +11,7 @@ if(!['dev','test','test-ui','test-ui-stills','test-coverage','build','package'].
 if(mode==='test-ui' && (args.length>1 || args.some(arg=>arg!=='--smoke')))throw Error('Expected test-ui [--smoke]');
 const windows = process.platform === 'win32' && process.arch === 'x64';
 if (process.platform !== 'darwin' && !windows) throw Error('Video Editor supports macOS and Windows x64.');
-if (windows && ['test-ui', 'test-coverage', 'package'].includes(mode)) {
+if (windows && ['test-ui', 'test-coverage'].includes(mode)) {
   throw Error(`Video Editor ${mode} currently requires the macOS VideoToolbox media backend.`);
 }
 async function run(command,arguments_,env=process.env){
@@ -23,7 +23,7 @@ async function run(command,arguments_,env=process.env){
   });
 }
 await prepareMediaSdk();
-if(mode!=='package')await run(process.execPath,['scripts/copy-ffmpeg.mjs']);
+if(mode!=='package' || windows)await run(process.execPath,['scripts/copy-ffmpeg.mjs']);
 const sdk=join(mediaSdk,'lib');
 const env = {
   ...process.env,
@@ -35,12 +35,19 @@ if(mode==='dev')await run('cargo',['run','--locked','--manifest-path',manifest,'
 if(mode==='test')await run('cargo',['test','--locked','--manifest-path',manifest,'--','--test-threads=1'],env);
 if(mode==='build')await run('cargo',['build','--locked','--release','--manifest-path',manifest],env);
 if(mode==='package'){
-  const localEnv = {...env, MACOSX_DEPLOYMENT_TARGET:'13.0'};
-  delete localEnv.CARGO_BUILD_TARGET;
   const target = join(root,'apps/open_quartz_video_editor/target');
-  await run('cargo',['rustc','--locked','--release','--manifest-path',manifest,'--target-dir',target,'--',
-    '-C','link-arg=-Wl,-rpath,@executable_path/../Resources/runtime'],localEnv);
-  await packageVideoEditor(root,join(target,'release','open_quartz_video_editor'));
+  if (windows) {
+    const localEnv = { ...env };
+    delete localEnv.CARGO_BUILD_TARGET;
+    await run('cargo', ['build', '--locked', '--release', '--manifest-path', manifest, '--target-dir', target], localEnv);
+    await packageVideoEditor(root, join(target, 'release', 'open_quartz_video_editor.exe'));
+  } else {
+    const localEnv = {...env, MACOSX_DEPLOYMENT_TARGET:'13.0'};
+    delete localEnv.CARGO_BUILD_TARGET;
+    await run('cargo',['rustc','--locked','--release','--manifest-path',manifest,'--target-dir',target,'--',
+      '-C','link-arg=-Wl,-rpath,@executable_path/../Resources/runtime'],localEnv);
+    await packageVideoEditor(root,join(target,'release','open_quartz_video_editor'));
+  }
 }
 
 async function runEditorUi(binary, options, testEnv) {
