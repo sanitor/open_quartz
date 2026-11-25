@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 20);
+   assert.equal(data.schema_version, 21);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1968,6 +1968,59 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Shape and feather a clip mask and export the same alpha composite', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
+   fixture.data.tracks[0].clips[0].transform.scale = 1;
+   const seed = join(output, 'clip-mask.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 3');
+   for (let i = 0; i < 3; i++) await click('NEXT');
+   await client.click(await item('foreground.mp4'));
+   const pick = async (keys, label) => {
+     await client.click(await clipControl('Mask shape', 'Combobox'));
+     for (const key of keys) await client.key(key);
+     await client.key('\n');
+     await client.waitFor(async () =>
+       (await client.find({ label: 'Mask shape', role: 'Combobox', visible: false })).accessibleValue === label,
+       { description: `mask shape ${label}` });
+   };
+   await pick(['\uf701'], 'Rectangle');
+   for (const [label, value] of [['center X', 45], ['center Y', 45], ['width', 60], ['height', 60], ['feather', 25]]) {
+     await enter(await clipControl(`Mask ${label} (%)`), value);
+   }
+   await enter(await clipControl('Mask width (%)'), 0);
+   await waitState('width and height must be 1–100%');
+   await pick(['\uf701'], 'Ellipse'); await expectColor('red');
+   const path = join(output, 'ellipse-mask.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const stride = 320 * 180 * 3;
+   const bytes = mediaCommand(['-i', path, '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 20 });
+   const pixel = (x, y) => bytes.subarray(3 * stride + (y * 320 + x) * 3, 3 * stride + (y * 320 + x) * 3 + 3);
+   assert(pixel(160, 90)[0] > 225, 'ellipse interior stays opaque');
+   assert(pixel(215, 119)[2] > 225 && pixel(215, 119)[0] < 25, 'ellipse removes the rectangle corner');
+   const [r, g, b] = pixel(227, 81);
+   assert(r > 90 && b > 90 && g < 30, `feather mixes red and blue, got ${r}, ${g}, ${b}`);
+   await click('SAVE'); await waitState('Project saved');
+   const stored = JSON.parse(await readFile(seed, 'utf8')).data.tracks[0].clips[0].mask;
+   for (const [key, value] of Object.entries({ x: 0.45, y: 0.45, width: 0.6, height: 0.6, feather: 0.25 })) {
+     assert(Math.abs(stored[key] - value) < 0.0001);
+   }
+   await close();
+   await launch(seed);
+   await client.click(await item('foreground.mp4'));
+   assert.equal((await clipControl('Mask shape', 'Combobox')).accessibleValue, 'Ellipse');
+   await pick(['\uf700'], 'Rectangle');
+   await pick(['\uf700'], 'None');
+   await click('SAVE'); await waitState('Project saved');
+   assert.equal(JSON.parse(await readFile(seed, 'utf8')).data.tracks[0].clips[0].mask, undefined);
+   await click('UNDO');
+   assert.equal((await clipControl('Mask shape', 'Combobox')).accessibleValue, 'Rectangle');
+   await click('UNDO');
+   assert.equal((await clipControl('Mask shape', 'Combobox')).accessibleValue, 'Ellipse');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ }, { core: true });
  await step('Choose track blend modes and match composite preview to decoded MP4', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
@@ -2016,7 +2069,7 @@ try{
    }] }];
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
    // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
-   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 20);
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 21);
    fixture.data.tracks[0].clips[0].spatial_keys = [
      { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
      { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
@@ -2211,7 +2264,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 20);
+   assert.equal(saved.schema_version, 21);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

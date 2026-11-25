@@ -339,6 +339,16 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_mask_field(move |field, value| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                if let Some(id) = controller.selected_clip.clone() {
+                    let result = controller.document.edit_mask(&id, &field, &value);
+                    controller.finish_edit(result);
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_track_action(move |id, action, value| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().track_action(&id, &action, &value);
@@ -2298,6 +2308,17 @@ impl Controller {
                     .unwrap_or("Offline media")
                     .into(),
             );
+            let mask = clip.mask.unwrap_or_default();
+            window.set_mask_shape(match clip.mask.map(|mask| mask.shape) {
+                None => 0,
+                Some(crate::document::MaskShape::Rectangle) => 1,
+                Some(crate::document::MaskShape::Ellipse) => 2,
+            });
+            window.set_mask_x(format!("{:.2}", mask.x * 100.0).into());
+            window.set_mask_y(format!("{:.2}", mask.y * 100.0).into());
+            window.set_mask_width(format!("{:.2}", mask.width * 100.0).into());
+            window.set_mask_height(format!("{:.2}", mask.height * 100.0).into());
+            window.set_mask_feather(format!("{:.2}", mask.feather * 100.0).into());
             window.set_selected_clip_start(clip.timeline_start.to_string().into());
             window.set_selected_clip_duration(clip.duration.to_string().into());
             window.set_selected_clip_speed(clip.speed_percent.to_string().into());

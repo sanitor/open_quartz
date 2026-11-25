@@ -126,7 +126,19 @@ export class SlintUiClient {
   }
 
   /** Labels are matched locally because Slint has no label query instruction. */
-  async query({ id, type, label, role, root, visible = true, enabled } = {}) {
+  async query(selector = {}) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.querySnapshot(selector);
+      } catch (error) {
+        if (attempt === 3 || !(error instanceof SlintMcpError)
+          || !/element.*(?:destroyed|stale)|stale.*element/i.test(error.message)) throw error;
+        await delay(25, undefined, { signal: this.signal });
+      }
+    }
+  }
+
+  async querySnapshot({ id, type, label, role, root, visible = true, enabled } = {}) {
     if (!this.rootHandle) await this.useWindow();
     let elements;
     if (id || type || role) {

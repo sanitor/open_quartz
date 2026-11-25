@@ -169,7 +169,7 @@ impl EditorDocument {
                 timeline_start: start, duration: length, speed_percent: normal_speed(),
                 source_span_remainder: 0, source_in_pts: 0, source_subtick_numerator: 0,
                 source_subtick_denominator: 1, transform: ClipTransform::default(),
-                opacity_keys: Vec::new(), crop: Crop::default(), crop_keys: Vec::new(),
+                opacity_keys: Vec::new(), mask: None, crop: Crop::default(), crop_keys: Vec::new(),
                 spatial_keys: Vec::new(), pipeline: ClipPipeline::default(), effect_keys: Vec::new(),
             };
             if let Some(asset) = data.assets.iter_mut().find(|asset| asset.id == asset_id) {

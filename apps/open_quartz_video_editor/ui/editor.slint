@@ -614,6 +614,13 @@ export component EditorWindow inherits Window {
     callback clip_gesture(id: string, kind: string, delta: int, track: string);
     callback clip_drop_error(string, string, int) -> string;
     callback clip_snap(string, string, int, string, float) -> SnapResult;
+    in-out property <int> mask_shape;
+    in property <string> mask_x;
+    in property <string> mask_y;
+    in property <string> mask_width;
+    in property <string> mask_height;
+    in property <string> mask_feather;
+    callback mask_field(string, string);
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -1207,6 +1214,20 @@ export component EditorWindow inherits Window {
                                         text: root.on_crop_key ? "Remove crop keyframe" : "Add crop keyframe";
                                         enabled: root.spatial_key_enabled;
                                         clicked => { root.project_action("toggle-crop-key"); }
+                                    }
+                                    Text { text: "Mask"; color: root.accent; }
+                                    ComboBox {
+                                        accessible-label: "Mask shape"; model: ["None", "Rectangle", "Ellipse"];
+                                        current-index <=> root.mask_shape; enabled: root.selected_clip_writable;
+                                        selected => { root.mask_field("shape", "" + self.current-index); }
+                                    }
+                                    if root.mask_shape != 0: VerticalLayout {
+                                        spacing: 8px;
+                                        TimingField { label: "Mask center X (%)"; value: root.mask_x; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("x", value); } }
+                                        TimingField { label: "Mask center Y (%)"; value: root.mask_y; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("y", value); } }
+                                        TimingField { label: "Mask width (%)"; value: root.mask_width; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("width", value); } }
+                                        TimingField { label: "Mask height (%)"; value: root.mask_height; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("height", value); } }
+                                        TimingField { label: "Mask feather (%)"; value: root.mask_feather; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("feather", value); } }
                                     }
                                 }
 

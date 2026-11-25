@@ -42,6 +42,7 @@ pub struct PreviewLayer {
     pub pipeline: ClipPipeline,
     speed_percent: u16,
     opacity: Option<OpacityAnimation>,
+    mask: Option<document::Mask>,
     crop: Crop,
     crop_animation: Option<ClipAnimation<Crop>>,
     effects: Option<EffectAnimation>,
@@ -115,7 +116,7 @@ pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, 
             blend: document::BlendMode::Normal,
             source: LayerSource::Still(asset), transform: request.transform,
             pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
-            opacity: None, dissolve: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
+            opacity: None, dissolve: None, mask: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
         });
     } else if asset.has_video() {
         request.asset = Some(asset);
@@ -217,7 +218,7 @@ fn build_sequence_request(
             transform: draft.unwrap_or(clip.transform),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
             speed_percent: clip.speed_percent,
-            opacity, crop: clip.crop, crop_animation, effects, spatial,
+            opacity, mask: clip.mask, crop: clip.crop, crop_animation, effects, spatial,
             dissolve,
         });
     }
@@ -229,7 +230,7 @@ fn build_sequence_request(
     // Retimed clips use the sequence clock for window admission and a
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
-        if !nested && project.tracks.len() == 1 && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
+        if !nested && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
             && layer.speed_percent == document::normal_speed()
             && layer.transform.rotation == 0.0 && layer.transform.opacity == 1.0 {

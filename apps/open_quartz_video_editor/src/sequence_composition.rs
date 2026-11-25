@@ -212,6 +212,21 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             (String::new(), format!("vec2f({:.9e}, {:.9e})", crop.left, crop.top),
                 format!("vec2f({:.9e}, {:.9e})", 1.0 - crop.right, 1.0 - crop.bottom))
         };
+        let mask_setup = if let Some(mask) = layer.mask {
+            let distance = match mask.shape {
+                crate::document::MaskShape::Rectangle => "max(mask_uv.x, mask_uv.y)",
+                crate::document::MaskShape::Ellipse => "length(mask_uv)",
+            };
+            let gate = if mask.feather == 0.0 {
+                format!("select(0.0, 1.0, {distance} <= 1.0)")
+            } else {
+                format!("(1.0 - smoothstep({:.9e}, 1.0, {distance}))", 1.0 - mask.feather)
+            };
+            format!(
+                "let mask_uv = abs((p - vec2f({:.9e}, {:.9e})) * 2.0 / vec2f({:.9e}, {:.9e})); let mask_alpha = {gate};",
+                mask.x, mask.y, mask.width, mask.height,
+            )
+        } else { "let mask_alpha = 1.0;".into() };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
             "if (i32(blend{index}.w) / 4 == order) {{\n\
@@ -221,7 +236,8 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), layer_place, layer_blend);\n\
                 let sample = textureSampleLevel(layer{index}, layer{index}Sampler, p, 0.0);\n\
                 if (all(p >= {minimum}) && all(p <= {maximum})) {{\n\
-                    let alpha = {alpha};\n\
+                    {mask_setup}
+                    let alpha = ({alpha}) * mask_alpha;\n\
                     let color = linear(clamp(sample.rgb * blend{index}.z, vec3f(0.0), vec3f(1.0)));\n\
                     track_pixel += vec4f(color * alpha, alpha) * {weight};\n\
                 }}\n\

@@ -34,7 +34,10 @@ pub use effect_motion::EffectKeys;
 #[path = "document_sequences.rs"]
 mod sequences;
 pub use sequences::TimelineSequence;
-const SCHEMA_VERSION: u32 = 20;
+#[path = "document_mask.rs"]
+mod mask;
+pub use mask::{Mask, MaskShape};
+const SCHEMA_VERSION: u32 = 21;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -176,6 +179,8 @@ pub struct Clip {
     pub transform: ClipTransform,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opacity_keys: Vec<OpacityKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<Mask>,
     #[serde(default, skip_serializing_if = "Crop::is_empty")]
     pub crop: Crop,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -531,7 +536,7 @@ impl EditorDocument {
             source_subtick_numerator: 0,
             source_subtick_denominator: 1,
             transform: ClipTransform::default(),
-            opacity_keys: Vec::new(),
+            opacity_keys: Vec::new(), mask: None,
             crop: Crop::default(),
             crop_keys: Vec::new(),
             spatial_keys: Vec::new(),
@@ -1090,6 +1095,7 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
             clip.validate_opacity_keys()?;
             clip.validate_spatial()?;
             clip.validate_effect_animation()?;
+            if let Some(mask) = clip.mask { mask.validate()?; }
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }
