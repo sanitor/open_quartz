@@ -397,6 +397,8 @@ pub struct D3d12VideoFrame {
     array_layers: u32,
     luma_coefficients: [f32; 2],
     full_range: bool,
+    #[cfg(feature = "native-video-precise-d3d12")]
+    pub(crate) exact_color: Option<oq_media::ColorInfo>,
 }
 
 unsafe impl Send for D3d12VideoFrame {}
@@ -473,6 +475,8 @@ impl D3d12VideoFrame {
             array_layers: imported_array_layers,
             luma_coefficients: if height <= 576 { [0.299, 0.114] } else { [0.2126, 0.0722] },
             full_range: false,
+            #[cfg(feature = "native-video-precise-d3d12")]
+            exact_color: None,
         })
     }
 
@@ -515,6 +519,22 @@ impl GpuBackend {
         frame: &D3d12VideoFrame,
         output: &TextureHandle,
     ) -> Result<(), String> {
+        self.upload_d3d12_video(frame, output, None)
+    }
+
+    pub(crate) fn upload_d3d12_video(
+        &self,
+        frame: &D3d12VideoFrame,
+        output: &TextureHandle,
+        camera: Option<crate::operators::CameraLog>,
+    ) -> Result<(), String> {
+        let required = match frame.format {
+            D3d12VideoFormat::Nv12 => wgpu::Features::TEXTURE_FORMAT_NV12,
+            D3d12VideoFormat::P010 => wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+        };
+        if !self.device.features().contains(required) {
+            return Err(format!("The GPU device cannot sample {:?} video surfaces", frame.format));
+        }
         let (format, y_format, uv_format) = match frame.format {
             D3d12VideoFormat::Nv12 => (
                 wgpu::TextureFormat::NV12,
@@ -572,35 +592,35 @@ impl GpuBackend {
             array_layer_count: Some(1),
             ..Default::default()
         });
-        let (layout, pipeline) = self
-            .d3d12_yuv_converter
-            .get_or_init(|| create_d3d12_yuv_pipeline(&self.device));
-        let mut parameters = [0; 32];
-        for (bytes, parameter) in parameters.chunks_exact_mut(4).zip(frame.conversion_parameters()) {
-            bytes.copy_from_slice(&parameter.to_ne_bytes());
-        }
-        let conversion = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("open-quartz-d3d12-yuv-color"),
-            contents: &parameters,
-            usage: wgpu::BufferUsages::UNIFORM,
+        #[cfg(feature = "native-video-precise-d3d12")]
+        let exact_pipeline = frame.exact_color.map(|color| self.d3d12_exact_pipeline(frame.format, color, output.format, camera)).transpose()?;
+        #[cfg(not(feature = "native-video-precise-d3d12"))]
+        let exact_pipeline: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline)> = { let _ = camera; None };
+        let conversion = exact_pipeline.is_none().then(|| {
+            let mut parameters = [0; 32];
+            for (bytes, parameter) in parameters.chunks_exact_mut(4).zip(frame.conversion_parameters()) {
+                bytes.copy_from_slice(&parameter.to_ne_bytes());
+            }
+            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("open-quartz-d3d12-yuv-color"),
+                contents: &parameters,
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
         });
+        let (layout, pipeline) = exact_pipeline.as_ref().unwrap_or_else(|| self
+            .d3d12_yuv_converter
+            .get_or_init(|| create_d3d12_yuv_pipeline(&self.device)));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&y_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&uv_view) },
+        ];
+        if let Some(buffer) = &conversion {
+            entries.push(wgpu::BindGroupEntry { binding: 2, resource: buffer.as_entire_binding() });
+        }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("open-quartz-d3d12-yuv-bindings"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&y_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uv_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: conversion.as_entire_binding(),
-                },
-            ],
+            entries: &entries,
         });
         let mut encoder = self
             .device
@@ -633,6 +653,24 @@ impl GpuBackend {
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|error| format!("Cannot wait for detached D3D12 video surface: {error:?}"))?;
         Ok(())
+    }
+
+    #[cfg(feature = "native-video-precise-d3d12")]
+    fn d3d12_exact_pipeline(
+        &self,
+        format: D3d12VideoFormat,
+        color: oq_media::ColorInfo,
+        output: TextureFormat,
+        camera: Option<crate::operators::CameraLog>,
+    ) -> Result<(wgpu::BindGroupLayout, wgpu::RenderPipeline), String> {
+        let format = u8::from(format == D3d12VideoFormat::P010);
+        if camera.is_some() && format != 1 {
+            return Err("Camera log interpretation requires a P010 surface".into());
+        }
+        let managed = output == TextureFormat::Rgba16Float;
+        let conversion = super::video_color::Conversion::new(format, color, managed, camera);
+        let mut cache = self.d3d12_color_pipelines.lock().map_err(|_| "D3D12 video pipeline cache lock poisoned")?;
+        Ok(cache.entry(conversion.key()).or_insert_with(|| conversion.create(&self.device)).clone())
     }
 }
 

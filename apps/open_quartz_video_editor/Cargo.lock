@@ -3566,6 +3566,7 @@ dependencies = [
 name = "open_quartz"
 version = "0.20.0"
 dependencies = [
+ "ffmpeg-next",
  "futures-channel",
  "log",
  "naga",

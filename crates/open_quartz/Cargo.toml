@@ -13,6 +13,7 @@ gpu = ["dep:wgpu", "dep:parking_lot", "dep:windows-graphics", "dep:futures-chann
 native-runtime = ["gpu", "oq-inference/gpu", "dep:pollster", "dep:log"]
 native-video = ["dep:oq-media", "dep:log"]
 native-video-d3d12 = ["native-video", "gpu", "dep:ffmpeg-next"]
+native-video-precise-d3d12 = ["native-video-d3d12", "oq-media/d3d12"]
 native-onnx = ["oq-inference/ort"]
 model-cache = ["dep:reqwest", "dep:sha2"]
 inference-diagnostics = ["native-runtime", "oq-inference/gpu-diagnostics"]
@@ -34,6 +35,7 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 sha2 = { version = "0.10", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+oq-media = { path = "../oq-media", optional = true }
 windows-graphics = { package = "windows", version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
 ffmpeg-next = { version = "9.1", optional = true, default-features = false, features = ["codec", "format"] }
 

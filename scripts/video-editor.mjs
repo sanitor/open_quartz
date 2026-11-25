@@ -7,7 +7,7 @@ import { packageVideoEditor } from './package-video-editor.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const [mode='dev',...args]=process.argv.slice(2);
-if(!['dev','test','test-ui','test-ui-stills','test-ui-audio','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-coverage | build | package');
+if(!['dev','test','test-portable','test-ui','test-ui-stills','test-ui-audio','test-ui-preview','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-portable | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-ui-preview | test-coverage | build | package');
 if(mode==='test-ui' && (args.length>1 || args.some(arg=>arg!=='--smoke')))throw Error('Expected test-ui [--smoke]');
 const windows = process.platform === 'win32' && process.arch === 'x64';
 if (process.platform !== 'darwin' && !windows) throw Error('Video Editor supports macOS and Windows x64.');
@@ -37,7 +37,10 @@ if (windows) {
 }
 const manifest=join(root,'apps/open_quartz_video_editor/Cargo.toml');
 if(mode==='dev')await run('cargo',['run','--locked','--manifest-path',manifest,'--',...args],env);
-if(mode==='test')await run('cargo',['test','--locked','--manifest-path',manifest,'--','--test-threads=1'],env);
+if (mode === 'test' || mode === 'test-portable') {
+  const hardware = mode === 'test' ? ['--include-ignored'] : [];
+  await run('cargo', ['test', '--locked', '--manifest-path', manifest, '--', '--test-threads=1', ...hardware], env);
+}
 if(mode==='build')await run('cargo',['build','--locked','--release','--manifest-path',manifest],env);
 if(mode==='package'){
   const target = join(root,'apps/open_quartz_video_editor/target');
@@ -63,19 +66,25 @@ async function runEditorUi(binary, options, testEnv) {
   }
   if (failures.length) throw new AggregateError(failures, 'Video Editor UI failed');
 }
-if(['test-ui', 'test-ui-stills', 'test-ui-audio'].includes(mode)){
+if(['test-ui', 'test-ui-stills', 'test-ui-audio', 'test-ui-sdr', 'test-ui-preview'].includes(mode)){
   await run('cargo',['build','--locked','--manifest-path',manifest,'--features','ui-automation'],env);
   const binary = join(root, 'apps/open_quartz_video_editor/target/debug', windows ? 'open_quartz_video_editor.exe' : 'open_quartz_video_editor');
   if (mode === 'test-ui-stills') {
     await run(process.execPath, ['scripts/test-video-editor-nodes-ui.mjs', binary, '--still-only'], env);
   } else if (mode === 'test-ui-audio') {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--audio-only'], env);
+  } else if (mode === 'test-ui-preview') {
+    if (windows) {
+      const { default: installer } = await import('@ffmpeg-installer/ffmpeg');
+      env.OPEN_QUARTZ_TEST_FFMPEG_PATH = installer.path;
+    }
+    await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--preview-only'], env);
   } else {
     await runEditorUi(binary, args, env);
   }
 }
 if(mode==='test-coverage'){
-  await run('cargo',['llvm-cov','--manifest-path',manifest,'--locked','--no-report','--','--test-threads=1'],env);
+  await run('cargo',['llvm-cov','--manifest-path',manifest,'--locked','--no-report','--','--test-threads=1','--include-ignored'],env);
   await run('cargo',['llvm-cov','run','--manifest-path',manifest,'--locked','--features','ui-automation','--no-report','--','--help'],env);
   const target=join(root,'apps/open_quartz_video_editor/target/llvm-cov-target');
   const uiEnv={...env,LLVM_PROFILE_FILE:join(target,'open_quartz_video_editor-%p-%m.profraw')};

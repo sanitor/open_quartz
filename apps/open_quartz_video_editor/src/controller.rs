@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "tracking_controller.rs"]
 mod tracking_controller;
 #[path = "reference_stills.rs"]
@@ -109,7 +109,7 @@ pub struct Controller {
     displayed: Option<StableFrame>,
     color_scope: crate::color_scope::ColorScope,
     references: reference_stills::ReferenceGallery,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     mask_tracking: Option<tracking_controller::MaskTask>,
     displayed_frame: Option<u64>,
     thumbnail_order: VecDeque<String>,
@@ -128,7 +128,7 @@ pub struct Controller {
     audio: Option<crate::audio_output::AudioPlayback>,
     #[cfg(any(target_os = "macos", windows))]
     waveforms: crate::audio_waveform::Waveforms,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     proxies: crate::proxy::Proxies,
     pipeline_editor: PipelineEditor,
 }
@@ -187,7 +187,7 @@ impl Controller {
             requested: None,
             displayed: None,
             color_scope: Default::default(), references: Default::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             mask_tracking: None,
             displayed_frame: None,
             thumbnail_order: VecDeque::new(),
@@ -206,7 +206,7 @@ impl Controller {
             audio: None,
             #[cfg(any(target_os = "macos", windows))]
             waveforms: Default::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
         }));
@@ -770,24 +770,24 @@ impl Controller {
         match action {
             "import" | "media" => self.import_dialog(),
             "import-files" | "relink-folder" => self.path_dialog(action),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "prepare-proxy" => {
                 let asset = self.selected_asset.as_deref().and_then(|id| self.document.asset(id)).cloned();
                 let result = asset.as_ref().ok_or_else(|| "Select a video asset".to_owned())
                     .and_then(|asset| self.proxies.start(asset));
                 self.set_proxy_status(result.map_or_else(|error| error, |_| "Preparing proxy…".into()));
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "prepare-proxy-batch" => {
                 let result = self.proxies.start_batch(&self.document.data.assets);
                 self.set_proxy_status(result.unwrap_or_else(|error| error));
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "cancel-proxy" => {
                 self.proxies.cancel();
                 self.set_proxy_status("Cancelling proxy…".into());
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "toggle-proxies" => {
                 self.pause();
                 self.proxies.enabled = !self.proxies.enabled;
@@ -804,9 +804,9 @@ impl Controller {
                 Err(error) => self.status(error),
             },
             "import-srt" => self.path_dialog("srt"),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "track-mask" => self.start_mask_tracking(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "cancel-mask-tracking" => self.cancel_mask_tracking(),
             "clear-mask-tracking" => {
                 if let Some(id) = self.selected_clip.clone() {
@@ -1543,7 +1543,7 @@ impl Controller {
         window.set_active_sequence_name(self.document.data.sequence_name.clone().into());
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn set_proxy_status(&self, text: String) {
         if let Some(window) = self.window.upgrade() {
             window.set_proxy_status(text.into());
@@ -1551,7 +1551,7 @@ impl Controller {
         self.refresh_proxy_controls();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn refresh_proxy_controls(&self) {
         if let Some(window) = self.window.upgrade() {
             window.set_proxy_mode(self.proxies.enabled);
@@ -1648,9 +1648,9 @@ impl Controller {
             self.ticket += 1;
             let request = PlaybackRequest { ticket: self.ticket, revision: self.document.revision,
                 start_frame: self.playhead,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 project: self.proxies.project(&self.document.data),
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", windows)))]
                 project: self.document.data.clone(),
                 #[cfg(any(target_os = "macos", windows))]
                 audio_clock: self.audio.as_ref().map(|audio| audio.clock.clone()),
@@ -1680,7 +1680,7 @@ impl Controller {
                 self.monitor_gesture.as_ref().map(|draft| (draft.clip.as_str(), draft.value)))
         };
         match plan.and_then(|request| {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             let request = {
                 let mut request = request;
                 request.map_video_assets(|asset| self.proxies.apply(asset));
@@ -1785,7 +1785,7 @@ impl Controller {
         #[cfg(target_os = "macos")]
         {
             if self.export.is_some() { return Err("A delivery is already rendering".into()); }
-            let render = self.preview.export_device()?;
+            let render = self.preview.offscreen_device()?;
             let task = crate::preview::export::ExportTask::start(
                 render, spec.project, spec.revision, spec.path, spec.frames, spec.options,
             )?;
@@ -1847,7 +1847,7 @@ impl Controller {
 
     fn tick(&mut self) {
         self.poll_references();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.poll_mask_tracking();
         if let Some(result) = self.color_scope.update(&self.backend, self.displayed.as_ref()) {
             if let Some(window) = self.window.upgrade() {
@@ -1860,7 +1860,7 @@ impl Controller {
                 }
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(status) = self.proxies.poll() {
             self.set_proxy_status(status);
             if self.proxies.enabled && !self.playing {
@@ -2353,7 +2353,7 @@ impl Controller {
         }
         self.refresh_source();
         self.refresh_motion();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.refresh_proxy_controls();
         if !self.document.is_dirty() {
             window.set_recovery_status("".into());
@@ -2533,7 +2533,7 @@ impl Controller {
             );
             let mask = clip.mask.unwrap_or_default();
             window.set_has_mask_tracking(!clip.mask_tracking.is_empty());
-            window.set_can_track_mask(cfg!(target_os = "macos") && clip.mask.is_some()
+            window.set_can_track_mask(cfg!(any(target_os = "macos", windows)) && clip.mask.is_some()
                 && self.document.asset(&clip.asset_id).is_some_and(|asset| asset.online && asset.has_video() && asset.sequence_source().is_none()));
             window.set_mask_shape(match clip.mask.map(|mask| mask.shape) {
                 None => 0,
@@ -2577,12 +2577,12 @@ impl Controller {
         self.motion = MotionEditor::default();
         self.color_scope.clear();
         self.references = Default::default();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.reset_mask_tracking();
         self.hide_reference();
         self.source_marks.clear();
         self.audio_destination = AudioDestination::Automatic;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.proxies = Default::default();
             self.set_proxy_status(String::new());
@@ -2772,13 +2772,13 @@ mod native_dialog_tests {
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn worker_owns_playback_clock_and_clip_cuts_but_exact_seek_supersedes() {
         crate::media::configure_runtime().unwrap();
         let (preview, _configuration, _) = PreviewBridge::new().unwrap();
         let backend = preview.backend.clone();
         let asset = crate::media::probe(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let mut document = EditorDocument::default();
         document.data.width = 64;
         document.data.height = 64;
@@ -2806,7 +2806,7 @@ mod native_dialog_tests {
             playhead: 0, playing: false, requested: None,
             displayed: None,
             color_scope: Default::default(), references: Default::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             mask_tracking: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
@@ -2818,7 +2818,7 @@ mod native_dialog_tests {
             audio: None,
             #[cfg(any(target_os = "macos", windows))]
             waveforms: Default::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),

@@ -1,0 +1,51 @@
+name: Desktop hardware preview parity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardware-preview:
+    name: Native desktop and Video Editor (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            runner: '["macos-latest"]'
+          - platform: Windows
+            runner: '["self-hosted","Windows","X64","openquartz-video-gpu"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure Windows bindgen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV'
+
+      - run: npm ci
+      - run: npm run test:desktop
+      - run: npm run test:desktop:ui:smoke
+      - run: npm run test:video-editor
+      - run: npm run test:video-editor:ui:stills
+      - run: npm run test:video-editor:ui:audio
+      - run: npm run test:video-editor:ui:preview
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: video-preview-${{ matrix.platform }}
+          path: |
+            test-results/slint-ui/
+            test-results/phase6/
+            test-results/clip-pipeline/
+          if-no-files-found: warn

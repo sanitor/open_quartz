@@ -14,7 +14,7 @@ mod document;
 mod document_recovery;
 mod media;
 mod preview;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod proxy;
 mod title_raster;
 mod clip_pipeline;

@@ -15,12 +15,12 @@ mod tests {
         }
     }
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn shared_pipeline_displays_real_video_black_gaps_and_retains_previous_frame_after_cut() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4");
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4");
         let asset = crate::media::probe(&path).unwrap();
         let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
             ticket: 1,
@@ -79,7 +79,7 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn obsolete_seek_is_never_published_as_newer_request_and_offline_is_an_error() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn clip_effect_pixels_are_isolated_and_graph_edits_reuse_the_hardware_source() {
         crate::media::configure_runtime().unwrap();
         let render = pollster::block_on(RenderDevice::new()).unwrap().0;
@@ -171,7 +171,7 @@ mod tests {
             render, PlaybackCapabilities { data_paths: vec![] },
         );
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: Some(asset),
@@ -256,7 +256,7 @@ mod tests {
         request.ticket += 1;
         drop(render_request(&mut pipeline, &request));
         request.asset = Some(crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/gray_64x64.mp4")).unwrap());
+            .join("../../tests/fixtures/gray_h264_high_64x64.mp4")).unwrap());
         request.transform = ClipTransform::default();
         assert!(configure(&mut pipeline, &mut configured, &request).unwrap().0);
         assert_eq!(pipeline.video_metrics(SOURCE_ID).unwrap().uploaded_frames, 0);
@@ -269,12 +269,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn effects_follow_native_size_and_contain_the_actual_upstream_aspect() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let mut clip_pipeline = ClipPipeline::default();
         let id = clip_pipeline.add_serial(SOURCE_ID,
             "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { return textureSample(image,imageSampler,uv)*vec4f(0.0,1.0,0.0,1.0); }",
@@ -344,12 +344,12 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn worker_play_snapshot_reports_progress_and_exact_seek_cancels_its_window() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let mut document = crate::document::EditorDocument::default();
         document.data.width = 64; document.data.height = 64;
         let id = asset.id.clone();
@@ -394,12 +394,12 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn playback_crosses_gap_and_cut_epochs_and_retires_the_exact_last_frame() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let mut document = crate::document::EditorDocument::default();
         document.data.width = 64; document.data.height = 64;
         let id = asset.id.clone();
@@ -444,12 +444,12 @@ mod tests {
         bridge.shutdown();
     }
     #[test]
-    #[cfg_attr(not(target_os = "macos"), ignore = "requires VideoToolbox media playback")]
+    #[ignore = "requires native hardware video playback"]
     fn two_native_sources_keep_independent_pts_and_blend_in_linear_light() {
         crate::media::configure_runtime().unwrap();
         let (mut bridge, _, _) = PreviewBridge::new().unwrap();
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/white_64x64.mp4")).unwrap();
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
         let tint = |color: &str| {
             let mut pipeline = ClipPipeline::default();
             let code = format!("@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f {{

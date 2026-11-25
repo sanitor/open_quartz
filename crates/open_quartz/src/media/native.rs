@@ -34,6 +34,39 @@ pub enum NativeVideoFrame<'a> {
     VideoToolbox(&'a oq_media::VideoToolboxFrame),
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn with_precise_frame<T>(
+    frame: &oq_media::HardwareFrame,
+    upload: impl FnOnce(NativeVideoFrame<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    upload(NativeVideoFrame::VideoToolbox(frame))
+}
+
+#[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+pub(super) fn with_precise_frame<T>(
+    frame: &oq_media::HardwareFrame,
+    upload: impl FnOnce(NativeVideoFrame<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    // The retained AVFrame keeps its descriptor, texture and fence alive
+    // through synchronous import. The detached texture contains both planes.
+    let mut native = unsafe {
+        let descriptor = &*frame.d3d12_descriptor().cast::<FfmpegD3d12Frame>();
+        D3d12VideoFrame::from_raw(
+            descriptor.texture,
+            descriptor.sync.fence,
+            descriptor.sync.event,
+            descriptor.sync.fence_value,
+            frame.width(),
+            frame.height(),
+            u32::try_from(descriptor.subresource_index)
+                .map_err(|_| "FFmpeg returned a negative D3D12 subresource")?,
+            true,
+        )?
+    };
+    native.exact_color = Some(frame.color());
+    upload(NativeVideoFrame::D3d12(&native))
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NativeVideoSourceKind {
@@ -145,21 +178,21 @@ pub struct NativeVideoSource {
     hardware_position_ns: Arc<AtomicU64>,
     #[cfg(target_os = "macos")]
     decoder_cancelled: Arc<AtomicBool>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_session: Option<oq_media::Session>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_cancelled: Option<Arc<AtomicBool>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_last_pts_ns: Option<i64>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_last_target_ns: Option<u64>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_composition_epoch: Option<u64>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_loop_cycle: u64,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_epoch: u64,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     exact_invalidated: bool,
 }
 
@@ -219,7 +252,7 @@ impl NativeVideoSource {
         };
         #[cfg(not(test))]
         let info = probe_video_for_playback(&ffmpeg, &config, precise).map_err(|error| decode_policy.error(error))?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         let (exact_session, exact_cancelled) = if precise
             && decode_policy == DecodePolicy::HardwareRequired
             && config.kind == NativeVideoSourceKind::File
@@ -258,21 +291,21 @@ impl NativeVideoSource {
             hardware_position_ns: Arc::new(AtomicU64::new(0)),
             #[cfg(target_os = "macos")]
             decoder_cancelled: Arc::new(AtomicBool::new(false)),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_session,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_cancelled,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_last_pts_ns: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_last_target_ns: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_composition_epoch: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_loop_cycle: 0,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_epoch: 0,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             exact_invalidated: false,
             info,
         };
@@ -333,7 +366,7 @@ impl NativeVideoSource {
                 return Err(self.decode_policy.error(error));
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.exact_session.is_some() {
             let previous = self.exact_last_pts_ns;
             let timeline_target = self.exact_last_target_ns.unwrap_or(0);
@@ -400,16 +433,14 @@ impl NativeVideoSource {
             u32,
         ) -> Result<(), String>,
     ) -> Result<Option<i64>, String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.exact_session.is_some() {
             let selected = self.prepare_exact_at(timeline_ns, epoch)?;
             let actual_ns = selected.actual_ns;
             if self.exact_last_pts_ns != Some(actual_ns) {
-                upload(
-                    NativeVideoFrame::VideoToolbox(&selected.frame.frame),
-                    self.info.width,
-                    self.info.height,
-                )?;
+                with_precise_frame(&selected.frame.frame, |frame| {
+                    upload(frame, self.info.width, self.info.height)
+                })?;
                 self.uploaded_frames = self.uploaded_frames.saturating_add(1);
                 self.exact_last_pts_ns = Some(actual_ns);
             }
@@ -419,18 +450,18 @@ impl NativeVideoSource {
         self.upload_latest(upload).map(|_| None)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     pub(super) fn is_precise(&self) -> bool {
         self.exact_session.is_some()
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     pub(super) fn invalidate_exact_cursor(&mut self) {
         self.exact_invalidated = true;
     }
 
     /// Runs only at an explicit blocking boundary or on the dedicated source worker.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     pub(super) fn prepare_exact_at(
         &mut self,
         timeline_ns: u64,
@@ -439,7 +470,7 @@ impl NativeVideoSource {
         self.prepare_exact_at_cancellable(timeline_ns, epoch, Arc::new(AtomicBool::new(false)))
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     pub(super) fn prepare_exact_at_cancellable(
         &mut self,
         timeline_ns: u64,
@@ -449,7 +480,7 @@ impl NativeVideoSource {
         self.prepare_exact(timeline_ns, epoch, cancelled, false)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     pub(super) fn prepare_exact(
         &mut self, timeline_ns: u64, epoch: u64, cancelled: Arc<AtomicBool>, editing: bool,
     ) -> Result<oq_media::SelectedFrame, String> {
@@ -551,7 +582,7 @@ impl NativeVideoSource {
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.exact_session.is_some() {
             self.preview_only = false;
             self.alive.store(true, Ordering::Release);
@@ -574,10 +605,10 @@ impl NativeVideoSource {
             .lock()
             .map_err(|_| "Native video error lock is poisoned")? = None;
         self.alive.store(true, Ordering::Release);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.exact_session.is_some() {
             self.alive.store(!self.preview_only, Ordering::Release);
-            self.info.decoder = "ffmpeg-videotoolbox".to_owned();
+            self.info.decoder = self.exact_session.as_ref().unwrap().actual_pipeline().decoder;
             self.info.fallback_reason = None;
             return Ok(());
         }
@@ -1040,7 +1071,7 @@ fn read_rgba_frames(
 impl Drop for NativeVideoSource {
     fn drop(&mut self) {
         self.stop_decoder();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(cancelled) = &self.exact_cancelled {
             cancelled.store(true, Ordering::Release);
         }

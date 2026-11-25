@@ -101,7 +101,7 @@ pub struct GpuExecutor {
     textures: HashMap<String, TextureHandle>,
     sampling: HashMap<String, (TextureFilter, TextureWrap, Arc<wgpu::Sampler>)>,
     output_domains: HashMap<String, crate::operators::ColorDomain>,
-    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    #[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
     camera_logs: HashMap<String, crate::operators::CameraLog>,
 }
 
@@ -114,7 +114,7 @@ impl GpuExecutor {
             textures: HashMap::new(),
             sampling: HashMap::new(),
             output_domains: HashMap::new(),
-            #[cfg(all(target_os = "macos", feature = "native-video"))]
+            #[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
             camera_logs: HashMap::new(),
         }
     }
@@ -274,7 +274,7 @@ impl GpuExecutor {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "native-video"))]
+    #[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
     fn video_texture_format(&self, node_id: &str) -> TextureFormat {
         match self.output_domains.get(node_id) {
             Some(crate::operators::ColorDomain::AcesCgLinear) => TextureFormat::Rgba16Float,
@@ -288,23 +288,35 @@ impl GpuExecutor {
         node_id: &str,
         frame: &super::D3d12VideoFrame,
     ) -> Result<(), GpuExecutionError> {
+        #[cfg(feature = "native-video-precise-d3d12")]
+        let format = if frame.exact_color.is_some() {
+            self.video_texture_format(node_id)
+        } else {
+            TextureFormat::Rgba8Unorm
+        };
+        #[cfg(not(feature = "native-video-precise-d3d12"))]
+        let format = TextureFormat::Rgba8Unorm;
         let recreate = self.textures.get(node_id).is_none_or(|texture| {
             texture.width != frame.width
                 || texture.height != frame.height
-                || texture.format != TextureFormat::Rgba8Unorm
+                || texture.format != format
         });
         if recreate {
             self.textures.insert(
                 node_id.to_owned(),
                 self.backend
-                    .create_texture(frame.width, frame.height, TextureFormat::Rgba8Unorm),
+                    .create_texture(frame.width, frame.height, format),
             );
         }
         let texture = self.textures.get(node_id).ok_or_else(|| {
             GpuExecutionError::for_node(node_id, "video texture allocation failed")
         })?;
+        #[cfg(feature = "native-video-precise-d3d12")]
+        let camera = self.camera_logs.get(node_id).copied();
+        #[cfg(not(feature = "native-video-precise-d3d12"))]
+        let camera = None;
         self.backend
-            .upload_d3d12_yuv(frame, texture)
+            .upload_d3d12_video(frame, texture, camera)
             .map_err(|message| GpuExecutionError::for_node(node_id, message))
     }
 
@@ -505,7 +517,7 @@ impl GpuExecutor {
             textures: self.textures.clone(),
             sampling: self.sampling.clone(),
             output_domains: self.output_domains.clone(),
-            #[cfg(all(target_os = "macos", feature = "native-video"))]
+            #[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
             camera_logs: self.camera_logs.clone(),
         };
         if !staged.sync_plan_in_place(plan, source_sizes)? { return Ok(None); }
@@ -518,7 +530,7 @@ impl GpuExecutor {
         source_sizes: &HashMap<String, (u32, u32)>,
     ) -> Result<bool, GpuExecutionError> {
         self.output_domains = plan.nodes.iter().map(|node| (node.id.clone(), node.output_domain)).collect();
-        #[cfg(all(target_os = "macos", feature = "native-video"))]
+        #[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
         { self.camera_logs = plan.nodes.iter().filter_map(|node| node.camera_log.map(|profile| (node.id.clone(), profile))).collect(); }
         let mut sizes = source_sizes.clone();
         let mut descriptors = HashMap::new();

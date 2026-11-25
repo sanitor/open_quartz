@@ -14,7 +14,7 @@
 
 Open Quartz is a node-based, hardware-accelerated framework for real-time video processing, GPU shaders, resident inference and CPU-side scalar math. ONNX is the model artifact format; production image inference uses a Metal GPU network on Slint's shared wgpu 30 Device/Queue. ORT host Tensor APIs are explicit reference/diagnostics only, never production fallback. The products are a **Rust + Slint** native desktop app and independent Windows `.scr` runtime using the shared native Rust core; Web/Tauri/WASM products are retired.
 
-**Video editor:** OpenQuartz Studio is a macOS timeline application with multi-track compositing, GPU clip effects, audio editing and mixing, titles and subtitles, proxy preview, and MP4 and SRT export. Run `npm run dev:video-editor` to develop or `npm run package:video-editor` to build the standalone app archive. [Start and use the editor](apps/open_quartz_video_editor/README.md).
+**Video editor:** OpenQuartz Studio is a macOS and Windows timeline application with multi-track compositing, GPU clip effects, audio editing and mixing, titles and subtitles, proxy preview, and SRT export. MP4 delivery uses the macOS hardware encoder. Run `npm run dev:video-editor` to develop or `npm run package:video-editor` to build the standalone app archive. [Start and use the editor](apps/open_quartz_video_editor/README.md).
 
 ## Node Catalog
 

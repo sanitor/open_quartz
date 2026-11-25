@@ -42,7 +42,7 @@ pub struct VideoSources {
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
     frame_budget: Option<Arc<FrameBudget>>,
     trace_enabled: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     worker: Option<precise::Worker>,
 }
 
@@ -53,9 +53,9 @@ struct RequestProgress {
     source_times: std::collections::BTreeMap<String, u64>,
     nodes: Vec<String>,
     selected: Vec<(String, Option<i64>)>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     failure: Option<String>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     ready: Option<Vec<precise::ReadyFrame>>,
 }
 
@@ -71,7 +71,7 @@ impl Default for VideoSources {
             waker: None,
             frame_budget: None,
             trace_enabled: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             worker: None,
         }
     }
@@ -83,7 +83,7 @@ pub struct PreparedVideoSource {
     frame_budget: Option<Arc<FrameBudget>>,
     file_identity: Option<crate::resources::source_identity::SourceFileIdentity>,
     prefetch_limits: (usize, u64),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
     preparation: Option<precise::Preparation>,
 }
 
@@ -95,15 +95,15 @@ impl PreparedVideoSource {
         } else { None };
         #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-d3d12"))))]
         let file_identity: Option<crate::resources::source_identity::SourceFileIdentity> = None;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         let source = NativeVideoSource::open_hardware_precise(config, preview_only)?;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12"))))]
         let source = NativeVideoSource::open_hardware_required(config, preview_only)?;
         let info = source.info().clone();
         if let Some(identity) = &file_identity { identity.validate()?; }
         Ok(Self { source: Some(source), info, frame_budget: None, file_identity,
             prefetch_limits: (usize::MAX, u64::MAX),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             preparation: None,
         })
     }
@@ -114,7 +114,7 @@ impl PreparedVideoSource {
 
     pub fn set_frame_budget(&mut self, budget: Arc<FrameBudget>) -> Result<(), String> {
         if self.frame_budget.as_ref().is_some_and(|current| Arc::ptr_eq(current, &budget)) { return Ok(()); }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.preparation.is_some() {
             return Err("Install the prepared source budget before prewarming".to_owned());
         }
@@ -127,7 +127,7 @@ impl PreparedVideoSource {
         if max_surfaces < 2 || max_bytes < minimum_bytes {
             return Err("Prepared video prefetch limits cannot fit the source cursor and one demand".into());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if self.preparation.is_some() {
             return Err("Configure prepared source limits before prewarming".into());
         }
@@ -142,7 +142,7 @@ impl PreparedVideoSource {
     }
 
     pub(crate) fn prefetch_at_with_policy(&mut self, timeline_ns: u64, epoch: u64, editing: bool) -> Result<bool, String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         {
             if self.preparation.is_none() {
                 let Some(worker) = precise::Preparation::pooled_worker(self.frame_budget.clone()) else { return Ok(false); };
@@ -150,7 +150,7 @@ impl PreparedVideoSource {
             }
             return self.preparation.as_mut().expect("preparation exists").poll(timeline_ns, epoch, self.prefetch_limits, editing);
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12"))))]
         { let _ = (timeline_ns, epoch, editing); Ok(true) }
     }
 }
@@ -165,7 +165,7 @@ impl VideoSources {
         let info = prepared.info.clone();
         if let Some(identity) = prepared.file_identity.take() { self.file_identities.insert(node_id.to_owned(), identity); }
         else { self.file_identities.remove(node_id); }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(preparation) = prepared.preparation.take() {
             self.sources.remove(node_id);
             let worker = self.worker.get_or_insert_with(|| precise::Worker::new(self.waker.clone(), self.frame_budget.clone()));
@@ -174,7 +174,7 @@ impl VideoSources {
             return info;
         }
         let source = prepared.source.take().expect("prepared source owns its native cursor");
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if source.is_precise() {
             self.sources.remove(node_id);
             let worker = self.worker.get_or_insert_with(|| precise::Worker::new(self.waker.clone(), self.frame_budget.clone()));
@@ -182,7 +182,7 @@ impl VideoSources {
             worker.attach(node_id, source);
             return info;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.detach(node_id);
         }
@@ -194,7 +194,7 @@ impl VideoSources {
         self.cancel_prefetch();
         self.file_identities.remove(node_id);
         self.sources.remove(node_id);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.detach(node_id);
         }
@@ -212,7 +212,7 @@ impl VideoSources {
         self.cancel_prefetch();
         self.sources.clear();
         self.file_identities.clear();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.clear();
         }
@@ -224,7 +224,7 @@ impl VideoSources {
 
     pub fn node_ids(&self) -> Vec<String> {
         let mut nodes: Vec<_> = self.sources.keys().cloned().collect();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             nodes.extend(worker.node_ids());
         }
@@ -232,7 +232,7 @@ impl VideoSources {
     }
 
     pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.lock().waker = Some(waker.clone());
         }
@@ -241,7 +241,7 @@ impl VideoSources {
 
     pub fn set_trace_enabled(&mut self, enabled: bool) {
         self.trace_enabled = enabled;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { worker.set_trace_enabled(enabled); }
     }
 
@@ -251,7 +251,7 @@ impl VideoSources {
         if !self.requests.is_empty() || self.prefetch_usage().0 != 0 {
             return Err("Cannot replace the frame budget while native frames are retained".to_owned());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { worker.lock().frame_budget = Some(budget.clone()); }
         self.frame_budget = Some(budget);
         Ok(())
@@ -259,7 +259,7 @@ impl VideoSources {
 
     pub fn dimensions(&self, node_id: &str) -> Option<(u32, u32)> {
         if let Some(source) = self.sources.get(node_id) { return Some((source.info().width, source.info().height)); }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             return worker.lock().sources.get(node_id).map(|source| (source.info.width, source.info.height));
         }
@@ -282,7 +282,7 @@ impl VideoSources {
         if self.requests.len() > capacity {
             return Err("Video prefetch capacity is below admitted requests".to_owned());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             let (surfaces, bytes) = worker.reserved_usage();
             if surfaces > max_surfaces || bytes > max_bytes {
@@ -324,7 +324,7 @@ impl VideoSources {
         if source_times.keys().any(|node| nodes.binary_search(node).is_err()) {
             return Err("Source time requires an attached native video node".into());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             if !worker.enqueue(request_id, timeline_ns, epoch, &nodes, source_times, (self.capacity, self.max_surfaces, self.max_bytes))? {
                 return Ok(false);
@@ -337,16 +337,16 @@ impl VideoSources {
             source_times: source_times.clone(),
             nodes,
             selected: Vec::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             failure: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             ready: None,
         });
         Ok(true)
     }
 
     pub fn cancel_prefetch(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             for (&request_id, request) in self.requests.iter().filter(|_| self.trace_enabled) {
                 worker.record_event(SourceStageEvent {
@@ -357,14 +357,14 @@ impl VideoSources {
             }
         }
         self.requests.clear();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.cancel();
         }
     }
 
     pub fn drain_prefetch_events(&mut self) -> Vec<SourceStageEvent> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { return worker.lock().events.drain(..).collect(); }
         Vec::new()
     }
@@ -373,7 +373,7 @@ impl VideoSources {
     /// not AVFrame references. Decoder-private pools and GPU submission retention
     /// are owned/accounted by their respective stages.
     pub fn prefetch_usage(&self) -> (usize, u64) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         {
             let mut surfaces = HashMap::new();
             if let Some(worker) = &self.worker {
@@ -388,7 +388,7 @@ impl VideoSources {
             }
             return (surfaces.len(), surfaces.values().copied().fold(0, u64::saturating_add));
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12"))))]
         (0, 0)
     }
 
@@ -412,7 +412,7 @@ impl VideoSources {
         mut upload: impl for<'frame> FnMut(&str, NativeVideoFrame<'frame>, u32, u32) -> Result<bool, String>,
     ) -> Result<Option<Vec<(String, Option<i64>)>>, String> {
         let request = self.requests.get_mut(&request_id).ok_or("Video prefetch request is not admitted")?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             if let Some(error) = &request.failure { return Err(error.clone()); }
             if request.ready.is_none() {
@@ -429,12 +429,14 @@ impl VideoSources {
         }
         while request.selected.len() < request.nodes.len() {
             let node = &request.nodes[request.selected.len()];
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
             if let Some(frame) = request.ready.as_ref().and_then(|frames| frames.iter().find(|frame| &frame.node == node)) {
                 let worker = self.worker.as_ref().expect("precise result requires worker");
                 let needed = worker.lock().sources.get(node).is_some_and(|source| source.uploaded_pts != Some(frame.selected.actual_ns));
                 if needed {
-                    if !upload(node, NativeVideoFrame::VideoToolbox(&frame.selected.frame.frame), frame.width, frame.height)? {
+                    if !super::native::with_precise_frame(&frame.selected.frame.frame, |native_frame| {
+                        upload(node, native_frame, frame.width, frame.height)
+                    })? {
                         return Ok(None);
                     }
                     if let Some(source) = worker.lock().sources.get_mut(node) {
@@ -466,7 +468,7 @@ impl VideoSources {
             }
         }
         let selected = self.requests.remove(&request_id).expect("admitted request").selected;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             worker.lock().reservations.remove(&request_id);
         }
@@ -476,27 +478,27 @@ impl VideoSources {
 
     pub fn pause(&mut self) {
         for source in self.sources.values_mut() { source.pause(); }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { worker.set_active(false); }
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
         for source in self.sources.values_mut() { source.resume()?; }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { worker.set_active(true); }
         Ok(())
     }
 
     pub fn is_active(&self) -> bool {
         if self.sources.values().any(NativeVideoSource::is_active) { return true; }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker { return worker.lock().sources.values().any(|source| source.active); }
         false
     }
 
     pub fn metrics(&self, node_id: &str) -> Result<NativeVideoMetrics, String> {
         if let Some(source) = self.sources.get(node_id) { return Ok(source.metrics()); }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         if let Some(worker) = &self.worker {
             if let Some(source) = worker.lock().sources.get(node_id) { return Ok(source.metrics.clone()); }
         }
@@ -510,7 +512,7 @@ impl VideoSources {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
 mod precise {
     use super::*;
     use std::collections::VecDeque;
@@ -601,7 +603,7 @@ mod precise {
         _credit: Option<FrameCredit>,
     }
     impl ReadyFrame {
-        pub fn identity(&self) -> usize { self.selected.frame.frame.pixel_buffer() as usize }
+        pub fn identity(&self) -> usize { self.selected.frame.frame.surface_identity() }
         pub fn bytes(&self) -> u64 { self.selected.frame.frame.allocation_size() }
     }
     pub(super) struct Source {
@@ -946,7 +948,7 @@ mod precise {
                     let admitted = if bytes == 0 {
                         Err("Native source returned a zero-sized surface".to_owned())
                     } else if let Some(reservation) = &mut reservation {
-                        reservation.credit.reassign((0, selected.frame.frame.pixel_buffer() as usize), 1, bytes)
+                        reservation.credit.reassign((0, selected.frame.frame.surface_identity()), 1, bytes)
                     } else { Ok(true) };
                     match admitted {
                         Ok(true) => {},
@@ -967,7 +969,7 @@ mod precise {
                     entry.metrics = source.metrics();
                     entry.metrics.uploaded_frames = uploads;
                     if let Ok(selected) = &result {
-                        entry.surface = Some((selected.frame.frame.pixel_buffer() as usize, selected.frame.frame.allocation_size()));
+                        entry.surface = Some((selected.frame.frame.surface_identity(), selected.frame.frame.allocation_size()));
                         retired_credit = std::mem::replace(&mut entry.credit, credit.clone());
                     }
                     if result.is_ok() || job.cancelled.load(Ordering::Acquire) {

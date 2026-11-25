@@ -153,9 +153,9 @@ jobs:
         if: runner.os != 'Linux'
         run: npm run test:desktop
 
-      - name: Test Video Editor on Windows
+      - name: Test Video Editor without hardware video decoding on Windows
         if: runner.os == 'Windows'
-        run: npm run test:video-editor
+        run: npm run test:video-editor:portable
 
       - name: Test desktop UI (Linux Vulkan virtual display)
         if: runner.os == 'Linux'

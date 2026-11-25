@@ -437,21 +437,21 @@ fn unstarted_software_source() -> NativeVideoSource {
         hardware_position_ns: Arc::new(AtomicU64::new(0)),
         #[cfg(target_os = "macos")]
         decoder_cancelled: Arc::new(AtomicBool::new(false)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_session: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_cancelled: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_last_pts_ns: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_last_target_ns: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_epoch: 0,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_composition_epoch: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_loop_cycle: 0,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12")))]
         exact_invalidated: false,
         info: super::NativeVideoInfo {
             width: 1,

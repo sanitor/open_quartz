@@ -64,7 +64,7 @@ impl Controller {
         if times.len() < 2 {
             return Err("Mask tracking needs two or more video frames".into());
         }
-        let render = self.preview.export_device()?;
+        let render = self.preview.offscreen_device()?;
         let fps = self.document.data.fps;
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_flag = cancel.clone();

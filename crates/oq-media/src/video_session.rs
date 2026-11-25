@@ -75,6 +75,19 @@ impl HardwareFrame {
     pub fn pixel_buffer(&self) -> *mut c_void {
         unsafe { (*self.raw).data[3].cast() }
     }
+
+    /// FFmpeg's AVD3D12VAFrame descriptor, borrowed for the life of this frame.
+    #[cfg(windows)]
+    pub fn d3d12_descriptor(&self) -> *const std::ffi::c_void {
+        unsafe { (*self.raw).data[0].cast() }
+    }
+
+    pub fn surface_identity(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        { self.pixel_buffer() as usize }
+        #[cfg(windows)]
+        { self.d3d12_descriptor() as usize }
+    }
     /// Physical allocation shared by all retained references to this pixel buffer.
     #[cfg(target_os = "macos")]
     pub fn allocation_size(&self) -> u64 {
@@ -90,6 +103,15 @@ impl HardwareFrame {
                 IOSurfaceGetAllocSize(surface) as u64
             }
         }
+    }
+
+    /// Conservative per-surface charge including padding for planar textures.
+    #[cfg(windows)]
+    pub fn allocation_size(&self) -> u64 {
+        let context = unsafe { &*(*(*self.raw).hw_frames_ctx).data.cast::<ffi::AVHWFramesContext>() };
+        let row = (context.width.max(0) as u64 * 2).div_ceil(256) * 256;
+        let height = context.height.max(0) as u64;
+        (row * height + row * height.div_ceil(2)).div_ceil(65_536) * 65_536
     }
     pub fn width(&self) -> u32 {
         unsafe { (*self.raw).width as u32 }
@@ -253,6 +275,15 @@ impl Session {
             return Err(
                 "Hardware decoding is available only for H.264 and HEVC".into(),
             );
+        }
+        #[cfg(windows)]
+        if stream.parameters().id() == codec::Id::H264 {
+            use ffmpeg_next::codec::profile::{H264, Profile};
+            let parameters = stream.parameters();
+            let profile = Profile::from((parameters.id(), unsafe { (*parameters.as_ptr()).profile }));
+            if !matches!(profile, Profile::Unknown | Profile::H264(H264::Baseline | H264::ConstrainedBaseline | H264::Main | H264::High)) {
+                return Err(MediaError::unsupported(format!("Unsupported H.264 profile for D3D12VA: {profile:?}")));
+            }
         }
         let stream_index = stream.index();
         let time_base: ffi::AVRational = stream.time_base().into();

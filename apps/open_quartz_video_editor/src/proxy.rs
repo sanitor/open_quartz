@@ -212,11 +212,17 @@ impl Proxies {
 fn proxy_directory() -> Option<PathBuf> {
     std::env::var_os("OPEN_QUARTZ_PROXY_CACHE_DIR")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join("Library/Caches/OpenQuartz Studio/Proxies"))
-        })
+        .or_else(default_proxy_directory)
+}
+
+#[cfg(target_os = "macos")]
+fn default_proxy_directory() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches/OpenQuartz Studio/Proxies"))
+}
+
+#[cfg(windows)]
+fn default_proxy_directory() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("OpenQuartz Studio/Proxies"))
 }
 
 fn lock(path: &Path) -> Result<File, String> {
@@ -302,13 +308,32 @@ fn transcode(asset: &MediaAsset, destination: &Path, cancel: &AtomicBool) -> Res
     let scale = (640.0 / f64::from(asset.width))
         .min(360.0 / f64::from(asset.height))
         .min(1.0);
+    #[cfg(windows)]
+    // Preserve aspect ratio when a Media Foundation encoder needs a larger
+    // minimum input extent than the source provides.
+    let scale = scale.max(128.0 / f64::from(asset.width.min(asset.height)));
     let even = |value: u32| (f64::from(value) * scale / 2.0).round().max(1.0) as u32 * 2;
+    let (width, height) = (even(asset.width), even(asset.height));
+    #[cfg(windows)]
+    if width > 640 || height > 360 {
+        return Err("Source aspect ratio cannot fit the hardware proxy dimensions".into());
+    }
     let filter = format!(
         "scale={}:{}:out_color_matrix=bt709:out_range=tv",
-        even(asset.width),
-        even(asset.height)
+        width,
+        height
     );
-    let mut child = Command::new(encoder)
+    let mut command = Command::new(encoder);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(target_os = "macos")]
+    let codec = ["-c:v", "h264_videotoolbox", "-allow_sw", "0", "-pix_fmt", "yuv420p"];
+    #[cfg(windows)]
+    let codec = ["-c:v", "h264_mf", "-hw_encoding", "1", "-pix_fmt", "nv12"];
+    let mut child = command
         .args([
             "-hide_banner",
             "-loglevel",
@@ -333,15 +358,10 @@ fn transcode(asset: &MediaAsset, destination: &Path, cancel: &AtomicBool) -> Res
             "{}/{}",
             asset.time_base.numerator, asset.time_base.denominator
         ))
+        .args(codec)
         .args([
-            "-c:v",
-            "h264_videotoolbox",
-            "-allow_sw",
-            "0",
             "-b:v",
             "1400k",
-            "-pix_fmt",
-            "yuv420p",
             "-color_primaries",
             "bt709",
             "-color_trc",

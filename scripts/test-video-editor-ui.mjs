@@ -12,10 +12,11 @@ import { writeHtmlReport } from './slint-ui-report.mjs';
 const args = process.argv.slice(2);
 const smoke = args.includes('--smoke');
 const audioOnly = args.includes('--audio-only');
-assert(!smoke || !audioOnly, 'Choose either --smoke or --audio-only');
-const positional = args.filter(arg => !['--smoke', '--audio-only'].includes(arg));
-assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke|--audio-only]');
-const tier = audioOnly ? 'audio-only' : smoke ? 'smoke' : 'full';
+const previewOnly = args.includes('--preview-only');
+assert([smoke, audioOnly, previewOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only'].includes(arg));
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke|--audio-only|--preview-only]');
+const tier = audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -50,7 +51,7 @@ async function step(name, run, { core = false } = {}) {
   if (smoke && !core) return;
   report.caseDefinitions.push({ id: name, title: name, description: 'Native UI actions and observable results', screenshotPrefixes: [] });
   const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
-function generate(name,color,duration=3,fps=30,size='320x180'){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=${fps}`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
+function generate(name,color,duration=3,fps=30,size='320x180'){const path=join(output,name);execFileSync(process.env.OPEN_QUARTZ_TEST_FFMPEG_PATH || ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=${fps}`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
 async function audioOnlyRoundTrip() {
   await step('Import, play and reopen an independent PCM clip', async () => {
     const path = join(output, 'audio-only-tone.wav');
@@ -83,6 +84,214 @@ async function audioOnlyRoundTrip() {
     await waitState('audio clips 1');
     await close();
   });
+}
+
+const fixtureCommand = args => execFileSync(process.env.OPEN_QUARTZ_TEST_FFMPEG_PATH || ffmpeg,
+  ['-hide_banner', '-loglevel', 'error', ...args],
+  { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
+
+const center = item => ({
+  x: item.absolutePosition.x + item.size.width / 2,
+   y: item.absolutePosition.y + item.size.height / 2,
+ });
+ const grip = name => client.find({ label: `Reorder ${name}`, role: 'Button' });
+const enter = async (input, value) => {
+  await client.click(input);
+   await client.setValue(input, String(value));
+   await client.key('\n');
+ };
+const clipControl = async (label, role = 'TextInput', section = 'clip_properties') => {
+  const viewport = await client.find({ id: `EditorWindow::${section}` });
+   const scroll = deltaY => client.value('dispatch_pointer_scroll', {
+     windowHandle: client.windowId, position: center(viewport), deltaX: 0, deltaY,
+   });
+   await scroll(2000);
+   for (let attempt = 0; attempt < 12; attempt++) {
+     let control;
+     try {
+       [control] = await client.byLabel(label, { role, visible: false });
+     } catch (error) {
+       if (!/destroyed|stale/i.test(error.message)) throw error;
+       await delay(80);
+       continue;
+     }
+     const bounds = viewport.absolutePosition.y;
+     if (control) {
+       const y = center(control).y;
+       if (y > bounds + 4 && y < bounds + viewport.size.height - 4) return control;
+       await scroll(bounds + viewport.size.height / 2 - y);
+     } else {
+       await scroll(-140);
+     }
+     await delay(80);
+   }
+   throw new Error(`Could not scroll clip Inspector to ${label}`);
+ };
+
+async function maskTrackingRoundTrip(decodeOutput) {
+  const verifyExport = Boolean(decodeOutput);
+ await step(verifyExport ? 'Track a translating clip mask and retain the animated result in export' : 'Track a translating clip mask and verify the monitor', async () => {
+   const input = join(output, 'move-mask.mp4');
+   const project = join(output, 'track-mask.oqvideo.json');
+   fixtureCommand(['-f', 'lavfi', '-i',
+     "nullsrc=s=320x180:r=30,geq=lum='if(between(X,40+N*4,79+N*4)*between(Y,65,115),235,16)':cb=128:cr=128",
+     '-frames:v', '36', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-color_range', 'tv',
+     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-y', input]);
+   await launch();
+   await click('SEQUENCE');
+   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
+   await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
+   await click('Apply settings');
+   await fileAction('IMPORT', input, 'Import media'); await waitState('assets 1'); await click('ADD CLIP'); await waitState('clips 1');
+   await client.click((await timeline('move-mask.mp4'))[0]);
+   await client.click(await clipControl('Mask shape', 'Combobox'));
+   await client.key('\uf701'); await client.key('\n');
+   for (const [label, value] of [['center X', 18.75], ['width', 18], ['height', 50]]) {
+     await enter(await clipControl(`Mask ${label} (%)`), value);
+   }
+   const track = async () => client.click(await clipControl('Track mask forward', 'Button'));
+   await track();
+   await client.click(await client.find({ label: 'Cancel mask tracking', role: 'Button' }));
+   await waitState('Mask tracking cancelled');
+   await track(); await waitState('Mask tracking complete');
+   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved');
+   const clip = JSON.parse(await readFile(project, 'utf8')).data.tracks[0].clips[0];
+   assert.equal(clip.mask_tracking.length, 36);
+   assert(clip.mask_tracking[17].x > 0.38 && clip.mask_tracking[17].x < 0.42, JSON.stringify(clip.mask_tracking[17]));
+   assert(Math.abs(clip.mask_tracking[17].y - 0.5) < 0.03);
+   const check = async white => client.waitFor(async () => {
+     const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+     const png = decodePng(await client.screenshot());
+     const window = await client.windowProperties();
+     const scale = window.scaleFactor || 1;
+     const sx = png.width / (window.size.width / scale), sy = png.height / (window.size.height / scale);
+     const width = Math.min(viewer.size.width, viewer.size.height * 320 / 180);
+     const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2 - width * 0.1) * sx);
+     const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * sy);
+     const level = png.pixels[(y * png.width + x) * png.channels];
+     return white ? level > 210 : level < 20;
+   }, { description: white ? 'moving patch stays within the tracked monitor mask' : 'static mask excludes the moving patch' });
+   for (let i = 0; i < 17; i++) await click('NEXT');
+   await check(true);
+   await client.click(await clipControl('Clear mask tracking', 'Button')); await check(false);
+   await click('UNDO'); await check(true);
+   if (verifyExport) {
+     const path = join(output, 'tracked-mask.mp4');
+     await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+     const pixels = decodeOutput(['-i', path, '-vf', 'select=eq(n\\,17)', '-frames:v', '1',
+       '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+     assert(pixels[(90 * 320 + 128) * 3] > 210, 'tracked clip export keeps the moving patch');
+   }
+   await click('SAVE'); await waitState('Project saved'); await close();
+ }, { core: true });
+}
+
+async function hdrPreviewRoundTrip() {
+ await step('Import PQ and HLG and inspect the hardware tone-mapped monitor', async () => {
+   const asset = (name, transfer) => {
+     const path = join(output, name + '.mp4');
+     fixtureCommand(['-f', 'lavfi', '-i',
+       "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum=509:cb=512:cr=512",
+       '-frames:v', '24', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
+       '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
+       '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', transfer, '-y', path]);
+     return path;
+   };
+   const pq = asset('pq-neutral', 'smpte2084');
+   const hlg = asset('hlg-neutral', 'arib-std-b67');
+   await launch();
+   const check = async (name, profile, min, max) => {
+     const card = await assetCard(name + '.mp4');
+     assert(card.accessibleDescription.includes(profile));
+     await client.waitFor(async () => {
+       const pixels = decodePng(await client.screenshot());
+       const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+       const win = await client.windowProperties();
+       const scale = pixels.width / (win.size.width / (win.scaleFactor || 1));
+       const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2) * scale);
+       const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * scale);
+       const offset = (y * pixels.width + x) * pixels.channels;
+       const [red, green, blue] = pixels.pixels.subarray(offset, offset + 3);
+       return red >= min && red <= max && Math.abs(red - green) <= 2 && Math.abs(red - blue) <= 2;
+     }, { description: profile + ' neutral display value' });
+   };
+   await fileAction('IMPORT', pq, 'Import media'); await waitState('assets 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
+   await click('ADD CLIP'); await waitState('clips 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
+   await fileAction('IMPORT', hlg, 'Import media'); await waitState('assets 2');
+   await check('hlg-neutral', 'BT.2020 HLG · 10-bit', 114, 132);
+   const project = join(output, 'hdr-import.oqvideo.json');
+   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved'); await close();
+   await launch(project); await waitState('clips 1');
+   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
+   await close();
+ }, { core: true });
+}
+
+async function linkedAudioPreview() {
+  await step('Play and pause hardware video with linked AAC audio', async () => {
+    const input = generate('linked-preview-picture.mp4', 'red');
+    const linked = join(output, 'linked-preview.mp4');
+    execFileSync(ffmpeg, [
+      '-v', 'error', '-i', input, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-y', linked,
+    ], { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
+    await launch();
+    await fileAction('IMPORT', linked, 'Import media');
+    await waitState('assets 1');
+    await click('ADD CLIP');
+    await waitState('audio clips 1');
+    const clip = await client.find({ label: 'Audio clip linked-preview.mp4', role: 'Button', visible: false });
+    assert(clip.accessibleDescription.endsWith('linked video'));
+    await click('PLAY');
+    await client.waitFor(async () => {
+      const status = await state();
+      return /Audio output [1-9][0-9]*%/.test(status) && /playhead [1-9]\d* frames/.test(status);
+    }, { description: 'linked audio and video advance together' });
+    await click('PAUSE');
+    await client.waitFor(async () => !(await state()).includes('Audio output'), { description: 'pause stops linked audio' });
+    await snapshot('linked-audio', 'red');
+    await fileAction('SAVE AS', join(output, 'linked-preview.oqvideo.json'), 'Save project');
+    await waitState('Project saved');
+    await close();
+  });
+}
+
+async function proxyRoundTrip() {
+ await step('Generate a proxy for reordered VFR footage with a nonzero origin', async () => {
+   const original = resolve('crates/oq-media/tests/source-time.mp4');
+   const cacheFiles = async () => {
+     try { return (await readdir(join(output, 'proxies'))).filter(name => /^[a-f0-9]{64}\.mp4$/.test(name)); }
+     catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+   };
+   const previous = new Set(await cacheFiles());
+   await launch();
+   await fileAction('IMPORT', original, 'Import media');
+   await waitState('source PTS 0 ns');
+   await click('Prepare proxy'); await waitState('Proxy ready');
+   const created = (await cacheFiles()).filter(name => !previous.has(name));
+   assert.equal(created.length, 1);
+   const timestamps = path => {
+     const decoded = spawnSync(ffmpeg, ['-hide_banner', '-copyts', '-i', path,
+       '-vf', 'showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-'], { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' }, encoding: 'utf8' });
+     assert.equal(decoded.status, 0, decoded.stderr);
+     return Array.from(decoded.stderr.matchAll(/\bn:\s+\d+ pts:\s+(\d+)\b/g), match => Number(match[1]));
+   };
+   const source = timestamps(original);
+   assert.equal(source.length, 34);
+   assert.equal(source[0], 2000);
+   assert(source.some((timestamp, index) => timestamp - source[index - 1] === 200));
+   const proxy = timestamps(join(output, 'proxies', created[0]));
+   assert.deepEqual(proxy, source.map(pts => pts - source[0]));
+   await click('Use proxies'); await waitState('Proxy preview enabled');
+   await click('ADD CLIP'); await waitState('clips 1');
+   await click('NEXT'); await waitState('source PTS 100000000 ns');
+   await click('Use originals'); await waitState('Original preview enabled');
+   await fileAction('SAVE AS', join(output, 'proxy-vfr.oqvideo.json'), 'Save project');
+   await waitState('Project saved');
+   await close();
+ });
 }
 
 async function runVideoCases() {
@@ -127,6 +336,7 @@ async function runVideoCases() {
  await step('Save project through UI and verify source timestamps',async()=>{await fileAction('SAVE AS',project,'Save project');await waitState('Project saved');const data=JSON.parse(await readFile(project,'utf8')).data;assert.equal(data.width,640);assert.equal(data.height,360);assert.deepEqual(data.tracks.flatMap(track => track.clips).map(c=>[c.timeline_start,c.duration]),[[10,35],[45,35],[100,90]]);const asset=data.assets.find(a=>a.name==='red.mp4');assert.equal(data.tracks.flatMap(track => track.clips)[0].source_in_pts,asset.start_pts+asset.time_base.denominator/asset.time_base.numerator/3);assert(!data.assets[0].path.startsWith('/'));await close();}, { core: true });
  await step('Reopen, detect missing media and reject wrong relink',async()=>{await rename(red,join(output,'red-relocated.mp4'));await launch(project);await waitState('clips 3');const item=(await client.byLabel('red.mp4',{role:'Button'})).find(i=>i.accessibleDescription?.includes('; offline'));assert(item);await client.click(item);await waitState('Media offline');await snapshot('08-offline');await fileAction('RELINK',blue,'Relink media');await waitState('does not match');assert((await client.byLabel('red.mp4',{role:'Button'})).some(i=>i.accessibleDescription?.includes('; offline')));}, { core: true });
  await step('Relink matching original and restore hardware image',async()=>{await fileAction('RELINK',join(output,'red-relocated.mp4'),'Relink media');await client.waitFor(async()=> (await buttons('red.mp4')).some(i=>i.accessibleDescription?.includes('; online')),{description:'matched relink'});const item=(await buttons('red.mp4')).find(i=>i.accessibleDescription?.includes('; online'));await client.click(item);await waitState('source PTS 0 ns · CPU image bytes 0');await snapshot('09-restored','red');await click('SAVE');await waitState('Project saved');await close();}, { core: true });
+ if (previewOnly) { await linkedAudioPreview(); await hdrPreviewRoundTrip(); await maskTrackingRoundTrip(); await proxyRoundTrip(); return; }
  await step('Long media plus preserves full duration beyond GPU texture limits',async()=>{
   const longMedia=generate('long.mp4','red',30);
   const longProject=join(output,'long.oqvideo.json');
@@ -176,11 +386,6 @@ async function runVideoCases() {
    await client.waitFor(async () => previewHasColor(await client.screenshot(), color),
      { description: `composited ${color} pixels` });
  };
- const center = item => ({
-   x: item.absolutePosition.x + item.size.width / 2,
-   y: item.absolutePosition.y + item.size.height / 2,
- });
- const grip = name => client.find({ label: `Reorder ${name}`, role: 'Button' });
  const item = async name => (await timeline(name))[0];
  await step('Drag media to the upper video track and render both layers', async () => {
    await launch();
@@ -617,11 +822,6 @@ async function runVideoCases() {
    await close();
  });
  const findInput = label => client.find({ label, role: 'TextInput' });
- const enter = async (input, value) => {
-   await client.click(input);
-   await client.setValue(input, String(value));
-   await client.key('\n');
- };
  const timingProject = join(output, 'timing.oqvideo.json');
  const outgoing = 'timing-blue.mp4';
  const incoming = 'linked-tone.mp4';
@@ -908,33 +1108,6 @@ async function runVideoCases() {
    assert.equal(data.tracks[0].clips[0].duration * 1600, length);
    await close();
  });
- const clipControl = async (label, role = 'TextInput', section = 'clip_properties') => {
-   const viewport = await client.find({ id: `EditorWindow::${section}` });
-   const scroll = deltaY => client.value('dispatch_pointer_scroll', {
-     windowHandle: client.windowId, position: center(viewport), deltaX: 0, deltaY,
-   });
-   await scroll(2000);
-   for (let attempt = 0; attempt < 12; attempt++) {
-     let control;
-     try {
-       [control] = await client.byLabel(label, { role, visible: false });
-     } catch (error) {
-       if (!/destroyed|stale/i.test(error.message)) throw error;
-       await delay(80);
-       continue;
-     }
-     const bounds = viewport.absolutePosition.y;
-     if (control) {
-       const y = center(control).y;
-       if (y > bounds + 4 && y < bounds + viewport.size.height - 4) return control;
-       await scroll(bounds + viewport.size.height / 2 - y);
-     } else {
-       await scroll(-140);
-     }
-     await delay(80);
-   }
-   throw new Error(`Could not scroll clip Inspector to ${label}`);
- };
  await step('Solo a track, observe separated meters, and export only that track', async () => {
    await launch(audioProject); await waitState('audio clips 2');
    await audioLaneScroll();
@@ -1813,31 +1986,7 @@ async function runVideoCases() {
    await expectColor('blue');
    await close();
  });
- await step('Generate a proxy for reordered VFR footage with a nonzero origin', async () => {
-   const original = resolve('crates/oq-media/tests/source-time.mp4');
-   const previous = new Set(await cacheFiles());
-   await launch();
-   await fileAction('IMPORT', original, 'Import media');
-   await waitState('source PTS 0 ns');
-   await click('Prepare proxy'); await waitState('Proxy ready');
-   const created = (await cacheFiles()).filter(name => !previous.has(name));
-   assert.equal(created.length, 1);
-   const timestamps = path => {
-     const decoded = spawnSync(ffmpeg, ['-hide_banner', '-copyts', '-i', path,
-       '-vf', 'showinfo', '-vsync', '0', '-f', 'null', '-'], { env: mediaEnv, encoding: 'utf8' });
-     assert.equal(decoded.status, 0, decoded.stderr);
-     return Array.from(decoded.stderr.matchAll(/\bn:\s+\d+ pts:\s+(\d+)\b/g), match => Number(match[1]));
-   };
-   const source = timestamps(original);
-   assert.equal(source.length, 34);
-   assert.equal(source[0], 2000);
-   assert(source.some((timestamp, index) => timestamp - source[index - 1] === 200));
-   const proxy = timestamps(join(output, 'proxies', created[0]));
-   assert.deepEqual(proxy, source.map(pts => pts - source[0]));
-   await fileAction('SAVE AS', join(output, 'proxy-vfr.oqvideo.json'), 'Save project');
-   await waitState('Project saved');
-   await close();
- });
+ await proxyRoundTrip();
  const chooseExportOption = async (label, steps, value) => {
    const box = await client.find({ label, role: 'Combobox' });
    await client.click(box);
@@ -2223,58 +2372,7 @@ async function runVideoCases() {
    await click('SAVE'); await waitState('Project saved');
    await close();
  }, { core: true });
- await step('Track a translating clip mask and retain the animated result in export', async () => {
-   const input = join(output, 'move-mask.mp4');
-   const project = join(output, 'track-mask.oqvideo.json');
-   mediaCommand(['-f', 'lavfi', '-i',
-     "nullsrc=s=320x180:r=30,geq=lum='if(between(X,40+N*4,79+N*4)*between(Y,65,115),235,16)':cb=128:cr=128",
-     '-frames:v', '36', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-color_range', 'tv',
-     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-y', input]);
-   await launch();
-   await click('SEQUENCE');
-   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
-   await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
-   await click('Apply settings');
-   await importMedia(input); await waitState('assets 1'); await click('ADD CLIP'); await waitState('clips 1');
-   await client.click(await item('move-mask.mp4'));
-   await client.click(await clipControl('Mask shape', 'Combobox'));
-   await client.key('\uf701'); await client.key('\n');
-   for (const [label, value] of [['center X', 18.75], ['width', 18], ['height', 50]]) {
-     await enter(await clipControl(`Mask ${label} (%)`), value);
-   }
-   const track = async () => client.click(await clipControl('Track mask forward', 'Button'));
-   await track();
-   await client.click(await client.find({ label: 'Cancel mask tracking', role: 'Button' }));
-   await waitState('Mask tracking cancelled');
-   await track(); await waitState('Mask tracking complete');
-   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved');
-   const clip = JSON.parse(await readFile(project, 'utf8')).data.tracks[0].clips[0];
-   assert.equal(clip.mask_tracking.length, 36);
-   assert(clip.mask_tracking[17].x > 0.38 && clip.mask_tracking[17].x < 0.42, JSON.stringify(clip.mask_tracking[17]));
-   assert(Math.abs(clip.mask_tracking[17].y - 0.5) < 0.03);
-   const check = async white => client.waitFor(async () => {
-     const viewer = await client.find({ label: 'Video preview', role: 'Image' });
-     const png = decodePng(await client.screenshot());
-     const window = await client.windowProperties();
-     const scale = window.scaleFactor || 1;
-     const sx = png.width / (window.size.width / scale), sy = png.height / (window.size.height / scale);
-     const width = Math.min(viewer.size.width, viewer.size.height * 320 / 180);
-     const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2 - width * 0.1) * sx);
-     const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * sy);
-     const level = png.pixels[(y * png.width + x) * png.channels];
-     return white ? level > 210 : level < 20;
-   }, { description: white ? 'moving patch stays within the tracked monitor mask' : 'static mask excludes the moving patch' });
-   for (let i = 0; i < 17; i++) await click('NEXT');
-   await check(true);
-   await client.click(await clipControl('Clear mask tracking', 'Button')); await check(false);
-   await click('UNDO'); await check(true);
-   const path = join(output, 'tracked-mask.mp4');
-   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
-   const pixels = mediaCommand(['-i', path, '-vf', 'select=eq(n\\,17)', '-frames:v', '1',
-     '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
-   assert(pixels[(90 * 320 + 128) * 3] > 210, 'tracked clip export keeps the moving patch');
-   await click('SAVE'); await waitState('Project saved'); await close();
- }, { core: true });
+ await maskTrackingRoundTrip(mediaCommand);
  await step('Choose track blend modes and match composite preview to decoded MP4', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
@@ -2919,46 +3017,7 @@ async function runVideoCases() {
    assert.equal(saved.tracks[0].clips[0].source_in_pts, asset.start_pts + ticksPerSecond / 2);
    await close();
  }, { core: true });
- await step('Import PQ and HLG and inspect the hardware tone-mapped monitor', async () => {
-   const asset = (name, transfer) => {
-     const path = join(output, name + '.mp4');
-     mediaCommand(['-f', 'lavfi', '-i',
-       "nullsrc=s=320x180:r=30,format=yuv420p10le,geq=lum=509:cb=512:cr=512",
-       '-frames:v', '24', '-c:v', 'libx265', '-x265-params', 'pools=1:frame-threads=1:log-level=error',
-       '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', '-color_range', 'tv',
-       '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', transfer, '-y', path]);
-     return path;
-   };
-   const pq = asset('pq-neutral', 'smpte2084');
-   const hlg = asset('hlg-neutral', 'arib-std-b67');
-   await launch();
-   const check = async (name, profile, min, max) => {
-     const card = await assetCard(name + '.mp4');
-     assert(card.accessibleDescription.includes(profile));
-     await client.waitFor(async () => {
-       const pixels = decodePng(await client.screenshot());
-       const viewer = await client.find({ label: 'Video preview', role: 'Image' });
-       const win = await client.windowProperties();
-       const scale = pixels.width / (win.size.width / (win.scaleFactor || 1));
-       const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2) * scale);
-       const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * scale);
-       const offset = (y * pixels.width + x) * pixels.channels;
-       const [red, green, blue] = pixels.pixels.subarray(offset, offset + 3);
-       return red >= min && red <= max && Math.abs(red - green) <= 2 && Math.abs(red - blue) <= 2;
-     }, { description: profile + ' neutral display value' });
-   };
-   await importMedia(pq); await waitState('assets 1');
-   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
-   await click('ADD CLIP'); await waitState('clips 1');
-   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
-   await importMedia(hlg); await waitState('assets 2');
-   await check('hlg-neutral', 'BT.2020 HLG · 10-bit', 114, 132);
-   const project = join(output, 'hdr-import.oqvideo.json');
-   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved'); await close();
-   await launch(project); await waitState('clips 1');
-   await check('pq-neutral', 'BT.2020 PQ · 10-bit', 140, 157);
-   await close();
- }, { core: true });
+ await hdrPreviewRoundTrip();
  await step('Export PQ highlights as independently decoded HDR10 Main10 with mastering metadata', async () => {
    const input = join(output, 'pq-split.mp4');
    mediaCommand(['-f', 'lavfi', '-i',
@@ -3143,7 +3202,7 @@ async function runVideoCases() {
 }
 
 try {
-  if (audioOnly || !smoke) await audioOnlyRoundTrip();
+  if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
   if (!audioOnly) await runVideoCases();
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

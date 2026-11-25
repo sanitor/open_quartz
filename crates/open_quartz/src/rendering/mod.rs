@@ -15,6 +15,8 @@ pub use pipeline_cache::GpuRuntimeStats;
 pub mod stable_frame;
 #[cfg(all(target_os = "macos", feature = "native-video"))]
 pub mod videotoolbox;
+#[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
+mod video_color;
 #[cfg(all(target_os = "macos", feature = "native-video"))]
 pub mod encode_surface;
 

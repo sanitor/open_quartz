@@ -66,7 +66,7 @@ enum LayerSource {
     Nested { request: Box<PreviewRequest>, project: Arc<ProjectData>, clock: ClockStep },
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl PreviewRequest {
     pub fn map_video_assets(&mut self, mut update: impl FnMut(&mut MediaAsset)) {
         if let Some(asset) = &mut self.asset {
@@ -462,7 +462,7 @@ pub struct PreviewBridge {
     delivered: Arc<AtomicU64>,
     coalesced: Arc<AtomicU64>,
     worker: Option<JoinHandle<()>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     render_info: open_quartz::rendering::RenderDeviceInfo,
     pub backend: Arc<open_quartz::rendering::GpuBackend>,
 }
@@ -471,6 +471,8 @@ impl PreviewBridge {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: if cfg!(target_os = "macos") {
                 wgpu::Backends::METAL
+            } else if cfg!(windows) {
+                wgpu::Backends::DX12
             } else {
                 wgpu::Backends::PRIMARY
             },
@@ -482,8 +484,16 @@ impl PreviewBridge {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
-        let features = adapter.features() & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+        let supported = adapter.features();
+        let mut features = supported & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+        if cfg!(windows) {
+            features |= supported & wgpu::Features::TEXTURE_FORMAT_NV12;
+            let p010 = wgpu::Features::TEXTURE_FORMAT_P010 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+            if supported.contains(p010) {
+                features |= p010;
+            }
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("OpenQuartz Studio shared GPU"),
             required_features: features,
@@ -530,7 +540,7 @@ impl PreviewBridge {
                 delivered,
                 coalesced,
                 worker: Some(worker),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 render_info: info.clone(),
                 backend,
             },
@@ -541,8 +551,8 @@ impl PreviewBridge {
             ),
         ))
     }
-    #[cfg(target_os = "macos")]
-    pub fn export_device(&self) -> Result<RenderDevice, String> {
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn offscreen_device(&self) -> Result<RenderDevice, String> {
         RenderDevice::offscreen_session(&self.backend, self.render_info.clone())
     }
     pub fn request(&self, request: PreviewRequest) -> Result<(), String> {
@@ -706,7 +716,7 @@ use playback::run;
 #[path = "sequence_export.rs"]
 pub(crate) mod export;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "mask_tracking.rs"]
 pub(crate) mod mask_tracking;
 

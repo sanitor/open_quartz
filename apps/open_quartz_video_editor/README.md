@@ -14,7 +14,15 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-Windows x64 可运行 `dev:video-editor`、`build:video-editor` 和 `test:video-editor`，支持静态图片以及独立音频素材的编辑和播放。可用 `npm run test:video-editor:ui:stills` 验证静态图片、节点效果和工程重开，用 `npm run test:video-editor:ui:audio` 验证 PCM 波形和 WASAPI 播放。视频导入与精确寻帧、视频关联音频、代理媒体和 MP4 导出仍依赖 macOS 媒体后端。
+Windows x64 支持 D3D12VA 硬件视频导入、按源 PTS 寻帧、SDR 和 PQ/HLG HDR 预览、遮罩跟踪、关联 AAC 音频、独立音频编辑，以及使用 Media Foundation 硬件编码器生成预览代理。视频硬解使用 NV12 或 P010，Windows 的 H.264 导入覆盖 Baseline、Main 和 High profile。MP4 导出使用 macOS 的 VideoToolbox。
+
+macOS 和 Windows 运行同一组预览测试。硬件测试需要可用的 Metal 或 D3D12VA GPU，涉及音频输出的用例需要默认播放设备。
+
+- `npm run test:video-editor` 运行 Rust 测试，包含硬件逐帧预览。
+- `npm run test:video-editor:ui:preview` 验证剪辑、像素、源 PTS、工程重开、关联 AAC 和 HDR 色调映射。
+- `npm run test:video-editor:ui:stills` 和 `npm run test:video-editor:ui:audio` 验证静态图片和独立音频。
+
+GitHub Actions 的 **Desktop hardware preview parity** 工作流可手动运行，对两平台运行相同的 Open Quartz 桌面冒烟测试和 Studio 预览用例。Windows runner 需要交互桌面、GPU、音频设备、MSVC 和 LLVM，并带有 `openquartz-video-gpu` 标签。
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 

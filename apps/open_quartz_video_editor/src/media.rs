@@ -1,7 +1,7 @@
 use crate::document::{fingerprint, new_id, MediaAsset, Rational};
 #[cfg(any(target_os = "macos", windows))]
 use crate::document::AudioAsset;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use crate::document::HdrTransfer;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbaImage};
 use std::path::{Path, PathBuf};
@@ -56,7 +56,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
         }
         (audio, name, path)
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
         let info = session.source_info().clone();
@@ -108,10 +108,8 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             online: true,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
-        #[cfg(windows)]
-        let _ = (audio, name, stored_path);
         Err(
             "Precise resident editing currently requires macOS VideoToolbox; no CPU fallback"
                 .into(),
@@ -175,6 +173,11 @@ pub fn proxy_encoder_path() -> Result<PathBuf, String> {
         .chain([development])
         .find(|path| path.is_file())
         .ok_or_else(|| "Proxy encoder unavailable. Run npm run prepare:desktop".into())
+}
+
+#[cfg(windows)]
+pub fn proxy_encoder_path() -> Result<PathBuf, String> {
+    open_quartz::media::native::find_ffmpeg()
 }
 
 pub fn configure_runtime() -> Result<(), String> {

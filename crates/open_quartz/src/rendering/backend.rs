@@ -35,6 +35,8 @@ pub struct GpuBackend {
     pub(crate) readback_fault: AtomicU8,
     #[cfg(windows)]
     pub(crate) d3d12_yuv_converter: Arc<OnceLock<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
+    #[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+    pub(crate) d3d12_color_pipelines: std::sync::Mutex<std::collections::HashMap<u16, (wgpu::BindGroupLayout, wgpu::RenderPipeline)>>,
     #[cfg(all(target_os = "macos", feature = "native-video"))]
     pub(crate) videotoolbox_importer: OnceLock<Result<super::videotoolbox::VideoToolboxImporter, String>>,
 }
@@ -52,6 +54,8 @@ impl GpuBackend {
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             d3d12_yuv_converter: Arc::new(OnceLock::new()),
+            #[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+            d3d12_color_pipelines: Default::default(),
             #[cfg(all(target_os = "macos", feature = "native-video"))]
             videotoolbox_importer: OnceLock::new(),
         }
@@ -69,6 +73,8 @@ impl GpuBackend {
             readback_fault: AtomicU8::new(0),
             #[cfg(windows)]
             d3d12_yuv_converter: Arc::new(OnceLock::new()),
+            #[cfg(all(windows, feature = "native-video-precise-d3d12"))]
+            d3d12_color_pipelines: Default::default(),
             #[cfg(all(target_os = "macos", feature = "native-video"))]
             videotoolbox_importer: OnceLock::new(),
         }

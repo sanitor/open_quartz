@@ -185,14 +185,22 @@ impl RenderDevice {
 
     /// Use the same device, queue and physical budget with independent import
     /// limits and completion notifications.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub fn offscreen_session(backend: &GpuBackend, info: RenderDeviceInfo) -> Result<Self, String> {
         let offscreen = Arc::new(GpuBackend::from_shared(backend.device.clone(), backend.queue.clone()));
         offscreen.set_frame_budget(backend.frame_budget())?;
         Ok(Self {
+            #[cfg(windows)]
+            presentation_scaler: GpuPreviewReader::new(offscreen.clone()),
             executor: GpuExecutor::new(offscreen),
             info,
             display_converter: parking_lot::Mutex::new(None),
+            #[cfg(windows)]
+            shared_presenter: None,
+            #[cfg(windows)]
+            shared_texture_enabled: false,
+            #[cfg(windows)]
+            presentation_started_at: Instant::now(),
         })
     }
 

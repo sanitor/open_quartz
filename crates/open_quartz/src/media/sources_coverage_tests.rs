@@ -49,7 +49,7 @@ fn prepared_file_rejects_unsupported_backend_before_file_access() {
 #[test]
 fn hardware_source_upload_retries_and_tracks_lifecycle() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/white_64x64.mp4");
+        .join("../../tests/fixtures/white_h264_high_64x64.mp4");
     assert!(
         path.is_file(),
         "hardware video fixture is a required test prerequisite"
