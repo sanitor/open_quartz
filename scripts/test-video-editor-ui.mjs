@@ -11,9 +11,11 @@ import { writeHtmlReport } from './slint-ui-report.mjs';
 
 const args = process.argv.slice(2);
 const smoke = args.includes('--smoke');
-const positional = args.filter(arg => arg !== '--smoke');
-assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke]');
-const tier = smoke ? 'smoke' : 'full';
+const audioOnly = args.includes('--audio-only');
+assert(!smoke || !audioOnly, 'Choose either --smoke or --audio-only');
+const positional = args.filter(arg => !['--smoke', '--audio-only'].includes(arg));
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke|--audio-only]');
+const tier = audioOnly ? 'audio-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -49,8 +51,42 @@ async function step(name, run, { core = false } = {}) {
   report.caseDefinitions.push({ id: name, title: name, description: 'Native UI actions and observable results', screenshotPrefixes: [] });
   const startedAt=new Date().toISOString();const first=report.screenshots.length;try{await run();report.steps.push({name,passed:true,startedAt,finishedAt:new Date().toISOString(),screenshots:report.screenshots.slice(first)});console.log(`[video-editor] PASS ${name}`);}catch(error){report.steps.push({name,passed:false,startedAt,finishedAt:new Date().toISOString(),error:error.message,screenshots:report.screenshots.slice(first)});throw error;}}
 function generate(name,color,duration=3,fps=30,size='320x180'){const path=join(output,name);execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=${fps}`,'-vf','scale=in_color_matrix=bt601:out_color_matrix=bt709','-t',String(duration),'-c:v','libx264','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-y',path],{env:{...process.env,DYLD_LIBRARY_PATH:'',DYLD_FALLBACK_LIBRARY_PATH:''}});return path;}
-const red=generate('red.mp4','red'),blue=generate('blue.mp4','blue');
-try{
+async function audioOnlyRoundTrip() {
+  await step('Import, play and reopen an independent PCM clip', async () => {
+    const path = join(output, 'audio-only-tone.wav');
+    const audioProject = join(output, 'audio-only.oqvideo.json');
+    execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=44100:duration=5',
+      '-c:a', 'pcm_s16le', '-y', path], { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' } });
+    await launch();
+    await fileAction('IMPORT', path, 'Import media');
+    await waitState('assets 1');
+    await click('Add audio-only-tone.wav to timeline');
+    await waitState('audio clips 1');
+    const view = await client.find({ id: 'EditorWindow::timeline_scroll' });
+    await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId, deltaX: 0, deltaY: -170,
+      position: { x: view.absolutePosition.x + 100, y: view.absolutePosition.y + 50 } });
+    await client.waitFor(async () => (await client.byLabel('Waveform audio-only-tone.wav', { role: 'Image' })).length === 1,
+      { description: 'decoded PCM waveform' });
+    await click('PLAY');
+    await client.waitFor(async () => /Audio output [1-9][0-9]*%/.test(await state()) && /playhead [1-9]\d* frames/.test(await state()),
+      { description: 'audio meter and device-driven playhead advance' });
+    await click('PAUSE');
+    await client.waitFor(async () => !(await state()).includes('Audio output'), { description: 'pause stops device output' });
+    await fileAction('SAVE AS', audioProject, 'Save project');
+    await waitState('Project saved');
+    const data = JSON.parse(await readFile(audioProject, 'utf8')).data;
+    assert.equal(data.assets[0].audio.rate, 44100);
+    assert.equal(data.audio_tracks[0].clips[0].placement.duration, 240000);
+    await snapshot('audio-timeline');
+    await close();
+    await launch(audioProject);
+    await waitState('audio clips 1');
+    await close();
+  });
+}
+
+async function runVideoCases() {
+  const red = generate('red.mp4', 'red'), blue = generate('blue.mp4', 'blue');
  await step('Empty native window',async()=>{await launch();await waitState('assets 0; clips 0');await click('EXPORT');await waitState('Add media to the timeline before exporting');await snapshot('01-empty');}, { core: true });
  await step('Frameless window controls follow configuration and maximize/restore',async()=>{
   const labels=['Close window','Minimize window','Maximize window'];
@@ -3104,6 +3140,11 @@ try{
    assert.equal((await choice()).accessibleValue, 'Sony S-Log3 / S-Gamut3.Cine');
    await close();
  }, { core: true });
- report.passed=true;
+}
+
+try {
+  if (audioOnly || !smoke) await audioOnlyRoundTrip();
+  if (!audioOnly) await runVideoCases();
+  report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
 }finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.caseDefinitions});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}

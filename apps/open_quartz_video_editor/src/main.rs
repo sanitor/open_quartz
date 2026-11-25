@@ -1,13 +1,13 @@
 mod animation_key;
 mod batch_media;
 mod controller;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod audio_mix;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod audio_rate;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod audio_waveform;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod audio_output;
 mod delivery;
 mod document;

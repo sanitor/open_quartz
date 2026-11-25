@@ -3602,6 +3602,7 @@ dependencies = [
  "slint_code_editor",
  "tempfile",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

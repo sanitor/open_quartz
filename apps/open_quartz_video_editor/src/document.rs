@@ -942,7 +942,7 @@ impl EditorDocument {
                 .into_owned();
             asset.online = Path::new(&asset.path).is_file()
                 && fingerprint(Path::new(&asset.path)).is_ok_and(|sum| sum == asset.fingerprint);
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             if asset.online && asset.has_audio && asset.audio.is_none() {
                 asset.audio = crate::media::audio_metadata(Path::new(&asset.path)).ok().flatten();
             }

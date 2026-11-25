@@ -1,6 +1,8 @@
 use crate::document::{fingerprint, new_id, MediaAsset, Rational};
+#[cfg(any(target_os = "macos", windows))]
+use crate::document::AudioAsset;
 #[cfg(target_os = "macos")]
-use crate::document::{AudioAsset, HdrTransfer};
+use crate::document::HdrTransfer;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbaImage};
 use std::path::{Path, PathBuf};
 
@@ -34,8 +36,8 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
             online: true,
         });
     }
-    #[cfg(target_os = "macos")]
-    {
+    #[cfg(any(target_os = "macos", windows))]
+    let (audio, name, stored_path) = {
         let streams = oq_media::probe_audio(&canonical).map_err(|error| error.to_string())?;
         let audio = streams.audio.map(audio_asset).transpose()?;
         let name = canonical.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -52,6 +54,10 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
                 camera_log: None, hdr_transfer: None, has_audio: true, audio: Some(audio), online: true,
             });
         }
+        (audio, name, path)
+    };
+    #[cfg(target_os = "macos")]
+    {
         let mut session = oq_media::Session::open(&canonical).map_err(|e| e.to_string())?;
         let info = session.source_info().clone();
         if !matches!(info.codec.as_str(), "h264" | "hevc") {
@@ -78,7 +84,7 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
         Ok(MediaAsset {
             id: new_id("asset", 0),
             name,
-            path,
+            path: stored_path,
             fingerprint: fingerprint(&canonical)?,
             size_bytes: metadata.len(),
             still: false,
@@ -104,7 +110,8 @@ pub fn probe(path: &Path) -> Result<MediaAsset, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = path;
+        #[cfg(windows)]
+        let _ = (audio, name, stored_path);
         Err(
             "Precise resident editing currently requires macOS VideoToolbox; no CPU fallback"
                 .into(),
@@ -141,7 +148,7 @@ pub(crate) fn decode_still(path: &Path) -> Result<RgbaImage, String> {
     Ok(image.into_rgba8())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn audio_asset(info: oq_media::AudioSourceInfo) -> Result<AudioAsset, String> {
     Ok(AudioAsset {
         stream: info.stream_index,
@@ -151,7 +158,7 @@ fn audio_asset(info: oq_media::AudioSourceInfo) -> Result<AudioAsset, String> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub fn audio_metadata(path: &Path) -> Result<Option<AudioAsset>, String> {
     oq_media::probe_audio(path).map_err(|error| error.to_string())?.audio.map(audio_asset).transpose()
 }
@@ -178,6 +185,8 @@ pub fn configure_runtime() -> Result<(), String> {
     let ffmpeg = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
+            #[cfg(windows)]
+            candidates.push(parent.join(ffmpeg));
             candidates.push(parent.join("runtime").join(ffmpeg));
             candidates.push(parent.join("../Resources/runtime").join(ffmpeg));
         }

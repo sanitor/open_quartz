@@ -30,6 +30,10 @@ sha2 = "0.10"
 [target.'cfg(target_os = "macos")'.dependencies]
 oq-media = { path = "../../crates/oq-media", features = ["videotoolbox"] }
 
+[target.'cfg(windows)'.dependencies]
+oq-media = { path = "../../crates/oq-media", features = ["audio"] }
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }
+
 [build-dependencies]
 slint-build = "=1.18.1"
 

@@ -124,9 +124,9 @@ pub struct Controller {
     busy: bool,
     #[cfg(target_os = "macos")]
     export: Option<crate::preview::export::ExportTask>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     audio: Option<crate::audio_output::AudioPlayback>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     waveforms: crate::audio_waveform::Waveforms,
     #[cfg(target_os = "macos")]
     proxies: crate::proxy::Proxies,
@@ -202,9 +202,9 @@ impl Controller {
             busy: false,
             #[cfg(target_os = "macos")]
             export: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             audio: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             waveforms: Default::default(),
             #[cfg(target_os = "macos")]
             proxies: Default::default(),
@@ -1392,7 +1392,7 @@ impl Controller {
     fn pause(&mut self) {
         let was_playing = self.playing;
         self.playing = false;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.audio.take();
         if was_playing {
             let progress = self.preview.progress();
@@ -1419,7 +1419,7 @@ impl Controller {
             return;
         }
         self.asset_preview = false;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         match crate::audio_output::AudioPlayback::start(&self.document.data, self.playhead) {
             Ok(playback) => self.audio = playback,
             Err(error) => { self.status(error); return; }
@@ -1652,7 +1652,7 @@ impl Controller {
                 project: self.proxies.project(&self.document.data),
                 #[cfg(not(target_os = "macos"))]
                 project: self.document.data.clone(),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 audio_clock: self.audio.as_ref().map(|audio| audio.clock.clone()),
             };
             match self.preview.play(request) {
@@ -1878,18 +1878,18 @@ impl Controller {
                 }
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if self.waveforms.poll(&self.document.data) {
             if let Some(window) = self.window.upgrade() {
                 self.refresh_audio(&window);
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(error) = self.audio.as_ref().and_then(|audio| audio.error()) {
             self.pause();
             self.status(error);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(window) = self.window.upgrade() {
             let (status, peaks) = self.audio.as_ref().map_or_else(
                 || (String::new(), Vec::new()),
@@ -2048,7 +2048,7 @@ impl Controller {
                         Ok(matches)
                     }) {
                         Ok(matches) => {
-                            #[cfg(target_os = "macos")]
+                            #[cfg(any(target_os = "macos", windows))]
                             for entry in &matches { self.waveforms.invalidate(&entry.id); }
                             self.changed();
                             let offline = self.document.data.assets.iter().filter(|asset| !asset.online).count();
@@ -2098,7 +2098,7 @@ impl Controller {
                             Ok(())
                         })
                     });
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     if result.is_ok() { self.waveforms.invalidate(&id); }
                     self.finish_edit(result);
                 }
@@ -2110,7 +2110,7 @@ impl Controller {
             if self.playing {
                 self.playhead = progress.frame;
                 self.playing = progress.playing;
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 if !self.playing { self.audio.take(); }
                 self.refresh_time();
                 if let Some(window) = self.window.upgrade() { window.set_playing(self.playing); }
@@ -2298,9 +2298,9 @@ impl Controller {
                     .map_or("Missing media", |asset| asset.name.as_str());
                 let selected = self.selected_audio.as_ref() == Some(&clip.id);
                 let linked = matches!(clip.placement, document::AudioPlacement::Linked { .. });
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 let waveform = self.waveforms.path(&clip.asset_id, interval).unwrap_or_default();
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", windows)))]
                 let waveform = String::new();
                 rows.push(AudioClipRow {
                     id: clip.id.clone().into(), lane: lane as i32, name: asset_name.into(),
@@ -2337,7 +2337,7 @@ impl Controller {
         }
     }
     fn refresh(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.waveforms.request_scan();
         let Some(window) = self.window.upgrade() else {
             return;
@@ -2587,7 +2587,7 @@ impl Controller {
             self.proxies = Default::default();
             self.set_proxy_status(String::new());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         { self.waveforms = Default::default(); }
         self.monitor_gesture = None;
         self.timeline_capture = None;
@@ -2613,7 +2613,7 @@ impl Controller {
     pub fn shutdown(&mut self) {
         self.timer.stop();
         self.recovery.reset_current();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.audio.take();
         self.clear_images();
         self.preview.shutdown();
@@ -2814,9 +2814,9 @@ mod native_dialog_tests {
             recovery: crate::document_recovery::Recovery::new(),
             #[cfg(target_os = "macos")]
             export: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             audio: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             waveforms: Default::default(),
             #[cfg(target_os = "macos")]
             proxies: Default::default(),

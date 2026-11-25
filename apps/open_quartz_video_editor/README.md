@@ -14,7 +14,7 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-Windows x64 可运行 `dev:video-editor`、`build:video-editor` 和 `test:video-editor`。`npm run test:video-editor:ui:stills` 验证静态图片导入、片段节点效果和保存后重新打开工程。视频导入与精确寻帧、音频、代理媒体和 MP4 导出仍依赖 macOS 媒体后端。
+Windows x64 可运行 `dev:video-editor`、`build:video-editor` 和 `test:video-editor`，支持静态图片以及独立音频素材的编辑和播放。可用 `npm run test:video-editor:ui:stills` 验证静态图片、节点效果和工程重开，用 `npm run test:video-editor:ui:audio` 验证 PCM 波形和 WASAPI 播放。视频导入与精确寻帧、视频关联音频、代理媒体和 MP4 导出仍依赖 macOS 媒体后端。
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 

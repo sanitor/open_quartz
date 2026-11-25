@@ -119,7 +119,8 @@ async function packageWindows(root, binary, stage, archive) {
   const sdkBin = join(sdk, 'bin');
   for (const file of await readdir(sdkBin)) {
     if (file === 'ffmpeg.exe' || file.toLowerCase().endsWith('.dll')) {
-      await copyFile(join(sdkBin, file), join(runtime, file));
+      // Both executables locate the same app-local libav DLLs.
+      await copyFile(join(sdkBin, file), join(app, file));
     }
   }
   await cp(join(sdk, 'doc'), join(runtime, 'doc'), { recursive: true });
@@ -136,7 +137,7 @@ async function packageWindows(root, binary, stage, archive) {
   const packaged = join(extracted, name);
   const { stdout } = await exec(join(packaged, basename(binary)), ['--help'], { cwd: extracted, env });
   if (!stdout.includes('OpenQuartz Studio')) throw new Error('Packaged Studio help did not run');
-  const ffmpeg = join(packaged, 'runtime', 'ffmpeg.exe');
+  const ffmpeg = join(packaged, 'ffmpeg.exe');
   await verifyAndSaveArchive(root, ffmpeg, extracted, env, zip, archive);
 }
 
