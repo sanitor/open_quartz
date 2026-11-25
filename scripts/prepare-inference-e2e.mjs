@@ -13,9 +13,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureDirectory = join(root, 'tests', 'fixtures', 'inference');
 const defaultOutput = join(root, 'test-results', 'inference-e2e');
 
-function catalogExport(signal) {
+function catalogExport(signal, offline) {
   return new Promise((accept, reject) => {
-    const child = spawn('cargo', ['run', '--offline', '--locked', '-p', 'open_quartz', '--example', 'inference_e2e_catalog'], {
+    const args = ['run', '--locked', ...(offline ? ['--offline'] : []), '-p', 'open_quartz', '--example', 'inference_e2e_catalog'];
+    const child = spawn('cargo', args, {
       cwd: root, stdio: ['ignore', 'pipe', 'inherit'], signal,
     });
     const chunks = [];
@@ -116,7 +117,7 @@ export async function prepareInferenceE2e(outputDir = defaultOutput, { signal, o
   const output = resolve(outputDir);
   const lock = JSON.parse(await readFile(join(fixtureDirectory, 'assets.json'), 'utf8'));
   assert.equal(lock.schemaVersion, 1, 'Unsupported inference asset lock version');
-  const catalog = await catalogExport(signal);
+  const catalog = await catalogExport(signal, offline);
   assert.ok(Array.isArray(catalog) && catalog.length > 0, 'Canonical catalog must be a nonempty array');
   const ids = catalog.map((entry) => entry.id);
   assert.equal(new Set(ids).size, ids.length, 'Canonical catalog IDs must be unique');

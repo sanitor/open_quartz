@@ -85,7 +85,7 @@ npm run test:sdk-coverage
 
 ### 七模型推理 E2E 回归
 
-`test:desktop:inference` 是显式 macOS Metal / VideoToolbox 硬件任务。模型目录由 `inference_e2e_catalog` 从 Rust `inference_models()` 导出；`tests/fixtures/inference/assets.json` 固定七份原始 ONNX 和全部样本的 SHA-256、大小、来源与许可证说明。NASA 公有领域人像及固定 H.264 视频随仓提交；视频含红/蓝标记与镜像人像两个稳定帧组，不使用私有用户媒体。准备完成后测试只访问固定本地路径；缺文件、哈希不符或硬件不可用均失败，不跳过或退回 CPU。已有缓存可执行 `npm run prepare:inference -- --offline`。
+`test:desktop:inference` 在 macOS 使用 Metal 和 VideoToolbox，在 Windows 使用 D3D12 和 D3D12VA。模型目录由 `inference_e2e_catalog` 从 Rust `inference_models()` 导出。`tests/fixtures/inference/assets.json` 固定七份原始 ONNX 和全部样本的 SHA-256、大小、来源与许可证。仓库包含 NASA 公有领域人像和固定 H.264 样本。准备完成后，硬件回归从本地路径读取模型和素材。已有依赖、模型和素材缓存时，可执行 `npm run prepare:inference -- --offline`。
 
 运行分三个进程边界：`inference_e2e_production` 在不存在的 ORT 路径下驱动真实 RenderBridge/model worker/NativePlayer/Renderer；`inference_e2e_reference` 才加载 ORT，用同帧 GPU 源快照独立 CPU 前处理并核对原始输出、任务结果及 RGBA；随后 Slint MCP 套件从实际菜单创建每个推理节点和 Renderer、点击端口连接、Load、Play、Pause/Resume、Unload/Reload、Save/重开。UI 图仅预置输入资源，不声称覆盖系统文件选择器；实际窗口与生产 PNG 的同构显示比较只证明显示传递，独立数学一致性单列报告。数值失败仍可收集 UI 证据，但最终命令不得因此通过。
 
