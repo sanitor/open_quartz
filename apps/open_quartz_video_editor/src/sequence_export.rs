@@ -4,6 +4,7 @@ use super::{
     RenderDevice, OUTPUT_ID,
 };
 use crate::delivery::{Cadence, ExportOptions};
+use crate::output_queue::Phase;
 use open_quartz::execution::{ExportConfig, ExportJob, ExportPhase, ExportSequence};
 use open_quartz::rendering::InputInterpretation;
 use oq_media::{EncoderConfig, RationalTimeBase};
@@ -17,7 +18,7 @@ use std::time::Duration;
 
 pub struct ExportTask {
     cancel: Arc<AtomicBool>,
-    progress: Arc<Mutex<(String, bool)>>,
+    progress: Arc<Mutex<(String, Option<Phase>)>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -31,7 +32,7 @@ impl ExportTask {
         options: ExportOptions,
     ) -> Result<Self, String> {
         let cancel = Arc::new(AtomicBool::new(false));
-        let progress = Arc::new(Mutex::new(("Preparing MP4 export…".into(), false)));
+        let progress = Arc::new(Mutex::new(("Preparing MP4 export…".into(), None)));
         let worker_cancel = cancel.clone();
         let worker_progress = progress.clone();
         let worker = thread::Builder::new()
@@ -47,12 +48,12 @@ impl ExportTask {
                     &worker_cancel,
                     &worker_progress,
                 );
-                let text = match result {
-                    Ok(true) => format!("Export complete · {}", path.display()),
-                    Ok(false) => "Export cancelled".into(),
-                    Err(error) => format!("Export failed · {error}"),
+                let (text, phase) = match result {
+                    Ok(true) => (format!("Export complete · {}", path.display()), Phase::Complete),
+                    Ok(false) => ("Export cancelled".into(), Phase::Cancelled),
+                    Err(error) => (format!("Export failed · {error}"), Phase::Failed),
                 };
-                *worker_progress.lock().unwrap() = (text, true);
+                *worker_progress.lock().unwrap() = (text, Some(phase));
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -62,7 +63,7 @@ impl ExportTask {
         })
     }
 
-    pub fn progress(&self) -> (String, bool) {
+    pub fn progress(&self) -> (String, Option<Phase>) {
         self.progress.lock().unwrap().clone()
     }
 
@@ -149,7 +150,7 @@ fn run(
     frames: Range<u64>,
     options: ExportOptions,
     cancel: &Arc<AtomicBool>,
-    progress: &Mutex<(String, bool)>,
+    progress: &Mutex<(String, Option<Phase>)>,
 ) -> Result<bool, String> {
     let output_fps = options.fps(project.fps);
     let cadence = Cadence::new(frames.start, project.fps, output_fps);

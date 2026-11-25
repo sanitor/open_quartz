@@ -332,7 +332,7 @@ Resolve Color page常见能力包括Primaries wheels/Log controls、HDR tonal-zo
 | LUT / Look | 无文件LUT节点；Field Color Map是伪彩诊断效果 | **Corrector / Look palette**：1D shaper/3D LUT、domain、插值、文件指纹；作为Corrector最后的look stage，输入域不匹配时拒绝或要求显式CST |
 | Color Warper / ColorSlice | 无网格/色相切片的perceptual hue-saturation remapping | **Corrector高级palette**，后续择一；网格/切片参数仍存于Corrector，不开放成自由串行节点 |
 | Qualifier / Power Windows / Tracking / Magic Mask | 无typed mask输出/合成、时间跟踪及模型生命周期 | 首期作为Corrector内部Secondary palette；Qualifier/Window产生内部mask并作用于secondary grade。只有需要跨节点复用的mask才另行引入typed Mask node；Tracker依赖C1，Magic Mask依赖C3 |
-| Video Scopes | 不是图节点；当前视频Editor无Scopes | 独立Viewer辅助面板，选择Final/Corrector stage观察working或display signal；不进入Graph执行链 |
+| Video Scopes | 监视器已提供 SDR RGB 直方图与亮度波形，读取合成后的程序帧 | Working-domain、单 Corrector 输入输出、RGB Parade 和矢量示波器保留为独立 Viewer 扩展 |
 | Input/Output CST、Camera IDT、HDR ODT | 属于工程色彩管理边界 | 不塞进Corrector默认stage；Input controls、project working space、Viewer/Export transform各自只有一个owner，显式CST另行标domain并防重复转换 |
 
 **当前能力基线**：共享目录新增原生Color Corrector，配置存`NodeData.color_corrector`，不保存生成WGSL。原有7项COLOR Shader presets仍保留为Legacy效果，不自动迁移为Corrector palette；Brightness/Contrast的0.5中心与[0,1] clamp、Hue Rotate的HSV语义不变。
@@ -379,7 +379,7 @@ Corrector在共享Graph内是具有typed配置的原生节点；内部stage顺�
 | CG-3：Corrector / Curves、Mixer、Look | 同一节点中分批增加曲线、RGB Mixer、LUT palette/资源 | 控制点/矩阵/LUT/domain oracle；参数、资源data和变体快路一致 |
 | CG-4：Corrector高级Palette | Color Warper/ColorSlice择一，保持原生节点与版本化内部顺序 | 感知空间、稳定交互和性能独立评审；不做虚假入口 |
 | CG-5：Corrector / Secondary | 内部Qualifier/Window/Mask，未来Tracker/Magic Mask；跨节点共享mask另评typed接口 | 静态mask不强依赖动画；Tracking需C1、Magic Mask需C3；两应用Viewer tools及GPU mask验收 |
-| D1：Scopes | Waveform/Parade/Vectorscope viewer tools，指明working/display domain | HDR-1颜色域固定后单独实现；Scopes不是Graph node |
+| D1：专业 Scopes | Working/display 域的 Waveform、Parade、Vectorscope | HDR-1 颜色域固定后实现。SDR 程序监视器已有 RGB 直方图和亮度波形 |
 | D3：跨平台/扩展导出 | 扩展到更多已验收平台/encoder与项目导出能力，不延迟HDR-2单轨HDR10闭环 | 每个平台单独验证色彩格式/硬件surface/mux/时间戳/错误路径；不得推断兼容 |
 
 产品交付顺序遵守既定优先级：HDR-0 → HDR-1 → HDR-2（HDR10单轨输出闭环）之后，再分别决定HDR-3 HLG与HDR-4 EDR；Grade node实施建议在HDR-2之后从CG-1/CG-2开始，CG-3后续，CG-4/CG-5依赖各自前置能力。CG的理论依赖是HDR-1，但不改变已同意的HDR-10交付优先级。Scopes是独立Viewer功能。C1只为Time节点/动画/复杂异步图服务，不阻塞静态grade或HDR input/display transform。K0-K3暂缓。

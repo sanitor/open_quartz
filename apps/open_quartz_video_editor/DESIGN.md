@@ -2,7 +2,7 @@
 
 ## 1. 状态与决策
 
-本目录现在是独立 **Rust + Slint 视频编辑应用 OpenQuartz Studio**，和原节点图应用并列。Phase6编辑基线含素材库、真实GPU监视器、单轨剪辑事务、撤销/重做、工程保存恢复与匹配素材重定位。阶段A的Clip-scoped静态Nodes工作区也已落地；各能力和未交付边界见[README](README.md)与[渲染管线编辑器](RENDER_PIPELINE_EDITOR_DESIGN.md)。Resolve交互参考不表示完整色彩管理/剪辑功能对等。
+本目录现在是独立 **Rust + Slint 视频编辑应用 OpenQuartz Studio**，和原节点图应用并列。当前包括素材库、多轨时间线、画面与音频合成、统一关键帧、嵌套序列、片段 Nodes、调色版本及交付队列。阶段记录和运行说明见[README](README.md)与[渲染管线编辑器](RENDER_PIPELINE_EDITOR_DESIGN.md)。Resolve交互参考不表示完整色彩管理/剪辑功能对等。
 
 核心决策：
 
@@ -24,7 +24,7 @@
 - 复用现有节点应用的GraphView、Inspector、WGSL CodeEditor、OpenQuartz Graph模型、工厂目录与GraphClipboard；视频应用通过宿主适配器持有clip目标与EditorDocument，不复制节点画布/执行器。每个Clip独立持有静态pipeline；Schema 1打开迁移成受保护`video → output`直通图，保存为Schema 2。
 - Nodes工作区复用现有类型端口并插入Color/Filter/Distortion/Blend单image Shader、Custom Shader、Constant和Math；Source/Output受保护。候选图在共享GPU worker预检后才作为单个项目历史事务提交，Shader/uniform Inspector与布局编辑复用主工程撤销/重做。
 - **验证（macOS原生窗口）：47个Rust测试通过；视频时间线窗口15项通过；Nodes窗口11项通过。** Nodes用实际红/蓝H.264解码源及截图像素oracle验证Invert颜色结果、custom Shader输出、端口重连/顺序变化、shader编译失败保留最后有效帧、uniform值、两片段隔离和保存重开。完整证据在`test-results/clip-pipeline/nodes-ui-2026-11-18T14-21-48-990Z/`及`test-results/phase6/ui-2026-11-18T14-21-23-512Z/`。
-- 未交付：Inference/外部资源节点、time/frame/feedback、多源合成、node thumbnail、Before/After、Gallery/versions、Groups/scopes、专业颜色与HDR、音频/多轨和视频编辑器导出UI。现有核心仍用一个`timeline_ns`驱动源选择和System时间；视频宿主尚未集成模型目录/资源生命周期。**HDR色彩科学、输入控件、浮点工作域、HDR显示/编码已有分阶段评审提案，非运行时能力**，见[渲染管线设计](RENDER_PIPELINE_EDITOR_DESIGN.md)。
+- 阶段 A 的未交付范围曾包括 Inference、外部资源节点、Time/Frame/Feedback、合成、调色版本、示波器、音频和导出。之后实现的多轨、动画、版本和交付流程见 §15。当前独立缺口包括 Inference、外部资源节点、任意 Time/Frame/Feedback 节点、HDR、图库和并排对照。现有核心仍用一个`timeline_ns`驱动源选择和System时间；视频宿主尚未集成模型目录/资源生命周期。**HDR色彩科学、输入控件、浮点工作域、HDR显示/编码已有分阶段评审提案，非运行时能力**，见[渲染管线设计](RENDER_PIPELINE_EDITOR_DESIGN.md)。
 - 硬件预检执行在现有GPU worker；提交接口先拒绝disposed session，候选图和静态WGSL经GPU计划预检；现有核心Inference订阅同步的全局事务化尚未改造，故clip图禁止Inference，且不承诺在未来支持Inference图时保持同样全局原子性。时间契约首发排除Time/Frame：现有核心单一timeline_ns同时驱动VideoToolbox源选择与内建shader时间，跨源/效果时间拆分尚待设计阶段C。
 - **共享Corrector设计（未实现）**：模型、lowering、参数更新、变体缓存和旁路是[OpenQuartz通用结构化算子协议](../../docs/DESIGN.md#structured-operators)，Corrector是首个消费者，不是视频app私有Shader方案。两款应用共享[Slint专用Palette/draft组件](../../docs/SLINT_UI_REFACTOR.md#structured-operator-ui)；`apps/open_quartz_slint`也必须支持创建/连线/编辑/GPU运行/旁路/复制/历史与持久化，视频app只增加clip隔离和EditorDocument宿主事务。
 
@@ -32,12 +32,12 @@
 
 | 能力 | 已有依据 | 当前边界或后续仍需完成 |
 |---|---|---|
-| Slint原生预览/UI | 现有Edit时间线 + Phase7复用GraphView/Inspector/CodeEditor的Nodes工作区；共用Device/Queue | 图布局/缩略图仍为GraphView基础展示，无Resolve图库、Scopes或Before/After |
+| Slint原生预览/UI | 现有Edit时间线 + Phase7复用GraphView/Inspector/CodeEditor的Nodes工作区；共用Device/Queue | 图布局和节点缩略图使用 GraphView 基础展示，监视器可显示 SDR 直方图及亮度波形；图库和并排对照仍属扩展 |
 | 硬件视频解码 | `oq-media::Session`提供精确源PTS、顺序解码、取消/drain/FrameLease | 单cursor前向取帧；多源取帧、随机seek窗口、跨源同步仍不完整 |
 | 图渲染 | 现有typed Graph、执行计划、FramePipeline候选预检及每clip静态图 | FrameStamp的单`timeline_ns`仍同时承载源选择/Shader系统时间；Inference型clip图及未来效果时钟需核心改造 |
 | GPU输出/lease | 现有stable frame、预算和GPU texture直接交给Slint | Before/After和大量节点thumbnail尚未实现；专业颜色/alpha元数据有限 |
 | 项目与历史 | `.oqvideo.json` schema2、schema1直通图迁移、per-clip Graph、clone/validate/commit共用撤销 | 只有一个活动Graph版本；Gallery/Local Versions/Groups和外部资源表未实现 |
-| Inference/合成/色彩 | 其他OpenQuartz宿主具备部分推理与Shader目录 | 视频编辑器Cargo未集成推理资源；多输入Matte/Layer/Resolve式ParallelMixer、managed color/HDR input+float working+HDR display/encode、Scope均未交付；HDR路线已在[渲染管线提案](RENDER_PIPELINE_EDITOR_DESIGN.md)中分阶段定义 |
+| Inference/合成/色彩 | 其他OpenQuartz宿主具备部分推理与Shader目录 | 视频编辑器Cargo未集成推理资源；多输入Matte/Layer/Resolve式ParallelMixer、HDR 输入、浮点工作域及 HDR 显示与编码仍属扩展；当期 Scope 使用 SDR 程序画面；HDR路线已在[渲染管线提案](RENDER_PIPELINE_EDITOR_DESIGN.md)中分阶段定义 |
 | 声音/导出 | 核心单独具备部分无音轨H.264基础 | 视频编辑器没有音频或导出UI；时间线全段确定性渲染/编码闭环仍需实施 |
 
 源码核对入口：
@@ -581,7 +581,7 @@ P0～P2 是首个可用编辑闭环的依赖顺序，不是允许只交付窗口
 
 ### 14.1 Phase 提交序列与依赖
 
-本节将产品里程碑P0～P2拆为实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～5已提交（Phase5：`cd1d857`）；Phase6可操作编辑器与本轮真实窗口验收见下。Phase7完整预览/效果、Phase8导出UI/打包尚未交付。既有全局100% coverage gates仍红，不发布。
+本节将产品里程碑P0～P2拆为实施提交；**Phase与P0/P1/P2不是同一编号体系**。Phase0～5已提交（Phase5：`cd1d857`）；Phase6可操作编辑器与本轮真实窗口验收见下。此处记录 Phase 6 的启动状态。编辑器后来加入了效果、导出窗口和本地 macOS 安装包。发布签名与平台验证单独跟踪。
 
 | Phase / 建议 commit subject | 交付边界与已有消费者 | 必须新增/更新的单元与行为测试 | 真实端到端验收门槛 |
 |---|---|---|---|
@@ -896,6 +896,8 @@ Schema 22 保存片段活动调色版本的身份与备用节点图。切换交�
 当时间线超过 256 个片段时，原生视频和音频片段控件只实例化可视窗口与相邻范围。指针捕获期间保留当前控件，释放后更新窗口。完整文档、GPU 合成计划和历史独立于窗口裁剪。相邻片段共享完全相同的节点图时，文档只验证一次该图，片段时间和媒体关系依然逐一验证。
 
 在 Apple M4 Pro 的 1,800 切点烟测工程上，原生窗口从启动到发布完整工程状态的单次样本由 8.30 秒降至 1.88 秒。启动时实例化 17 个时间线视频片段控件。测试还滚动至第 4,030 帧并验证拖动和撤销。
+
+批量交付为每个任务保存独立的项目快照、帧区间、编码参数和目标路径。同一时刻只有一个编码任务，失败只影响本任务。重试复用原任务的快照，底层仍检查媒体和防止覆盖目标文件。
 
 ### 15.3 原生 UI E2E 与分发
 

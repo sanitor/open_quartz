@@ -18,6 +18,7 @@ mod preview;
 mod proxy;
 mod title_raster;
 mod clip_pipeline;
+mod output_queue;
 mod timeline_viewport;
 mod color_scope;
 #[path = "../../open_quartz_slint/src/graph_view_model.rs"]

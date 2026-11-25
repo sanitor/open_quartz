@@ -1,3 +1,5 @@
+use crate::output_queue::{ExportSpec, OutputQueue, Phase as JobPhase};
+use crate::ExportJobRow;
 use crate::timeline_viewport::TimelineViewport;
 use crate::delivery::ExportOptions;
 use crate::document::{self, AudioDestination, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
@@ -69,6 +71,8 @@ struct Thumbnail {
 }
 pub struct Controller {
     window: slint::Weak<EditorWindow>,
+    delivery_queue: OutputQueue,
+    delivery_model: Rc<VecModel<ExportJobRow>>,
     pub document: EditorDocument,
     preview: PreviewBridge,
     backend: Arc<GpuBackend>,
@@ -141,9 +145,13 @@ impl Controller {
         let timeline_audio_model = Rc::new(VecModel::default());
         window.set_timeline_video_clips(ModelRc::from(timeline_video_model.clone()));
         window.set_timeline_audio_clips(ModelRc::from(timeline_audio_model.clone()));
+        let delivery_model = Rc::new(VecModel::default());
+        window.set_delivery_jobs(ModelRc::from(delivery_model.clone()));
         let this = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             document: EditorDocument::default(),
+            delivery_queue: Default::default(),
+            delivery_model,
             preview,
             backend,
             io_send,
@@ -527,6 +535,12 @@ impl Controller {
                 let mut controller = controller.borrow_mut();
                 let result = controller.document.rename(&name);
                 controller.finish_edit(result);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        window.on_delivery_queue_action(move |action, index| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().delivery_queue_action(&action, index as usize);
             }
         });
         let weak = Rc::downgrade(this);
@@ -998,8 +1012,8 @@ impl Controller {
         if self.busy {
             return;
         }
-        if matches!(kind, "export" | "export-srt") {
-            self.submit_export(path, kind == "export-srt");
+        if matches!(kind, "export" | "export-srt" | "queue-export") {
+            self.submit_export(path, kind == "export-srt", kind == "queue-export");
             return;
         }
         if path.as_os_str().is_empty() {
@@ -1621,7 +1635,7 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
-    fn submit_export(&mut self, path: PathBuf, subtitles: bool) {
+    fn submit_export(&mut self, path: PathBuf, subtitles: bool, queued: bool) {
         let Some(window) = self.window.upgrade() else { return; };
         let extension = if subtitles { "srt" } else { "mp4" };
         let range = if !path.is_absolute()
@@ -1649,7 +1663,20 @@ impl Controller {
                         frame_rate: window.get_export_frame_rate(),
                         quality: window.get_export_quality(),
                     };
-                    self.start_export(path, frames, options);
+                    let spec = ExportSpec {
+                        project: self.document.data.clone(), revision: self.document.revision,
+                        path, frames, options,
+                    };
+                    let result = if queued {
+                        self.delivery_queue.add(spec).map(|()| {
+                            self.status("Delivery added to render queue");
+                            self.publish_delivery_queue();
+                        })
+                    } else { self.start_export(spec) };
+                    if let Err(error) = result {
+                        if queued { window.set_file_dialog_open(true); }
+                        self.status(error);
+                    }
                 }
             }
             Err(error) => {
@@ -1696,33 +1723,68 @@ impl Controller {
         self.request_preview();
     }
 
-    fn start_export(&mut self, path: PathBuf, frames: Range<u64>, options: ExportOptions) {
+    fn start_export(&mut self, spec: ExportSpec) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            if self.export.is_some() {
-                return;
+            if self.export.is_some() { return Err("A delivery is already rendering".into()); }
+            let render = self.preview.export_device()?;
+            let task = crate::preview::export::ExportTask::start(
+                render, spec.project, spec.revision, spec.path, spec.frames, spec.options,
+            )?;
+            if let Some(window) = self.window.upgrade() {
+                window.set_export_status(task.progress().0.into());
+                window.set_export_active(true);
             }
-            let result = self.preview.export_device().and_then(|render| {
-                crate::preview::export::ExportTask::start(
-                    render, self.document.data.clone(), self.document.revision, path, frames, options,
-                )
-            });
-            match result {
-                Ok(task) => {
-                    if let Some(window) = self.window.upgrade() {
-                        window.set_export_status(task.progress().0.into());
-                        window.set_export_active(true);
-                    }
-                    self.export = Some(task);
-                }
-                Err(error) => self.status(error),
-            }
+            self.export = Some(task);
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (path, frames, options);
-            self.status("MP4 export requires macOS VideoToolbox");
+            let _ = spec;
+            Err("MP4 export requires macOS VideoToolbox".into())
         }
+    }
+
+    fn delivery_queue_action(&mut self, action: &str, index: usize) {
+        match action {
+            "start" => self.delivery_queue.running = true,
+            "cancel" => {
+                if self.delivery_queue.active == Some(index) {
+                    #[cfg(target_os = "macos")]
+                    if let Some(export) = &self.export { export.cancel(); }
+                } else {
+                    self.delivery_queue.cancel_pending(index);
+                }
+            }
+            "retry" => {
+                if let Err(error) = self.delivery_queue.retry(index) { self.status(error); }
+            }
+            _ => return,
+        }
+        self.publish_delivery_queue();
+    }
+
+    fn publish_delivery_queue(&self) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let rows: Vec<_> = self.delivery_queue.jobs.iter().map(|job| ExportJobRow {
+            path: job.spec.path.to_string_lossy().as_ref().into(),
+            phase: job.phase.label().into(),
+            details: if job.status.is_empty() {
+                format!("{} · Frames {}–{}", job.spec.project.sequence_name, job.spec.frames.start, job.spec.frames.end).into()
+            } else { job.status.as_str().into() },
+            can_cancel: matches!(job.phase, JobPhase::Pending | JobPhase::Running),
+            can_retry: matches!(job.phase, JobPhase::Cancelled | JobPhase::Failed),
+        }).collect();
+        // A running job changes each frame. Update the existing row so its
+        // cancel button remains mounted while the user presses it.
+        for (index, row) in rows.into_iter().enumerate() {
+            match self.delivery_model.row_data(index) {
+                Some(previous) if previous == row => {}
+                Some(_) => self.delivery_model.set_row_data(index, row),
+                None => self.delivery_model.push(row),
+            }
+        }
+        window.set_delivery_can_start(!self.delivery_queue.running && self.delivery_queue.has_pending());
     }
 
     fn tick(&mut self) {
@@ -1783,18 +1845,27 @@ impl Controller {
             }
         }
         #[cfg(target_os = "macos")]
-        if let Some(export) = &self.export {
-            let (status, finished) = export.progress();
-            if let Some(window) = self.window.upgrade() {
-                if window.get_export_status().as_str() != status {
-                    window.set_export_status(status.into());
+        {
+            if let Some(export) = &self.export {
+                let (status, outcome) = export.progress();
+                if let Some(window) = self.window.upgrade() {
+                    if window.get_export_status().as_str() != status {
+                        window.set_export_status(status.as_str().into());
+                    }
+                    if outcome.is_some() { window.set_export_active(false); }
                 }
-                if finished {
-                    window.set_export_active(false);
+                self.delivery_queue.update_active(&status, outcome);
+                if outcome.is_some() { self.export.take(); }
+            }
+            if self.export.is_none() {
+                if let Some(spec) = self.delivery_queue.next() {
+                    if let Err(error) = self.start_export(spec) {
+                        self.delivery_queue.update_active(&error, Some(JobPhase::Failed));
+                    }
                 }
             }
-            if finished {
-                self.export.take();
+            if self.delivery_queue.running || self.window.upgrade().is_some_and(|window| window.get_delivery_queue_open()) {
+                self.publish_delivery_queue();
             }
         }
         while let Ok(command) = self.ui_receive.try_recv() {
@@ -2644,7 +2715,8 @@ mod native_dialog_tests {
         let (io_send, io_receive) = mpsc::channel();
         let (ui_send, ui_receive) = mpsc::channel();
         let mut controller = Controller {
-            window: slint::Weak::default(), document, preview, backend,
+            window: slint::Weak::default(), document, preview, backend, delivery_queue: Default::default(),
+            delivery_model: Rc::new(VecModel::default()),
             io_send, io_receive, ui_send, ui_receive, generation: 0, ticket: 0,
             selected_asset: None, selected_clip: Some(first), asset_preview: false,
             source_marks: HashMap::new(), audio_destination: AudioDestination::Automatic,

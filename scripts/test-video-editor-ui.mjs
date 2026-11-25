@@ -1968,6 +1968,78 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Queue range exports, preserve snapshots, cancel and retry individual jobs', async () => {
+   const seed = join(output, 'queue-edit.oqvideo.json');
+   await writeFile(seed, await readFile(exportProject));
+   const existing = join(output, 'queue-existing.mp4');
+   const snapshotOutput = join(output, 'queue-snapshot.mp4');
+   const cancelled = join(output, 'queue-cancelled.mp4');
+   await writeFile(existing, 'Keep this existing delivery');
+   await launch(seed); await waitState('clips 3');
+   const add = async (path, start, end) => {
+     await click('EXPORT');
+     await client.setValue(await client.find({ label: 'Export start frame', role: 'TextInput' }), String(start));
+     await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), String(end));
+     await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+     await click('Add to queue');
+   };
+   await add(existing, 0, 2); await waitState('Delivery added to render queue');
+   await add(snapshotOutput, 3, 6);
+   await add(snapshotOutput, 0, 3); await waitState('already uses that output path');
+   assert.equal((await client.find({ label: 'File path', role: 'TextInput' })).accessibleValue, snapshotOutput);
+   await click('Cancel');
+   await add(cancelled, 0, 2);
+   const job = name => client.find({ label: new RegExp(`Delivery .*queue-${name}[.]mp4$`), role: 'Groupbox' });
+   const phase = (name, prefix) => client.waitFor(async () =>
+     (await job(name)).accessibleDescription.startsWith(prefix),
+     { description: `${name} job ${prefix}` });
+   await click('Render queue');
+   await phase('snapshot', 'Pending');
+   await click('Cancel job', true); await phase('cancelled', 'Cancelled');
+   await click('Close queue');
+   await click('SEQUENCE'); await click('New sequence'); await waitState('clips 0'); await click('Cancel');
+   await click('Render queue'); await click('Start render queue');
+   await phase('existing', 'Failed'); await phase('snapshot', 'Complete');
+   assert.equal(await readFile(existing, 'utf8'), 'Keep this existing delivery');
+   assert.equal((await readdir(output)).includes('queue-cancelled.mp4'), false);
+   const stride = 320 * 180 * 3;
+   const frames = mediaCommand(['-i', snapshotOutput, '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 4 });
+   assert.equal(frames.length, stride * 3);
+   const [r, g, b] = frames.subarray((90 * 320 + 160) * 3);
+   assert(r > 225 && g < 25 && b < 25);
+   await rename(existing, join(output, 'queue-preserved.mp4'));
+   await click('Retry job'); await phase('existing', 'Pending');
+   await click('Start render queue'); await phase('existing', 'Complete');
+   assert((await readFile(existing)).length > 512);
+   await click('Close queue');
+   await click('SAVE'); await waitState('Project saved');
+   await close();
+ }, { core: true });
+ await step('Cancel a running queued delivery and keep its partial output unpublished', async () => {
+   const model = JSON.parse(await readFile(exportProject, 'utf8'));
+   const base = model.data.tracks.at(-1);
+   const clip = base.clips[0];
+   model.data.tracks = [{ ...base, clips: Array.from({ length: 20 }, (_, index) => ({
+     ...clip, id: `queue-long-${index}`, timeline_start: index * 80, duration: 80,
+   })) }];
+   const seed = join(output, 'queue-cancel-edit.oqvideo.json');
+   const path = join(output, 'queue-cancel-active.mp4');
+   await writeFile(seed, JSON.stringify(model));
+   await launch(seed); await waitState('clips 20');
+   await click('EXPORT');
+   await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), path);
+   await click('Add to queue'); await waitState('Delivery added to render queue');
+   await click('Render queue'); await click('Start render queue');
+   const row = () => client.find({ label: /Delivery .*queue-cancel-active[.]mp4$/, role: 'Groupbox' });
+   await client.waitFor(async () => (await row()).accessibleDescription.startsWith('Rendering'),
+     { description: 'the queued task is rendering' });
+   await click('Cancel job');
+   await client.waitFor(async () => (await row()).accessibleDescription.startsWith('Cancelled'),
+     { description: 'the running queued task was cancelled' });
+   assert(!(await readdir(output)).includes('queue-cancel-active.mp4'));
+   await click('Close queue');
+   await close();
+ });
  await step('Scroll and edit a late clip in an 1,800-cut timeline without mounting every clip', async () => {
    const seed = JSON.parse(await readFile(exportProject, 'utf8'));
    const blue = seed.data.assets.find(asset => asset.name === 'background.mp4');

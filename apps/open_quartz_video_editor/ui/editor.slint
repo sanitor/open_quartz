@@ -21,6 +21,7 @@ component NodeEffectTile inherits Rectangle {
     VerticalLayout { padding: 5px; spacing: 4px; Rectangle { width: 84px; height: 84px; background: #111517; border-radius: 4px; border-width: 1px; border-color: #384247; Text { text: root.effect.glyph; width: parent.width; height: parent.height; color: #38d9c3; font-size: 27px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } } Text { text: root.effect.label; width: parent.width; height: 20px; color: #e7eaed; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } }
     tile := TouchArea { accessible-role: button; accessible-label: "Add " + root.effect.label + " node"; enabled: root.enabled; clicked => { root.clicked(); } }
 }
+export struct ExportJobRow { path: string, phase: string, details: string, can_cancel: bool, can_retry: bool }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool, blend_mode: int, subtitles: bool }
 export struct AudioTrackRow { id: string, name: string, muted: bool, solo: bool, locked: bool, sync_ripple: bool, gain: string }
@@ -649,6 +650,10 @@ export component EditorWindow inherits Window {
     callback sequence_settings(width: string, height: string, fps_numerator: string, fps_denominator: string);
     callback rename_project(string);
     callback file_submit(kind: string, path: string);
+    in-out property <bool> delivery_queue_open;
+    in property <[ExportJobRow]> delivery_jobs;
+    in property <bool> delivery_can_start;
+    callback delivery_queue_action(string, int);
     function submit_file() {
         let kind = root.file_dialog_kind;
         let path = root.file_path;
@@ -874,6 +879,7 @@ export component EditorWindow inherits Window {
                     if root.previous_available: Button { text: "Previous version"; clicked => { root.project_action("recover-previous"); } }
                     if !root.export_active: ToolButton { label: "EXPORT"; glyph: "↑"; clicked => { root.project_action("export"); } }
                     if root.export_active: Button { text: "Cancel export"; clicked => { root.project_action("cancel-export"); } }
+                    ToolButton { label: "Render queue"; glyph: "≡"; clicked => { root.delivery_queue_open = true; } }
                     ToolButton { label: "RELINK"; glyph: "↔"; clicked => { root.project_action("relink"); } }
                     ToolButton { label: "IMPORT"; glyph: "↓"; clicked => { root.project_action("import"); } }
                     ToolButton { label: "SEQUENCE"; glyph: "⚙"; clicked => { editor_focus.focus(); root.open_settings(); } }
@@ -1715,6 +1721,48 @@ export component EditorWindow inherits Window {
                 }
             }
         }
+        if root.delivery_queue_open: Rectangle {
+            width: parent.width; height: parent.height; background: #000000b0;
+            TouchArea { clicked => { root.delivery_queue_open = false; editor_focus.focus(); } }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: min(700px, parent.width - 34px); height: min(460px, parent.height - 40px);
+                background: root.panel; border-width: 1px; border-color: root.border; border-radius: 10px;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 18px; spacing: 10px;
+                    Text { text: "Render queue"; color: root.text; font-size: 18px; font-weight: 700; }
+                    if root.delivery_jobs.length == 0: Text { text: "Use Add to queue in the MP4 export dialog."; color: root.secondary; }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 6px;
+                            for job[index] in root.delivery_jobs: Rectangle {
+                                height: 64px; background: #22292c; border-radius: 5px;
+                                accessible-role: groupbox; accessible-label: "Delivery " + job.path;
+                                accessible-description: job.phase + " · " + job.details;
+                                HorizontalLayout {
+                                    padding: 8px; spacing: 6px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1; spacing: 4px;
+                                        Text { text: job.phase + " · " + job.path; color: root.text; overflow: elide; font-size: 12px; }
+                                        Text { text: job.details; color: root.secondary; overflow: elide; font-size: 11px; }
+                                    }
+                                    if job.can_cancel: Button { text: "Cancel job"; clicked => { root.delivery_queue_action("cancel", index); } }
+                                    if job.can_retry: Button { text: "Retry job"; clicked => { root.delivery_queue_action("retry", index); } }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "Close queue"; clicked => { root.delivery_queue_open = false; editor_focus.focus(); } }
+                        Button { text: "Start render queue"; enabled: root.delivery_can_start; primary: true; clicked => { root.delivery_queue_action("start", 0); } }
+                    }
+                }
+            }
+        }
         if root.settings_open: Rectangle {
             width: parent.width; height: parent.height; background: #000000b0;
             TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
@@ -1845,6 +1893,10 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Rectangle { horizontal-stretch: 1; }
                         Button { text: "Cancel"; clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
+                        if root.file_dialog_kind == "export": Button {
+                            text: "Add to queue";
+                            clicked => { root.file_dialog_open = false; editor_focus.focus(); root.file_submit("queue-export", root.file_path); }
+                        }
                         Button { text: root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
