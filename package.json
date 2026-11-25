@@ -25,6 +25,7 @@
     "test:video-editor:ui:stills": "node scripts/video-editor.mjs test-ui-stills",
     "test:video-editor:ui:audio": "node scripts/video-editor.mjs test-ui-audio",
     "test:video-editor:ui:preview": "node scripts/video-editor.mjs test-ui-preview",
+    "test:video-editor:ui:delivery": "node scripts/video-editor.mjs test-ui-delivery",
     "test:video-editor:coverage": "node scripts/video-editor.mjs test-coverage",
     "test:desktop:shaders": "node scripts/desktop.mjs test-ui-shaders",
     "prepare:inference": "node scripts/prepare-inference-e2e.mjs",

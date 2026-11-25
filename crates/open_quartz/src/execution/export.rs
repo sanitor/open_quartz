@@ -130,7 +130,13 @@ impl ExportJob {
             .iter()
             .map(|path| SourceFileIdentity::capture(path))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::start(pipeline, config, Some(Box::new(sequence)), Some(identities), audio)
+        Self::start(
+            pipeline,
+            config,
+            Some(Box::new(sequence)),
+            Some(identities),
+            audio,
+        )
     }
 
     fn start(
@@ -188,25 +194,58 @@ impl ExportJob {
             .ok_or("export window span overflow")?
             .max(1);
         pipeline.configure_window(window)?;
-        let mut converter = Nv12Converter::new(
-            pipeline.backend(),
-            config.encoder.queue_capacity,
-            window.max_bytes / 2,
-        )?;
-        converter.set_input_interpretation(config.input_interpretation);
-        // Reserve the downstream native working set before starting source work.
-        if !converter.prepare_surfaces(
-            config.encoder.width,
-            config.encoder.height,
-            config.encoder.queue_capacity,
-        )? {
-            return Err(
-                "shared frame budget cannot currently reserve the export encoder working set"
-                    .into(),
-            );
-        }
-        let encoder = Mp4Encoder::open_with_profile(&config.output, config.encoder.clone(), audio, config.input_interpretation.encoder_profile())
+        #[cfg(target_os = "macos")]
+        let (converter, encoder) = {
+            let mut converter = Nv12Converter::new(
+                pipeline.backend(),
+                config.encoder.queue_capacity,
+                window.max_bytes / 2,
+            )?;
+            converter.set_input_interpretation(config.input_interpretation);
+            // Reserve the downstream native working set before starting source work.
+            if !converter.prepare_surfaces(
+                config.encoder.width,
+                config.encoder.height,
+                config.encoder.queue_capacity,
+            )? {
+                return Err(
+                    "shared frame budget cannot currently reserve the export encoder working set"
+                        .into(),
+                );
+            }
+            let encoder = Mp4Encoder::open_with_profile(
+                &config.output,
+                config.encoder.clone(),
+                audio,
+                config.input_interpretation.encoder_profile(),
+            )
             .map_err(|e| e.to_string())?;
+            (converter, encoder)
+        };
+        #[cfg(windows)]
+        let (converter, encoder) = {
+            let backend = pipeline.backend();
+            let native = backend.open_d3d12_encoder(
+                config.encoder.width,
+                config.encoder.height,
+                config.encoder.time_base,
+                usize::try_from(config.encoder.bitrate).map_err(|_| "Invalid encoder bitrate")?,
+                config.input_interpretation.encoder_profile(),
+            )?;
+            let (encoder, pool) =
+                Mp4Encoder::open_d3d12(&config.output, config.encoder.clone(), audio, native)
+                    .map_err(|error| error.to_string())?;
+            let converter = Nv12Converter::for_pool(
+                backend,
+                config.encoder.width,
+                config.encoder.height,
+                config.input_interpretation,
+                pool,
+                config.encoder.queue_capacity,
+                window.max_bytes / 2,
+            )?;
+            (converter, encoder)
+        };
         Ok(Self {
             pipeline,
             converter,
@@ -612,6 +651,6 @@ fn sample_ns(frame: u64, time_base: oq_media::RationalTimeBase) -> Result<u64, S
     u64::try_from(value).map_err(|_| "export source time exceeds nanosecond capacity".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "export_tests.rs"]
 mod tests;

@@ -712,7 +712,7 @@ mod composition;
 mod playback;
 use playback::run;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "sequence_export.rs"]
 pub(crate) mod export;
 

@@ -1,12 +1,24 @@
 use super::{
     encode_color::{create_pipelines, plane_formats, InputInterpretation},
-    GpuBackend, TextureHandle,
+    encode_frame::{Completion, ConversionAdmission, ConversionReady, ConvertedFrame},
+    GpuBackend, StableFrame, TextureHandle,
+};
+use crate::{
+    outputs::{FrameAlphaMode, FrameColorSpace},
+    resources::{FrameBudget, FrameCredit},
 };
 use oq_media::{
-    d3d12_encoder::{D3d12Encoder, InputSurface, Profile},
+    d3d12_encoder::{D3d12Encoder, FramePool, InputSurface, Profile},
     RationalTimeBase,
 };
-use std::{ptr::NonNull, sync::Arc};
+use std::{
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, OnceLock,
+    },
+    time::Instant,
+};
 use windows_graphics::{
     core::Interface,
     Win32::Graphics::{
@@ -27,6 +39,160 @@ pub struct D3d12ColorConverter {
     pipelines: [wgpu::RenderPipeline; 2],
     staging: wgpu::Buffer,
     pitch: u32,
+}
+
+struct ExportSlot {
+    surface: InputSurface,
+    _budget: FrameCredit,
+    busy: AtomicBool,
+}
+
+struct ExportLease {
+    slot: Arc<ExportSlot>,
+    budget: Arc<FrameBudget>,
+}
+
+impl Drop for ExportLease {
+    fn drop(&mut self) {
+        self.slot.busy.store(false, Ordering::Release);
+        self.budget.notify_waiters();
+    }
+}
+
+/// Fixed GPU conversion working set shared with the hardware encoder.
+pub struct Nv12Converter {
+    gpu: D3d12ColorConverter,
+    slots: Vec<Arc<ExportSlot>>,
+    budget: Arc<FrameBudget>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    trace_enabled: bool,
+}
+
+impl Nv12Converter {
+    pub(crate) fn for_pool(
+        backend: Arc<GpuBackend>,
+        width: u32,
+        height: u32,
+        interpretation: InputInterpretation,
+        pool: FramePool,
+        count: usize,
+        max_bytes: u64,
+    ) -> Result<Self, String> {
+        let budget = backend.frame_budget();
+        let row = (u64::from(width)
+            * if interpretation.encoder_profile().is_hdr() {
+                2
+            } else {
+                1
+            })
+        .div_ceil(256)
+            * 256;
+        let surface_bytes =
+            (row * (u64::from(height) + u64::from(height).div_ceil(2))).div_ceil(65_536) * 65_536;
+        let bytes = surface_bytes
+            .checked_mul(count as u64)
+            .ok_or("D3D12 working set overflow")?;
+        if count == 0 || bytes == 0 || bytes > max_bytes {
+            return Err("D3D12 encoder working set exceeds the export budget".into());
+        }
+        budget.validate_working_set(count, bytes)?;
+        let mut slots = Vec::with_capacity(count);
+        for _ in 0..count {
+            let surface = pool.allocate().map_err(|error| error.to_string())?;
+            let credit = budget
+                .try_acquire(
+                    (0, surface.texture_ptr().as_ptr() as usize),
+                    1,
+                    surface_bytes,
+                )?
+                .ok_or("Frame budget cannot reserve the D3D12 encoder working set")?;
+            slots.push(Arc::new(ExportSlot {
+                surface,
+                _budget: credit,
+                busy: AtomicBool::new(false),
+            }));
+        }
+        Ok(Self {
+            gpu: D3d12ColorConverter::new(backend, width, height, interpretation)?,
+            slots,
+            budget,
+            waker: None,
+            trace_enabled: false,
+        })
+    }
+
+    pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.waker = Some(waker);
+    }
+
+    pub fn set_trace_enabled(&mut self, enabled: bool) {
+        self.trace_enabled = enabled;
+    }
+
+    pub fn try_convert(&mut self, input: StableFrame) -> Result<ConversionAdmission, String> {
+        if !input.belongs_to(&self.gpu.backend) {
+            return Err("Encoder input belongs to another GPU device".into());
+        }
+        if (input.image.color_space != FrameColorSpace::Unknown
+            && input.image.color_space != self.gpu.interpretation.color_space())
+            || (input.image.alpha_mode != FrameAlphaMode::Unknown
+                && input.image.alpha_mode != self.gpu.interpretation.alpha())
+        {
+            return Err("Encoder input metadata disagrees with its declared interpretation".into());
+        }
+        let Some(slot) = self
+            .slots
+            .iter()
+            .find(|slot| !slot.busy.load(Ordering::Acquire))
+            .cloned()
+        else {
+            return Ok(ConversionAdmission::WouldBlock(input));
+        };
+        let mut surface = slot
+            .surface
+            .try_retain()
+            .map_err(|error| error.to_string())?;
+        slot.busy.store(true, Ordering::Release);
+        surface
+            .attach_lease(ExportLease {
+                slot,
+                budget: self.budget.clone(),
+            })
+            .map_err(|error| error.to_string())?;
+        let gpu_lease = surface.try_retain().map_err(|error| error.to_string())?;
+        let handle = input.output();
+        let texture = TextureHandle {
+            texture: handle.texture.clone(),
+            view: handle.view.clone(),
+            sampler: handle.sampler.clone(),
+            lease: handle.lease.clone(),
+            width: handle.width,
+            height: handle.height,
+            format: handle.format,
+        };
+        self.gpu.convert(&texture, &mut surface)?;
+        let ready = ConversionReady(Arc::new(Completion {
+            ready: AtomicBool::new(false),
+            completed_at: OnceLock::new(),
+        }));
+        let completed = ready.clone();
+        let trace = self.trace_enabled;
+        let waker = self.waker.clone();
+        self.gpu.backend.queue.on_submitted_work_done(move || {
+            drop((input, gpu_lease));
+            if trace {
+                let _ = completed.0.completed_at.set(Instant::now());
+            }
+            completed.0.ready.store(true, Ordering::Release);
+            if let Some(waker) = waker {
+                waker();
+            }
+        });
+        Ok(ConversionAdmission::Accepted(ConvertedFrame {
+            surface,
+            ready,
+        }))
+    }
 }
 
 impl D3d12ColorConverter {

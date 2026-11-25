@@ -8,5 +8,5 @@ pub use pipeline::{
     ExternalFrameInput, FrameAdmission, FrameCompletion, FrameDemand, FrameOutcome, FramePipeline,
     FrameStageEvent, FrameWindowConfig, PreparedNativeGraph,
 };
-#[cfg(all(target_os = "macos", feature = "native-video", feature = "native-runtime"))]
+#[cfg(all(feature = "native-runtime", any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12"))))]
 pub use pipeline::{ExportConfig, ExportJob, ExportPhase, ExportSequence, ExportStageEvent, ExportStatus};

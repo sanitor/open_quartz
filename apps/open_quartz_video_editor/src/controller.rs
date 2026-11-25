@@ -122,7 +122,7 @@ pub struct Controller {
     deferred_refresh: bool,
     recovery: crate::document_recovery::Recovery,
     busy: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     export: Option<crate::preview::export::ExportTask>,
     #[cfg(any(target_os = "macos", windows))]
     audio: Option<crate::audio_output::AudioPlayback>,
@@ -200,7 +200,7 @@ impl Controller {
             deferred_refresh: false,
             recovery: crate::document_recovery::Recovery::new(),
             busy: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             export: None,
             #[cfg(any(target_os = "macos", windows))]
             audio: None,
@@ -876,7 +876,7 @@ impl Controller {
                     self.path_dialog(action);
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             "cancel-export" => {
                 if let Some(export) = &self.export {
                     export.cancel();
@@ -1782,7 +1782,7 @@ impl Controller {
     }
 
     fn start_export(&mut self, spec: ExportSpec) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             if self.export.is_some() { return Err("A delivery is already rendering".into()); }
             let render = self.preview.offscreen_device()?;
@@ -1796,10 +1796,10 @@ impl Controller {
             self.export = Some(task);
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = spec;
-            Err("MP4 export requires macOS VideoToolbox".into())
+            Err("MP4 export requires VideoToolbox or Direct3D 12 hardware".into())
         }
     }
 
@@ -1808,7 +1808,7 @@ impl Controller {
             "start" => self.delivery_queue.running = true,
             "cancel" => {
                 if self.delivery_queue.active == Some(index) {
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     if let Some(export) = &self.export { export.cancel(); }
                 } else {
                     self.delivery_queue.cancel_pending(index);
@@ -1905,7 +1905,7 @@ impl Controller {
                 window.set_audio_track_peaks(ModelRc::new(VecModel::from(peaks)));
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             if let Some(export) = &self.export {
                 let (status, outcome) = export.progress();
@@ -2617,11 +2617,11 @@ impl Controller {
         self.audio.take();
         self.clear_images();
         self.preview.shutdown();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.export.take();
     }
     pub fn may_close(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if self.export.is_some() {
             self.status("Wait for the export to finish or cancel it before closing");
             return false;
@@ -2812,7 +2812,7 @@ mod native_dialog_tests {
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
             recovery: crate::document_recovery::Recovery::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             export: None,
             #[cfg(any(target_os = "macos", windows))]
             audio: None,

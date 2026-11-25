@@ -16,9 +16,16 @@ struct Identity {
     change_seconds: i64,
     #[cfg(unix)]
     change_nanoseconds: i64,
+    #[cfg(windows)]
+    object: (u32, u64),
+    #[cfg(windows)]
+    change_time: i64,
 }
 impl Identity {
-    fn read(metadata: Metadata) -> Result<Self, String> {
+    fn from_metadata(
+        metadata: Metadata,
+        #[cfg(windows)] native: ((u32, u64), i64),
+    ) -> Result<Self, String> {
         if !metadata.is_file() {
             return Err("export source must be a regular file".into());
         }
@@ -35,7 +42,59 @@ impl Identity {
             change_seconds: metadata.ctime(),
             #[cfg(unix)]
             change_nanoseconds: metadata.ctime_nsec(),
+            #[cfg(windows)]
+            object: native.0,
+            #[cfg(windows)]
+            change_time: native.1,
         })
+    }
+
+    fn read(file: &File) -> Result<Self, String> {
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_graphics::Win32::{
+                Foundation::HANDLE,
+                Storage::FileSystem::{
+                    FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+                    BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO,
+                },
+            };
+            let handle = HANDLE(file.as_raw_handle());
+            let mut identity = BY_HANDLE_FILE_INFORMATION::default();
+            let mut times = FILE_BASIC_INFO::default();
+            unsafe {
+                GetFileInformationByHandle(handle, &mut identity).and_then(|()| {
+                    GetFileInformationByHandleEx(
+                        handle,
+                        FileBasicInfo,
+                        (&mut times as *mut FILE_BASIC_INFO).cast(),
+                        size_of::<FILE_BASIC_INFO>() as u32,
+                    )
+                })
+            }
+            .map_err(|error| error.to_string())?;
+            let index =
+                (u64::from(identity.nFileIndexHigh) << 32) | u64::from(identity.nFileIndexLow);
+            Self::from_metadata(
+                metadata,
+                ((identity.dwVolumeSerialNumber, index), times.ChangeTime),
+            )
+        }
+        #[cfg(not(windows))]
+        Self::from_metadata(metadata)
+    }
+
+    fn named(path: &Path) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            Self::read(&File::open(path).map_err(|error| error.to_string())?)
+        }
+        #[cfg(not(windows))]
+        {
+            Self::from_metadata(std::fs::metadata(path).map_err(|error| error.to_string())?)
+        }
     }
 }
 
@@ -52,7 +111,7 @@ impl SourceFileIdentity {
     pub(crate) fn capture(path: &Path) -> Result<Self, String> {
         let file =
             File::open(path).map_err(|e| format!("Cannot open source {}: {e}", path.display()))?;
-        let identity = Identity::read(file.metadata().map_err(|e| e.to_string())?)?;
+        let identity = Identity::read(&file)?;
         let source = Self {
             path: path.to_owned(),
             file: Arc::new(file),
@@ -63,11 +122,9 @@ impl SourceFileIdentity {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
-        let handle = Identity::read(self.file.metadata().map_err(|e| e.to_string())?)?;
-        let named =
-            Identity::read(std::fs::metadata(&self.path).map_err(|e| {
-                format!("Source {} changed or disappeared: {e}", self.path.display())
-            })?)?;
+        let handle = Identity::read(&self.file)?;
+        let named = Identity::named(&self.path)
+            .map_err(|e| format!("Source {} changed or disappeared: {e}", self.path.display()))?;
         if handle != self.identity || named != self.identity {
             return Err(format!(
                 "Source {} changed after preparation; export cannot mix source revisions",
@@ -85,6 +142,10 @@ impl SourceFileIdentity {
     pub(crate) fn is_target(&self, path: &Path) -> Result<bool, String> {
         let source = std::fs::canonicalize(&self.path).map_err(|e| e.to_string())?;
         if path.exists() {
+            #[cfg(windows)]
+            if Identity::named(path)?.object == self.identity.object {
+                return Ok(true);
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;

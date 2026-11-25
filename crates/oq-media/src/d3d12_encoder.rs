@@ -98,6 +98,35 @@ impl FramePool {
 pub struct InputSurface(Video, Profile);
 
 impl InputSurface {
+    pub fn try_retain(&self) -> Result<Self, MediaError> {
+        let mut frame = Video::empty();
+        check(
+            unsafe { ffi::av_frame_ref(frame.as_mut_ptr(), self.0.as_ptr()) },
+            "Retain D3D12 input surface",
+        )?;
+        Ok(Self(frame, self.1))
+    }
+
+    /// Retains an accounting lease until FFmpeg releases its frame references.
+    pub fn attach_lease<T: Send + 'static>(&mut self, lease: T) -> Result<(), MediaError> {
+        unsafe extern "C" fn release<T>(opaque: *mut c_void, _data: *mut u8) {
+            unsafe { drop(Box::from_raw(opaque.cast::<T>())) };
+        }
+        let frame = unsafe { &mut *self.0.as_mut_ptr() };
+        if !frame.opaque_ref.is_null() {
+            return Err("D3D12 input surface already has a lease".into());
+        }
+        let lease = Box::into_raw(Box::new(lease));
+        let buffer =
+            unsafe { ffi::av_buffer_create(lease.cast(), 0, Some(release::<T>), lease.cast(), 0) };
+        if buffer.is_null() {
+            unsafe { drop(Box::from_raw(lease)) };
+            return Err("Cannot retain frame accounting lease".into());
+        }
+        frame.opaque_ref = buffer;
+        Ok(())
+    }
+
     pub fn width(&self) -> u32 {
         self.0.width()
     }

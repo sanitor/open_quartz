@@ -21,10 +21,12 @@ const studioPreviewSuites = [
   ['Video Editor still image graphs', 'scripts/video-editor.mjs', 'test-ui-stills'],
   ['Video Editor independent audio', 'scripts/video-editor.mjs', 'test-ui-audio'],
   ['Video Editor native video preview', 'scripts/video-editor.mjs', 'test-ui-preview'],
+  ['Video Editor hardware MP4 delivery', 'scripts/video-editor.mjs', 'test-ui-delivery'],
 ];
 const suites = process.platform === 'win32' ? [...desktopSuites, ...studioPreviewSuites] : [
   ...desktopSuites,
   ['Video Editor Edit and Nodes', 'scripts/video-editor.mjs', 'test-ui'],
+  ['Video Editor hardware MP4 delivery', 'scripts/video-editor.mjs', 'test-ui-delivery'],
   ['Resident inference', 'scripts/desktop.mjs', 'test-inference'],
 ];
 

@@ -1,6 +1,9 @@
 //! Hardware-only, headless video-effect export using the shared frame pipeline.
 //! Usage: INPUT OUTPUT START END FPS_NUM FPS_DEN [--invert] [--overwrite]
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(windows, feature = "native-video-precise-d3d12")
+))]
 mod native {
     use open_quartz::execution::{ExportConfig, ExportJob, ExportPhase, FramePipeline};
     use open_quartz::media::native::{NativeVideoConfig, NativeVideoSourceKind};
@@ -21,7 +24,7 @@ mod native {
                 .iter()
                 .any(|arg| arg != "--invert" && arg != "--overwrite")
         {
-            return Err("usage: cargo run -p open_quartz --features native-runtime,native-video --example export_video -- INPUT OUTPUT START END FPS_NUM FPS_DEN [--invert] [--overwrite]".into());
+            return Err("usage: cargo run -p open_quartz --features native-runtime,native-video (Windows: add native-video-precise-d3d12) --example export_video -- INPUT OUTPUT START END FPS_NUM FPS_DEN [--invert] [--overwrite]".into());
         }
         let start: u64 = args[2].parse()?;
         let end: u64 = args[3].parse()?;
@@ -97,12 +100,20 @@ mod native {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(windows, feature = "native-video-precise-d3d12")
+))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     native::main()
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(
+    target_os = "macos",
+    all(windows, feature = "native-video-precise-d3d12")
+)))]
 fn main() {
-    eprintln!("Hardware H.264 MP4 export currently requires macOS VideoToolbox");
+    eprintln!(
+        "Hardware MP4 export requires macOS VideoToolbox or Windows native-video-precise-d3d12"
+    );
     std::process::exit(1);
 }

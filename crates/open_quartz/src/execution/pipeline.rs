@@ -26,10 +26,10 @@ mod window;
 pub use window::{FrameStageEvent, FrameWindowConfig};
 use window::{FrameWindow, QueuedFrame};
 
-#[cfg(all(target_os = "macos", feature = "native-video"))]
+#[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
 #[path = "export.rs"]
 mod export;
-#[cfg(all(target_os = "macos", feature = "native-video"))]
+#[cfg(any(all(target_os = "macos", feature = "native-video"), all(windows, feature = "native-video-precise-d3d12")))]
 pub use export::{ExportConfig, ExportJob, ExportPhase, ExportSequence, ExportStageEvent, ExportStatus};
 
 fn runtime_error(error: SdkError) -> String {

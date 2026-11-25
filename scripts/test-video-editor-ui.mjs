@@ -13,10 +13,11 @@ const args = process.argv.slice(2);
 const smoke = args.includes('--smoke');
 const audioOnly = args.includes('--audio-only');
 const previewOnly = args.includes('--preview-only');
-assert([smoke, audioOnly, previewOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only'].includes(arg));
-assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] [--smoke|--audio-only|--preview-only]');
-const tier = audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const deliveryOnly = args.includes('--delivery-only');
+assert([smoke, audioOnly, previewOnly, deliveryOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only'].includes(arg));
+assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
+const tier = deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -304,6 +305,71 @@ async function proxyRoundTrip() {
    await waitState('Project saved');
    await close();
  });
+}
+
+async function hardwareDeliveryRoundTrip() {
+  await step('Deliver SDR, HDR10 and HLG MP4 with linked AAC audio', async () => {
+    const picture = generate('delivery-picture.mp4', 'red');
+    const input = join(output, 'delivery-linked.mp4');
+    fixtureCommand(['-i', picture, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-y', input]);
+    await launch();
+    await click('SEQUENCE');
+    await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
+    await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
+    await click('Apply settings');
+    await fileAction('IMPORT', input, 'Import media');
+    await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('audio clips 1');
+    const profile = () => client.find({ label: 'Export color profile', role: 'Combobox' });
+    const labels = ['SDR Rec.709', 'HDR10', 'HLG'];
+    for (const [name, index, codec, transfer] of [
+      ['sdr', 0, /Video: h264/, 'bt709'],
+      ['hdr10', 1, /Video: hevc \(Main 10\)/, 'smpte2084'],
+      ['hlg', 2, /Video: hevc \(Main 10\)/, 'arib-std-b67'],
+    ]) {
+      const target = join(output, name + '.mp4');
+      await click('EXPORT');
+      const field = await profile();
+      const selected = labels.findIndex(label => field.accessibleValue.startsWith(label));
+      assert(selected >= 0, field.accessibleValue);
+      if (selected !== index) {
+        await client.click(field);
+        for (let i = 0; i < Math.abs(index - selected); i++) {
+          await client.key(index > selected ? '\uf701' : '\uf700');
+        }
+        await client.key('\n');
+      }
+      assert((await profile()).accessibleValue.startsWith(labels[index]));
+      await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), '6');
+      await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), target);
+      await click('Export MP4');
+      await client.waitFor(async () => {
+        const current = await state();
+        assert(!current.includes('Export failed'), current);
+        return current.includes('Export complete') && current.includes(name + '.mp4');
+      }, { description: name + ' delivery' });
+      const probe = spawnSync(ffmpeg, ['-hide_banner', '-i', target, '-vf', 'showinfo', '-f', 'null', '-'],
+        { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' }, encoding: 'utf8' });
+      assert.equal(probe.status, 0, probe.stderr);
+      assert.match(probe.stderr, codec);
+      assert.match(probe.stderr, /Audio: aac/);
+      assert(probe.stderr.includes(transfer), probe.stderr);
+      assert.equal([...probe.stderr.matchAll(/\bn:\s+\d+ pts:/g)].length, 6);
+      if (name === 'hdr10') assert((await readFile(target)).includes(Buffer.from('mdcv')));
+    }
+    const cancelled = join(output, 'cancelled-delivery.mp4');
+    await click('EXPORT');
+    await client.setValue(await client.find({ label: 'Export end frame (exclusive)', role: 'TextInput' }), '90');
+    await client.setValue(await client.find({ label: 'File path', role: 'TextInput' }), cancelled);
+    await click('Export MP4'); await waitState('Exporting MP4');
+    await click('Cancel export'); await waitState('Export cancelled');
+    const files = await readdir(output);
+    assert(!files.includes('cancelled-delivery.mp4'));
+    assert(!files.some(name => name.startsWith('.oq-export-')));
+    await fileAction('SAVE AS', join(output, 'delivery.oqvideo.json'), 'Save project');
+    await waitState('Project saved'); await close();
+  }, { core: true });
 }
 
 async function proxyCacheAndCancellation() {
@@ -3248,8 +3314,11 @@ async function runVideoCases() {
 }
 
 try {
-  if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
-  if (!audioOnly) await runVideoCases();
+  if (deliveryOnly) await hardwareDeliveryRoundTrip();
+  else {
+    if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
+    if (!audioOnly) await runVideoCases();
+  }
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;
 }finally{await writeFile(join(output,'result.json'),JSON.stringify(report,null,2));await writeHtmlReport(output,report,{...report,caseDefinitions:report.caseDefinitions});if(child)child.kill('SIGTERM');console.log(`[video-editor] Evidence: ${output}`);}

@@ -14,7 +14,7 @@
 
 Open Quartz is a node-based, hardware-accelerated framework for real-time video processing, GPU shaders, resident inference and CPU-side scalar math. ONNX is the model artifact format; production image inference uses a Metal GPU network on Slint's shared wgpu 30 Device/Queue. ORT host Tensor APIs are explicit reference/diagnostics only, never production fallback. The products are a **Rust + Slint** native desktop app and independent Windows `.scr` runtime using the shared native Rust core; Web/Tauri/WASM products are retired.
 
-**Video editor:** OpenQuartz Studio is a macOS and Windows timeline application with multi-track compositing, GPU clip effects, audio editing and mixing, titles and subtitles, proxy preview, and SRT export. MP4 delivery uses the macOS hardware encoder. Run `npm run dev:video-editor` to develop or `npm run package:video-editor` to build the standalone app archive. [Start and use the editor](apps/open_quartz_video_editor/README.md).
+**Video editor:** OpenQuartz Studio is a macOS and Windows timeline application with multi-track compositing, GPU clip effects, audio editing and mixing, titles and subtitles, proxy preview, and SRT export. MP4 delivery uses VideoToolbox on macOS and D3D12VA on Windows. Run `npm run dev:video-editor` to develop or `npm run package:video-editor` to build the standalone app archive. [Start and use the editor](apps/open_quartz_video_editor/README.md).
 
 ## Node Catalog
 
@@ -136,7 +136,7 @@ The public headless `Player` still has no real device driver, and `Project::grap
 
 Desktop Rust calls typed APIs directly. Web/Tauri, WASM, JS object/worker exports, `bindings::wasm`, `web-bindings` and `browser` remain retired with no opt-in compatibility adapter. SDK C ABI/JNI bridges are unnecessary; ORT, FFmpeg, AVFoundation/CoreVideo, Metal and D3D12/COM backend FFI remain necessary.
 
-macOS also provides a hardware-only headless H.264/MP4 consumer of the same `FramePipeline` (no audio/editor UI):
+macOS and Windows provide a hardware-only headless H.264/MP4 consumer of the same `FramePipeline`:
 
 ```sh
 node scripts/prepare-media-sdk.mjs
@@ -145,7 +145,9 @@ OPEN_QUARTZ_FFMPEG_PATH="$PWD/apps/open_quartz_slint/runtime/ffmpeg" \
   INPUT.mp4 OUTPUT.mp4 START END FPS_NUM FPS_DEN --invert
 ```
 
-The frame range is half-open; output PTS starts at zero. Existing targets require `--overwrite`. NV12 conversion remains on Metal, encoding requires VideoToolbox hardware, and cancellation/errors do not commit a partial target. Platform limits and exercised evidence: [media library](crates/oq-media/README.md#硬件h264mp4文件任务) and [Phase 5 record](apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
+On Windows, prepare the runtime with `npm run prepare:desktop` and use `--features native-runtime,native-video-precise-d3d12`. Put the prepared `apps/open_quartz_slint/runtime/ffmpeg-shared/bin` on PATH and set FFMPEG_DIR to its parent.
+
+The frame range is half-open. Output PTS starts at zero. Existing targets require `--overwrite`. NV12 conversion stays on the render GPU. Cancellation and failures leave destinations untouched. Platform limits and exercised evidence: [media library](crates/oq-media/README.md#硬件h264mp4文件任务) and [Phase 5 record](apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围).
 
 [Design validation](docs/DESIGN.md#validation) separates resident evidence and pending final integration from dated ORT/CoreML coverage results. Prior passing tests and failing overall 100% gates are historical, not this cutover's counts; thresholds/exclusions must not be relaxed.
 

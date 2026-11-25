@@ -39,6 +39,7 @@ jobs:
       - run: npm run test:video-editor:ui:stills
       - run: npm run test:video-editor:ui:audio
       - run: npm run test:video-editor:ui:preview
+      - run: npm run test:video-editor:ui:delivery
 
       - uses: actions/upload-artifact@v4
         if: always()

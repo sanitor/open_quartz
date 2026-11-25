@@ -14,7 +14,7 @@ npm run dev:video-editor
 npm run dev:video-editor -- --project /absolute/path/edit.oqvideo.json
 ```
 
-Windows x64 支持 D3D12VA 硬件视频导入、按源 PTS 寻帧、SDR 和 PQ/HLG HDR 预览、遮罩跟踪、关联 AAC 音频、独立音频编辑，以及使用 Media Foundation 硬件编码器生成预览代理。视频硬解使用 NV12 或 P010，Windows 的 H.264 导入覆盖 Baseline、Main 和 High profile。MP4 导出使用 macOS 的 VideoToolbox。
+Windows x64 支持 D3D12VA 硬件视频导入、按源 PTS 寻帧、SDR 和 PQ/HLG HDR 预览、遮罩跟踪、关联 AAC 音频、独立音频编辑，以及使用 Media Foundation 硬件编码器生成预览代理。视频硬解使用 NV12 或 P010，Windows 的 H.264 导入覆盖 Baseline、Main 和 High profile。MP4 导出使用 macOS VideoToolbox 或 Windows D3D12VA，支持 SDR H.264、PQ/HLG HEVC Main 10 与 AAC 音频。可用的分辨率和编码格式由硬件驱动决定。
 
 macOS 和 Windows 运行同一组预览测试。硬件测试需要可用的 Metal 或 D3D12VA GPU，涉及音频输出的用例需要默认播放设备。
 
@@ -24,7 +24,7 @@ macOS 和 Windows 运行同一组预览测试。硬件测试需要可用的 Meta
 
 GitHub Actions 的 **Desktop hardware preview parity** 工作流可手动运行，对两平台运行相同的 Open Quartz 桌面冒烟测试和 Studio 预览用例。Windows runner 需要交互桌面、GPU、音频设备、MSVC 和 LLVM，并带有 `openquartz-video-gpu` 标签。
 
-Windows 可用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e:full` 运行 Open Quartz 桌面及 Studio 静帧、音频和硬件视频预览。macOS 套件还覆盖 MP4 导出和 GPU 驻留推理。
+Windows 可用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e:full` 运行 Open Quartz 桌面及 Studio 静帧、音频、硬件视频预览和 MP4 导出。macOS 套件还覆盖 GPU 驻留推理。
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 
@@ -156,6 +156,7 @@ npm run test:video-editor
 npm run test:video-editor:ui:stills
 npm run test:video-editor:ui:audio
 npm run test:video-editor:ui:preview
+npm run test:video-editor:ui:delivery
 ```
 
 macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例，或用 `npm run test:video-editor:ui` 和 `npm run test:video-editor:coverage` 执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
