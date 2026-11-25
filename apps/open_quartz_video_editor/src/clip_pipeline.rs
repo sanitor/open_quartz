@@ -15,13 +15,14 @@ pub const OUTPUT_ID: &str = "output";
 const OUTPUT_CODE: &str = "@fragment\nfn main(@location(0) uv: vec2f) -> @location(0) vec4f {\n    return textureSample(image, imageSampler, uv);\n}\n";
 
 #[derive(Clone, Copy)]
-pub enum BranchComposite { Blend, LumaMask }
+pub enum BranchComposite { Blend, LumaMask, Compare }
 
 impl BranchComposite {
     pub fn from_node(node: &ProjectNode) -> Option<Self> {
         match (node.data.shader_template_id.as_deref(), node.data.shader_code.as_str()) {
             (Some("oq-clip-blend-v1"), BLEND_CODE) => Some(Self::Blend),
             (Some("oq-clip-luma-mask-v1"), MASK_CODE) => Some(Self::LumaMask),
+            (Some("oq-monitor-wipe-v1"), COMPARE_CODE) => Some(Self::Compare),
             _ => None,
         }
     }
@@ -30,6 +31,7 @@ impl BranchComposite {
         match self {
             Self::Blend => ("Blend", "oq-clip-blend-v1", BLEND_CODE, "overlay"),
             Self::LumaMask => ("Luma Mask", "oq-clip-luma-mask-v1", MASK_CODE, "matte"),
+            Self::Compare => ("Monitor wipe", "oq-monitor-wipe-v1", COMPARE_CODE, "original"),
         }
     }
 }
@@ -61,6 +63,19 @@ const MASK_CODE: &str = r#"
     let m = textureSample(matte, matteSampler, uv);
     let coverage = clamp(dot(m.rgb, vec3f(0.27222872, 0.67408177, 0.05368952)), 0.0, 1.0) * m.a;
     return vec4f(b.rgb, b.a * mix(1.0, coverage, clamp(amount, 0.0, 1.0)));
+}
+"#;
+
+const COMPARE_CODE: &str = r#"
+@group(0) @binding(0) var base: texture_2d<f32>;
+@group(0) @binding(1) var baseSampler: sampler;
+@group(0) @binding(2) var original: texture_2d<f32>;
+@group(0) @binding(3) var originalSampler: sampler;
+@group(0) @binding(4) var<uniform> amount: f32; // Original frame fraction. Default 0.5
+@fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
+    let graded = textureSample(base, baseSampler, uv);
+    let ungraded = textureSample(original, originalSampler, uv);
+    return select(graded, ungraded, uv.x < amount);
 }
 "#;
 
@@ -252,6 +267,15 @@ impl ClipPipeline {
         Ok(candidate)
     }
 
+    pub fn monitor_comparison(&self, split: f32) -> Result<Self, String> {
+        let mut candidate = self.clone();
+        let id = candidate.add_branch_composite(OUTPUT_ID, BranchComposite::Compare)?;
+        let node = candidate.graph.nodes.iter_mut().find(|node| node.id == id)
+            .ok_or("Missing comparison node")?;
+        node.data.uniforms.insert("amount".into(), serde_json::json!(split.clamp(0.0, 1.0)));
+        Ok(candidate)
+    }
+
     /// Insert a factory shader into the selected serial connection, preserving downstream fan-out.
     pub fn add_serial(&mut self, after: &str, code: &str, label: &str) -> Result<String, String> {
         self.add_serial_factory(after, None, |position| NodeFactoryRequest::Shader {
@@ -272,7 +296,7 @@ impl ClipPipeline {
             position: Some(position), code: code.to_owned(), label: label.to_owned(),
             template_name: None, shader_template_id: Some(template.to_owned()),
         })?;
-        let amount = match operation { BranchComposite::Blend => 0.5, BranchComposite::LumaMask => 1.0 };
+        let amount = match operation { BranchComposite::Blend | BranchComposite::Compare => 0.5, BranchComposite::LumaMask => 1.0 };
         if let Some(node) = self.graph.nodes.iter_mut().find(|node| node.id == id) {
             node.data.uniforms.insert("amount".into(), serde_json::json!(amount));
         }

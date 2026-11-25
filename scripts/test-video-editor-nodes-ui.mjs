@@ -733,6 +733,40 @@ try {
     await click('Nodes workspace'); await selectClip('red.mp4'); await waitColor('dark-gray');
     await close();
   }, { core: true });
+  await step('Compare the original and grade on the same frame with a monitor wipe', async () => {
+    const path = join(output, 'compare.oqvideo.json');
+    await launch();
+    await fileAction('IMPORT', join(output, 'red.mp4'), 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('Nodes workspace'); await selectClip('red.mp4');
+    await selectNode('video'); await addEffect('Invert'); await waitColor('cyan');
+    await click('Compare original');
+    const split = () => client.find({ label: 'Original comparison split', role: 'Slider' });
+    const sides = (left, right) => client.waitFor(async () => {
+      const image = decodePng(await client.screenshot());
+      const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+      const window = await client.windowProperties();
+      const scale = window.scaleFactor || 1;
+      const sx = image.width / (window.size.width / scale), sy = image.height / (window.size.height / scale);
+      const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * sy);
+      const colors = [0.25, 0.75].map(fraction => {
+        const x = Math.floor((viewer.absolutePosition.x + viewer.size.width * fraction) * sx);
+        const at = (y * image.width + x) * image.channels;
+        const [r, g, b] = image.pixels.subarray(at, at + 3);
+        return r > 220 && g < 30 && b < 30 ? 'red' : r < 35 && g > 220 && b > 220 ? 'cyan' : 'other';
+      });
+      return colors[0] === left && colors[1] === right;
+    }, { description: `same-frame wipe ${left} / ${right}` });
+    await sides('red', 'cyan');
+    await client.setValue(await split(), '0.95'); await sides('red', 'red');
+    await client.setValue(await split(), '0.05'); await sides('cyan', 'cyan');
+    await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+    const graph = JSON.parse(await readFile(path, 'utf8')).data.tracks[0].clips[0].pipeline.graph;
+    assert.equal(graph.nodes.length, 3);
+    await click('Close comparison'); await sides('cyan', 'cyan');
+    assert.equal((await client.byLabel('Original comparison split', { role: 'Slider' })).length, 0);
+    await close();
+  }, { core: true });
   report.passed = true;
 } catch (error) {
   report.error = error.stack;

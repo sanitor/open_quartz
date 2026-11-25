@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider, TextEdit } from "std-widgets.slint";
 import { WindowControls } from "../../open_quartz_slint/ui/components/window_controls.slint";
 import { ToolButton } from "icon_button.slint";
 import { GraphView, GraphNode, GraphEdge, GraphPort } from "../../open_quartz_slint/ui/components/graph_view.slint";
@@ -594,6 +594,9 @@ export component EditorWindow inherits Window {
     callback pipeline_edge_selected(string);
     callback pipeline_add_effect(int);
     in property <string> pipeline_monitor_label;
+    in property <bool> pipeline_compare_active;
+    in-out property <float> pipeline_split: 0.5;
+    callback pipeline_compare_split(float);
     callback pipeline_action(string);
     callback pipeline_label_draft_changed(string);
     callback pipeline_shader_draft_changed(string);
@@ -986,6 +989,22 @@ export component EditorWindow inherits Window {
                                 selected => { root.color_scope_changed(self.current-index); }
                             }
                             Text { text: root.project_data_width + " × " + root.project_data_height; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
+                        if root.nodes_open: HorizontalLayout {
+                            height: 29px; padding-left: 14px; padding-right: 14px; spacing: 8px;
+                            Button {
+                                text: root.pipeline_compare_active ? "Close comparison" : "Compare original";
+                                enabled: root.selected_clip_id != "";
+                                clicked => { root.pipeline_action("compare-original"); }
+                            }
+                            if root.pipeline_compare_active: Text { text: "Original"; color: root.secondary; vertical-alignment: center; }
+                            if root.pipeline_compare_active: Slider {
+                                accessible-label: "Original comparison split";
+                                minimum: 0; maximum: 1; step: 0.01;
+                                value <=> root.pipeline_split;
+                                changed(value) => { root.pipeline_compare_split(value); }
+                            }
+                            if root.pipeline_compare_active: Text { text: "Graded"; color: root.secondary; vertical-alignment: center; }
+                        }
                         monitor_surface := Rectangle {
                             horizontal-stretch: 1; vertical-stretch: 1; background: #0a0b0c;
                             clip: true;

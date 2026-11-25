@@ -16,6 +16,7 @@ pub(super) enum PipelineCommand {
     Edge(String), Add(i32), Action(String), Label(String), Shader(String),
     Size(i32, i32, bool), Uniform(String, String), Form(String, String), ApplyForm(String),
     Corrector(String, String, String, String),
+    CompareSplit(f32),
 }
 
 struct Draft {
@@ -67,6 +68,7 @@ struct CorrectorState {
 pub(super) struct PipelineEditor {
     clip: Option<String>,
     pub(super) monitor: Option<(String, String)>,
+    pub(super) comparison: Option<f32>,
     selected: BTreeSet<String>,
     edge: Option<String>,
     port: Option<(String,String,bool)>,
@@ -106,6 +108,7 @@ impl Controller {
         bind!(on_pipeline_edge_selected, |id| PipelineCommand::Edge(id.to_string()));
         bind!(on_pipeline_add_effect, |index| PipelineCommand::Add(index));
         bind!(on_pipeline_action, |action| PipelineCommand::Action(action.to_string()));
+        bind!(on_pipeline_compare_split, |split| PipelineCommand::CompareSplit(split));
         bind!(on_pipeline_label_draft_changed, |value| PipelineCommand::Label(value.to_string()));
         bind!(on_pipeline_shader_draft_changed, |value| PipelineCommand::Shader(value.to_string()));
         bind!(on_pipeline_output_size_draft_changed, |w,h,auto| PipelineCommand::Size(w,h,auto));
@@ -162,7 +165,9 @@ impl Controller {
             self.extra_selection.clear();
             if !open {
                 self.discard_pipeline_corrector();
-                if self.pipeline_editor.monitor.take().is_some() {
+                let tap = self.pipeline_editor.monitor.take();
+                let comparison = self.pipeline_editor.comparison.take();
+                if tap.is_some() || comparison.is_some() {
                     self.requested = None;
                     self.request_preview();
                 }
@@ -181,9 +186,9 @@ impl Controller {
             self.refresh();return;
         }
         let read_only = match &command {
-            PipelineCommand::Select(..) | PipelineCommand::Edge(..) => true,
+            PipelineCommand::Select(..) | PipelineCommand::Edge(..) | PipelineCommand::CompareSplit(..) => true,
             PipelineCommand::Action(action) => matches!(action.as_str(),
-                "copy" | "select-all" | "discard-drafts" | "cancel-connection" | "show-selected-node" | "show-program") || action.starts_with("toggle-preview:"),
+                "copy" | "select-all" | "discard-drafts" | "cancel-connection" | "show-selected-node" | "show-program" | "compare-original") || action.starts_with("toggle-preview:"),
             _ => false,
         };
         if !read_only {
@@ -247,6 +252,13 @@ impl Controller {
             PipelineCommand::Form(key,value)=>{if let Some(d)=self.pipeline_draft(){d.forms.change(&key,&value);}self.publish_pipeline_inspector();}
             PipelineCommand::ApplyForm(key)=>self.apply_pipeline_inspector(&format!("form:{key}")),
             PipelineCommand::Corrector(target,action,key,value)=>self.pipeline_corrector_event(&target,&action,&key,&value),
+            PipelineCommand::CompareSplit(split) => {
+                if split.is_finite() && self.pipeline_editor.comparison.is_some() {
+                    self.pipeline_editor.comparison = Some(split.clamp(0.0, 1.0));
+                    self.requested = None;
+                    self.request_preview();
+                }
+            }
             PipelineCommand::Workspace(_)=>{}
         }
     }
@@ -272,6 +284,7 @@ impl Controller {
     fn pipeline_action(&mut self, action:&str){
         if action == "show-program" {
             self.pipeline_editor.monitor = None;
+            self.pipeline_editor.comparison = None;
             self.refresh_pipeline_monitor();
             return;
         }
@@ -281,6 +294,11 @@ impl Controller {
         let Some(clip)=self.document.clip(&id)else{return;};
         let mut pipeline=clip.pipeline.clone();
         match action {
+            "compare-original" => {
+                self.pipeline_editor.monitor = None;
+                self.pipeline_editor.comparison = if self.pipeline_editor.comparison.is_some() { None } else { Some(0.5) };
+                self.refresh_pipeline_monitor();
+            }
             "cancel-connection"=>{self.pipeline_editor.port=None;self.pipeline_editor.edge=None;self.publish_pipeline();}
             "select-all"=>{self.pipeline_editor.selected=pipeline.graph().nodes.iter().filter(|n|!ClipPipeline::is_protected(&n.id)).map(|n|n.id.clone()).collect();self.publish_pipeline();}
             "discard-drafts"=>{self.discard_pipeline_corrector();let clip=self.pipeline_editor.clip.clone().unwrap_or_default();let selected=self.pipeline_editor.selected.clone();self.pipeline_editor.drafts.retain(|(c,n),_|c!=&clip||!selected.contains(n));self.pipeline_editor.error.clear();self.publish_pipeline_inspector();}
@@ -323,6 +341,7 @@ impl Controller {
                     .or_else(|| (self.pipeline_editor.selected.len() == 1).then(|| self.pipeline_editor.selected.first().cloned()).flatten());
                 let Some(node) = node else { self.pipeline_error("Select one image node".into()); return; };
                 if let Err(error) = pipeline.monitor_tap(&node) { self.pipeline_error(error); return; }
+                self.pipeline_editor.comparison = None;
                 self.pipeline_editor.monitor = Some((id, node));
                 self.refresh_pipeline_monitor();
             }
@@ -407,6 +426,7 @@ impl Controller {
         let active=self.selected_clip.clone().filter(|id|self.document.clip(id).is_some_and(|clip|clip.title.is_none()));
         if active!=self.pipeline_editor.clip{
             self.pipeline_editor.monitor = None;
+            self.pipeline_editor.comparison = None;
             self.pipeline_editor.clip=active.clone();self.pipeline_editor.selected.clear();self.pipeline_editor.edge=None;self.pipeline_editor.port=None;self.pipeline_editor.error.clear();
         }
         let mut graph=active.as_deref().and_then(|id|self.document.clip(id)).map(|clip|clip.pipeline.graph().clone()).unwrap_or_default();
@@ -416,6 +436,8 @@ impl Controller {
         let monitor_label = self.pipeline_editor.monitor.as_ref()
             .and_then(|(_, id)| graph.nodes.iter().find(|node| node.id == *id))
             .map(|node| node.data.label.as_str());
+        window.set_pipeline_compare_active(self.pipeline_editor.comparison.is_some());
+        window.set_pipeline_split(self.pipeline_editor.comparison.unwrap_or(0.5));
         window.set_pipeline_monitor_label(monitor_label.unwrap_or_default().into());
         self.pipeline_editor.selected.retain(|id|graph.nodes.iter().any(|n|&n.id==id));
         for node in &mut graph.nodes { node.data.extra.insert("expanded".into(),serde_json::json!(false)); }

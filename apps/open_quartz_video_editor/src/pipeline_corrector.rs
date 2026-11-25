@@ -17,6 +17,9 @@ impl Controller {
                 .then(|| state.preview.clone()).flatten()
         });
         if !self.playing && self.window.upgrade().is_some_and(|window| window.get_nodes_open()) {
+            if let Some(split) = self.pipeline_editor.comparison.filter(|_| self.selected_clip.as_deref() == Some(clip_id)) {
+                return draft.as_ref().unwrap_or(&self.document.clip(clip_id)?.pipeline).monitor_comparison(split).ok();
+            }
             if let Some((clip, node)) = &self.pipeline_editor.monitor {
                 if clip == clip_id {
                     return draft.as_ref().unwrap_or(&self.document.clip(clip_id)?.pipeline).monitor_tap(node).ok();

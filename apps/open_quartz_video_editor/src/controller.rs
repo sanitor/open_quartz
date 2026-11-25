@@ -1394,6 +1394,7 @@ impl Controller {
             Err(error) => { self.status(error); return; }
         }
         self.pipeline_editor.monitor = None;
+        self.pipeline_editor.comparison = None;
         self.playing = true;
         self.requested = None;
         self.refresh();
