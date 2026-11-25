@@ -1968,6 +1968,52 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Scroll and edit a late clip in an 1,800-cut timeline without mounting every clip', async () => {
+   const seed = JSON.parse(await readFile(exportProject, 'utf8'));
+   const blue = seed.data.assets.find(asset => asset.name === 'background.mp4');
+   const track = seed.data.tracks.find(track => track.clips.some(clip => clip.asset_id === blue.id));
+   const source = track.clips[0];
+   track.clips = Array.from({ length: 1800 }, (_, index) => ({
+     ...source, id: `long-cut-${index}`, timeline_start: 10 * index, duration: 4,
+   }));
+   seed.data.tracks = [track];
+   const fixture = join(output, 'long-timeline.oqvideo.json');
+   await writeFile(fixture, JSON.stringify(seed));
+   const launched = performance.now();
+   await launch(fixture); await waitState('clips 1800');
+   const availableMs = performance.now() - launched;
+   const mounted = async visible => (await client.byLabel('background.mp4', { role: 'Button', visible }))
+     .filter(item => item.accessibleDescription?.startsWith('Timeline start'));
+   const instances = await client.waitFor(async () => {
+     const match = /timeline window (\d+) video/.exec(await state());
+     return match && Number(match[1]) > 0 && Number(match[1]);
+   }, { description: 'hydrated timeline window' });
+   report.longTimeline = { totalClips: 1800, mountedAtStart: instances, availableMs };
+   assert(instances > 0 && instances < 40, 'initial UI contains a bounded clip window');
+   await expectColor('blue');
+   const viewport = await client.find({ id: 'EditorWindow::timeline_scroll' });
+   await client.value('dispatch_pointer_scroll', {
+     windowHandle: client.windowId, position: center(viewport), deltaX: -64000, deltaY: 0,
+   });
+   const later = await client.waitFor(async () => {
+     const rows = await mounted(true);
+     return rows.filter(row => Number(/^Timeline start (\d+)/.exec(row.accessibleDescription)?.[1]) > 2500).at(3);
+   }, { description: 'a distant clip mounts after real timeline pan' });
+   const start = Number(/^Timeline start (\d+)/.exec(later.accessibleDescription)[1]);
+   await client.click(later);
+   await waitState(`playhead ${start} frames`);
+   await expectColor('blue');
+   await click('Toggle timeline snapping');
+   const selected = (await mounted(true)).find(row => row.accessibleDescription.startsWith(`Timeline start ${start} frames`));
+   const point = center(selected);
+   await client.drag(selected, { x: point.x + 12, y: point.y });
+   await client.waitFor(async () => !(await mounted(true)).some(row => row.accessibleDescription.startsWith(`Timeline start ${start} frames`)),
+     { description: 'dragged clip moved from its former position' });
+   await click('UNDO');
+   await client.waitFor(async () => (await mounted(true)).some(row => row.accessibleDescription.startsWith(`Timeline start ${start} frames`)),
+     { description: 'undo restores a clip outside the first viewport' });
+   await close();
+ }, { core: true });
  await step('Read live RGB histogram and luma waveform from the program monitor', async () => {
    await launch(exportProject); await waitState('clips 3'); await expectColor('blue');
    const scope = () => client.find({ label: 'Color scope', role: 'Combobox' });

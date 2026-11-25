@@ -1,3 +1,4 @@
+use crate::timeline_viewport::TimelineViewport;
 use crate::delivery::ExportOptions;
 use crate::document::{self, AudioDestination, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
@@ -48,6 +49,7 @@ enum IoResult {
     Relink(u64, String, PathBuf, Result<(), String>),
 }
 enum UiCommand {
+    TimelineViewport(TimelineViewport),
     SelectAsset(String),
     AddAsset(String),
     AddSelectedAsset,
@@ -83,6 +85,10 @@ pub struct Controller {
     selected_track: String,
     monitor_gesture: Option<MonitorGesture>,
     motion: MotionEditor,
+    timeline_viewport: TimelineViewport,
+    timeline_window_dirty: bool,
+    timeline_video_model: Rc<VecModel<ClipRow>>,
+    timeline_audio_model: Rc<VecModel<AudioClipRow>>,
     timeline_capture: Option<(String, u64)>,
     displayed_ticket: Option<u64>,
     asset_preview: bool,
@@ -131,6 +137,10 @@ impl Controller {
         window.set_clips(ModelRc::from(clip_model.clone()));
         window.set_audio_tracks(ModelRc::from(audio_track_model.clone()));
         window.set_audio_clips(ModelRc::from(audio_clip_model.clone()));
+        let timeline_video_model = Rc::new(VecModel::default());
+        let timeline_audio_model = Rc::new(VecModel::default());
+        window.set_timeline_video_clips(ModelRc::from(timeline_video_model.clone()));
+        window.set_timeline_audio_clips(ModelRc::from(timeline_audio_model.clone()));
         let this = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             document: EditorDocument::default(),
@@ -149,6 +159,8 @@ impl Controller {
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
             motion: MotionEditor::default(),
+            timeline_viewport: TimelineViewport::default(), timeline_window_dirty: false,
+            timeline_video_model, timeline_audio_model,
             timeline_capture: None,
             displayed_ticket: None,
             asset_preview: false,
@@ -319,6 +331,10 @@ impl Controller {
                         .map_or(AudioDestination::Automatic, |track| AudioDestination::Track(track.id.clone())),
                 };
             }
+        });
+        let viewport_send = this.borrow().ui_send.clone();
+        window.on_timeline_view_changed(move |left, top, width, height| {
+            let _ = viewport_send.send(UiCommand::TimelineViewport(TimelineViewport::new(left, top, width, height)));
         });
         let weak = Rc::downgrade(this);
         window.on_timeline_capture(move |id| {
@@ -1783,6 +1799,12 @@ impl Controller {
         }
         while let Ok(command) = self.ui_receive.try_recv() {
             match command {
+                UiCommand::TimelineViewport(viewport) => {
+                    if self.timeline_viewport != viewport {
+                        self.timeline_viewport = viewport;
+                        self.timeline_window_dirty = true;
+                    }
+                }
                 UiCommand::Pipeline(command) => self.pipeline_command(command),
                 UiCommand::SelectAsset(id) => {
                     self.selected_asset = Some(id);
@@ -2051,6 +2073,22 @@ impl Controller {
                 }
             }
         }
+        self.refresh_timeline_window();
+    }
+    fn refresh_timeline_window(&mut self) {
+        if !self.timeline_window_dirty || self.timeline_capture.is_some() { return; }
+        self.timeline_window_dirty = false;
+        let Some(window) = self.window.upgrade() else { return; };
+        let zoom = window.get_timeline_zoom();
+        let viewport = self.timeline_viewport;
+        let crowded = self.clip_model.row_count() + self.audio_clip_model.row_count() > 256;
+        let video_rows = self.clip_model.iter().filter(|clip| !crowded || viewport.contains(clip.x, clip.width, clip.lane)).collect();
+        reconcile(&self.timeline_video_model, video_rows, |row| row.id.as_str(), same_clip_row);
+        let layers = window.get_tracks().row_count() as i32;
+        let audio_rows = self.audio_clip_model.iter().filter(|clip| {
+            !crowded || viewport.contains(clip.start * zoom, clip.duration * zoom, layers + clip.lane)
+        }).collect();
+        reconcile(&self.timeline_audio_model, audio_rows, |row| row.id.as_str(), |a, b| a == b);
     }
     fn thumbnail(&self, frame: &StableFrame) -> Result<Thumbnail, String> {
         let bytes = u64::from(frame.image.width) * u64::from(frame.image.height) * 4;
@@ -2109,7 +2147,7 @@ impl Controller {
             window.set_playing(self.playing);
         }
     }
-    fn refresh_audio(&self, window: &EditorWindow) {
+    fn refresh_audio(&mut self, window: &EditorWindow) {
         let data = &self.document.data;
         let tracks = data.audio_tracks.iter().map(|track| AudioTrackRow {
             id: track.id.clone().into(), name: track.name.clone().into(), muted: track.muted, solo: track.solo,
@@ -2148,6 +2186,7 @@ impl Controller {
             }
         }
         reconcile(&self.audio_clip_model, rows, |row| row.id.as_str(), |a, b| a == b);
+        self.timeline_window_dirty = true;
         if let Some((clip, name, interval, locked, linked, crossfade)) = selection {
             window.set_audio_clip_id(clip.id.clone().into());
             window.set_audio_clip_name(name.into());
@@ -2320,29 +2359,9 @@ impl Controller {
                 }
             })
             .collect::<Vec<_>>();
-        reconcile(
-            &self.clip_model,
-            clips,
-            |row| row.id.as_str(),
-            |a, b| {
-                a.id == b.id
-                    && a.lane == b.lane
-                    && a.track == b.track
-                    && a.locked == b.locked
-                    && a.is_title == b.is_title
-                    && a.is_subtitle == b.is_subtitle
-                    && a.is_still == b.is_still
-                    && a.asset_name == b.asset_name
-                    && a.start == b.start
-                    && a.duration == b.duration
-                    && a.x == b.x
-                    && a.width == b.width
-                    && a.online == b.online
-                    && a.selected == b.selected
-                    && a.has_thumbnail == b.has_thumbnail
-                    && same_image(&a.thumbnail, &b.thumbnail)
-            },
-        );
+        reconcile(&self.clip_model, clips, |row| row.id.as_str(), same_clip_row);
+        self.timeline_window_dirty = true;
+        self.refresh_timeline_window();
         if let Some(asset) = self
             .selected_asset
             .as_ref()
@@ -2439,6 +2458,9 @@ impl Controller {
         }
         self.asset_model.set_vec(Vec::new());
         self.clip_model.set_vec(Vec::new());
+        self.timeline_video_model.set_vec(Vec::new());
+        self.timeline_audio_model.set_vec(Vec::new());
+        self.timeline_window_dirty = true;
         self.displayed = None;
         self.displayed_frame = None;
         self.thumbnails.clear();
@@ -2473,6 +2495,25 @@ fn same_image(a: &slint::Image, b: &slint::Image) -> bool {
 }
 // Preserve rows for an unchanged ID: GPU ready notifications must not cancel a
 // pointer gesture or invalidate the user's focused timing field.
+fn same_clip_row(a: &ClipRow, b: &ClipRow) -> bool {
+    a.id == b.id
+        && a.lane == b.lane
+        && a.track == b.track
+        && a.locked == b.locked
+        && a.is_title == b.is_title
+        && a.is_subtitle == b.is_subtitle
+        && a.is_still == b.is_still
+        && a.asset_name == b.asset_name
+        && a.start == b.start
+        && a.duration == b.duration
+        && a.x == b.x
+        && a.width == b.width
+        && a.online == b.online
+        && a.selected == b.selected
+        && a.has_thumbnail == b.has_thumbnail
+        && same_image(&a.thumbnail, &b.thumbnail)
+}
+
 fn reconcile<T: Clone + 'static>(
     model: &VecModel<T>,
     rows: Vec<T>,

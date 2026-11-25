@@ -388,7 +388,7 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + (root.project_dirty ? "; Unsaved changes" : "") + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status);
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + (root.project_dirty ? "; Unsaved changes" : "") + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status) + (root.clips.length + root.audio_clips.length > 256 ? "; timeline window " + root.timeline_video_clips.length + " video · " + root.timeline_audio_clips.length + " audio" : "");
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
@@ -610,6 +610,9 @@ export component EditorWindow inherits Window {
     callback trim_clip(string, int); callback undo(); callback redo();
     callback playback(string); callback step_frame(int); callback zoom_changed(float);
     callback seek_frame(int);
+    in property <[ClipRow]> timeline_video_clips;
+    in property <[AudioClipRow]> timeline_audio_clips;
+    callback timeline_view_changed(float, float, float, float);
     callback timeline_capture(string);
     callback clip_gesture(id: string, kind: string, delta: int, track: string);
     callback clip_drop_error(string, string, int) -> string;
@@ -1454,6 +1457,15 @@ export component EditorWindow inherits Window {
                         }
                         timeline_scroll := ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
+                            property <float> view_left: -self.content-x / 1px;
+                            property <float> view_top: -self.content-y / 1px;
+                            property <float> view_width: self.visible-width / 1px;
+                            property <float> view_height: self.visible-height / 1px;
+                            function publish_view() { root.timeline_view_changed(self.view_left, self.view_top, self.view_width, self.view_height); }
+                            changed view_left => { self.publish_view(); }
+                            changed view_top => { self.publish_view(); }
+                            changed view_width => { self.publish_view(); }
+                            changed view_height => { self.publish_view(); }
                             content-width: max(self.visible-width, root.timeline_content_width * 1px);
                             content-height: max(self.visible-height, (root.tracks.length + root.audio_tracks.length) * 84px + 1px);
                             Rectangle {
@@ -1473,7 +1485,7 @@ export component EditorWindow inherits Window {
                                 TouchArea {
                                     clicked => { editor_focus.focus(); root.seek_frame(max(0, Math.round((self.mouse-x / 1px - 10) / max(0.0001, root.timeline_zoom)))); }
                                 }
-                                for clip in root.clips: TimelineClip {
+                                for clip in root.timeline_video_clips: TimelineClip {
                                     item: clip; zoom: root.timeline_zoom; cancel_token: root.cancel_token; scroll_x: timeline_scroll.content-x;
                                     focused => { editor_focus.focus(); root.timeline_capture(clip.id); }
                                     cancelled => { root.timeline_capture(""); }
@@ -1497,7 +1509,7 @@ export component EditorWindow inherits Window {
                                     clear_snap => { root.timeline_snap_frame = -1; }
                                     autoscroll(x, y) => { root.edge_scroll(x, y, true); }
                                 }
-                                for clip in root.audio_clips: AudioTimelineClip {
+                                for clip in root.timeline_audio_clips: AudioTimelineClip {
                                     item: clip; video_lanes: root.tracks.length;
                                     zoom: root.timeline_zoom; scroll_x: timeline_scroll.content-x; cancel_token: root.cancel_token;
                                     capture => { editor_focus.focus(); root.timeline_capture(clip.id); }

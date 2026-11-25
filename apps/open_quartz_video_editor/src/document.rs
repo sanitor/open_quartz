@@ -1082,6 +1082,8 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
     }
     let mut clip_ids = std::collections::HashSet::new();
     let mut tracks = std::collections::HashSet::new();
+    // Adjacent copies of the same graph need only one structural and WGSL validation.
+    let mut previous_pipeline = None;
     let mut has_subtitle_track = false;
     if data.tracks.is_empty() { return Err("A sequence needs at least one video track".into()); }
     for track in &data.tracks {
@@ -1096,7 +1098,10 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
             if clip.id.is_empty() || !clip_ids.insert(clip.id.as_str()) {
                 return Err("Missing or duplicate clip ID".into());
             }
-            clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
+            if previous_pipeline != Some(&clip.pipeline) {
+                clip.pipeline.validate().map_err(|error| format!("Clip {} pipeline: {error}", clip.id))?;
+                previous_pipeline = Some(&clip.pipeline);
+            }
             clip.validate_opacity_keys()?;
             clip.validate_spatial()?;
             clip.validate_effect_animation()?;
