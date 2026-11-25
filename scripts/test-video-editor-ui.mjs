@@ -42,7 +42,7 @@ async function fileAction(action,path,submit){await click(action);await client.s
 const timeline=async name=>(await buttons(name)).filter(item=>item.accessibleDescription?.startsWith('Timeline start'));
 const assetCard=async name=>{const cards=(await buttons(name)).filter(item=>item.typeNamesAndIds?.some(type=>type.typeName==='AssetCard'));assert.equal(cards.length,1,`Expected one media card ${name}`);return cards[0];};
 async function waitState(fragment){return client.waitFor(async()=> (await state()).includes(fragment),{description:fragment});}
-async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
+async function previewHasColor(png,color){const preview=await client.find({label:'Video preview',role:'Image'});const image=decodePng(png);const window=await client.windowProperties();const scale=window.scaleFactor||1;const sx=image.width/(window.size.width/scale),sy=image.height/(window.size.height/scale);const x=Math.floor(((preview.absolutePosition.x||0)+preview.size.width/2)*sx);const y=Math.floor(((preview.absolutePosition.y||0)+preview.size.height/2)*sy);let hits=0;for(let dy=-15;dy<15;dy++)for(let dx=-15;dx<15;dx++){const at=((y+dy)*image.width+x+dx)*image.channels;const [r,g,b]=image.pixels.subarray(at,at+3);if(color==='red'?r>220&&g<25&&b<25:color==='blue'?b>220&&r<25&&g<25:color==='magenta'?r>220&&b>220&&g<25:color==='blend'?r>=178&&r<=196&&g<25&&b>=178&&b<=196:color==='three-quarter'?r>=218&&r<=234&&g<25&&b>=125&&b<=150:r<5&&g<5&&b<5)hits++;}return hits>=890;}
 async function snapshot(name,color){const path=join(output,`${name}.png`);const png=await client.screenshot(path);report.screenshots.push(path);if(color)assert(await previewHasColor(png,color),`${name}: wrong visible ${color} pixels`);return png;}
 async function step(name, run, { core = false } = {}) {
   if (smoke && !core) return;
@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 19);
+   assert.equal(data.schema_version, 20);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -1968,6 +1968,42 @@ try{
    }
    await close();
  }, { core: true });
+ await step('Choose track blend modes and match composite preview to decoded MP4', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
+   fixture.data.tracks[0].clips[0].transform.scale = 1;
+   const seed = join(output, 'blend-modes.oqvideo.json');
+   await writeFile(seed, JSON.stringify(fixture));
+   await launch(seed); await waitState('clips 3');
+   for (let i = 0; i < 3; i++) await click('NEXT');
+   await expectColor('red');
+   const mode = () => client.find({ label: 'Blend Video 3', role: 'Combobox' });
+   const pickBlend = async (keys, name) => {
+     await client.click(await mode());
+     for (const key of keys) await client.key(key);
+     await client.key('\n');
+     await client.waitFor(async () => (await mode()).accessibleValue === name,
+       { description: `selected blend mode ${name}` });
+   };
+   await pickBlend(['\uf701'], 'Multiply'); await expectColor('black');
+   await pickBlend(['\uf701'], 'Screen'); await expectColor('magenta');
+   const path = join(output, 'blend-screen.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const stride = 320 * 180 * 3;
+   const bytes = mediaCommand(['-i', path, '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { maxBuffer: stride * 20 });
+   const at = 3 * stride + (90 * 320 + 160) * 3;
+   const [r, g, b] = bytes.subarray(at, at + 3);
+   assert(r > 225 && g < 25 && b > 225, `screen gives magenta, got ${r}, ${g}, ${b}`);
+   await pickBlend(['\uf701'], 'Overlay'); await expectColor('blue');
+   await click('UNDO'); await expectColor('magenta');
+   await click('SAVE'); await waitState('Project saved'); await close();
+   await launch(seed);
+   assert.equal((await mode()).accessibleValue, 'Screen');
+   await click('Lock Video 3');
+   assert.equal(Boolean((await mode()).accessibleEnabled), false);
+   await click('UNDO');
+   await close();
+ }, { core: true });
  await step('Nest a live sequence at the playhead and export its internal cuts and audio', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    const sound = JSON.parse(await readFile(audioProject, 'utf8')).data;
@@ -1980,7 +2016,7 @@ try{
    }] }];
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
    // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
-   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 19);
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 20);
    fixture.data.tracks[0].clips[0].spatial_keys = [
      { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
      { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
@@ -2175,7 +2211,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 19);
+   assert.equal(saved.schema_version, 20);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

@@ -174,7 +174,7 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
         );
         parameters.insert(
             format!("blend{index}"),
-            serde_json::json!([cos, sin, 2.0f32.powf(t.exposure), order]),
+            serde_json::json!([cos, sin, 2.0f32.powf(t.exposure), order * 4 + layer.blend.index()]),
         );
         let alpha = match &layer.opacity {
             Some(animation) => {
@@ -214,7 +214,8 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
         };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) { format!("({alpha}) * sample.a") } else { alpha };
         draws.push_str(&format!(
-            "if (i32(blend{index}.w) == order) {{\n\
+            "if (i32(blend{index}.w) / 4 == order) {{\n\
+                track_mode = i32(blend{index}.w) % 4;
                 {placement}
                 {crop_setup}
                 let p = source_uv(uv, vec2f(textureDimensions(layer{index})), layer_place, layer_blend);\n\
@@ -262,13 +263,28 @@ fn linear(c:vec3f) -> vec3f {{
 fn encoded(c:vec3f) -> vec3f {{
     return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - vec3f(0.055), 12.92 * c, c <= vec3f(0.0031308));
 }}
+fn blend_rgb(backdrop: vec3f, source: vec3f, mode: i32) -> vec3f {{
+    if (mode == 1) {{ return backdrop * source; }}
+    if (mode == 2) {{ return backdrop + source - backdrop * source; }}
+    if (mode == 3) {{
+        return select(1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source), 2.0 * backdrop * source, backdrop <= vec3f(0.5));
+    }}
+    return source;
+}}
 @fragment fn main(@location(0) uv:vec2f) -> @location(0) vec4f {{
     var result = vec3f(0.0);
     var alpha = 0.0;
     for (var order = 0; order < {}; order++) {{
         var track_pixel = vec4f(0.0);
+        var track_mode = 0;
         {draws}
-        result = track_pixel.rgb + result * (1.0 - track_pixel.a);
+        var front = track_pixel.rgb;
+        if (track_mode != 0 && track_pixel.a > 0.0 && alpha > 0.0) {{
+            let backdrop = result / alpha;
+            let source = track_pixel.rgb / track_pixel.a;
+            front = mix(source, blend_rgb(backdrop, source, track_mode), alpha) * track_pixel.a;
+        }}
+        result = front + result * (1.0 - track_pixel.a);
         alpha = track_pixel.a + alpha * (1.0 - track_pixel.a);
     }}
     {result_color}

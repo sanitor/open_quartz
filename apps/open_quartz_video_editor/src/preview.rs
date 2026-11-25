@@ -36,6 +36,7 @@ pub struct PreviewLayer {
     pub clip_id: String,
     pub track_name: String,
     track_id: String,
+    blend: document::BlendMode,
     source: LayerSource,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
@@ -111,6 +112,7 @@ pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, 
     if asset.still {
         request.layers.push(PreviewLayer {
             clip_id: asset.id.clone(), track_name: String::new(), track_id: asset.id.clone(),
+            blend: document::BlendMode::Normal,
             source: LayerSource::Still(asset), transform: request.transform,
             pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
             opacity: None, dissolve: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
@@ -211,6 +213,7 @@ fn build_sequence_request(
         };
         layers.push(PreviewLayer {
             clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
+            blend: track.blend,
             transform: draft.unwrap_or(clip.transform),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()),
             speed_percent: clip.speed_percent,

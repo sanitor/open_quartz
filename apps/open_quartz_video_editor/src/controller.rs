@@ -2204,6 +2204,8 @@ impl Controller {
             name: track.name.clone().into(),
             selected: track.id == self.selected_track,
             sync_ripple: track.sync_ripple,
+            blend_mode: track.blend.index() as i32,
+            subtitles: track.subtitles,
             visible: track.visible,
             locked: track.locked,
         }).collect();

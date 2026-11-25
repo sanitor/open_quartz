@@ -22,7 +22,7 @@ component NodeEffectTile inherits Rectangle {
     tile := TouchArea { accessible-role: button; accessible-label: "Add " + root.effect.label + " node"; enabled: root.enabled; clicked => { root.clicked(); } }
 }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
-export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool }
+export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool, blend_mode: int, subtitles: bool }
 export struct AudioTrackRow { id: string, name: string, muted: bool, solo: bool, locked: bool, sync_ripple: bool, gain: string }
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
@@ -1352,6 +1352,13 @@ export component EditorWindow inherits Window {
                                     label: "Ripple sync " + track.name;
                                     accessible-description: track.sync_ripple ? "Ripple sync enabled" : "Ripple sync disabled";
                                     clicked => { root.track_action(track.id, "sync-ripple", ""); }
+                                }
+                                if !track.subtitles: ComboBox {
+                                    x: 52px; y: 65px; width: parent.width - 56px; height: 18px;
+                                    accessible-label: "Blend " + track.name;
+                                    model: ["Normal", "Multiply", "Screen", "Overlay"];
+                                    current-index: track.blend_mode; enabled: !track.locked;
+                                    selected => { root.track_action(track.id, "blend", "" + self.current-index); }
                                 }
                             }
                             for track[index] in root.audio_tracks: Rectangle {

@@ -34,7 +34,7 @@ pub use effect_motion::EffectKeys;
 #[path = "document_sequences.rs"]
 mod sequences;
 pub use sequences::TimelineSequence;
-const SCHEMA_VERSION: u32 = 19;
+const SCHEMA_VERSION: u32 = 20;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -195,12 +195,40 @@ impl Clip {
             .ok_or_else(|| "Clip end frame overflow".into())
     }
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+}
+
+impl BlendMode {
+    fn is_normal(&self) -> bool { *self == Self::Normal }
+
+    pub fn index(self) -> usize { self as usize }
+
+    fn from_index(value: &str) -> Result<Self, String> {
+        match value {
+            "0" => Ok(Self::Normal),
+            "1" => Ok(Self::Multiply),
+            "2" => Ok(Self::Screen),
+            "3" => Ok(Self::Overlay),
+            _ => Err("Unknown video blend mode".into()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VideoTrack {
     pub id: String,
     pub name: String,
     pub visible: bool,
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub blend: BlendMode,
     pub locked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_ripple: bool,
@@ -213,7 +241,7 @@ pub struct VideoTrack {
 fn is_false(value: &bool) -> bool { !value }
 impl VideoTrack {
     fn new(id: String, name: String) -> Self {
-        Self { id, name, visible: true, locked: false, sync_ripple: false, subtitles: false, clips: Vec::new(), dissolves: Vec::new() }
+        Self { id, name, visible: true, locked: false, sync_ripple: false, subtitles: false, blend: BlendMode::default(), clips: Vec::new(), dissolves: Vec::new() }
     }
 
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
@@ -592,6 +620,11 @@ impl EditorDocument {
             match action {
                 "visible" => track.visible = !track.visible,
                 "lock" => track.locked = !track.locked,
+                "blend" => {
+                    track.require_unlocked()?;
+                    if track.subtitles { return Err("Subtitle tracks use normal blending".into()); }
+                    track.blend = BlendMode::from_index(value)?;
+                }
                 "sync-ripple" => track.sync_ripple = !track.sync_ripple,
                 "rename" => { track.require_unlocked()?; track.name = value.trim().into(); }
                 "delete" => {
