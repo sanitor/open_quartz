@@ -1,5 +1,16 @@
 # 视频编辑器：渲染管线编辑器设计
 
+## 当前交付范围
+
+| 工作流 | 已交付 |
+| --- | --- |
+| HDR | Apple Silicon 上的 PQ、HLG 和三种 Sony Log 素材解释，线性 ACEScg 序列，SDR 桌面监视，多轨 HDR10 PQ 与 HLG Main10 MP4 输出 |
+| 节点 | 片段图的中间节点监视、单节点旁路、同帧原片擦拭、版本和工程内参考图 |
+| 调色 | 共享 Color Corrector 的 Primaries、HDR Zones、参数曲线、RGB Mixer 和 HSL Qualifier，剪辑器内嵌式 ACEScg CUBE LUT，SDR 监视器示波器 |
+| 合成 | 视频轨混合、双输入 Blend、Luma Mask、可羽化的片段蒙版、源时间锚定的二维平移跟踪 |
+
+HDR 编解码和验收边界见 [HDR 工作流](HDR_WORKFLOW.md)。EDR 监视、HDR 示波器、RAW、更多相机格式、复杂运动跟踪和通用多源图保留为后续工作。以下各节还保留设计提案和阶段目标，交付状态以本节为准。
+
 ## 1. 决策与状态
 
 **状态：阶段 A 与首批原生Corrector（Primaries/HDR Zones）已接入；阶段 B–D及完整HDR输入/监视/输出仍为待评审方案。** 本文分别标识已实现边界与后续提案，不把FP16内部处理等同端到端HDR支持。
@@ -307,7 +318,7 @@ Frame/plan cache identity必须含input metadata/override+transform版本、work
 
 ### 7.7 分阶段实现与验收门
 
-阶段 A已实现。HDR-0–HDR-4、B–D、C1–C4及关键帧K0–K3均为提案，非排期承诺。评审锁定了AP1、macOS首发、HDR10优先、Sony video Log、RAW另评；动画/关键帧暂缓。
+阶段 A 的基础架构和 HDR 文件交付见文首状态表。本节阶段编号用于追踪提案目标。
 
 | 阶段 | 提案交付 | 验收出口 |
 |---|---|---|
@@ -351,11 +362,11 @@ Corrector在共享Graph内是具有typed配置的原生节点；内部stage顺�
 
 共享Palette、通用draft adapter、gesture提交/取消、focus/accessibility、Viewer工具及两应用验收的唯一设计源为[Slint：共享结构化算子编辑器](../../docs/SLINT_UI_REFACTOR.md#structured-operator-ui)。两应用使用同一CorrectorEditor和色轮/曲线/资源控件；视频app保留已认可的左侧Media/Nodes、中间Viewer/Graph和统一右侧Inspector布局。选node切换专用编辑器，不把Corrector配置当普通Uniform字符串表单，不让每个工具弹独立浮窗。
 
-首批一个Corrector内实现Primaries/HDR Zones及独立enable/bypass/reset；Curves/RGB Mixer/Look、高级塑形与Secondary仍是后续方案，没有可用入口。切tab/折叠不改执行，Reset与bypass独立。当前只贯通了FP16 AP1算子域和显式SDR边界，不能将此标为HDR-1（PQ/HLG/Sony IDT）整体完成；HDR10输出优先级不变。两应用共用真实Palette与GPU链路。
+两应用共用 Color Corrector 的 Primaries、HDR Zones、参数曲线、RGB Mixer 和 Qualifier 界面及浮点执行链路。片段图以独立节点载入 CUBE LUT，并用 Blend 和 Luma Mask 组织同片段分支。工具栏提供旁路和参考图比较，媒体管理器负责输入解释。
 
 ## 8. 实施顺序与完整交付边界
 
-阶段A及CG-1/CG-2的原生算子、FP16 AP1处理与共享编辑入口已实现；B–D、C1–C4、完整HDR-0–HDR-4、CG-3–CG-5和K0–K3仍为提案，非排期承诺。HDR产品范围见§7.1；节点grading范围见§7.8；动画/关键帧暂缓。
+下表保留阶段设计与原始验收目标。当前可用范围见文首，HDR 数值和端到端验收见 [HDR 工作流](HDR_WORKFLOW.md)。
 
 | 阶段 | 提案交付 | 进入条件 / 验收出口 |
 |---|---|---|

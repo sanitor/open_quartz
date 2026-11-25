@@ -66,6 +66,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - 在 Nodes 的 **Grade versions** 可复制、命名、切换和删除片段的调色方案。版本保存独立的片段节点图及其动画参数。活动版本立刻用于监视器和导出，可撤销版本操作。
 - 长时间线按窗口实例化片段控件。滚动会加载临近区间，拖拽结束时同步窗口。库、工程里的总片段数和编辑选择使用完整时间线。
 - **Library → Input color** 可按素材选择 Sony S-Log3 / S-Gamut3.Cine、S-Log3 / S-Gamut3 或 S-Log2 / S-Gamut。选择 **Auto** 恢复自动解释。
+- 在 Edit 的蒙版设置中选择 **Track mask forward**，从当前帧跟踪最多 240 帧的二维平移。用位置与宽高圈选有纹理的区域。轨迹记录源时间，随修剪、切分、预览和导出使用，可取消、清除和撤销。
 - **Nodes → Blend** 提供底图与叠加图的两路图像输入；**Luma Mask** 用第二分支的亮度与 alpha 控制底图覆盖率。插入时第二路默认接 **Clip Source**，可拖线重接同片段的其他图像节点。**Amount** 控制混合强度。启用 ACEScg 时，两路在浮点工作域合成。
 - **Color Corrector → Qualifier** 用色相、饱和度、明度和软边限制该节点的调色范围。用 Primaries 等面板调整入选像素，将 **Qualifier matte output** 设为 1 可输出黑白蒙版，供 Luma Mask 的第二路使用。
 - **Nodes → Import CUBE LUT** 把线性 ACEScg 3D CUBE LUT 插入片段图。支持 2–33 点网格和输入域声明，进行三线性插值，超出输入域取边缘。LUT 随工程保存，可撤销和重开，无需保留原 CUBE 文件。
@@ -118,7 +119,7 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 源选择使用目标处或之后第一张实际 presentation frame。播放到源片尾时，允许使用有明确帧时长且覆盖目标的末帧。监视器显示各活动视频源的实际 PTS。序列用有理数 CFR 帧位置，图层 contain-fit 后在同一画布内合成。缩略图至多保留六张不可变 GPU 图像，并计入共享可观测预算；VideoToolbox/driver 私有内存不冒报硬上限。
 
-当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 26，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
+当前支持多视频轨有界播放/暂停、精确定位、切点预热和每片段独立效果。Edit 页的 **Add Track** 添加轨道，素材可直接拖入轨道，拖片段跨轨和拖轨头重排都进入工程撤销历史。监视器的 **Transform** 提供位置、缩放和旋转手柄，Inspector 同步显示变换并支持透明度。旧工程打开时迁移到 Schema 27，保留原有切点。[多视频轨合成设计](DESIGN.md#multi-track-composition)
 
 **音频**：添加有声视频时，视频片段和可解码的音频默认链接。编辑视频时间、分割或删除会同步修改链接音频。音频素材用 **ADD CLIP** 放到播放头。音频轨提供静音、增益和锁定，音频片段 Inspector 提供增益、解除链接、独立时间与源入点编辑。播放用 macOS 音频设备时钟，底部显示输出电平。 时间线会在后台解码波形。独立音频可在原轨拖动、拖两端修剪，并用 **SPLIT** 在播放头分割。选中独立音频后可拖顶部淡入淡出手柄，或在 Inspector 按采样填写长度。播放和导出使用同一线性增益曲线，裁短片段时淡化长度会随之收窄。
 

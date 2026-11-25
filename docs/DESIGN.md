@@ -222,7 +222,7 @@ Alias本身零算子draw/零专属输出surface；稳定交付池、平台显示
 
 ### Corrector首个消费者与双应用落地
 
-Corrector算法版本1固定为White Balance → Exposure → Lift/Gamma/Gain/Offset → Contrast/Pivot → 六分区HDR Zones → Saturation/Color Boost，不声称等同Resolve内部算法。Primaries与HDR Zones独立enable/reset；六区为Black/Shadow/Dark/Light/Highlight/Specular，range/pivot/falloff以stops描述。活动处理使用signed、unclipped、straight-alpha AP1，最多10个vec4参数bindings；独立f64 CPU oracle验证GPU像素。Curves/RGB Mixer/Look、Secondary和空间工具尚未实现，没有可用入口或可接受的active配置。
+Color Corrector 的求值顺序为 White Balance → Exposure → Lift/Gamma/Gain/Offset → Contrast/Pivot → HDR Zones → Saturation/Color Boost → RGB Mixer → Curves。Qualifier 对输入计算 HSL 覆盖率，再用它混合原色和当前节点的调色结果，或输出灰度蒙版。各阶段可独立启用和重置。活动处理使用带符号的浮点 AP1 与 straight alpha，参数用向量及矩阵绑定。独立的 f64 参考实现验证 GPU 结果。
 
 Legacy输入按显式sRGB兼容策略转换，Corrector链保持AP1；Renderer、legacy Shader取样和预览在明示边界编码回sRGB，8-bit显示target截断到SDR范围，不把该截断塞进Corrector。注入的转换函数使用避开全部用户源码标识符的命名空间；混合domain的同一取样helper和managed textureGather明确拒绝。外部帧经资源Alias链进入活动Corrector时，必须证明alpha为Straight/Opaque，Premultiplied/Unknown在纹理变更前拒绝；纯bypass保留原alpha/provenance。
 

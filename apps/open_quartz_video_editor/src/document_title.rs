@@ -95,7 +95,7 @@ pub(super) fn generated_clip(id: String, start: u64, duration: u64, text: Title)
         source_subtick_numerator: 0,
         source_subtick_denominator: 1,
         transform: ClipTransform::default(),
-        opacity_keys: Vec::new(), mask: None,
+        opacity_keys: Vec::new(), mask: None, mask_tracking: Vec::new(),
         crop: Default::default(),
         crop_keys: Vec::new(),
         spatial_keys: Vec::new(),

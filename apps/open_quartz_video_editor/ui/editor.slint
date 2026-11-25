@@ -640,6 +640,9 @@ export component EditorWindow inherits Window {
     in property <string> mask_width;
     in property <string> mask_height;
     in property <string> mask_feather;
+    in property <bool> has_mask_tracking;
+    in property <bool> can_track_mask;
+    in property <bool> mask_tracking_busy;
     callback mask_field(string, string);
     in property <image> color_scope_plot;
     in property <string> color_scope_summary;
@@ -1349,6 +1352,15 @@ export component EditorWindow inherits Window {
                                         TimingField { label: "Mask width (%)"; value: root.mask_width; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("width", value); } }
                                         TimingField { label: "Mask height (%)"; value: root.mask_height; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("height", value); } }
                                         TimingField { label: "Mask feather (%)"; value: root.mask_feather; enabled: root.selected_clip_writable; committed(value) => { root.mask_field("feather", value); } }
+                                        if root.can_track_mask || root.mask_tracking_busy: Button {
+                                            text: root.mask_tracking_busy ? "Cancel mask tracking" : "Track mask forward";
+                                            enabled: root.mask_tracking_busy || root.selected_clip_writable;
+                                            clicked => { root.project_action(root.mask_tracking_busy ? "cancel-mask-tracking" : "track-mask"); }
+                                        }
+                                        if root.has_mask_tracking: Button {
+                                            text: "Clear mask tracking"; enabled: root.selected_clip_writable && !root.mask_tracking_busy;
+                                            clicked => { root.project_action("clear-mask-tracking"); }
+                                        }
                                     }
                                 }
 

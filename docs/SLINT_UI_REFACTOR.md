@@ -53,9 +53,9 @@ Graph上是一个Color Corrector节点。右侧Inspector提供整个node enable/
 
 Palette enable保留参数；Reset恢复中性值且不改变enable，折叠/换tab不旁路。整体bypass与stage enable独立；临时A/B比较仍是后续能力。disabled Palette的参数保留并可查看。
 
-Primaries提供功能RGB色轮、拖动和数值等价入口，曝光单位为stops；HDR Zones提供六区曝光/饱和度与range/pivots/falloff。非有限/越界值由核心拒绝并显示错误；全部字段有accessibility label，色轮可用方向键。Curves/RGB Mixer/Look/Secondary及资源选择尚未交付，不在UI显示可用控件。
+Primaries提供功能RGB色轮、拖动和数值等价入口，曝光单位为stops；HDR Zones提供六区曝光/饱和度与range/pivots/falloff。非有限/越界值由核心拒绝并显示错误；全部字段有accessibility label，色轮可用方向键。共享编辑器也提供参数 Curves、RGB Mixer 和 HSL Qualifier。视频剪辑器从节点库加载内嵌的 ACEScg CUBE LUT。
 
-Qualifier/Window未来需要共享Viewer交互协议：开始工具时锁目标node/clip，明确cursor/overlay/selected shape，吸管与控制柄在同一帧/同domain下作用；Esc取消当前工具/gesture并恢复原draft或退出overlay。切node、删node、undo、切clip的冲突按同一draft政策处理；文字焦点不触发图Delete/Space播放。Tracker/Magic Mask未交付时不以普通窗口几何遮罩冒充。
+Qualifier/Window未来需要共享Viewer交互协议：开始工具时锁目标node/clip，明确cursor/overlay/selected shape，吸管与控制柄在同一帧/同domain下作用；Esc取消当前工具/gesture并恢复原draft或退出overlay。切node、删node、undo、切clip的冲突按同一draft政策处理；文字焦点不触发图Delete/Space播放。视频剪辑器提供片段蒙版的二维平移跟踪。Magic Mask、吸管和高级跟踪仍属后续 Viewer 工具。
 
 #### 事务与实时预览
 

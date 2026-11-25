@@ -45,11 +45,18 @@ pub struct PreviewLayer {
     speed_percent: u16,
     opacity: Option<OpacityAnimation>,
     mask: Option<document::Mask>,
+    tracked_mask: Option<TrackedMask>,
     crop: Crop,
     crop_animation: Option<ClipAnimation<Crop>>,
     effects: Option<EffectAnimation>,
     spatial: Option<ClipAnimation<document::Pose>>,
     dissolve: Option<DissolveLayer>,
+}
+#[derive(Clone)]
+struct TrackedMask {
+    points: Vec<document::MaskPosition>,
+    timeline_start_ns: u64,
+    source_start_ns: u64,
 }
 #[derive(Clone)]
 enum LayerSource {
@@ -120,7 +127,7 @@ pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, 
             blend: document::BlendMode::Normal,
             source: LayerSource::Still(asset), transform: request.transform,
             pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
-            opacity: None, dissolve: None, mask: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
+            opacity: None, dissolve: None, mask: None, tracked_mask: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
         });
     } else if asset.has_video() {
         request.asset = Some(asset);
@@ -219,13 +226,20 @@ fn build_sequence_request(
                 seconds_per_frame: f64::from(project.fps.denominator) / f64::from(project.fps.numerator),
             })
         };
+        let tracked_mask = if clip.mask_tracking.is_empty() { None } else {
+            Some(TrackedMask {
+                points: clip.mask_tracking.clone(),
+                timeline_start_ns: project.fps.frames_to_ns(clip.timeline_start)?,
+                source_start_ns: project.clip_source_time(clip, clip.timeline_start)?,
+            })
+        };
         layers.push(PreviewLayer {
             clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
             blend: track.blend,
             transform: draft.unwrap_or(clip.transform),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()).effective()?,
             speed_percent: clip.speed_percent,
-            opacity, mask: clip.mask, crop: clip.crop, crop_animation, effects, spatial,
+            opacity, mask: clip.mask, tracked_mask, crop: clip.crop, crop_animation, effects, spatial,
             dissolve,
         });
     }
@@ -340,7 +354,8 @@ impl PreviewRequest {
             [layer.opacity.as_ref().map(|animation| animation.timeline_start_ns),
              layer.spatial.as_ref().map(|animation| animation.timeline_start_ns),
              layer.crop_animation.as_ref().map(|animation| animation.timeline_start_ns),
-             layer.effects.as_ref().map(|animation| animation.timeline_start_ns)].into_iter().flatten()
+             layer.effects.as_ref().map(|animation| animation.timeline_start_ns),
+             layer.tracked_mask.as_ref().map(|tracked| tracked.timeline_start_ns)].into_iter().flatten()
         }).max().unwrap_or(0)
     }
 
@@ -690,6 +705,10 @@ use playback::run;
 #[cfg(target_os = "macos")]
 #[path = "sequence_export.rs"]
 pub(crate) mod export;
+
+#[cfg(target_os = "macos")]
+#[path = "mask_tracking.rs"]
+pub(crate) mod mask_tracking;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]

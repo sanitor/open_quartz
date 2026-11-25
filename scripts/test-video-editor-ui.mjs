@@ -215,7 +215,7 @@ try{
      { description: 'foreground clip moves into the top lane' });
    await fileAction('SAVE AS', multiProject, 'Save project'); await waitState('Project saved');
    const { data } = JSON.parse(await readFile(multiProject, 'utf8'));
-   assert.equal(data.schema_version, 26);
+   assert.equal(data.schema_version, 27);
    assert.deepEqual(data.tracks.map(track => [track.name, track.clips.length]), [['Video 3', 1], ['Video 2', 0], ['Video 1', 1]]);
    assert.equal(data.tracks[0].clips[0].timeline_start, 0);
    assert(data.tracks[0].clips[0].transform.scale < 1);
@@ -2185,6 +2185,58 @@ try{
    await click('SAVE'); await waitState('Project saved');
    await close();
  }, { core: true });
+ await step('Track a translating clip mask and retain the animated result in export', async () => {
+   const input = join(output, 'move-mask.mp4');
+   const project = join(output, 'track-mask.oqvideo.json');
+   mediaCommand(['-f', 'lavfi', '-i',
+     "nullsrc=s=320x180:r=30,geq=lum='if(between(X,40+N*4,79+N*4)*between(Y,65,115),235,16)':cb=128:cr=128",
+     '-frames:v', '36', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-color_range', 'tv',
+     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-y', input]);
+   await launch();
+   await click('SEQUENCE');
+   await client.setValue(await client.find({ label: 'Sequence width', role: 'TextInput' }), '320');
+   await client.setValue(await client.find({ label: 'Sequence height', role: 'TextInput' }), '180');
+   await click('Apply settings');
+   await importMedia(input); await waitState('assets 1'); await click('ADD CLIP'); await waitState('clips 1');
+   await client.click(await item('move-mask.mp4'));
+   await client.click(await clipControl('Mask shape', 'Combobox'));
+   await client.key('\uf701'); await client.key('\n');
+   for (const [label, value] of [['center X', 18.75], ['width', 18], ['height', 50]]) {
+     await enter(await clipControl(`Mask ${label} (%)`), value);
+   }
+   const track = async () => client.click(await clipControl('Track mask forward', 'Button'));
+   await track();
+   await client.click(await client.find({ label: 'Cancel mask tracking', role: 'Button' }));
+   await waitState('Mask tracking cancelled');
+   await track(); await waitState('Mask tracking complete');
+   await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved');
+   const clip = JSON.parse(await readFile(project, 'utf8')).data.tracks[0].clips[0];
+   assert.equal(clip.mask_tracking.length, 36);
+   assert(clip.mask_tracking[17].x > 0.38 && clip.mask_tracking[17].x < 0.42, JSON.stringify(clip.mask_tracking[17]));
+   assert(Math.abs(clip.mask_tracking[17].y - 0.5) < 0.03);
+   const check = async white => client.waitFor(async () => {
+     const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+     const png = decodePng(await client.screenshot());
+     const window = await client.windowProperties();
+     const scale = window.scaleFactor || 1;
+     const sx = png.width / (window.size.width / scale), sy = png.height / (window.size.height / scale);
+     const width = Math.min(viewer.size.width, viewer.size.height * 320 / 180);
+     const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2 - width * 0.1) * sx);
+     const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2) * sy);
+     const level = png.pixels[(y * png.width + x) * png.channels];
+     return white ? level > 210 : level < 20;
+   }, { description: white ? 'moving patch stays within the tracked monitor mask' : 'static mask excludes the moving patch' });
+   for (let i = 0; i < 17; i++) await click('NEXT');
+   await check(true);
+   await client.click(await clipControl('Clear mask tracking', 'Button')); await check(false);
+   await click('UNDO'); await check(true);
+   const path = join(output, 'tracked-mask.mp4');
+   await fileAction('EXPORT', path, 'Export MP4'); await waitState('Export complete');
+   const pixels = mediaCommand(['-i', path, '-vf', 'select=eq(n\\,17)', '-frames:v', '1',
+     '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+   assert(pixels[(90 * 320 + 128) * 3] > 210, 'tracked clip export keeps the moving patch');
+   await click('SAVE'); await waitState('Project saved'); await close();
+ }, { core: true });
  await step('Choose track blend modes and match composite preview to decoded MP4', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
@@ -2233,7 +2285,7 @@ try{
    }] }];
    fixture.data.tracks = fixture.data.tracks.filter(track => track.clips.length > 0);
    // The outgoing solid changes pose at child frame 4. The parent must use the child's animation clock.
-   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 26);
+   fixture.schema_version = fixture.data.schema_version = Math.max(fixture.schema_version, 27);
    fixture.data.tracks[0].clips[0].spatial_keys = [
      { time: 0, value: { x: 0, y: 0, scale: 0.5, rotation: 0 } },
      { time: 1, value: { x: 0.45, y: 0, scale: 0.2, rotation: 0 } },
@@ -2437,7 +2489,7 @@ try{
    assert.deepEqual([0, 1, 2, 3, 4].map(dominant), ['red', 'red', 'red', 'blue', 'blue']);
    await click('SAVE'); await waitState('Project saved');
    const saved = JSON.parse(await readFile(seed, 'utf8'));
-   assert.equal(saved.schema_version, 26);
+   assert.equal(saved.schema_version, 27);
    const [layer] = saved.data.tracks[0].clips;
    assert.deepEqual(layer.opacity_keys, [{ time: 0, value: 1 }]);
    assert.equal(layer.spatial_keys[0].curve, 'smooth');

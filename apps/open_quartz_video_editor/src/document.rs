@@ -36,7 +36,7 @@ mod sequences;
 pub use sequences::TimelineSequence;
 #[path = "document_mask.rs"]
 mod mask;
-pub use mask::{Mask, MaskShape};
+pub use mask::{Mask, MaskPosition, MaskShape, MAX_TRACKED_FRAMES};
 #[path = "document_reference.rs"]
 mod references;
 pub use references::ReferenceStill;
@@ -44,7 +44,7 @@ pub(crate) use references::MAX_REFERENCES;
 #[path = "document_grades.rs"]
 mod grades;
 pub use grades::GradeVersions;
-const SCHEMA_VERSION: u32 = 26;
+const SCHEMA_VERSION: u32 = 27;
 #[path = "document_spatial.rs"]
 mod spatial;
 pub use spatial::{Crop, CropKey, Pose, SpatialKey};
@@ -203,6 +203,8 @@ pub struct Clip {
     pub opacity_keys: Vec<OpacityKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask: Option<Mask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mask_tracking: Vec<MaskPosition>,
     #[serde(default, skip_serializing_if = "Crop::is_empty")]
     pub crop: Crop,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -566,7 +568,7 @@ impl EditorDocument {
             source_subtick_numerator: 0,
             source_subtick_denominator: 1,
             transform: ClipTransform::default(),
-            opacity_keys: Vec::new(), mask: None,
+            opacity_keys: Vec::new(), mask: None, mask_tracking: Vec::new(),
             crop: Crop::default(),
             crop_keys: Vec::new(),
             spatial_keys: Vec::new(),
@@ -1148,6 +1150,7 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
             clip.validate_effect_animation()?;
             clip.validate_grade_versions()?;
             if let Some(mask) = clip.mask { mask.validate()?; }
+            mask::validate_tracking(clip)?;
             if clip.duration == 0 {
                 return Err("Clip duration must be positive".into());
             }
@@ -1169,6 +1172,7 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
             }
             if let Some(title) = &clip.title {
                 title.validate()?;
+                if !clip.mask_tracking.is_empty() { return Err("Tracked masks require original video".into()); }
                 clip.validate_sequence_timing()?;
                 if !clip.asset_id.is_empty() || clip.pipeline != ClipPipeline::default() {
                     return Err("Title clips use a generated image".into());
@@ -1179,6 +1183,9 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
                     .iter()
                     .find(|asset| asset.id == clip.asset_id)
                     .ok_or("Clip references a missing media asset")?;
+                if !clip.mask_tracking.is_empty() && (!asset.has_video() || asset.sequence_source().is_some()) {
+                    return Err("Tracked masks require original video".into());
+                }
                 if asset.still {
                     clip.validate_sequence_timing()?;
                 } else {

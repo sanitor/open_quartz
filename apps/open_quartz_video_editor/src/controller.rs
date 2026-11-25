@@ -14,6 +14,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
+#[cfg(target_os = "macos")]
+#[path = "tracking_controller.rs"]
+mod tracking_controller;
 #[path = "reference_stills.rs"]
 mod reference_stills;
 #[path = "pipeline_editor.rs"]
@@ -106,6 +109,8 @@ pub struct Controller {
     displayed: Option<StableFrame>,
     color_scope: crate::color_scope::ColorScope,
     references: reference_stills::ReferenceGallery,
+    #[cfg(target_os = "macos")]
+    mask_tracking: Option<tracking_controller::MaskTask>,
     displayed_frame: Option<u64>,
     thumbnail_order: VecDeque<String>,
     thumbnails: HashMap<String, Thumbnail>,
@@ -182,6 +187,8 @@ impl Controller {
             requested: None,
             displayed: None,
             color_scope: Default::default(), references: Default::default(),
+            #[cfg(target_os = "macos")]
+            mask_tracking: None,
             displayed_frame: None,
             thumbnail_order: VecDeque::new(),
             thumbnails: HashMap::new(),
@@ -797,6 +804,16 @@ impl Controller {
                 Err(error) => self.status(error),
             },
             "import-srt" => self.path_dialog("srt"),
+            #[cfg(target_os = "macos")]
+            "track-mask" => self.start_mask_tracking(),
+            #[cfg(target_os = "macos")]
+            "cancel-mask-tracking" => self.cancel_mask_tracking(),
+            "clear-mask-tracking" => {
+                if let Some(id) = self.selected_clip.clone() {
+                    let result = self.document.set_mask_tracking(&id, self.document.revision, Vec::new());
+                    self.finish_edit(result);
+                }
+            }
             "lut" => self.path_dialog("lut"),
             "new" => {
                 if self.confirm_discard() {
@@ -1830,6 +1847,8 @@ impl Controller {
 
     fn tick(&mut self) {
         self.poll_references();
+        #[cfg(target_os = "macos")]
+        self.poll_mask_tracking();
         if let Some(result) = self.color_scope.update(&self.backend, self.displayed.as_ref()) {
             if let Some(window) = self.window.upgrade() {
                 match result {
@@ -2513,6 +2532,9 @@ impl Controller {
                     .into(),
             );
             let mask = clip.mask.unwrap_or_default();
+            window.set_has_mask_tracking(!clip.mask_tracking.is_empty());
+            window.set_can_track_mask(cfg!(target_os = "macos") && clip.mask.is_some()
+                && self.document.asset(&clip.asset_id).is_some_and(|asset| asset.online && asset.has_video() && asset.sequence_source().is_none()));
             window.set_mask_shape(match clip.mask.map(|mask| mask.shape) {
                 None => 0,
                 Some(crate::document::MaskShape::Rectangle) => 1,
@@ -2555,6 +2577,8 @@ impl Controller {
         self.motion = MotionEditor::default();
         self.color_scope.clear();
         self.references = Default::default();
+        #[cfg(target_os = "macos")]
+        self.reset_mask_tracking();
         self.hide_reference();
         self.source_marks.clear();
         self.audio_destination = AudioDestination::Automatic;
@@ -2780,7 +2804,9 @@ mod native_dialog_tests {
             extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,
             displayed: None,
-            color_scope: Default::default(), references: Default::default(), displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
+            color_scope: Default::default(), references: Default::default(),
+            #[cfg(target_os = "macos")]
+            mask_tracking: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),
             asset_model: Rc::new(VecModel::default()), clip_model: Rc::new(VecModel::default()),
             audio_track_model: Rc::new(VecModel::default()), audio_clip_model: Rc::new(VecModel::default()),
             timer: slint::Timer::default(), deferred_refresh: false, busy: false,
