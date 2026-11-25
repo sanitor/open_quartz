@@ -27,6 +27,7 @@ export struct AudioTrackRow { id: string, name: string, muted: bool, locked: boo
 export struct AudioClipRow { id: string, lane: int, name: string, start: float, duration: float, description: string, selected: bool, muted: bool, editable: bool, waveform: string, fade_in: float, fade_out: float }
 export struct MonitorBox { ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float, tx: float, ty: float, angle: float, visible: bool, locked: bool }
 export struct ClipRow { id: string, lane: int, track: string, locked: bool, asset_name: string, is_title: bool, is_subtitle: bool, is_still: bool, start: int, duration: int, x: float, width: float, selected: bool, online: bool, thumbnail: image, has_thumbnail: bool }
+export struct SnapResult { delta: int, frame: int }
 export struct MarkerRow { frame: int, name: string }
 export struct DissolveRow { lane: int, start: float, duration: float, description: string }
 
@@ -232,12 +233,14 @@ component TimelineClip inherits Rectangle {
     callback lane_id(int) -> string;
     callback drop_error(string, int) -> string;
     callback snapped_delta(string, int, string) -> int;
+    callback clear_snap();
     callback autoscroll(length, length);
     in property <length> scroll_x;
     private property <length> lane_height: 84px;
     private property <int> lane: root.item.lane;
     private property <string> error: "";
     function clear_drag() {
+        root.clear_snap();
         if root.part_of_group && root.gesture_kind == "move" { root.group_preview(0); }
         root.gesture_kind = "";
         root.delta = 0;
@@ -333,7 +336,7 @@ component TimelineClip inherits Rectangle {
         began => { root.focused(); root.additive = false; root.gesture_kind = "trim-start"; root.delta = 0; }
         preview(value, x, y) => { root.autoscroll(x, y); root.delta = root.bounded_delta("trim-start", root.snapped_delta("trim-start", value, root.item.track)); }
         finished(value, x, y) => { root.finish("trim-start", value == 0 ? 0 : root.snapped_delta("trim-start", value, root.item.track)); }
-        cancelled => { root.gesture_kind = ""; root.delta = 0; }
+        cancelled => { if root.gesture_kind != "" { root.clear_drag(); root.cancelled(); } }
     }
     ClipGestureArea {
         x: parent.width - self.width; width: min(9px, parent.width / 3); height: parent.height; zoom: root.zoom; cancel_token: root.cancel_token; mouse-cursor: ew-resize;
@@ -343,7 +346,7 @@ component TimelineClip inherits Rectangle {
         began => { root.focused(); root.additive = false; root.gesture_kind = "trim-end"; root.delta = 0; }
         preview(value, x, y) => { root.autoscroll(x, y); root.delta = root.bounded_delta("trim-end", root.snapped_delta("trim-end", value, root.item.track)); }
         finished(value, x, y) => { root.finish("trim-end", value == 0 ? 0 : root.snapped_delta("trim-end", value, root.item.track)); }
-        cancelled => { root.gesture_kind = ""; root.delta = 0; }
+        cancelled => { if root.gesture_kind != "" { root.clear_drag(); root.cancelled(); } }
     }
 }
 
@@ -460,6 +463,8 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
     in-out property <float> timeline_zoom: 16;
+    private property <bool> timeline_snap_enabled: true;
+    private property <int> timeline_snap_frame: -1;
     in-out property <string> search_query;
     in-out property <string> file_path;
     in-out property <string> export_start_frame;
@@ -567,7 +572,7 @@ export component EditorWindow inherits Window {
     callback timeline_capture(string);
     callback clip_gesture(id: string, kind: string, delta: int, track: string);
     callback clip_drop_error(string, string, int) -> string;
-    callback clip_snap(string, string, int, string, float) -> int;
+    callback clip_snap(string, string, int, string, float) -> SnapResult;
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -1140,6 +1145,12 @@ export component EditorWindow inherits Window {
                         ToolButton { label: "DELETE"; glyph: "⌫"; active: root.selected_clip_id != ""; clicked => { editor_focus.focus(); root.lift_clip(); } }
                         Button { text: "Ripple delete"; enabled: root.selected_clip_writable; clicked => { editor_focus.focus(); root.project_action("ripple-delete"); } }
                         Rectangle { width: 1px; height: 20px; background: root.border; }
+                        ToolButton {
+                            label: "Toggle timeline snapping"; glyph: "magnet"; selected: root.timeline_snap_enabled;
+                            accessible-description: root.timeline_snap_enabled ? "Snapping enabled" : "Snapping disabled";
+                            tooltip-text: root.timeline_snap_enabled ? "Disable timeline snapping" : "Enable timeline snapping";
+                            clicked => { editor_focus.focus(); root.timeline_snap_enabled = !root.timeline_snap_enabled; }
+                        }
                         ToolButton { label: "FIT TIMELINE"; glyph: "fit"; tooltip-text: "Fit entire sequence"; active: root.sequence_duration > 0; clicked => { root.fit_timeline(); } }
                         ToolButton { label: "ZOOM OUT"; glyph: "−"; active: root.timeline_zoom > 0.0001; clicked => { root.set_zoom(root.timeline_zoom > 4 ? root.timeline_zoom - 2 : root.timeline_zoom / 2); } }
                         Text { text: root.timeline_zoom >= 1 ? Math.round(root.timeline_zoom * 100) / 100 + " px/f" : Math.round(100 / root.timeline_zoom) / 100 + " f/px"; width: 88px; color: root.secondary; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
@@ -1292,7 +1303,15 @@ export component EditorWindow inherits Window {
                                     target_lane(y) => { return root.target_lane(y); }
                                     lane_id(lane) => { return root.lane_id(lane); }
                                     drop_error(track, delta) => { return root.clip_drop_error(clip.id, track, delta); }
-                                    snapped_delta(kind, delta, track) => { return root.clip_snap(clip.id, kind, delta, track, root.timeline_zoom); }
+                                    snapped_delta(kind, delta, track) => {
+                                        if !root.timeline_snap_enabled {
+                                            return delta;
+                                        }
+                                        let snap = root.clip_snap(clip.id, kind, delta, track, root.timeline_zoom);
+                                        root.timeline_snap_frame = snap.frame;
+                                        return snap.delta;
+                                    }
+                                    clear_snap => { root.timeline_snap_frame = -1; }
                                     autoscroll(x, y) => { root.edge_scroll(x, y, true); }
                                 }
                                 for clip in root.audio_clips: AudioTimelineClip {
@@ -1314,6 +1333,13 @@ export component EditorWindow inherits Window {
                                     Text { text: "Dissolve"; width: parent.width; height: parent.height; color: #fff1d8; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                 }
                                 Rectangle { x: 10px + root.selected_frame * root.timeline_zoom * 1px; width: 2px; height: parent.height; background: #ff525b; }
+                                if root.timeline_snap_frame >= 0: Rectangle {
+                                    x: 10px + root.timeline_snap_frame * root.timeline_zoom * 1px;
+                                    width: 2px; height: parent.height; background: #f2c96d;
+                                    accessible-role: groupbox;
+                                    accessible-label: "Snap guide";
+                                    accessible-description: "Frame " + root.timeline_snap_frame;
+                                }
                                 if root.reorder_marker >= 0: Rectangle { y: root.reorder_marker * 84px - 1px; height: 2px; width: parent.width; background: root.accent; }
                             }
                         }

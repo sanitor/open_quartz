@@ -1644,6 +1644,65 @@ try{
  });
  const timelineToolsProject = join(output, 'timeline-tools.oqvideo.json');
  const shiftSelect = async name => client.click(await item(name), { modifiers: { shift: true } });
+ const snapProject = join(output, 'timeline-snap.oqvideo.json');
+ const dragTimelineBy = async (element, frames) => {
+   await client.drag(element, { x: center(element).x + 4 * frames, y: center(element).y });
+ };
+ const zoomForSnapping = async () => {
+   for (let i = 0; i < 6; i++) await click('ZOOM OUT');
+ };
+ await step('Snap a timeline move and both trim edges, and toggle snapping off', async () => {
+   const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
+   const [upper, , lower] = fixture.data.tracks;
+   Object.assign(upper.clips[0], { timeline_start: 12, duration: 20 });
+   Object.assign(upper.clips[1], { timeline_start: 90, duration: 16 });
+   Object.assign(lower.clips[0], { timeline_start: 8, duration: 20 });
+   fixture.data.tracks = [upper, lower];
+   fixture.data.markers = [
+     { id: 'snap-move', frame: 60, name: 'Movement reference' },
+     { id: 'snap-trim', frame: 72, name: 'Trim reference' },
+   ];
+   await writeFile(snapProject, JSON.stringify(fixture));
+   await launch(snapProject); await waitState('clips 3');
+   await zoomForSnapping();
+   const snap = () => client.find({ label: 'Toggle timeline snapping', role: 'Button' });
+   assert.equal((await snap()).accessibleDescription, 'Snapping enabled');
+   await dragTimelineBy(await item('foreground.mp4'), 47);
+   assert.deepEqual(await positions('foreground.mp4'), [[60, 20], [90, 16]]);
+   assert.equal((await client.byLabel('Snap guide')).length, 0);
+   await click('UNDO');
+   assert.deepEqual(await positions('foreground.mp4'), [[12, 20], [90, 16]]);
+   await client.click(await snap());
+   assert.equal((await snap()).accessibleDescription, 'Snapping disabled');
+   await dragTimelineBy(await item('foreground.mp4'), 47);
+   assert.deepEqual(await positions('foreground.mp4'), [[59, 20], [90, 16]]);
+   await click('UNDO');
+   await client.click(await snap());
+   assert.equal((await snap()).accessibleDescription, 'Snapping enabled');
+   await dragTimelineBy(await item('foreground.mp4'), 47);
+   const left = (await buttons('Trim start of foreground.mp4'))[0];
+   await dragTimelineBy(left, 11);
+   assert.deepEqual(await positions('foreground.mp4'), [[72, 8], [90, 16]]);
+   const right = (await buttons('Trim end of foreground.mp4'))[0];
+   await dragTimelineBy(right, 9);
+   assert.deepEqual(await positions('foreground.mp4'), [[72, 18], [90, 16]]);
+   await click('UNDO'); await click('UNDO'); await click('UNDO');
+   assert.deepEqual(await positions('foreground.mp4'), [[12, 20], [90, 16]]);
+   await close();
+ }, { core: true });
+ await step('A selected clip on another track can anchor a snapped group move', async () => {
+   await launch(snapProject); await waitState('clips 3');
+   await zoomForSnapping();
+   await client.click(await item('foreground.mp4'));
+   await shiftSelect('background.mp4'); await waitState('2 selected');
+   await dragTimelineBy(await item('foreground.mp4'), 51);
+   assert.deepEqual(await positions('foreground.mp4'), [[64, 20], [90, 16]]);
+   assert.deepEqual(await positions('background.mp4'), [[60, 20]]);
+   await click('UNDO');
+   assert.deepEqual(await positions('foreground.mp4'), [[12, 20], [90, 16]]);
+   assert.deepEqual(await positions('background.mp4'), [[8, 20]]);
+   await close();
+ });
  await step('Move and delete a multi-track selection in one undo step, and navigate a named marker', async () => {
    const fixture = JSON.parse(await readFile(exportProject, 'utf8'));
    const [upper, , lower] = fixture.data.tracks;

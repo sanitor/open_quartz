@@ -1,7 +1,7 @@
 use crate::delivery::ExportOptions;
 use crate::document::{self, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
-use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, TrackRow};
+use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, SnapResult, TrackRow};
 use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
@@ -356,8 +356,9 @@ impl Controller {
         });
         let weak = Rc::downgrade(this);
         window.on_clip_snap(move |id, kind, delta, track, zoom| {
-            weak.upgrade().map_or(delta, |controller| controller.borrow()
-                .snap_clip(&id, &kind, delta, &track, zoom))
+            weak.upgrade().map_or(SnapResult { delta, frame: -1 }, |controller| {
+                controller.borrow().snap_clip(&id, &kind, delta, &track, zoom)
+            })
         });
         let weak = Rc::downgrade(this);
         window.on_asset_place(move |asset, track, frame| {
@@ -933,32 +934,83 @@ impl Controller {
         };
         self.finish_edit(result);
     }
-    fn snap_clip(&self, id: &str, kind: &str, delta: i32, track: &str, zoom: f32) -> i32 {
-        let Some(clip) = self.document.clip(id) else { return delta; };
-        let Some(track) = self.document.data.tracks.iter().find(|item| item.id == track) else { return delta; };
-        if delta == 0 || zoom <= 0.0 || (kind == "move" && !self.extra_selection.is_empty() && self.in_selection(id)) { return delta; }
-        let end = clip.timeline_end().unwrap_or(clip.timeline_start);
-        let start = i128::from(clip.timeline_start);
-        let end = i128::from(end);
-        let mut anchors = match kind {
-            "trim-end" => vec![end],
-            "move" => vec![start, end],
-            _ => vec![start],
-        };
-        anchors.iter_mut().for_each(|anchor| *anchor += i128::from(delta));
-        let targets = std::iter::once(self.playhead).chain(track.clips.iter().filter(|other| other.id != id)
-            .flat_map(|other| [other.timeline_start, other.timeline_end().unwrap_or(other.timeline_start)]));
+    fn snap_clip(&self, id: &str, kind: &str, delta: i32, track: &str, zoom: f32) -> SnapResult {
+        let unsnapped = SnapResult { delta, frame: -1 };
+        let Some(clip) = self.document.clip(id) else { return unsnapped; };
+        if delta == 0 || !zoom.is_finite() || zoom <= 0.0 {
+            return unsnapped;
+        }
+        let group = kind == "move" && !self.extra_selection.is_empty() && self.in_selection(id);
+        let moving = |candidate: &str| candidate == id || (group && self.in_selection(candidate));
+        let mut anchors = Vec::new();
+        let mut targets = vec![self.playhead];
+        targets.extend(self.document.data.markers.iter().map(|marker| marker.frame));
+        let mut minimum = -i128::from(clip.timeline_start);
+        let mut maximum = i128::from(i32::MAX);
+        match kind {
+            "move" => {
+                for lane in &self.document.data.tracks {
+                    let participates = group && lane.clips.iter().any(|item| moving(&item.id));
+                    for item in &lane.clips {
+                        let Ok(end) = item.timeline_end() else { continue; };
+                        if moving(&item.id) {
+                            minimum = minimum.max(-i128::from(item.timeline_start));
+                            anchors.extend([item.timeline_start, end]);
+                        } else if participates || (!group && lane.id == track) {
+                            targets.extend([item.timeline_start, end]);
+                        }
+                    }
+                }
+                if !group && !self.document.data.tracks.iter().any(|lane| lane.id == track) {
+                    return unsnapped;
+                }
+            }
+            "trim-start" | "trim-end" => {
+                let Ok(end) = clip.timeline_end() else { return unsnapped; };
+                if kind == "trim-start" {
+                    anchors.push(clip.timeline_start);
+                    maximum = i128::from(clip.duration) - 1;
+                } else {
+                    anchors.push(end);
+                    minimum = 1 - i128::from(clip.duration);
+                }
+                if let Some(lane) = self.document.clip_track(id) {
+                    for item in lane.clips.iter().filter(|item| item.id != id) {
+                        if let Ok(end) = item.timeline_end() {
+                            targets.extend([item.timeline_start, end]);
+                        }
+                    }
+                }
+            }
+            _ => return unsnapped,
+        }
+
+        // At overview zoom, find the nearest target by frame instead of
+        // comparing every selected edge against every timeline target.
+        targets.sort_unstable();
+        let delta = i128::from(delta);
         let mut best = None;
-        for target in targets {
-            for anchor in &anchors {
-                let correction = i128::from(target) - anchor;
-                if correction.abs() as f32 * zoom <= 7.0
-                    && best.is_none_or(|old: i128| correction.abs() < old.abs()) {
-                    best = Some(correction);
+        for anchor in anchors {
+            let base = i128::from(anchor);
+            let location = base + delta.clamp(minimum, maximum);
+            let first = targets.partition_point(|frame| i128::from(*frame) < base + minimum);
+            let last = targets.partition_point(|frame| i128::from(*frame) <= base + maximum);
+            let candidates = &targets[first..last];
+            let index = candidates.partition_point(|frame| i128::from(*frame) < location);
+            for frame in [index.checked_sub(1).and_then(|i| candidates.get(i)), candidates.get(index)]
+                .into_iter().flatten()
+            {
+                let proposed = i128::from(*frame) - base;
+                let distance = (proposed - delta).abs();
+                if distance as f32 * zoom > 7.0 { continue; }
+                let (Ok(frame), Ok(delta)) = (i32::try_from(*frame), i32::try_from(proposed)) else { continue; };
+                let score = (distance, frame, delta);
+                if best.is_none_or(|old| score < old) {
+                    best = Some(score);
                 }
             }
         }
-        best.and_then(|correction| i32::try_from(i128::from(delta) + correction).ok()).unwrap_or(delta)
+        best.map_or(unsnapped, |(_, frame, delta)| SnapResult { delta, frame })
     }
 
     fn in_selection(&self, id: &str) -> bool {
