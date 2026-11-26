@@ -22,7 +22,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/white_h264_high_64x64.mp4");
         let asset = crate::media::probe(&path).unwrap();
-        let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
+        let mut request = PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(),
             ticket: 1,
             revision: 4,
             frame: 0,
@@ -86,7 +86,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/oq-media/tests/source-time.mp4");
         let mut asset = crate::media::probe(&path).unwrap();
-        let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
+        let mut request = PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(),
             ticket: 1,
             revision: 7,
             frame: 0,
@@ -172,7 +172,7 @@ mod tests {
         );
         let asset = crate::media::probe(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/white_h264_high_64x64.mp4")).unwrap();
-        let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
+        let mut request = PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
@@ -279,7 +279,7 @@ mod tests {
         let id = clip_pipeline.add_serial(SOURCE_ID,
             "@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { return textureSample(image,imageSampler,uv)*vec4f(0.0,1.0,0.0,1.0); }",
             "Green").unwrap();
-        let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
+        let mut request = PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: clip_pipeline,
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn gpu_candidate_preflight_reports_errors_without_replacing_the_live_preview() {
         let (mut bridge, _configuration, _) = PreviewBridge::new().unwrap();
-        let mut request = PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(),
+        let mut request = PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(),
             ticket: 1, revision: 1, frame: 0, source_ns: 0,
             width: 128, height: 64, asset: None,
             transform: ClipTransform::default(), pipeline: ClipPipeline::default(),
@@ -370,7 +370,7 @@ mod tests {
         };
         assert!(initial.submitted >= 2, "playback must prefill before its first presentation");
         assert!(initial.queue_peak <= initial.window_high_water);
-        bridge.request(PreviewRequest { managed_output: false, managed_view: false, layers: Vec::new(), ticket: 11, revision: document.revision,
+        bridge.request(PreviewRequest { managed_output: false, managed_view: false, sequence_grade: Default::default(), layers: Vec::new(), ticket: 11, revision: document.revision,
             frame: 3, source_ns: 100_000_000, width: 64, height: 64, asset: Some(asset),
             transform: ClipTransform::default(), pipeline: ClipPipeline::default() }).unwrap();
         let exact = wait(&bridge, 11);

@@ -15,6 +15,8 @@ pub struct TimelineSequence {
     pub name: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub managed_color: bool,
+    #[serde(default, skip_serializing_if = "SharedGrade::is_identity")]
+    pub grade: SharedGrade,
     pub width: u32,
     pub height: u32,
     pub fps: Rational,
@@ -96,6 +98,7 @@ impl ProjectData {
             id: self.sequence_id.clone(),
             name: self.sequence_name.clone(),
             managed_color: self.managed_color,
+            grade: self.sequence_grade,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -109,6 +112,7 @@ impl ProjectData {
         self.sequence_id = sequence.id;
         self.sequence_name = sequence.name;
         self.managed_color = sequence.managed_color;
+        self.sequence_grade = sequence.grade;
         self.width = sequence.width;
         self.height = sequence.height;
         self.fps = sequence.fps;

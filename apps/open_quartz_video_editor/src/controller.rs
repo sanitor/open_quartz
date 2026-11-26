@@ -584,6 +584,15 @@ impl Controller {
         let hdr_monitor = this.borrow().hdr_monitor.clone();
         window.on_toggle_hdr_monitor(move || hdr_monitor.toggle());
         let weak = Rc::downgrade(this);
+        window.on_shared_grade(move |track, field, value| {
+            if let Some(controller) = weak.upgrade() {
+                let mut controller = controller.borrow_mut();
+                let id = track.then(|| controller.selected_track.clone());
+                let result = controller.document.edit_shared_grade(id.as_deref(), &field, &value);
+                controller.finish_edit(result);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_sequence_settings(move |width, height, numerator, denominator| {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
@@ -2563,6 +2572,15 @@ impl Controller {
         };
         self.refresh_recovery();
         window.set_sequence_managed_color(self.document.data.managed_color);
+        let sequence = self.document.data.sequence_grade;
+        let track = self.document.data.tracks.iter().find(|track| track.id == self.selected_track);
+        let group = track.map_or(document::SharedGrade::default(), |track| track.grade);
+        window.set_grade_track_name(track.filter(|track| !track.subtitles && !track.locked)
+            .map_or("", |track| track.name.as_str()).into());
+        window.set_group_exposure(group.exposure.to_string().into());
+        window.set_group_saturation((group.saturation * 100.0).to_string().into());
+        window.set_sequence_exposure(sequence.exposure.to_string().into());
+        window.set_sequence_saturation((sequence.saturation * 100.0).to_string().into());
         self.publish_sequence_slots(&window);
         window.set_has_offline_assets(self.document.data.assets.iter().any(|asset| !asset.online));
         if matches!(&self.audio_destination, AudioDestination::Track(id)

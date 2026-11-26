@@ -662,6 +662,12 @@ export component EditorWindow inherits Window {
     in property <string> grade_name;
     callback grade_action(string, int, string);
     in property <bool> grade_can_paste;
+    in property <string> grade_track_name;
+    in property <string> group_exposure;
+    in property <string> group_saturation;
+    in property <string> sequence_exposure;
+    in property <string> sequence_saturation;
+    callback shared_grade(bool, string, string);
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -1913,7 +1919,7 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.settings_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 480px; height: 622px; background: root.panel;
+                width: 480px; height: 732px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
@@ -1956,6 +1962,19 @@ export component EditorWindow inherits Window {
                         Button {
                             text: "Nest at playhead";
                             clicked => { root.sequence_slot("nest", root.nested_source_choice, ""); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        TimingField { label: "Timeline exposure (EV)"; value: root.sequence_exposure; enabled: true; committed(value) => { root.shared_grade(false, "exposure", value); } }
+                        TimingField { label: "Timeline saturation (%)"; value: root.sequence_saturation; enabled: true; committed(value) => { root.shared_grade(false, "saturation", value); } }
+                    }
+                    if root.grade_track_name != "": VerticalLayout {
+                        Text { text: "Track grade ? " + root.grade_track_name; color: root.secondary; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            TimingField { label: "Track exposure (EV)"; value: root.group_exposure; enabled: true; committed(value) => { root.shared_grade(true, "exposure", value); } }
+                            TimingField { label: "Track saturation (%)"; value: root.group_saturation; enabled: true; committed(value) => { root.shared_grade(true, "saturation", value); } }
                         }
                     }
                     CheckBox {

@@ -3545,6 +3545,33 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function sharedGradeRoundTrip() {
+  await step('Grade a picture track and the full timeline, then verify the delivered pixels', async () => {
+    const gray = generate('shared-grade.mp4', '0x606060', 1);
+    const saved = join(output, 'shared-grade.oqvideo.json');
+    const movie = join(output, 'shared-grade.mp4');
+    await launch();
+    await fileAction('IMPORT', gray, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('SEQUENCE');
+    for (const label of ['Track exposure (EV)', 'Timeline exposure (EV)']) {
+      await enter(await client.find({label, role:'TextInput'}), '1');
+    }
+    await click('Apply settings');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    const {data} = JSON.parse(await readFile(saved, 'utf8'));
+    assert.equal(data.sequence_grade.exposure, 1);
+    assert.equal(data.tracks[0].grade.exposure, 1);
+    await close();
+    await launch(saved); await waitState('clips 1');
+    await fileAction('EXPORT', movie.replace('shared-grade.mp4', 'graded.mp4'), 'Export MP4'); await waitState('Export complete');
+    const pixel = path => fixtureCommand(['-i', path, '-vf', 'crop=2:2', '-frames:v', '1',
+      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'])[0];
+    assert(pixel(join(output, 'graded.mp4')) > pixel(gray) + 40);
+    await close();
+  }, {core: true});
+}
+
 async function gradeWorkflowRoundTrip() {
   await step('Match tone and color to a gallery still and reuse the active grade on another shot', async () => {
     const reference = generate('reference-gray.mp4', '0x707070', 1);
@@ -3802,6 +3829,7 @@ async function seekCloseRoundTrip() {
 
 try {
   if (gradeWorkflowOnly) {
+    await sharedGradeRoundTrip();
     await maskTrackingRoundTrip(fixtureCommand);
     await gradeWorkflowRoundTrip();
   }
@@ -3821,6 +3849,7 @@ try {
     if (!audioOnly && !previewOnly) await multicamRoundTrip();
     if (!audioOnly && !previewOnly) await audioDeliveryRoundTrip();
     if (!audioOnly && !previewOnly) await gradeWorkflowRoundTrip();
+    if (!audioOnly && !previewOnly) await sharedGradeRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();

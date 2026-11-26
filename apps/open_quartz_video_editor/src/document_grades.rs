@@ -1,5 +1,48 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedGrade {
+    pub exposure: f32,
+    pub saturation: f32,
+}
+
+impl Default for SharedGrade {
+    fn default() -> Self { Self { exposure: 0.0, saturation: 1.0 } }
+}
+
+impl SharedGrade {
+    pub fn is_identity(&self) -> bool { *self == Self::default() }
+
+    pub(super) fn validate(self) -> Result<(), String> {
+        if !(-8.0..=8.0).contains(&self.exposure) || !(0.0..=2.0).contains(&self.saturation) {
+            return Err("Exposure must be −8 to 8 stops and saturation 0 to 200%".into());
+        }
+        Ok(())
+    }
+}
+
+impl EditorDocument {
+    pub fn edit_shared_grade(&mut self, track: Option<&str>, field: &str, input: &str) -> Result<(), String> {
+        let value: f32 = input.trim().parse().map_err(|_| "Enter a numeric grade value")?;
+        self.transact(|data| {
+            let grade = if let Some(id) = track {
+                let index = data.track_index(id)?;
+                let track = &mut data.tracks[index];
+                track.require_unlocked()?;
+                if track.subtitles { return Err("Select a picture track".into()); }
+                &mut track.grade
+            } else { &mut data.sequence_grade };
+            match field {
+                "exposure" => grade.exposure = value,
+                "saturation" => grade.saturation = value / 100.0,
+                _ => return Err("Unknown grade control".into()),
+            }
+            grade.validate()
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GradeVersions {

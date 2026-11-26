@@ -48,7 +48,7 @@ pub use references::ReferenceStill;
 pub(crate) use references::MAX_REFERENCES;
 #[path = "document_grades.rs"]
 mod grades;
-pub use grades::GradeVersions;
+pub use grades::{GradeVersions, SharedGrade};
 const SCHEMA_VERSION: u32 = 27;
 #[path = "document_spatial.rs"]
 mod spatial;
@@ -263,6 +263,8 @@ pub struct VideoTrack {
     pub id: String,
     pub name: String,
     pub visible: bool,
+    #[serde(default, skip_serializing_if = "SharedGrade::is_identity")]
+    pub grade: SharedGrade,
     #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
     pub blend: BlendMode,
     pub locked: bool,
@@ -277,7 +279,7 @@ pub struct VideoTrack {
 fn is_false(value: &bool) -> bool { !value }
 impl VideoTrack {
     fn new(id: String, name: String) -> Self {
-        Self { id, name, visible: true, locked: false, sync_ripple: false, subtitles: false, blend: BlendMode::default(), clips: Vec::new(), dissolves: Vec::new() }
+        Self { id, name, visible: true, grade: SharedGrade::default(), locked: false, sync_ripple: false, subtitles: false, blend: BlendMode::default(), clips: Vec::new(), dissolves: Vec::new() }
     }
 
     pub fn clip_at(&self, frame: u64) -> Option<&Clip> {
@@ -306,6 +308,8 @@ pub struct ProjectData {
     pub other_sequences: Vec<TimelineSequence>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub managed_color: bool,
+    #[serde(default, skip_serializing_if = "SharedGrade::is_identity")]
+    pub sequence_grade: SharedGrade,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reference_stills: Vec<ReferenceStill>,
     pub width: u32,
@@ -330,6 +334,7 @@ impl Default for ProjectData {
             sequence_name: sequences::default_sequence_name(),
             other_sequences: Vec::new(),
             managed_color: false,
+            sequence_grade: SharedGrade::default(),
             reference_stills: Vec::new(),
             width: 1920,
             height: 1080,
@@ -1092,6 +1097,7 @@ pub(crate) fn validate(data: &ProjectData) -> Result<(), String> {
 }
 
 fn validate_timeline(data: &ProjectData) -> Result<(), String> {
+    data.sequence_grade.validate()?;
     if data.schema_version != SCHEMA_VERSION {
         return Err("Unsupported in-memory project schema".into());
     }
@@ -1138,6 +1144,7 @@ fn validate_timeline(data: &ProjectData) -> Result<(), String> {
     let mut has_subtitle_track = false;
     if data.tracks.is_empty() { return Err("A sequence needs at least one video track".into()); }
     for track in &data.tracks {
+        track.grade.validate()?;
         if track.id.is_empty() || track.name.trim().is_empty() || !tracks.insert(&track.id) {
             return Err("Missing or duplicate video track ID or empty track name".into());
         }

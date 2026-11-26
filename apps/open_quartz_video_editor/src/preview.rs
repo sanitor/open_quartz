@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 pub struct PreviewRequest {
     pub managed_output: bool,
     pub managed_view: bool,
+    pub sequence_grade: document::SharedGrade,
     pub ticket: u64,
     pub revision: u64,
     pub frame: u64,
@@ -39,6 +40,7 @@ pub struct PreviewLayer {
     pub track_name: String,
     track_id: String,
     blend: document::BlendMode,
+    grade: document::SharedGrade,
     source: LayerSource,
     pub transform: ClipTransform,
     pub pipeline: ClipPipeline,
@@ -118,13 +120,14 @@ pub fn asset_request(asset: MediaAsset, ticket: u64, revision: u64, frame: u64, 
     let mut request = PreviewRequest {
         managed_output: false,
         managed_view: false,
+        sequence_grade: document::SharedGrade::default(),
         ticket, revision, frame, width, height, source_ns: 0, asset: None,
         transform: ClipTransform::default(), pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
     if asset.still {
         request.layers.push(PreviewLayer {
             clip_id: asset.id.clone(), track_name: String::new(), track_id: asset.id.clone(),
-            blend: document::BlendMode::Normal,
+            blend: document::BlendMode::Normal, grade: document::SharedGrade::default(),
             source: LayerSource::Still(asset), transform: request.transform,
             pipeline: request.pipeline.clone(), speed_percent: document::normal_speed(),
             opacity: None, dissolve: None, mask: None, tracked_mask: None, crop: Crop::default(), crop_animation: None, effects: None, spatial: None,
@@ -235,7 +238,7 @@ fn build_sequence_request(
         };
         layers.push(PreviewLayer {
             clip_id: clip.id.clone(), track_name: track.name.clone(), track_id: track.id.clone(), source,
-            blend: track.blend,
+            blend: track.blend, grade: track.grade,
             transform: draft.unwrap_or(clip.transform),
             pipeline: pipeline_override(&clip.id).unwrap_or_else(|| clip.pipeline.clone()).effective()?,
             speed_percent: clip.speed_percent,
@@ -246,14 +249,16 @@ fn build_sequence_request(
     let mut request = PreviewRequest {
         managed_output,
         managed_view: false,
+        sequence_grade: document::SharedGrade::default(),
         ticket, revision, frame, width: project.width, height: project.height,
         asset: None, source_ns: project.fps.frames_to_ns(frame)?, transform: ClipTransform::default(),
         pipeline: ClipPipeline::default(), layers: Vec::new(),
     };
+    request.sequence_grade = project.sequence_grade;
     // Retimed clips use the sequence clock for window admission and a
     // separate media time for each decode request.
     if let [layer] = layers.as_slice() {
-        if !managed_output && !nested && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
+        if !managed_output && !nested && request.sequence_grade.is_identity() && layer.grade.is_identity() && project.tracks.len() == 1 && layer.mask.is_none() && layer.opacity.is_none() && layer.spatial.is_none() && layer.crop.is_empty() && layer.crop_animation.is_none() && layer.effects.is_none()
             && matches!(&layer.source, LayerSource::Video { .. })
             && !layer.pipeline.graph().nodes.iter().any(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some() || ClipPipeline::is_lut(node) || crate::person_matte::is_effect(node))
             && layer.speed_percent == document::normal_speed()

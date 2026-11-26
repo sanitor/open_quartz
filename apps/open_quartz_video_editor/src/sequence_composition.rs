@@ -329,10 +329,11 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                 if (all(p >= {minimum}) && all(p <= {maximum})) {{\n\
                     {mask_setup}
                     let alpha = ({alpha}) * mask_alpha;\n\
-                    let color = {color};\n\
+                    let color = grade_rgb({color}, {:.9e}, {:.9e});\n\
                     track_pixel += vec4f(color * alpha, alpha) * {weight};\n\
                 }}\n\
             }}\n"
+            , layer.grade.exposure, layer.grade.saturation
         ));
     }
     animation_code.push_str(r#"
@@ -353,6 +354,8 @@ fn bezier_progress(t: f32, points: vec4f) -> f32 {
 }
 "#);
     if request.managed_output { animation_code.push_str(open_quartz::operators::WGSL_COLOR_TRANSFORMS); }
+    let grade = request.sequence_grade;
+    let luminance = if request.managed_output { "0.2722287, 0.6740818, 0.0536895" } else { "0.2126, 0.7152, 0.0722" };
     let result_color = if request.managed_output && clock.is_some() {
         "return vec4f(result / max(alpha, 0.00001), alpha);"
     } else if request.managed_output {
@@ -374,6 +377,10 @@ fn linear(c:vec3f) -> vec3f {{
 }}
 fn encoded(c:vec3f) -> vec3f {{
     return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - vec3f(0.055), 12.92 * c, c <= vec3f(0.0031308));
+}}
+fn grade_rgb(rgb: vec3f, exposure: f32, saturation: f32) -> vec3f {{
+    let luma = dot(rgb, vec3f({luminance}));
+    return mix(vec3f(luma), rgb, saturation) * exp2(exposure);
 }}
 fn blend_rgb(backdrop: vec3f, source: vec3f, mode: i32) -> vec3f {{
     if (mode == 1) {{ return backdrop * source; }}
@@ -399,8 +406,9 @@ fn blend_rgb(backdrop: vec3f, source: vec3f, mode: i32) -> vec3f {{
         result = front + result * (1.0 - track_pixel.a);
         alpha = track_pixel.a + alpha * (1.0 - track_pixel.a);
     }}
+    result = grade_rgb(result, {:.9e}, {:.9e});
     {result_color}
-}}", request.width, request.height, tracks.len());
+}}", request.width, request.height, tracks.len(), grade.exposure, grade.saturation);
     let (mut output, _) = crate::clip_pipeline::project(Graph::default())
         .create_graph_node(
             NodeFactoryRequest::Shader {
