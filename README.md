@@ -177,13 +177,13 @@ npm run build                       # release binary + portable desktop package
 
 The first run downloads the platform runtime libraries. No wasm-pack, browser, or Web frontend build is required for these commands. Windows builds set `FFMPEG_DIR` from the existing pinned shared-FFmpeg helper; if LLVM is not on the toolchain search path, set `LIBCLANG_PATH` to its `bin` directory. Portable Windows packaging requires the Visual Studio x64 VC++ redistributable files.
 
-Linux build prerequisites (Debian/Ubuntu):
+Experimental Linux build prerequisites (Debian/Ubuntu):
 
 ```bash
 sudo apt-get install pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev libdbus-1-dev libvulkan1 mesa-vulkan-drivers
 ```
 
-Linux packages still require the system desktop/font/Vulkan libraries; they are not universal static binaries. Native builds run on their host architecture: macOS arm64/x64, Windows x64, Linux x64/arm64. CI covers Windows, macOS, and Linux desktop build/tests; it does not substitute for GPU/camera/native-window acceptance on each platform.
+Linux packages still require the system desktop/font/Vulkan libraries; they are not universal static binaries. Native builds run on their host architecture: macOS arm64/x64, Windows x64, Linux x64/arm64. Desktop CI and release packaging cover Windows and macOS. Linux builds are experimental and await native validation.
 
 ### Portable Artifacts and Runtime Resources
 
@@ -191,7 +191,7 @@ Linux packages still require the system desktop/font/Vulkan libraries; they are 
 
 - **macOS**: `Open Quartz.app` and `.zip`; executable at `Contents/MacOS/open_quartz_slint`, resources at `Contents/Resources/runtime/`.
 - **Windows**: `.zip` containing `open_quartz_slint.exe`, `icon.ico`, shortcut, and `runtime/`. DLLs are also placed beside the executable because FFmpeg imports are resolved before Rust startup. Extract the whole archive before launching.
-- **Linux**: `.tar.gz` with executable, icon, and `runtime/`; desktop/system-library dependencies remain external.
+- **Linux (experimental local build)**: `.tar.gz` with executable, icon, and `runtime/`. System dependencies remain external.
 
 `runtime/` contains `ffmpeg` (`ffmpeg.exe` on Windows), `libonnxruntime.1.21.0.dylib` / `onnxruntime.dll` / `libonnxruntime.so.1.21.0`, and required companion libraries and notices. Windows also includes `DirectML.dll` and `open-quartz-screensaver-stub.exe`. Startup resolves `executable-parent/runtime` or the macOS app resource path above. Development commands set `ORT_DYLIB_PATH`, `OPEN_QUARTZ_FFMPEG_PATH`, and runtime `PATH` explicitly. The native libraries come from Microsoft's versioned NuGet packages. [ONNX Runtime 1.21.0](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.21.0), [ONNX Runtime DirectML 1.21.0](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.21.0), [DirectML 1.15.4](https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4)
 
