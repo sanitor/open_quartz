@@ -963,7 +963,7 @@ fn exact_video_demand_carries_vfr_pts_through_gpu_and_seek_epoch() {
         graph.nodes[0].data.input_mode = Some(crate::project::model::InputMode::Video);
         let mut p = pipeline(device().await, &graph);
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../oq-media/tests/source-time.mp4");
+            .join("tests/fixtures/source-time.mp4");
         let config = NativeVideoConfig {
             kind: NativeVideoSourceKind::File,
             source: path.to_string_lossy().into_owned(),

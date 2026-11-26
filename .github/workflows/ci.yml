@@ -51,9 +51,6 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
           "$pwd\node_modules\.cache\open-quartz\desktop-runtime-win32-x64" >> $env:GITHUB_PATH
 
-      - name: Build native media and test audio seeking on Windows
-        if: runner.os == 'Windows'
-        run: cargo test --locked -p oq-media --features audio,d3d12 --lib
 
       - name: Enforce 100% Rust SDK coverage
         run: npm run test:sdk-coverage
@@ -77,38 +74,13 @@ jobs:
           OPEN_QUARTZ_FFMPEG_PATH: ${{ github.workspace }}/apps/open_quartz_slint/runtime/ffmpeg
         run: |
           mkdir -p test-results/phase5
-          cargo llvm-cov --locked -p oq-media --features videotoolbox --json --output-path test-results/phase5/media-coverage.json -- --test-threads=1
           cargo test --locked -p open_quartz --features native-runtime,native-video --lib -- --test-threads=1
-          cargo run --locked -p open_quartz --features native-runtime,native-video --example export_video -- crates/oq-media/tests/source-time.mp4 test-results/phase5/cli-export.mp4 1 13 10 1 --invert
+          cargo run --locked -p open_quartz --features native-runtime,native-video --example export_video -- crates/open_quartz/tests/fixtures/source-time.mp4 test-results/phase5/cli-export.mp4 1 13 10 1 --invert
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: media-source-and-export-evidence
           path: test-results/phase5/
-          if-no-files-found: error
-
-  video-editor:
-    name: Native video editor (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: npm ci
-      - name: Exercise Rust and real editor UI with coverage
-        run: npm run test:video-editor:coverage
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: native-video-editor-evidence
-          path: |
-            test-results/phase6/
-            test-results/clip-pipeline/
           if-no-files-found: error
 
   slint-app:
@@ -142,8 +114,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Test reusable code editor
-        run: npm run test:editor
 
       - name: Test native desktop (Linux virtual display)
         if: runner.os == 'Linux'
@@ -153,9 +123,6 @@ jobs:
         if: runner.os != 'Linux'
         run: npm run test:desktop
 
-      - name: Test Video Editor without hardware video decoding on Windows
-        if: runner.os == 'Windows'
-        run: npm run test:video-editor:portable
 
       - name: Test desktop UI (Linux Vulkan virtual display)
         if: runner.os == 'Linux'

@@ -88,7 +88,7 @@ independent. NativePlayer is the real native production coordinator; the public
 headless `Player` driver is unchanged and `Project::graph_mut` can still bypass
 revision/history. See [Design 模块与所有权](../../docs/DESIGN.md#module-ownership).
 
-The shared core now also has a macOS hardware H.264/MP4 `execution::ExportJob` and runnable `export_video` example. This is headless infrastructure, **not a new File → Export Video UI** in this application. It uses the same FramePipeline with GPU NV12 conversion, bounded native input-consumption credits and atomic final-file commit; no audio or CPU image fallback. Commands, SDK source/patch distribution and actual evidence are in the [media README](../../crates/oq-media/README.md#硬件h264mp4文件任务).
+The shared core now also has a macOS hardware H.264/MP4 `execution::ExportJob` and runnable `export_video` example. This is headless infrastructure, **not a new File → Export Video UI** in this application. It uses the same FramePipeline with GPU NV12 conversion, bounded native input-consumption credits and atomic final-file commit; no audio or CPU image fallback. Commands, SDK source/patch distribution and actual evidence are in the [media README](https://github.com/sanitor/oq-media/blob/master/README.md#硬件h264mp4文件任务).
 
 Phase 6 now has a **separate timeline application**, [OpenQuartz Studio](../open_quartz_video_editor/README.md), launched with `npm run dev:video-editor`. This node-graph application and its normal `npm run dev` entry are unchanged. The timeline app reuses FramePipeline and shared-device GPU textures; it does not yet offer the Phase 8 export UI or audio editing.
 
@@ -188,7 +188,7 @@ project; CLEAR removes the graph as one undoable edit. Neither automatically sav
   previews collapse. Runtime and project details are available through FILE →
   RUNTIME STATUS…. At 800×540 the toolbar shortens its brand and hides the
   version to preserve actions.
-- The native shader editor uses the independent `crates/slint_code_editor`
+- The native shader editor uses the independent [slint-code-editor](https://github.com/sanitor/slint-code-editor)
   component with live WGSL highlighting. Its editing and accessibility limits are
   described under [Inspector and WGSL editing](#inspector-and-wgsl-editing).
 - `GraphViewModel` projects SDK graph snapshots into node and edge models and
@@ -330,7 +330,7 @@ preserved separately from BT.601 YUV coefficients and converted to BT.709 in
 linear light before sRGB output. HDR, other primaries, rotation/crop and non-square
 pixels remain unsupported by this path. Unsupported cameras/Linux and Windows
 without D3D12 refuse rather than CPU-upload frames. Device-specific 8K measurements
-in the [oq-media README](../../crates/oq-media/README.md#8k-性能与-opengl-兼容慢路径) do not establish inference throughput or cross-platform support.
+in the [oq-media README](https://github.com/sanitor/oq-media/blob/master/README.md#8k-性能与-opengl-兼容慢路径) do not establish inference throughput or cross-platform support.
 
 For the small shared-GPU video demo, prepare the runtime first, then run
 `cargo run --manifest-path apps/open_quartz_slint/Cargo.toml --example video_preview -- VIDEO`.
@@ -400,7 +400,7 @@ See [core structured operators](../../docs/DESIGN.md#structured-operators), [sha
   dimensions through automatic filters on the next executed frame, while manual
   targets remain fixed. Builtin `iResolution` matches each allocated GPU target.
   With no connected sampler, automatic targets retain the graph-default size.
-- Shader nodes use the reusable `crates/slint_code_editor` component, with a
+- Shader nodes use the reusable [slint-code-editor](https://github.com/sanitor/slint-code-editor) component, with a
   cosmic-text document/layout, live WGSL colors, line numbers, goto-line,
   find/next, replace/all, mouse/keyboard selection and document undo/redo.
   Built-in implementations remain read-only; **Apply shader** remains explicit.

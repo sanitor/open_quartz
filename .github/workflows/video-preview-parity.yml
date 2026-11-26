@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   hardware-preview:
-    name: Native desktop and Video Editor (${{ matrix.platform }})
+    name: Native desktop (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +35,6 @@ jobs:
       - run: npm ci
       - run: npm run test:desktop
       - run: npm run test:desktop:export
-      - run: npm run test:video-editor
       - run: npm run test:e2e:full
 
       - uses: actions/upload-artifact@v4

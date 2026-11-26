@@ -15,7 +15,7 @@ inference-e2e = ["open_quartz/inference-diagnostics"]
 
 [dependencies]
 open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video", "native-onnx", "model-cache"] }
-slint_code_editor = { path = "../../crates/slint_code_editor" }
+slint_code_editor = { git = "https://github.com/sanitor/slint-code-editor.git", rev = "5725592db93abf81da00a7b7dac111ffa7ccc14a" }
 directories = "6"
 pollster = "0.4"
 base64 = "0.22"

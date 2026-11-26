@@ -192,7 +192,7 @@ fn video_window_prefetches_future_pts_and_cut_prewarm_survives_graph_commit() {
         graph.nodes[0].data.input_mode = Some(crate::project::model::InputMode::Video);
         let mut p = pipeline(device().await, &graph);
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../oq-media/tests/source-time.mp4");
+            .join("tests/fixtures/source-time.mp4");
         let config = NativeVideoConfig {
             kind: NativeVideoSourceKind::File,
             source: path.to_string_lossy().into_owned(),

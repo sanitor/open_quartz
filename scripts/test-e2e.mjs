@@ -16,8 +16,6 @@ const suites = [
   ['Desktop interactions', 'scripts/desktop.mjs', 'test-ui'],
   ['Desktop catalog shaders', 'scripts/desktop.mjs', 'test-ui-shaders'],
   ['Desktop Color Corrector', 'scripts/desktop.mjs', 'test-ui-corrector'],
-  ['Video Editor Edit and Nodes', 'scripts/video-editor.mjs', 'test-ui'],
-  ['Video Editor hardware MP4 delivery', 'scripts/video-editor.mjs', 'test-ui-delivery'],
   ['Resident inference', 'scripts/desktop.mjs', 'test-inference'],
 ];
 

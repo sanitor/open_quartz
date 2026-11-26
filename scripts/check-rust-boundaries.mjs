@@ -185,7 +185,7 @@ fn main() { let _ = core::any::type_name::<Player>(); }
     if (members.includes(obsolete)) throw new Error(`Obsolete core package remains in workspace: ${obsolete}`);
   }
   const manifests = [
-    'Cargo.toml', 'apps/open_quartz_slint/Cargo.toml', 'crates/slint_code_editor/Cargo.toml',
+    'Cargo.toml', 'apps/open_quartz_slint/Cargo.toml',
     'crates/open_quartz/Cargo.toml', 'crates/oq-inference/Cargo.toml',
     'crates/open_quartz_screensaver/Cargo.toml', 'crates/open-quartz-screensaver-stub/Cargo.toml',
   ];

@@ -3864,6 +3864,7 @@ dependencies = [
 [[package]]
 name = "oq-media"
 version = "0.1.0"
+source = "git+https://github.com/sanitor/oq-media.git?rev=df56eee2dde13576dce23932eef9cc34b8bdaaba#df56eee2dde13576dce23932eef9cc34b8bdaaba"
 dependencies = [
  "ffmpeg-next",
  "windows",
@@ -5217,6 +5218,7 @@ dependencies = [
 [[package]]
 name = "slint_code_editor"
 version = "0.1.0"
+source = "git+https://github.com/sanitor/slint-code-editor.git?rev=5725592db93abf81da00a7b7dac111ffa7ccc14a#5725592db93abf81da00a7b7dac111ffa7ccc14a"
 dependencies = [
  "arboard",
  "cosmic-text",

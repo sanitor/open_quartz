@@ -14,7 +14,7 @@ fn graph() -> crate::Graph {
     ],"edges":[{"id":"a","source":"video","sourceHandle":"out","target":"effect","targetHandle":"in"},{"id":"b","source":"effect","sourceHandle":"out","target":"renderer","targetHandle":"in"}]})).unwrap()
 }
 fn fixture() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../oq-media/tests/source-time.mp4")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-time.mp4")
 }
 fn prepare(path: &std::path::Path) -> FramePipeline {
     let (device, _) = pollster::block_on(RenderDevice::new()).expect("real hardware GPU required");
