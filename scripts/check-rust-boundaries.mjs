@@ -169,7 +169,7 @@ fn main() { let _ = core::any::type_name::<Player>(); }
     [privateModel, /error\[E0603\]: module `model` is private/],
     [privatePlayer, /error\[E0603\]: module `playback` is private/],
   ]) {
-    const result = execute('cargo', ['check', '--quiet', '--manifest-path', join(project, 'Cargo.toml')], root);
+    const result = execute('cargo', ['check', '--quiet', '--color', 'never', '--manifest-path', join(project, 'Cargo.toml')], root);
     if (result.status === 0) throw new Error(`Internal module unexpectedly public: ${project}`);
     if (!diagnostic.test(result.stderr)) {
       throw new Error(`Boundary fixture did not fail for the expected reason: ${project}\n${result.stdout}\n${result.stderr}`);

@@ -3864,7 +3864,8 @@ dependencies = [
 [[package]]
 name = "oq-media"
 version = "0.1.0"
-source = "git+https://github.com/sanitor/oq-media.git?rev=df56eee2dde13576dce23932eef9cc34b8bdaaba#df56eee2dde13576dce23932eef9cc34b8bdaaba"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b930b369d76efab1be0506a6abd0f27e33a93ddd8090fae39568ed64662246c"
 dependencies = [
  "ffmpeg-next",
  "windows",
@@ -5218,7 +5219,8 @@ dependencies = [
 [[package]]
 name = "slint_code_editor"
 version = "0.1.0"
-source = "git+https://github.com/sanitor/slint-code-editor.git?rev=5725592db93abf81da00a7b7dac111ffa7ccc14a#5725592db93abf81da00a7b7dac111ffa7ccc14a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51d7fdcdc7eba9775d64e3412f5c68a06e86ce6412571ed8a2c815389b14bf33"
 dependencies = [
  "arboard",
  "cosmic-text",

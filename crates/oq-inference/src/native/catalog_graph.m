@@ -733,7 +733,9 @@ void *oq_catalog_graph_create(void *mtl_device, const uint8_t *json, size_t json
             OQCheck(owner.inputBytes<=device.maxBufferLength && owner.outputBytes<=device.maxBufferLength,@"catalog input/output exceeds render-device buffer limit");
             MPSGraphDevice *graphDevice=[MPSGraphDevice deviceWithMTLDevice:device];
             MPSGraphCompilationDescriptor *compilation=[MPSGraphCompilationDescriptor new]; compilation.optimizationLevel=MPSGraphOptimizationLevel0; compilation.waitForCompilationCompletion=YES;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
             if(@available(macOS 26.0,*)) compilation.reducedPrecisionFastMath=MPSGraphReducedPrecisionFastMathNone;
+#endif
             __block NSString *compilationError=nil;
             compilation.compilationCompletionHandler=^(MPSGraphExecutable *executable,NSError *failure) { (void)executable; if(failure) compilationError=[failure.localizedDescription copy]; };
             MPSGraphShapedType *inputType=[[MPSGraphShapedType alloc] initWithShape:inputShape dataType:MPSDataTypeFloat32];
