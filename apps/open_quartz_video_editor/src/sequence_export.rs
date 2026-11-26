@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[path = "master_export.rs"]
+mod master;
+
 pub struct ExportTask {
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<(String, Option<Phase>)>>,
@@ -38,7 +41,12 @@ impl ExportTask {
         let worker = thread::Builder::new()
             .name("oq-editor-export".into())
             .spawn(move || {
-                let result = run(
+                let runner = if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mov")) {
+                    master::run
+                } else {
+                    run
+                };
+                let result = runner(
                     render,
                     project,
                     revision,

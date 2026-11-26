@@ -17,11 +17,12 @@ const deliveryOnly = args.includes('--delivery-only');
 const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
 const transcriptOnly = args.includes('--transcript-only');
+const interchangeOnly = args.includes('--interchange-only');
 const seekCloseOnly = args.includes('--seek-close-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only'].includes(arg));
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = interchangeOnly ? 'interchange-only' : seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -760,7 +761,8 @@ async function runVideoCases() {
  }, { description: 'independent audio timeline item' });
  const audioLaneScroll = async () => {
    const view = await client.find({ id: 'EditorWindow::timeline_scroll' });
-   await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId, deltaX: 0, deltaY: -170, position: center(view) });
+   await client.value('dispatch_pointer_scroll', { windowHandle: client.windowId, deltaX: 0, deltaY: -170,
+     position: { x: view.absolutePosition.x + 100, y: view.absolutePosition.y + 50 } });
  };
  const dragAudio = async (element, pixels) => {
    const from = center(element);
@@ -1244,8 +1246,11 @@ async function runVideoCases() {
  });
  await step('Solo a track, observe separated meters, and export only that track', async () => {
    await launch(audioProject); await waitState('audio clips 2');
-   await audioLaneScroll();
-   const solo = async () => (await buttons('Solo Audio 2'))[0];
+   const solo = () => client.waitFor(async () => {
+     const control = (await buttons('Solo Audio 2'))[0];
+     if (!control) await audioLaneScroll();
+     return control;
+   }, { description: 'second audio lane solo control' });
    assert.equal((await solo()).accessibleDescription, 'Solo disabled');
    await client.click(await solo());
    assert.equal((await solo()).accessibleDescription, 'Solo enabled');
@@ -1925,7 +1930,11 @@ async function runVideoCases() {
    assert.equal((await client.byLabel('Input color', { role: 'Combobox' })).length, 1);
    const card = await assetCard('overlay.png');
    assert(card.accessibleDescription.endsWith('; offline'));
-   await client.click(card);
+   await client.value('dispatch_pointer_scroll', {
+     windowHandle: client.windowId, deltaX: 0, deltaY: -400,
+     position: {x: card.absolutePosition.x + 20, y: card.absolutePosition.y + 8},
+   });
+   await client.click(await assetCard('overlay.png'));
    await waitState('Media offline');
    assert.equal((await client.byLabel('Input color', { role: 'Combobox' })).length, 0);
    await fileAction('RELINK', moved, 'Relink media');
@@ -2318,12 +2327,13 @@ async function runVideoCases() {
    assert.equal((await client.find({ label: 'File path', role: 'TextInput' })).accessibleValue, snapshotOutput);
    await click('Cancel');
    await add(cancelled, 0, 2);
-   const job = name => client.find({ label: new RegExp(`Delivery .*queue-${name}[.]mp4$`), role: 'Groupbox' });
+   const job = async name => (await client.byLabel(new RegExp(`Delivery .*queue-${name}[.]mp4$`), {role: 'Groupbox'}))[0];
    const phase = (name, prefix) => client.waitFor(async () =>
-     (await job(name)).accessibleDescription.startsWith(prefix),
+     (await job(name))?.accessibleDescription.startsWith(prefix),
      { description: `${name} job ${prefix}` });
    await click('Render queue');
    await phase('snapshot', 'Pending');
+   await phase('cancelled', 'Pending');
    await click('Cancel job', true); await phase('cancelled', 'Cancelled');
    await click('Close queue');
    await close();
@@ -3524,6 +3534,95 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function interchangeRoundTrip() {
+  await step('Exchange OTIO cuts and linked audio, relink originals, and render a ProRes master', async () => {
+    const source = join(output, 'interchange-source.mp4');
+    const original = join(output, 'interchange-original.oqvideo.json');
+    const restored = join(output, 'interchange-restored.oqvideo.json');
+    const interchange = join(output, 'interchange.otio');
+    const movie = join(output, 'interchange.mov');
+    fixtureCommand(['-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=24:d=1',
+      '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=1',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', source]);
+    await launch();
+    await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('audio clips 1');
+    for (let frame = 0; frame < 4; frame++) await click('NEXT');
+    await click('SPLIT'); await waitState('clips 2');
+    await click('Add marker');
+    await fileAction('SAVE AS', original, 'Save project'); await waitState('Project saved');
+    await click('SEQUENCE');
+    await fileAction('Export OTIO', interchange, 'Save OTIO timeline'); await waitState('OTIO timeline exported');
+    const timeline = JSON.parse(await readFile(interchange, 'utf8'));
+    assert.equal(timeline.OTIO_SCHEMA, 'Timeline.1');
+    assert.deepEqual(timeline.tracks.children.map(track => track.kind), ['Video', 'Audio']);
+    await close();
+    const relocated = join(output, 'relinked');
+    await mkdir(relocated);
+    await rename(source, join(relocated, 'interchange-source.mp4'));
+    await launch();
+    await click('SEQUENCE');
+    await fileAction('Import OTIO', interchange, 'Open OTIO timeline'); await waitState('audio clips 2');
+    assert((await assetCard('interchange-source.mp4')).accessibleDescription.includes('offline'));
+    await fileAction('Relink folder', relocated, 'Search folder');
+    await waitState('Relinked 1 originals');
+    assert((await assetCard('interchange-source.mp4')).accessibleDescription.includes('online'));
+    await fileAction('SAVE AS', restored, 'Save project'); await waitState('Project saved');
+    const video = data => data.tracks.flatMap(track => track.clips.map(clip =>
+      [clip.timeline_start, clip.duration, clip.source_in_pts +
+        (clip.source_subtick_numerator || 0) / (clip.source_subtick_denominator || 1)]));
+    const audio = data => data.audio_tracks.flatMap(track => track.clips.map(clip => {
+      const linked = data.tracks.flatMap(track => track.clips).find(item => item.id === clip.placement.video_id);
+      assert(linked, 'Audio placement retains its link to the corresponding video cut');
+      return [linked.timeline_start, clip.gain];
+    }));
+    const before = JSON.parse(await readFile(original, 'utf8')).data;
+    const after = JSON.parse(await readFile(restored, 'utf8')).data;
+    assert.deepEqual(video(after), video(before));
+    assert.deepEqual(audio(after), audio(before));
+    assert.deepEqual(after.markers.map(({frame, name}) => [frame, name]), before.markers.map(({frame, name}) => [frame, name]));
+    await click('SEQUENCE');
+    await click('ProRes master');
+    for (const [label, value] of [['File path', movie], ['Export start frame', '2'], ['Export end frame (exclusive)', '8']]) {
+      await client.setValue(await client.find({label, role: 'TextInput'}), value);
+    }
+    await click('Save ProRes master');
+    await client.waitFor(async () => {
+      const current = await state();
+      if (current.includes('Export failed')) throw Error(current);
+      return current.includes('Export complete');
+    }, {timeoutMs: 60000, description: 'ProRes master completes'});
+    const media = spawnSync(process.env.OPEN_QUARTZ_TEST_FFMPEG_PATH || ffmpeg,
+      ['-hide_banner', '-i', movie], {encoding: 'utf8', env: {...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: ''}});
+    assert.match(media.stderr, /Video: prores \(HQ\).*yuv422p10le/);
+    assert.match(media.stderr, /Audio: pcm_s24le.*48000 Hz, stereo/);
+    const pixels = fixtureCommand(['-i', movie, '-an', '-vf', 'crop=2:2',
+      '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+    assert.equal(pixels.length, 6 * 2 * 2 * 3);
+    for (let pixel = 0; pixel < pixels.length; pixel += 3) {
+      assert(pixels[pixel] < 30 && pixels[pixel + 1] < 30 && pixels[pixel + 2] > 220,
+        'Master contains the rendered blue source across the cut');
+    }
+    const pcm = fixtureCommand(['-i', movie, '-vn', '-c:a', 'pcm_s24le', '-f', 's24le', '-']);
+    assert.equal(pcm.length, 9600 * 2 * 3);
+    assert(pcm.some(sample => sample !== 0), 'Master contains the audible source signal');
+    const published = await readFile(movie);
+    await click('SEQUENCE');
+    await fileAction('ProRes master', movie, 'Save ProRes master');
+    await waitState('Output already exists');
+    assert.deepEqual(await readFile(movie), published);
+
+    const unsupported = join(output, 'unsupported.otio');
+    timeline.tracks.children[0].children[0].OTIO_SCHEMA = 'Transition.1';
+    await writeFile(unsupported, JSON.stringify(timeline));
+    await click('SEQUENCE');
+    await fileAction('Import OTIO', unsupported, 'Open OTIO timeline');
+    await waitState('OTIO contains an unsupported item');
+    assert((await state()).includes('audio clips 2'), 'Failed import preserves the active project');
+    await close();
+  }, {core: true});
+}
+
 async function seekCloseRoundTrip() {
   await step('Close the native window immediately after a backward seek', async () => {
     let path = process.env.OPEN_QUARTZ_SEEK_CLOSE_PROJECT;
@@ -3556,7 +3655,8 @@ async function seekCloseRoundTrip() {
 }
 
 try {
-  if (seekCloseOnly) await seekCloseRoundTrip();
+  if (interchangeOnly) await interchangeRoundTrip();
+  else if (seekCloseOnly) await seekCloseRoundTrip();
   else if (transcriptOnly) await transcriptRoundTrip();
   else if (hdrMonitorOnly) await hdrMonitorRoundTrip();
   else if (matteOnly) await personMatteRoundTrip();
@@ -3565,6 +3665,7 @@ try {
     if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
     if (!audioOnly) await runVideoCases();
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
+    if (!audioOnly && !previewOnly) await interchangeRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();

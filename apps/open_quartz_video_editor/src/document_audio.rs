@@ -29,12 +29,12 @@ pub struct AudioTrack {
     pub gain: f32,
     pub clips: Vec<AudioClip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    crossfades: Vec<AudioCrossfade>,
+    pub(super) crossfades: Vec<AudioCrossfade>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct AudioCrossfade {
+pub(super) struct AudioCrossfade {
     outgoing: String,
     incoming: String,
     samples: u64,

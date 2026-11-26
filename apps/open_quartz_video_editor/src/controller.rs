@@ -54,6 +54,8 @@ enum IoResult {
     FolderRelink(u64, u64, Result<Vec<crate::batch_media::RelinkMatch>, String>),
     Import(u64, Result<MediaAsset, String>),
     Open(u64, Result<EditorDocument, String>),
+    ImportOtio(u64, Result<(EditorDocument, String), String>),
+    ExportOtio(u64, Result<String, String>),
     Recover(u64, Option<PathBuf>, Result<EditorDocument, String>),
     Relink(u64, String, PathBuf, Result<(), String>),
 }
@@ -888,7 +890,8 @@ impl Controller {
                 }
             }
             "save-as" => self.save_as(),
-            "export" | "export-srt" => {
+            "import-otio" | "export-otio" => self.path_dialog(action),
+            "export" | "export-srt" | "export-master" => {
                 if self.document.data.duration_frames() == 0 {
                     self.status("Add media to the timeline before exporting");
                 } else if self.pipeline_has_drafts() {
@@ -990,7 +993,7 @@ impl Controller {
         self.pause();
         if let Some(window) = self.window.upgrade() {
             window.set_file_dialog_kind(kind.into());
-            if matches!(kind, "export" | "export-srt") {
+            if matches!(kind, "export" | "export-srt" | "export-master") {
                 window.set_export_resolution(0);
                 window.set_export_frame_rate(0);
                 window.set_export_quality(0);
@@ -1004,8 +1007,8 @@ impl Controller {
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Untitled.oqvideo.json".into())
                     .into()
-            } else if matches!(kind, "export" | "export-srt") {
-                let name = if kind == "export-srt" { "subtitles.srt" } else { "export.mp4" };
+            } else if matches!(kind, "export" | "export-srt" | "export-master") {
+                let name = if kind == "export-srt" { "subtitles.srt" } else if kind == "export-master" { "master.mov" } else { "export.mp4" };
                 self.document.path().and_then(|path| path.parent())
                     .map(|parent| parent.join(name).to_string_lossy().into_owned())
                     .unwrap_or_default().into()
@@ -1045,12 +1048,16 @@ impl Controller {
             "srt" => rfd::FileDialog::new()
                 .add_filter("SubRip subtitles", &["srt"])
                 .pick_file(),
+            "import-otio" => rfd::FileDialog::new().add_filter("OpenTimelineIO", &["otio"]).pick_file(),
+            "export-otio" => rfd::FileDialog::new().add_filter("OpenTimelineIO", &["otio"])
+                .set_file_name("timeline.otio").save_file(),
             "open" => rfd::FileDialog::new()
                 .add_filter("Video project", &["json"])
                 .pick_file(),
             "save-as" => rfd::FileDialog::new()
                 .set_file_name("Untitled.oqvideo.json")
                 .save_file(),
+            "export-master" => rfd::FileDialog::new().add_filter("ProRes MOV", &["mov"]).set_file_name("master.mov").save_file(),
             "export-srt" => rfd::FileDialog::new()
                 .add_filter("SubRip subtitles", &["srt"])
                 .set_file_name("subtitles.srt")
@@ -1086,8 +1093,8 @@ impl Controller {
         if self.busy {
             return;
         }
-        if matches!(kind, "export" | "export-srt" | "queue-export") {
-            self.submit_export(path, kind == "export-srt", kind == "queue-export");
+        if matches!(kind, "export" | "export-srt" | "export-master" | "queue-export") {
+            self.submit_export(path, kind);
             return;
         }
         if path.as_os_str().is_empty() {
@@ -1098,6 +1105,28 @@ impl Controller {
             window.set_file_dialog_open(false);
         }
         match kind {
+            "import-otio" | "export-otio" => {
+                if !path.is_absolute() || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("otio")) {
+                    self.status("Enter an absolute path ending in .otio");
+                    return;
+                }
+                let importing = kind == "import-otio";
+                if importing && !self.confirm_discard() { return; }
+                self.busy = true;
+                let generation = self.generation;
+                let sender = self.io_send.clone();
+                if importing {
+                    std::thread::spawn(move || {
+                        let _ = sender.send(IoResult::ImportOtio(generation, document::otio::import(&path)));
+                    });
+                } else {
+                    let snapshot = self.document.data.clone();
+                    let revision = self.document.revision;
+                    std::thread::spawn(move || {
+                        let _ = sender.send(IoResult::ExportOtio(generation, document::otio::export(&snapshot, revision, &path)));
+                    });
+                }
+            }
             "import" => self.import_path(path),
             "lut" => self.import_clip_lut(&path),
             "import-files" => {
@@ -1713,9 +1742,11 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
-    fn submit_export(&mut self, path: PathBuf, subtitles: bool, queued: bool) {
+    fn submit_export(&mut self, path: PathBuf, kind: &str) {
         let Some(window) = self.window.upgrade() else { return; };
-        let extension = if subtitles { "srt" } else { "mp4" };
+        let subtitles = kind == "export-srt";
+        let queued = kind == "queue-export";
+        let extension = match kind { "export-srt" => "srt", "export-master" => "mov", _ => "mp4" };
         let range = if !path.is_absolute()
             || !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
         {
@@ -2091,6 +2122,21 @@ impl Controller {
                         }
                         Err(error) => self.status(error),
                     }
+                }
+                IoResult::ImportOtio(generation, result) if generation == self.generation => {
+                    self.busy = false;
+                    match result {
+                        Ok((doc, report)) => {
+                            self.recovery.reset_current();
+                            self.install_opened_document(doc);
+                            self.status(report);
+                        }
+                        Err(error) => self.status(error),
+                    }
+                }
+                IoResult::ExportOtio(generation, result) if generation == self.generation => {
+                    self.busy = false;
+                    self.status(result.unwrap_or_else(|error| error));
                 }
                 IoResult::Open(generation, result) if generation == self.generation => {
                     self.busy = false;

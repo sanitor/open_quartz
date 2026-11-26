@@ -14,7 +14,7 @@ export const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const mediaSdk = join(root, 'apps', 'open_quartz_slint', 'runtime', 'ffmpeg-media');
 const cache = join(root, 'node_modules', '.cache', 'open-quartz', `libav-${version}-${process.arch}`);
-const revision = 'oq-vt-hw3-metal-encode-r2-audio1-studio2';
+const revision = 'oq-vt-hw3-metal-encode-r2-audio1-studio3';
 
 function run(command, args, cwd) {
   return new Promise((accept, reject) => {
@@ -59,10 +59,10 @@ export async function prepareMediaSdk() {
     '--disable-gpl', '--disable-nonfree', '--disable-avdevice', '--enable-avfilter',
     '--enable-filter=scale,format,null,anull,aformat,aresample',
     '--enable-avcodec', '--enable-avformat', '--enable-swscale', '--enable-swresample', '--enable-videotoolbox',
-    '--enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac', '--enable-muxer=mp4,mov',
-    '--enable-decoder=h264,hevc,mpeg4,vp9,av1,aac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le',
+    '--enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac,prores_ks,pcm_s24le', '--enable-muxer=mp4,mov',
+    '--enable-decoder=rawvideo,h264,hevc,mpeg4,vp9,av1,aac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le',
     '--enable-parser=h264,hevc,mpeg4video,vp9,av1,aac',
-    '--enable-demuxer=mov,matroska,avi,mpegts,wav,aac', '--enable-protocol=file',
+    '--enable-demuxer=mov,matroska,avi,mpegts,wav,aac,rawvideo,pcm_f32le', '--enable-protocol=file,pipe',
     '--enable-hwaccel=h264_videotoolbox,hevc_videotoolbox',
     '--install-name-dir=@rpath', '--extra-cflags=-mmacosx-version-min=13.0',
     '--extra-ldflags=-mmacosx-version-min=13.0 -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/../lib',

@@ -1898,6 +1898,12 @@ export component EditorWindow inherits Window {
                         Button { text: "New sequence"; clicked => { root.sequence_slot("create", 0, ""); } }
                         Button { text: "Duplicate sequence"; clicked => { root.sequence_slot("duplicate", 0, ""); } }
                     }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "Import OTIO"; clicked => { root.settings_open = false; root.project_action("import-otio"); } }
+                        Button { text: "ProRes master"; clicked => { root.settings_open = false; root.project_action("export-master"); } }
+                        Button { text: "Export OTIO"; clicked => { root.settings_open = false; root.project_action("export-otio"); } }
+                    }
                     LineEdit {
                         property <string> sequence_label: root.active_sequence_name;
                         text: self.sequence_label; accessible-label: "Sequence name";
@@ -2005,18 +2011,18 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 680px; height: root.file_dialog_kind == "import-files" ? 370px : root.file_dialog_kind == "export" ? 390px : root.file_dialog_kind == "export-srt" ? 318px : 264px; background: root.panel;
+                width: 680px; height: root.file_dialog_kind == "import-files" ? 370px : root.file_dialog_kind == "export" ? 390px : (root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master") ? 318px : 264px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "import-otio" ? "Import timeline" : root.file_dialog_kind == "export-otio" ? "Export timeline" : root.file_dialog_kind == "export-master" ? "Export ProRes 422 HQ" : root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: root.file_dialog_kind == "import-files" ? "Paste one full file path per line, or use Browse." : root.file_dialog_kind == "relink-folder" ? "Paste a folder path, or use Browse to choose a folder." : "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
                         text: (root.export_profile == 1 ? "HEVC Main10 · declared BT.2020 / 1000-nit target" : root.export_profile == 2 ? "HEVC Main10 · BT.2020 HLG" : "H.264 MP4") + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
                         color: root.secondary; font-size: 11px;
                     }
-                    if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt": HorizontalLayout {
+                    if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master": HorizontalLayout {
                         spacing: 12px;
                         VerticalLayout {
                             spacing: 4px;
@@ -2063,7 +2069,7 @@ export component EditorWindow inherits Window {
                         if root.file_dialog_kind != "import-files": LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "lut" ? "/path/to/grade.cube" : root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "export-master" ? "/path/to/master.mov" : root.file_dialog_kind == "import-otio" || root.file_dialog_kind == "export-otio" ? "/path/to/timeline.otio" : root.file_dialog_kind == "lut" ? "/path/to/grade.cube" : root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -2078,7 +2084,7 @@ export component EditorWindow inherits Window {
                             text: "Add to queue";
                             clicked => { root.file_dialog_open = false; editor_focus.focus(); root.file_submit("queue-export", root.file_path); }
                         }
-                        Button { text: root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "export-master" ? "Save ProRes master" : root.file_dialog_kind == "import-otio" ? "Open OTIO timeline" : root.file_dialog_kind == "export-otio" ? "Save OTIO timeline" : root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }

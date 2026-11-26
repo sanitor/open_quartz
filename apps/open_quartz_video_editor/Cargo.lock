@@ -3810,6 +3810,7 @@ dependencies = [
  "slint-build",
  "slint_code_editor",
  "tempfile",
+ "url",
  "wgpu",
  "windows",
 ]

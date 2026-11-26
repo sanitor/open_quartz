@@ -28,7 +28,17 @@ Windows 和 macOS 共用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 
-macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio2` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
+macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio3` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
+
+### 时间线交换与专业母版
+
+在 **SEQUENCE** 中选择 **Export OTIO** 或 **Import OTIO** 交换当前序列。文件保留视频和音频轨、切点、素材入点、间隙和序列标记。Studio 导出的元数据额外保留序列画幅、精确帧率、匹配的音画链接和素材指纹。导入后另存为 Studio 工程。移动过的原始素材可通过 **Relink folder** 按指纹重新连接。第三方 OTIO 可使用绝对或相对的本地素材路径，缺少 Studio 素材元数据时需要先把媒体放到引用的位置。
+
+OTIO 用于交换常速剪辑。导出会列出省略的字幕、标题、嵌套序列、特效、转场和混音设置，遇到变速或重叠音频会报告错误。导入会拒绝 OTIO 转场或嵌套轨道，并在省略效果时显示提示。
+
+在 **SEQUENCE** 中选择 **ProRes master**，填写起止帧并保存为 `.mov`。输出沿用序列画幅和帧率，视频采用 ProRes 422 HQ，音轨存在时输出 48 kHz 立体声 24-bit PCM。视频来自 Studio 的 SDR 渲染结果。10-bit 4:2:2 是交付文件的编码格式，渲染输入精度为 8-bit SDR。母版需要 FFmpeg 的 `prores_ks` 和 `pcm_s24le` 编码器，渲染失败或取消会清理临时文件，已有的目标文件受覆盖保护。
+
+使用 `node scripts/test-video-editor-ui.mjs <binary> --interchange-only` 单独运行时间线往返、离线原片重连和 ProRes 母版回归。
 
 `dev:editor` 仍是代码编辑器组件示例；`dev:video-editor` 才是本应用。
 
