@@ -540,6 +540,12 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(this);
+        window.on_camera_chosen(move |index, split| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().change_camera(index as usize, split);
+            }
+        });
+        let weak = Rc::downgrade(this);
         window.on_sequence_slot(move |action, index, name| {
             if let Some(controller) = weak.upgrade() {
                 controller.borrow_mut().sequence_slot(&action, index, &name);
@@ -785,6 +791,10 @@ impl Controller {
                 == rfd::MessageDialogResult::Yes
     }
     fn action(&mut self, action: &str) {
+        if let Some(index) = action.strip_prefix("camera-").and_then(|value| value.parse::<usize>().ok()) {
+            self.change_camera(index, true);
+            return;
+        }
         if matches!(action, "save" | "save-as") && self.pipeline_has_drafts() {
             self.status("Apply or discard the pending node drafts before saving");
             return;
@@ -891,6 +901,27 @@ impl Controller {
             }
             "save-as" => self.save_as(),
             "import-otio" | "export-otio" => self.path_dialog(action),
+            "register-camera" => {
+                if let Some(id) = self.selected_asset.clone() {
+                    let result = self.document.register_angle(&id, self.source_state(&id).cursor);
+                    if result.is_ok() { self.status("Camera sync point saved"); self.refresh(); }
+                    else if let Err(error) = result { self.status(error); }
+                }
+            }
+            "clear-cameras" => {
+                let result = self.document.clear_angles();
+                if let Some(window) = self.window.upgrade() { window.set_multicam_open(false); }
+                self.finish_edit(result);
+            }
+            "camera-monitor" => {
+                if let Some(window) = self.window.upgrade() {
+                    self.pause();
+                    window.set_multicam_open(!window.get_multicam_open());
+                    self.asset_preview = false;
+                    self.requested = None;
+                    self.request_preview();
+                }
+            }
             "export" | "export-srt" | "export-master" => {
                 if self.document.data.duration_frames() == 0 {
                     self.status("Add media to the timeline before exporting");
@@ -1482,6 +1513,26 @@ impl Controller {
         self.refresh();
         self.request_preview();
     }
+    fn change_camera(&mut self, index: usize, split: bool) {
+        let Some(clip) = self.selected_clip.clone() else {
+            self.status("Select a registered camera clip");
+            return;
+        };
+        let playing = self.playing;
+        self.pause();
+        match self.document.cut_angle(&clip, self.playhead, index, split) {
+            Ok(id) => {
+                self.selected_clip = Some(id);
+                self.changed();
+                if playing { self.play(); }
+                self.status("Camera angle selected");
+            }
+            Err(error) => {
+                if playing { self.play(); }
+                self.status(error);
+            }
+        }
+    }
     fn sequence_slot(&mut self, action: &str, index: i32, label: &str) {
         self.pause();
         if action == "nest" {
@@ -1659,6 +1710,13 @@ impl Controller {
 
     fn refresh_source(&self) {
         let Some(window) = self.window.upgrade() else { return; };
+        let angles = self.document.data.multicam.iter()
+            .filter_map(|angle| self.document.asset(&angle.asset_id))
+            .map(|asset| slint::SharedString::from(asset.name.as_str()))
+            .collect::<Vec<_>>();
+        if window.get_camera_angles().iter().ne(angles.iter().cloned()) {
+            window.set_camera_angles(ModelRc::new(VecModel::from(angles)));
+        }
         let source = self.selected_asset.as_deref().and_then(|id| self.document.asset(id))
             .filter(|asset| asset.online && asset.has_video() && self.asset_preview)
             .and_then(|asset| {
@@ -1693,6 +1751,10 @@ impl Controller {
     }
 
     fn request_preview(&mut self) {
+        let angles = self.window.upgrade().filter(|window| window.get_multicam_open())
+            .and_then(|_| self.selected_clip.as_deref())
+            .and_then(|id| self.document.data.angle_preview(id));
+        let visual_project = angles.as_ref().unwrap_or(&self.document.data);
         if self.playing {
             if self.requested.is_some_and(|(revision, _, asset)| revision == self.document.revision && !asset) { return; }
             self.ticket += 1;
@@ -1700,9 +1762,9 @@ impl Controller {
                 start_frame: self.playhead,
                 scene_linear_monitor: self.hdr_monitor_open,
                 #[cfg(any(target_os = "macos", windows))]
-                project: self.proxies.project(&self.document.data),
+                project: self.proxies.project(visual_project),
                 #[cfg(not(any(target_os = "macos", windows)))]
-                project: self.document.data.clone(),
+                project: visual_project.clone(),
                 #[cfg(any(target_os = "macos", windows))]
                 audio_clock: self.audio.as_ref().map(|audio| audio.clock.clone()),
             };
@@ -1726,7 +1788,7 @@ impl Controller {
                     Ok(request)
                 })
         } else {
-            sequence_request(&self.document.data, self.ticket, self.document.revision, self.playhead,
+            sequence_request(visual_project, self.ticket, self.document.revision, self.playhead,
                 |id| self.pipeline_preview_for(id),
                 self.monitor_gesture.as_ref().map(|draft| (draft.clip.as_str(), draft.value)))
         };

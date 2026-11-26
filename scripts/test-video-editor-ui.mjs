@@ -18,9 +18,10 @@ const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
 const transcriptOnly = args.includes('--transcript-only');
 const interchangeOnly = args.includes('--interchange-only');
+const multicamOnly = args.includes('--multicam-only');
 const seekCloseOnly = args.includes('--seek-close-only');
 assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only'].includes(arg));
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only', '--multicam-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
 const tier = interchangeOnly ? 'interchange-only' : seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
@@ -3534,6 +3535,49 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function multicamRoundTrip() {
+  await step('Synchronize camera angles, cut and replace without changing sound', async () => {
+    const red = join(output, 'camera-a.mp4');
+    fixtureCommand(['-f', 'lavfi', '-i', 'color=red:s=320x180:r=30:d=1',
+      '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=1',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', red]);
+    const blue = generate('camera-b.mp4', 'blue', 2);
+    await launch(); await fileAction('IMPORT', red, 'Import media'); await waitState('assets 1');
+    await client.click(await assetCard('camera-a.mp4'));
+    await click('Set camera sync point'); await waitState('Camera sync point saved');
+    await click('ADD CLIP'); await waitState('audio clips 1');
+    await fileAction('IMPORT', blue, 'Import media'); await waitState('assets 2');
+    await client.click(await assetCard('camera-b.mp4'));
+    await click('Next source frame'); await click('Next source frame');
+    await click('Set camera sync point'); await waitState('Camera sync point saved');
+    await client.click((await timeline('camera-a.mp4'))[0]);
+    for (let frame = 0; frame < 5; frame++) await click('NEXT');
+    await click('SEQUENCE'); await click('Camera angles');
+    await waitState('Frame 5 ');
+    await client.key('2'); await waitState('clips 2');
+    await click('Replace with camera-a.mp4');
+    await waitState('Camera angle selected');
+    assert.equal((await timeline('camera-a.mp4')).length, 2);
+    await click('UNDO'); await waitState('clips 2');
+    await click('Close angles'); await expectColor('blue');
+    const saved = join(output, 'multicam.oqvideo.json');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    const {data} = JSON.parse(await readFile(saved, 'utf8'));
+    assert.equal(data.multicam.length, 2);
+    const [left, right] = data.tracks[0].clips;
+    assert.deepEqual([left.duration, right.timeline_start, right.duration], [5, 5, 25]);
+    const media = data.assets.find(asset => asset.id === right.asset_id);
+    assert(Math.abs(right.source_in_pts * media.time_base.numerator / media.time_base.denominator - 7 / 30) < 0.0001);
+    assert.deepEqual(data.audio_tracks[0].clips[0].placement, {kind:'independent', start:0, duration:48000, source:0});
+    await close();
+    await launch(saved); await waitState('clips 2');
+    await click('SEQUENCE'); await click('Clear camera sync');
+    await click('SAVE'); await waitState('Project saved');
+    assert.equal(JSON.parse(await readFile(saved, 'utf8')).data.multicam, undefined);
+    await close();
+  }, {core: true});
+}
+
 async function interchangeRoundTrip() {
   await step('Exchange OTIO cuts and linked audio, relink originals, and render a ProRes master', async () => {
     const source = join(output, 'interchange-source.mp4');
@@ -3655,7 +3699,8 @@ async function seekCloseRoundTrip() {
 }
 
 try {
-  if (interchangeOnly) await interchangeRoundTrip();
+  if (multicamOnly) await multicamRoundTrip();
+  else if (interchangeOnly) await interchangeRoundTrip();
   else if (seekCloseOnly) await seekCloseRoundTrip();
   else if (transcriptOnly) await transcriptRoundTrip();
   else if (hdrMonitorOnly) await hdrMonitorRoundTrip();
@@ -3666,6 +3711,7 @@ try {
     if (!audioOnly) await runVideoCases();
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
     if (!audioOnly && !previewOnly) await interchangeRoundTrip();
+    if (!audioOnly && !previewOnly) await multicamRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();

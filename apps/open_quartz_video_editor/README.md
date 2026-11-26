@@ -30,6 +30,12 @@ Windows 和 macOS 共用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e
 
 macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio3` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
 
+### 多机位剪辑
+
+在素材库选择一个机位，用源监视器定位所有机位都录到的同一事件，例如拍板落下的一帧，然后点击 **Set camera sync point**。每个机位分别登记一次，最多四个。再次登记同一素材会更新同步点。同步点随工程保存，可在 **SEQUENCE → Clear camera sync** 清空。
+
+把一个已登记机位放到时间线并选中它，在 **SEQUENCE → Camera angles** 打开同步画面。按数字键 1 到 4 或点 **Cut to…**，在播放头处切开并换掉右侧画面。**Replace with…** 将当前选中片段整段换机位。切换第一刀会把原片的关联声音变成独立音频，保留原声音、位置和长度。每次切换支持撤销。可用 --multicam-only 跑原生 UI 回归。
+
 ### 时间线交换与专业母版
 
 在 **SEQUENCE** 中选择 **Export OTIO** 或 **Import OTIO** 交换当前序列。文件保留视频和音频轨、切点、素材入点、间隙和序列标记。Studio 导出的元数据额外保留序列画幅、精确帧率、匹配的音画链接和素材指纹。导入后另存为 Studio 工程。移动过的原始素材可通过 **Relink folder** 按指纹重新连接。第三方 OTIO 可使用绝对或相对的本地素材路径，缺少 Studio 素材元数据时需要先把媒体放到引用的位置。

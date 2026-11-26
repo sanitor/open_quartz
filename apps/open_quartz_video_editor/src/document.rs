@@ -19,6 +19,9 @@ mod title;
 pub(crate) mod subtitle;
 #[path = "document_otio.rs"]
 pub(crate) mod otio;
+#[path = "document_multicam.rs"]
+mod multicam;
+use multicam::MulticamAngle;
 pub use title::Title;
 pub use transition::DissolveSide;
 #[path = "document_animation.rs"]
@@ -309,6 +312,8 @@ pub struct ProjectData {
     pub height: u32,
     pub fps: Rational,
     pub assets: Vec<MediaAsset>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multicam: Vec<MulticamAngle>,
     pub tracks: Vec<VideoTrack>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_tracks: Vec<audio::AudioTrack>,
@@ -333,6 +338,7 @@ impl Default for ProjectData {
                 denominator: 1,
             },
             assets: Vec::new(),
+            multicam: Vec::new(),
             tracks: vec![VideoTrack::new(DEFAULT_TRACK.into(), "Video 1".into())],
             audio_tracks: Vec::new(),
             markers: Vec::new(),
