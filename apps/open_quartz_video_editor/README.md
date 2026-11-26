@@ -93,7 +93,7 @@ OPEN_QUARTZ_WINDOW_CONTROLS=right npm run dev:video-editor
 - **Nodes → View selected node** 将监视器切到所选图像节点，**View final output** 返回成片。切换只影响当前监视器，保留保存和导出的出线。
 - **SEQUENCE → Managed color · ACEScg** 可将序列切换到浮点工作域，调色和合成完成后应用 SDR 监视变换。原工程默认维持原有 SDR 外观。
 - MP4 色彩选项支持 **HDR10 PQ · BT.2020 / 1000 nits** 和 **HLG · BT.2020**，使用原始素材生成 HEVC Main10。适用范围与验收见 [HDR 工作流](HDR_WORKFLOW.md)。
-- 在 MP4 导出窗口可用 **Add to queue** 冻结当前序列、范围和编码选项。用 **Render queue** 查看任务、串行启动、取消或重试。任务保留在当前应用会话，继续剪辑不会改动已排队的版本。
+- 在 MP4 导出窗口可用 **Add to queue** 冻结当前序列、范围和编码选项。用 **Render queue** 查看任务、串行启动、取消或重试。重新启动应用会恢复等待中和被中断的任务，须手动按 **Start render queue** 才开始。中断任务从头执行，现有输出文件受覆盖保护。已完成、失败或取消的记录保留至本次会话结束。继续剪辑不会改变已排队的版本。
 - **SAVE / SAVE AS / OPEN**：独立 `.oqvideo.json` 格式，原子文件替换、相对素材路径、完整 SHA-256 指纹、未来 schema/未知字段拒绝。撤销栈不写入工程。
 - 编辑器后台保留未保存的工程快照，重新启动后可用 **Recover autosave** 打开副本，或用 **Discard autosave** 清除提示。每次手动覆盖保存会保留上一个版本，可用 **Previous version** 打开副本，再另存为。
 - **Crop** 四个百分比字段裁切片段画面，保留原来的摆放位置。用 **Add transform keyframe** 在当前序列帧记录位置、缩放和旋转。建立关键帧后，在片段内改这些属性或拖预览手柄会更新当前位置的关键帧。在关键帧上可切换到下一帧的线性或缓入缓出插值，也可删除关键帧。
@@ -164,6 +164,10 @@ Windows 和 macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 No
 VFR 代理回归分别解码原片和代理，逐帧比对归零后的 PTS。测试按平台选择 FFmpeg 的逐帧透传选项。
 
 Rust 测试覆盖嵌套节点时钟、时间线窗口边界、GPU 帧预热和精确定位。原生 UI 还检查拖动后的持久化、效果前后的真实 GPU 像素和独立解码的交付文件。覆盖率命令将 Rust 测试与原生 UI 的插桩结果合并至 `test-results/phase6/editor-coverage.json`。
+
+测量长工程时，先准备一份 3840 × 2160 的本机工程，使用至少两条同时可见的视频轨，并记录原片尺寸、轨数和片段数。用 UI 自动化构建运行 `node scripts/measure-video-editor-playback.mjs <应用路径> <工程路径> <报告目录> 6`。`measurement.json` 记录实际监视器交付、掉帧、共享帧预算峰值和一次远端精确定位的延迟。采样 FPS 受轮询频率影响，共享预算峰值仅统计应用持有的帧资源。可在两平台用同一工程重复测量，再判断是否增加磁盘渲染缓存。
+
+初始 Windows 样本在 Radeon 860M 上使用双轨 1080p 原片、4K 画布和 1800 个剪辑片段。6 秒内监视器收到 122 张画面，播放工作器记录 48 次丢帧，应用帧资源峰值约 250 MiB。从时间线标尺定位到第 13625 帧并显示画面约用 15 秒，包含 UI 与自动化调用开销。长距离定位是此样本里值得优先分析的瓶颈。
 
 Timeline-window acceptance includes 30-second media plus, 900-frame clips at default/maximum zoom, fit-to-sequence, fractional-scale trims, undo and persistence. Nodes-window acceptance uses actual red/blue H.264 fixtures and checks final monitor pixels; graph callback forwarding alone is not treated as success.
 

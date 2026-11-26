@@ -28,7 +28,7 @@ const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r))
 let child,client,exited,stdout='',stderr='';
 const project=join(output,'edit.oqvideo.json');
 async function launch(path){
-  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1',OPEN_QUARTZ_EDITOR_RECOVERY_DIR:join(output,'recovery'),OPEN_QUARTZ_PROXY_CACHE_DIR:join(output,'proxies')},stdio:['pipe','pipe','pipe']});
+  stdout='';stderr='';child=spawn(binary,path?['--project',path]:[],{env:{...process.env,SLINT_MCP_PORT:String(port),OPEN_QUARTZ_UI_CLOSE_STDIN:'1',OPEN_QUARTZ_EDITOR_RECOVERY_DIR:join(output,'recovery'),OPEN_QUARTZ_RENDER_QUEUE_DIR:join(output,'render-queue'),OPEN_QUARTZ_PROXY_CACHE_DIR:join(output,'proxies')},stdio:['pipe','pipe','pipe']});
   child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);
   exited=new Promise((accept,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>accept({code,signal}));});
   client=new SlintUiClient(`http://127.0.0.1:${port}/mcp`);
@@ -2312,6 +2312,13 @@ async function runVideoCases() {
    await click('Render queue');
    await phase('snapshot', 'Pending');
    await click('Cancel job', true); await phase('cancelled', 'Cancelled');
+   await click('Close queue');
+   await close();
+   await launch(seed); await waitState('clips 3');
+   await click('Render queue');
+   await phase('existing', 'Pending'); await phase('snapshot', 'Pending');
+   assert.equal((await client.byLabel(/Delivery .*queue-cancelled[.]mp4$/, { role: 'Groupbox' })).length, 0);
+   assert(!(await readdir(output)).includes('queue-snapshot.mp4'), 'recovery waits for explicit start');
    await click('Close queue');
    await click('SEQUENCE'); await click('New sequence'); await waitState('clips 0'); await click('Cancel');
    await click('Render queue'); await click('Start render queue');

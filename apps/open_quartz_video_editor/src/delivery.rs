@@ -2,7 +2,7 @@ use crate::document::{ProjectData, Rational};
 use std::ops::Range;
 use std::path::Path;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExportOptions {
     pub resolution: i32,
     pub frame_rate: i32,
@@ -10,7 +10,7 @@ pub struct ExportOptions {
     pub color: ExportColor,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportColor {
     #[default]
     Sdr,

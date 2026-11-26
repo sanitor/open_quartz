@@ -964,7 +964,7 @@ pub(crate) fn write_new_artifact(path: &Path, bytes: &[u8]) -> Result<(), String
     write_project_atomic(path, bytes, 0, false)
 }
 
-fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64, replace: bool) -> Result<(), String> {
+pub(crate) fn write_project_atomic(path: &Path, serialized: &[u8], revision: u64, replace: bool) -> Result<(), String> {
     let parent = path.parent().ok_or("Project directory is missing")?;
     let temp = parent.join(format!(
         ".{}.{}.tmp",
@@ -1077,7 +1077,7 @@ fn migrate_keyframes(project: &mut serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate(data: &ProjectData) -> Result<(), String> {
+pub(crate) fn validate(data: &ProjectData) -> Result<(), String> {
     references::validate_references(&data.reference_stills)?;
     data.validate_sequence_slots()?;
     validate_timeline(data)

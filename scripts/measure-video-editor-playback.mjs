@@ -37,6 +37,8 @@ const launchedAt = performance.now();
 const report = {
   binary, project, requestedSeconds: seconds,
   sequence: { width: file.data.width, height: file.data.height, fps: file.data.fps },
+  videoTracks: file.data.tracks?.length ?? 1,
+  videoClips: file.data.tracks?.reduce((count, track) => count + track.clips.length, 0) ?? file.data.clips.length,
   assets: file.data.assets.map(asset => ({ name: asset.name, width: asset.width, height: asset.height, fps: asset.fps, path: asset.path })),
   correctors: (file.data.tracks?.flatMap(track => track.clips) ?? file.data.clips).flatMap(clip => clip.pipeline.graph.nodes.filter(node => node.type === 'colorcorrector').map(node => ({ clip: clip.id, config: node.data.colorCorrector }))),
   measurement: 'Slint native monitor Frame status changes sampled over HTTP; sampled counts are a lower bound, not GPU timestamps or a universal FPS guarantee. Playback metrics, when available, distinguish worker publication from UI display.',
@@ -92,6 +94,16 @@ try {
   if (pause.length) await client.click(pause[0]);
   report.finalStatus = await state();
   await client.screenshot(join(output, 'played.png'));
+  await client.click(await button('FIT TIMELINE'));
+  const beforeSeek = /playhead (\d+) frames/.exec(await state())?.[1];
+  const seekStarted = performance.now();
+  await client.click(await button('Seek timeline ruler'));
+  const seekFrame = await client.waitFor(async () => {
+    const status = await state();
+    const playhead = /playhead (\d+) frames/.exec(status)?.[1];
+    return playhead !== beforeSeek && Number(playhead) === frameOf(status) && playhead;
+  }, { description: 'exact displayed frame after seeking the timeline' });
+  report.seek = { frame: Number(seekFrame), elapsedMs: performance.now() - seekStarted };
   const changes = report.samples.filter((sample, index, all) => frameOf(sample.status) !== undefined
     && (index === 0 || frameOf(sample.status) !== frameOf(all[index - 1].status)));
   const intervals = changes.slice(1).map((sample, index) => sample.ms - changes[index].ms);
@@ -102,6 +114,8 @@ try {
     lastFrame: changes.length ? frameOf(changes.at(-1).status) : null,
     sampledIntervalP50Ms: percentile(intervals, 0.5), sampledIntervalP95Ms: percentile(intervals, 0.95),
     longestUnchangedMs: Math.max(0, trailingMs, ...intervals), trailingUnchangedMs: trailingMs,
+    droppedFrames: report.finalMetrics?.dropped ?? null,
+    peakFrameBytes: report.finalMetrics?.bytes_peak ?? null,
   };
   assert(changes.length > 1, 'Playback clock ran without multiple actual monitor deliveries');
   if (report.finalMetrics?.displayed !== undefined) {

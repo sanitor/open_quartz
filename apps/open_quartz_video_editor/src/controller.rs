@@ -158,7 +158,7 @@ impl Controller {
         let this = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             document: EditorDocument::default(),
-            delivery_queue: Default::default(),
+            delivery_queue: OutputQueue::open(),
             delivery_model,
             preview,
             backend,
@@ -224,6 +224,9 @@ impl Controller {
             },
         );
         this.borrow_mut().refresh();
+        if let Some(error) = this.borrow().delivery_queue.storage_error() {
+            window.set_project_status(error.into());
+        }
         this
     }
     fn connect(this: &Rc<RefCell<Self>>, window: &EditorWindow) {
@@ -1811,7 +1814,7 @@ impl Controller {
                     #[cfg(any(target_os = "macos", windows))]
                     if let Some(export) = &self.export { export.cancel(); }
                 } else {
-                    self.delivery_queue.cancel_pending(index);
+                    if let Err(error) = self.delivery_queue.cancel_pending(index) { self.status(error); }
                 }
             }
             "retry" => {
@@ -1915,13 +1918,13 @@ impl Controller {
                     }
                     if outcome.is_some() { window.set_export_active(false); }
                 }
-                self.delivery_queue.update_active(&status, outcome);
+                if let Err(error) = self.delivery_queue.update_active(&status, outcome) { self.status(error); }
                 if outcome.is_some() { self.export.take(); }
             }
             if self.export.is_none() {
                 if let Some(spec) = self.delivery_queue.next() {
                     if let Err(error) = self.start_export(spec) {
-                        self.delivery_queue.update_active(&error, Some(JobPhase::Failed));
+                        if let Err(error) = self.delivery_queue.update_active(&error, Some(JobPhase::Failed)) { self.status(error); }
                     }
                 }
             }
