@@ -288,7 +288,7 @@ async function proxyRoundTrip() {
    assert.equal(created.length, 1);
    const timestamps = path => {
      const decoded = spawnSync(ffmpeg, ['-hide_banner', '-copyts', '-i', path,
-       '-vf', 'showinfo', '-fps_mode', 'passthrough', '-f', 'null', '-'], { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' }, encoding: 'utf8' });
+       '-vf', 'showinfo', ...framePassthrough, '-f', 'null', '-'], { env: { ...process.env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' }, encoding: 'utf8' });
      assert.equal(decoded.status, 0, decoded.stderr);
      return Array.from(decoded.stderr.matchAll(/\bn:\s+\d+ pts:\s+(\d+)\b/g), match => Number(match[1]));
    };

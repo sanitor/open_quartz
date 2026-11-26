@@ -161,6 +161,8 @@ npm run test:video-editor:ui:delivery
 
 Windows 和 macOS 可用 `npm run test:video-editor:ui:smoke` 运行 Edit 和 Nodes 中标记为核心的原生用例，或用 `npm run test:video-editor:ui` 和 `npm run test:video-editor:coverage` 执行两套用例的全量。仓库级入口为 `npm run test:e2e:smoke` 和 `npm run test:e2e:full`。
 
+VFR 代理回归分别解码原片和代理，逐帧比对归零后的 PTS。测试按平台选择 FFmpeg 的逐帧透传选项。
+
 Rust 测试覆盖嵌套节点时钟、时间线窗口边界、GPU 帧预热和精确定位。原生 UI 还检查拖动后的持久化、效果前后的真实 GPU 像素和独立解码的交付文件。覆盖率命令将 Rust 测试与原生 UI 的插桩结果合并至 `test-results/phase6/editor-coverage.json`。
 
 Timeline-window acceptance includes 30-second media plus, 900-frame clips at default/maximum zoom, fit-to-sequence, fractional-scale trims, undo and persistence. Nodes-window acceptance uses actual red/blue H.264 fixtures and checks final monitor pixels; graph callback forwarding alone is not treated as success.
