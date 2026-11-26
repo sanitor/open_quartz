@@ -32,6 +32,8 @@ tempfile = "3"
 oq-media = { path = "../../crates/oq-media", features = ["videotoolbox"] }
 
 [target.'cfg(windows)'.dependencies]
+i-slint-backend-winit = { version = "=1.18.1", default-features = false }
+i-slint-core = { version = "=1.18.1", default-features = false }
 open_quartz = { path = "../../crates/open_quartz", features = ["native-video-precise-d3d12", "native-dml"] }
 oq-media = { path = "../../crates/oq-media", features = ["audio"] }
 windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }

@@ -3795,6 +3795,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "cosmic-text",
+ "i-slint-backend-winit",
+ "i-slint-core",
  "image",
  "naga",
  "open_quartz",

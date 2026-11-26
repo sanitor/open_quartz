@@ -17,10 +17,11 @@ const deliveryOnly = args.includes('--delivery-only');
 const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
 const transcriptOnly = args.includes('--transcript-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only'].includes(arg));
+const seekCloseOnly = args.includes('--seek-close-only');
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -3523,8 +3524,40 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function seekCloseRoundTrip() {
+  await step('Close the native window immediately after a backward seek', async () => {
+    let path = process.env.OPEN_QUARTZ_SEEK_CLOSE_PROJECT;
+    if (!path) {
+      path = join(output, 'seek-close.oqvideo.json');
+      const source = generate('seek-close-source.mp4', 'blue', 2);
+      await launch();
+      await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+      await click('ADD CLIP'); await waitState('clips 1');
+      await fileAction('SAVE AS', path, 'Save project'); await waitState('Project saved');
+      await close();
+    }
+    const {data} = JSON.parse(await readFile(path, 'utf8'));
+    const end = Math.max(...data.tracks.flatMap(track => track.clips.map(clip => clip.timeline_start + clip.duration)));
+    for (let attempt = 0; attempt < (seekCloseOnly ? 3 : 1); attempt++) {
+      await launch(resolve(path)); await waitState('Frame 0 ');
+      await click('PLAY');
+      await waitState(`Frame ${end - 1} `);
+      await click('FIT TIMELINE');
+      await click('Seek timeline ruler');
+      await client.waitFor(async () => {
+        const current = await state();
+        const frame = Number(/; Frame (\d+) /.exec(current)?.[1]);
+        const playhead = Number(/playhead (\d+) frames/.exec(current)?.[1]);
+        return frame === playhead && frame > 0 && frame < end - 1;
+      }, { description: 'monitor presents the exact earlier frame' });
+      await close();
+    }
+  }, { core: true });
+}
+
 try {
-  if (transcriptOnly) await transcriptRoundTrip();
+  if (seekCloseOnly) await seekCloseRoundTrip();
+  else if (transcriptOnly) await transcriptRoundTrip();
   else if (hdrMonitorOnly) await hdrMonitorRoundTrip();
   else if (matteOnly) await personMatteRoundTrip();
   else if (deliveryOnly) await hardwareDeliveryRoundTrip();
@@ -3534,6 +3567,7 @@ try {
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
+    if (!audioOnly) await seekCloseRoundTrip();
   }
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

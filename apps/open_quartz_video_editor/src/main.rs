@@ -24,6 +24,8 @@ mod color_scope;
 mod color_lut;
 mod person_matte;
 mod hdr_monitor;
+#[cfg(windows)]
+mod windows_platform;
 #[cfg(all(windows, feature = "ui-automation"))]
 #[path = "../../open_quartz_slint/src/automation_input.rs"]
 mod automation_input;
@@ -74,6 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (bridge, configuration, description) = preview::PreviewBridge::new()?;
     let backend = bridge.backend.clone();
     let hdr_monitor = hdr_monitor::Monitor::new(&configuration);
+    #[cfg(windows)]
+    let platform = windows_platform::WindowsPlatform::install(configuration, hdr_monitor.clone())?;
+    #[cfg(not(windows))]
     slint::BackendSelector::new()
         .with_winit_custom_application_handler(hdr_monitor.clone())
         .require_wgpu_30(configuration)
@@ -82,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.set_window_controls_on_left(controls_on_left);
     window.set_mac_style_controls(cfg!(target_os = "macos"));
     slint_code_editor::install_editor!(window, CodeEditorBridge);
-    let controller = controller::Controller::new(&window, bridge, backend, description, hdr_monitor);
+    let controller = controller::Controller::new(&window, bridge, backend.clone(), description, hdr_monitor);
     if let Some(path) = project {
         controller.borrow_mut().open_path(path);
     }
@@ -111,9 +116,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-    window.run()?;
+    let result = window.run();
     controller.borrow_mut().shutdown();
     drop(controller);
     drop(window);
-    Ok(())
+    #[cfg(windows)]
+    {
+        // Slint and its custom window handler hold clones of the shared queue.
+        // Destroy the Windows backend while we are outside TLS teardown.
+        if let Err(error) = backend.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(5)),
+        }) {
+            eprintln!("Studio could not drain the GPU queue on exit: {error}");
+        }
+        drop(platform);
+    }
+    result.map_err(Into::into)
 }

@@ -152,6 +152,8 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 ## 验证
 
+Windows 关窗时，Studio 在事件循环返回后结束预览、释放窗口、等待已提交的 GPU 工作，再显式释放 Slint 图形后端。这样 D3D12 队列和资源在 Windows 线程本地存储析构前退出。原生回归用例从播放末帧向前寻帧，等待监视器显示正确的较早帧，并立即关窗，要求进程正常退出。可在 UI 自动化构建上运行 `node scripts/test-video-editor-ui.mjs <应用路径> --seek-close-only` 连续验证三次，也可通过 `OPEN_QUARTZ_SEEK_CLOSE_PROJECT` 指定 8K 单片段工程重跑。
+
 ### 本地转录与文本粗剪
 
 安装 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 的 `whisper-cli` 并准备本地模型。启动 Studio 前将 `OPEN_QUARTZ_WHISPER_MODEL` 设为模型路径。可用 `OPEN_QUARTZ_WHISPER_CLI` 指定可执行文件，或将其加入 PATH。默认自动识别语言，也可用 `OPEN_QUARTZ_WHISPER_LANGUAGE` 指定。Studio 在临时目录提取音频，在本机执行识别，取消或关闭面板会终止正在执行的任务。
