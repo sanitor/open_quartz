@@ -389,7 +389,7 @@ export component EditorWindow inherits Window {
     background: #111315; default-font-size: 12px;
     accessible-role: main;
     accessible-label: "OpenQuartz video editor";
-    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + (root.project_dirty ? "; Unsaved changes" : "") + "; " + root.io_status + "; " + root.monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status) + (root.clips.length + root.audio_clips.length > 256 ? "; timeline window " + root.timeline_video_clips.length + " video · " + root.timeline_audio_clips.length + " audio" : "");
+    accessible-description: "Project " + root.project_name + "; assets " + root.assets.length + "; clips " + root.clips.length + "; playhead " + root.selected_frame + " frames, " + root.timecode + "; " + root.project_status + (root.project_dirty ? "; Unsaved changes" : "") + "; " + root.io_status + "; " + root.monitor_status + "; " + root.hdr_monitor_status + (root.export_status == "" ? "" : "; " + root.export_status) + (root.audio_clips.length == 0 ? "" : "; audio clips " + root.audio_clips.length) + (root.audio_level == "" ? "" : "; " + root.audio_level) + (root.recovery_status == "" ? "" : "; " + root.recovery_status) + (root.selection_size > 1 ? "; " + root.selection_size + " selected" : "") + (root.proxy_status == "" ? "" : "; " + root.proxy_status) + (root.clips.length + root.audio_clips.length > 256 ? "; timeline window " + root.timeline_video_clips.length + " video · " + root.timeline_audio_clips.length + " audio" : "");
     forward-focus: editor_focus;
     init => { Palette.color-scheme = ColorScheme.dark; Theme.dark = true; }
     in-out property <string> project_name: "Untitled Video";
@@ -668,6 +668,8 @@ export component EditorWindow inherits Window {
     callback clip_timing_changed(field: string, value: string);
     in-out property <bool> sequence_managed_color;
     callback managed_color_changed(bool);
+    in property <string> hdr_monitor_status: "HDR monitor closed";
+    callback toggle_hdr_monitor();
     callback sequence_settings(width: string, height: string, fps_numerator: string, fps_denominator: string);
     callback rename_project(string);
     callback file_submit(kind: string, path: string);
@@ -970,7 +972,7 @@ export component EditorWindow inherits Window {
                             }
 
                         }
-                        if root.library_tab == "nodes": ScrollView {
+                        if root.library_tab == "nodes": effects-scroll := ScrollView {
                             horizontal-stretch: 1; vertical-stretch: 1;
                             VerticalLayout {
                                 padding: 8px; spacing: 10px;
@@ -1906,6 +1908,15 @@ export component EditorWindow inherits Window {
                         text: "Managed color · ACEScg";
                         checked <=> root.sequence_managed_color;
                         toggled => { root.managed_color_changed(self.checked); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Toggle HDR monitor";
+                            enabled: root.sequence_managed_color || root.hdr_monitor_status != "HDR monitor closed";
+                            clicked => { root.toggle_hdr_monitor(); root.settings_open = false; }
+                        }
+                        Text { text: root.hdr_monitor_status; color: root.secondary; vertical-alignment: center; }
                     }
                     Text { text: "Frame dimensions and rational frame rate. Enter whole numbers; the project validates changes."; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                     Text { text: "Width (pixels)"; color: root.secondary; font-size: 12px; }

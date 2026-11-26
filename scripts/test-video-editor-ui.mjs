@@ -15,10 +15,11 @@ const audioOnly = args.includes('--audio-only');
 const previewOnly = args.includes('--preview-only');
 const deliveryOnly = args.includes('--delivery-only');
 const matteOnly = args.includes('--matte-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only'].includes(arg));
+const hdrMonitorOnly = args.includes('--hdr-monitor-only');
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -3406,13 +3407,78 @@ async function personMatteRoundTrip() {
   }, { core: true });
 }
 
+async function hdrMonitorRoundTrip() {
+  await step('Present the managed sequence on a native window while keeping the SDR editor view', async () => {
+    const source = generate('hdr-monitor-source.mp4', 'red', 5, 30, '320x180');
+    await launch();
+    await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await click('SEQUENCE');
+    const managed = await client.find({ label: /^Managed color/, role: 'Checkbox' });
+    await client.click(managed);
+    await click('Apply settings');
+    await click('NEXT'); await waitState('Frame 1 ');
+    const centerPixel = async () => {
+      const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+      const window = await client.windowProperties();
+      const image = decodePng(await client.screenshot());
+      const scale = image.width / (window.size.width / (window.scaleFactor || 1));
+      const point = center(viewer);
+      const offset = (Math.floor(point.y * scale) * image.width + Math.floor(point.x * scale)) * image.channels;
+      return Array.from(image.pixels.subarray(offset, offset + 3));
+    };
+    const reference = await centerPixel();
+    assert(reference[0] > 190 && reference[1] < 40 && reference[2] < 40, reference);
+    await click('SEQUENCE'); await click('Toggle HDR monitor');
+    const expectedMode = process.env.OPEN_QUARTZ_EXPECT_HDR_MONITOR;
+    const monitorMode = () => client.waitFor(async () => {
+      const current = await state();
+      if (current.includes('native HDR')) return 'native HDR';
+      if (current.includes('SDR fallback')) return 'SDR fallback';
+      assert(!current.includes('HDR monitor unavailable') && !current.includes('surface unavailable'), current);
+    }, { description: 'native monitor presents a frame' });
+    const mode = await monitorMode();
+    if (expectedMode) assert.equal(mode, expectedMode);
+    report.hdrMonitorMode = mode;
+    const switcher = process.env.OPEN_QUARTZ_HDR_TEST_SWITCHER;
+    if (switcher) {
+      assert.equal(mode, 'native HDR', 'live display change starts with HDR enabled');
+      try {
+        execFileSync(switcher, ['off']);
+        await waitState('HDR monitor · SDR fallback');
+        execFileSync(switcher, ['on']);
+        await waitState('HDR monitor · native HDR');
+        report.hdrMonitorTransitions = [mode, 'SDR fallback', 'native HDR'];
+      } finally {
+        execFileSync(switcher, ['on']);
+      }
+    }
+    await click('NEXT'); await waitState('Frame 2 ');
+    assert((await centerPixel()).every((channel, i) => Math.abs(channel - reference[i]) <= 3),
+      'editor retains the same SDR display transform with the native monitor open');
+    await click('PLAY');
+    await client.waitFor(async () => Number((await state()).match(/; Frame (\d+) /)?.[1]) > 4,
+      { description: 'native monitor remains open as real program frames advance' });
+    await click('PAUSE'); await waitState(mode);
+    await click('SEQUENCE'); await click('Toggle HDR monitor'); await waitState('HDR monitor closed');
+    const last = Number((await state()).match(/playhead (\d+) frames/)?.[1]);
+    await click('NEXT'); await waitState(`Frame ${last + 1} `);
+    assert((await centerPixel()).every((channel, i) => Math.abs(channel - reference[i]) <= 3));
+    await fileAction('SAVE AS', join(output, 'hdr-monitor.oqvideo.json'), 'Save project');
+    await waitState('Project saved');
+    await close();
+  }, { core: true });
+}
+
 try {
-  if (matteOnly) await personMatteRoundTrip();
+  if (hdrMonitorOnly) await hdrMonitorRoundTrip();
+  else if (matteOnly) await personMatteRoundTrip();
   else if (deliveryOnly) await hardwareDeliveryRoundTrip();
   else {
     if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
     if (!audioOnly) await runVideoCases();
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
+    if (!audioOnly) await hdrMonitorRoundTrip();
   }
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

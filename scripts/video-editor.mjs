@@ -7,7 +7,7 @@ import { packageVideoEditor } from './package-video-editor.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const [mode='dev',...args]=process.argv.slice(2);
-if(!['dev','test','test-portable','test-ui','test-ui-stills','test-ui-audio','test-ui-preview','test-ui-delivery','test-ui-matte','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-portable | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-ui-preview | test-ui-delivery | test-ui-matte | test-coverage | build | package');
+if(!['dev','test','test-portable','test-ui','test-ui-stills','test-ui-audio','test-ui-preview','test-ui-delivery','test-ui-matte','test-ui-hdr-monitor','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-portable | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-ui-preview | test-ui-delivery | test-ui-matte | test-ui-hdr-monitor | test-coverage | build | package');
 if(mode==='test-ui' && (args.length>1 || args.some(arg=>arg!=='--smoke')))throw Error('Expected test-ui [--smoke]');
 const windows = process.platform === 'win32' && process.arch === 'x64';
 if (process.platform !== 'darwin' && !windows) throw Error('Video Editor supports macOS and Windows x64.');
@@ -73,7 +73,7 @@ async function runEditorUi(binary, options, testEnv) {
   }
   if (failures.length) throw new AggregateError(failures, 'Video Editor UI failed');
 }
-const uiModes = ['test-ui', 'test-ui-stills', 'test-ui-audio', 'test-ui-preview', 'test-ui-delivery', 'test-ui-matte'];
+const uiModes = ['test-ui', 'test-ui-stills', 'test-ui-audio', 'test-ui-preview', 'test-ui-delivery', 'test-ui-matte', 'test-ui-hdr-monitor'];
 if (windows && [...uiModes, 'test-coverage'].includes(mode)) {
   // The packaged LGPL runtime remains the independent decoder for assertions.
   const { default: installer } = await import('@ffmpeg-installer/ffmpeg');
@@ -89,6 +89,8 @@ if (uiModes.includes(mode)) {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--audio-only'], env);
   } else if (mode === 'test-ui-matte') {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--matte-only'], env);
+  } else if (mode === 'test-ui-hdr-monitor') {
+    await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--hdr-monitor-only'], env);
   } else if (mode === 'test-ui-preview' || mode === 'test-ui-delivery') {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, mode === 'test-ui-delivery' ? '--delivery-only' : '--preview-only'], env);
   } else {

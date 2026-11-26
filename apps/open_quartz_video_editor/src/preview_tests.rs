@@ -356,7 +356,7 @@ mod tests {
         document.add_asset(asset.clone()).unwrap();
         document.add_clip(&id).unwrap();
         bridge.play(PlaybackRequest { ticket: 10, revision: document.revision,
-            start_frame: 0, project: document.data.clone(), #[cfg(any(target_os = "macos", windows))] audio_clock: None }).unwrap();
+            start_frame: 0, project: document.data.clone(), scene_linear_monitor: false, #[cfg(any(target_os = "macos", windows))] audio_clock: None }).unwrap();
         let first = wait(&bridge, 10);
         assert_eq!(first.frame, 0);
         assert_eq!(first.actual_pts_ns, Some(0));
@@ -413,7 +413,7 @@ mod tests {
         document.data.tracks[0].clips.push(next);
         let clock = Arc::new(crate::audio_output::AudioClock::default());
         bridge.play(PlaybackRequest { ticket: 1, revision: document.revision,
-            start_frame: 0, project: document.data, audio_clock: Some(clock.clone()) }).unwrap();
+            start_frame: 0, project: document.data, scene_linear_monitor: false, audio_clock: Some(clock.clone()) }).unwrap();
         let first = wait(&bridge, 1);
         let first_epoch = first.epoch;
         assert!(first.image.is_ok(), "{}", first.image.err().unwrap());
@@ -504,7 +504,7 @@ mod tests {
         assert!((185..=190).contains(&r) && (185..=190).contains(&b) && g == 0 && a == 255, "{r}, {g}, {b}, {a}");
 
         bridge.play(PlaybackRequest { ticket: 2, revision: document.revision,
-            start_frame: 0, project: document.data.clone(), #[cfg(any(target_os = "macos", windows))] audio_clock: None }).unwrap();
+            start_frame: 0, project: document.data.clone(), scene_linear_monitor: false, #[cfg(any(target_os = "macos", windows))] audio_clock: None }).unwrap();
         let played = wait(&bridge, 2);
         assert_eq!(played.frame, 0);
         assert_eq!(read(&played.image.unwrap()), pixels);

@@ -17,7 +17,14 @@ fn request_limits(request: &PreviewRequest, fps: Rational) -> Result<(FrameWindo
     let (width, height) = request.sources().fold((request.width, request.height), |(w, h), (_, asset, _)| {
         (w.max(asset.width), h.max(asset.height))
     });
-    playback_limits(width, height, fps)
+    let (window, mut stable) = playback_limits(width, height, fps)?;
+    if request.managed_output && !request.managed_view {
+        stable.max_bytes *= 2;
+        if stable.max_bytes > 1024 * 1024 * 1024 {
+            return Err("Full-resolution HDR outputs exceed the bounded 1 GiB preview pool".into());
+        }
+    }
+    Ok((window, stable))
 }
 pub(super) fn configure_limits(pipeline: &mut FramePipeline, request: &PreviewRequest, fps: Rational) -> Result<FrameWindowConfig, String> {
     let (window, mut stable) = request_limits(request, fps)?;
@@ -60,7 +67,8 @@ impl PlaybackSession {
                 let duration = play.project.duration_frames();
                 if duration == 0 { return Err("Add media to the timeline first".into()); }
                 let frame = play.start_frame.min(duration - 1);
-                let (request, end) = sequence_region(&play.project, play.ticket, play.revision, frame, duration)?;
+                let (mut request, end) = sequence_region(&play.project, play.ticket, play.revision, frame, duration)?;
+                if play.scene_linear_monitor { request.managed_view = false; }
                 let fps = play.project.fps;
                 (Some(play.project), request, end, duration, fps)
             }
@@ -213,8 +221,9 @@ fn worker_step(pipeline: &mut FramePipeline, session: &mut PlaybackSession, conf
         && session.warm_error.is_none()
         && session.next_frame.saturating_add(session.config.high_water as u64) >= session.end {
         let result = (|| {
-            let (request, end) = sequence_region(session.project.as_ref().unwrap(), session.request.ticket,
+            let (mut request, end) = sequence_region(session.project.as_ref().unwrap(), session.request.ticket,
                 session.request.revision, session.end, session.duration)?;
+            request.managed_view = session.request.managed_view;
             let previous_ns = session.source_times(session.end.saturating_sub(1))?.0;
             let continuous = request.source_ns.checked_sub(previous_ns)
                 .is_some_and(|delta| delta <= session.fps.frames_to_ns(1).unwrap_or(0).saturating_add(1));

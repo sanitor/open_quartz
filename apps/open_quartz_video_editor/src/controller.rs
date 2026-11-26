@@ -5,7 +5,7 @@ use crate::delivery::{ExportColor, ExportOptions};
 use crate::document::{self, AudioDestination, ClipTransform, EditorDocument, MediaAsset, Placement, Rational};
 use crate::preview::{asset_request, sequence_request, PlaybackRequest, PreviewBridge};
 use crate::{AssetRow, AudioClipRow, AudioTrackRow, ClipRow, DissolveRow, EditorWindow, MarkerRow, SnapResult, TrackRow};
-use open_quartz::rendering::{GpuBackend, GpuOutputHandle, StableFrame, TextureFormat};
+use open_quartz::rendering::{GpuBackend, GpuOutputHandle, TextureFormat};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -106,7 +106,9 @@ pub struct Controller {
     playhead: u64,
     playing: bool,
     requested: Option<(u64, u64, bool)>,
-    displayed: Option<StableFrame>,
+    displayed: Option<crate::hdr_monitor::DisplayFrame>,
+    hdr_monitor: crate::hdr_monitor::Monitor,
+    hdr_monitor_open: bool,
     color_scope: crate::color_scope::ColorScope,
     references: reference_stills::ReferenceGallery,
     #[cfg(any(target_os = "macos", windows))]
@@ -138,6 +140,7 @@ impl Controller {
         preview: PreviewBridge,
         backend: Arc<GpuBackend>,
         description: String,
+        hdr_monitor: crate::hdr_monitor::Monitor,
     ) -> Rc<RefCell<Self>> {
         let (ui_send, ui_receive) = mpsc::channel();
         let (io_send, io_receive) = mpsc::channel();
@@ -186,6 +189,8 @@ impl Controller {
             playing: false,
             requested: None,
             displayed: None,
+            hdr_monitor,
+            hdr_monitor_open: false,
             color_scope: Default::default(), references: Default::default(),
             #[cfg(any(target_os = "macos", windows))]
             mask_tracking: None,
@@ -550,6 +555,8 @@ impl Controller {
                 controller.finish_edit(result);
             }
         });
+        let hdr_monitor = this.borrow().hdr_monitor.clone();
+        window.on_toggle_hdr_monitor(move || hdr_monitor.toggle());
         let weak = Rc::downgrade(this);
         window.on_sequence_settings(move |width, height, numerator, denominator| {
             if let Some(controller) = weak.upgrade() {
@@ -1651,6 +1658,7 @@ impl Controller {
             self.ticket += 1;
             let request = PlaybackRequest { ticket: self.ticket, revision: self.document.revision,
                 start_frame: self.playhead,
+                scene_linear_monitor: self.hdr_monitor_open,
                 #[cfg(any(target_os = "macos", windows))]
                 project: self.proxies.project(&self.document.data),
                 #[cfg(not(any(target_os = "macos", windows)))]
@@ -1682,13 +1690,12 @@ impl Controller {
                 |id| self.pipeline_preview_for(id),
                 self.monitor_gesture.as_ref().map(|draft| (draft.clip.as_str(), draft.value)))
         };
-        match plan.and_then(|request| {
+        match plan.and_then(|mut request| {
+            if self.hdr_monitor_open {
+                request.managed_view = false;
+            }
             #[cfg(any(target_os = "macos", windows))]
-            let request = {
-                let mut request = request;
-                request.map_video_assets(|asset| self.proxies.apply(asset));
-                request
-            };
+            request.map_video_assets(|asset| self.proxies.apply(asset));
             self.preview.request(request)
         }) {
             Ok(()) => { self.requested = Some(identity); self.refresh_monitor(); }
@@ -1849,6 +1856,19 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        let (status, open) = self.hdr_monitor.status();
+        if let Some(window) = self.window.upgrade() {
+            if window.get_hdr_monitor_status().as_str() != status {
+                window.set_hdr_monitor_status(status.into());
+            }
+        }
+        if self.hdr_monitor_open != open {
+            self.hdr_monitor_open = open;
+            self.pause();
+            self.requested = None;
+            self.request_preview();
+        }
+        self.hdr_monitor.refresh_display();
         self.poll_references();
         #[cfg(any(target_os = "macos", windows))]
         self.poll_mask_tracking();
@@ -2142,6 +2162,10 @@ impl Controller {
                 && update.epoch >= progress.epoch && (current_clip || update.image.is_err()) {
                 match update.image {
                     Ok(frame) => {
+                        let frame = match self.hdr_monitor.present(&self.backend, frame) {
+                            Ok(frame) => frame,
+                            Err(error) => { self.pause(); self.status(error); return; }
+                        };
                         if let Some(window) = self.window.upgrade() {
                             match slint::Image::try_from((*frame.output().texture).clone()) {
                                 Ok(image) => {
@@ -2225,7 +2249,7 @@ impl Controller {
         }).collect();
         reconcile(&self.timeline_audio_model, audio_rows, |row| row.id.as_str(), |a, b| a == b);
     }
-    fn thumbnail(&self, frame: &StableFrame) -> Result<Thumbnail, String> {
+    fn thumbnail(&self, frame: &crate::hdr_monitor::DisplayFrame) -> Result<Thumbnail, String> {
         let bytes = u64::from(frame.image.width) * u64::from(frame.image.height) * 4;
         let credit = self
             .backend
@@ -2614,6 +2638,7 @@ impl Controller {
         self.thumbnail_order.clear();
     }
     pub fn shutdown(&mut self) {
+        self.hdr_monitor.close();
         self.timer.stop();
         self.recovery.reset_current();
         #[cfg(any(target_os = "macos", windows))]
@@ -2808,6 +2833,8 @@ mod native_dialog_tests {
             extra_selection: BTreeSet::new(),
             playhead: 0, playing: false, requested: None,
             displayed: None,
+            hdr_monitor: crate::hdr_monitor::Monitor::disabled(),
+            hdr_monitor_open: false,
             color_scope: Default::default(), references: Default::default(),
             #[cfg(any(target_os = "macos", windows))]
             mask_tracking: None, displayed_frame: None, thumbnail_order: VecDeque::new(), thumbnails: HashMap::new(),

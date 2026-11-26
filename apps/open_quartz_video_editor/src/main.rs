@@ -23,6 +23,7 @@ mod timeline_viewport;
 mod color_scope;
 mod color_lut;
 mod person_matte;
+mod hdr_monitor;
 #[cfg(all(windows, feature = "ui-automation"))]
 #[path = "../../open_quartz_slint/src/automation_input.rs"]
 mod automation_input;
@@ -72,14 +73,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (bridge, configuration, description) = preview::PreviewBridge::new()?;
     let backend = bridge.backend.clone();
+    let hdr_monitor = hdr_monitor::Monitor::new(&configuration);
     slint::BackendSelector::new()
+        .with_winit_custom_application_handler(hdr_monitor.clone())
         .require_wgpu_30(configuration)
         .select()?;
     let window = EditorWindow::new()?;
     window.set_window_controls_on_left(controls_on_left);
     window.set_mac_style_controls(cfg!(target_os = "macos"));
     slint_code_editor::install_editor!(window, CodeEditorBridge);
-    let controller = controller::Controller::new(&window, bridge, backend, description);
+    let controller = controller::Controller::new(&window, bridge, backend, description, hdr_monitor);
     if let Some(path) = project {
         controller.borrow_mut().open_path(path);
     }

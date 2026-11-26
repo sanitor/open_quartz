@@ -1,5 +1,6 @@
 use open_quartz::outputs::FrameSnapshotIdentity;
-use open_quartz::rendering::{GpuBackend, GpuPreviewImage, GpuPreviewReader, StableFrame};
+use open_quartz::rendering::{GpuBackend, GpuPreviewImage, GpuPreviewReader};
+use crate::hdr_monitor::DisplayFrame;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -39,13 +40,13 @@ pub struct ColorScope {
 }
 
 struct Worker {
-    send: mpsc::SyncSender<(u64, Mode, StableFrame)>,
+    send: mpsc::SyncSender<(u64, Mode, DisplayFrame)>,
     receive: mpsc::Receiver<(u64, Result<Plot, String>)>,
 }
 
 impl Worker {
     fn start(backend: Arc<GpuBackend>) -> Self {
-        let (send, jobs) = mpsc::sync_channel::<(u64, Mode, StableFrame)>(1);
+        let (send, jobs) = mpsc::sync_channel::<(u64, Mode, DisplayFrame)>(1);
         let (results, receive) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let mut reader = GpuPreviewReader::new(backend);
@@ -81,7 +82,7 @@ impl ColorScope {
         self.last_sample = None;
     }
 
-    pub fn update(&mut self, backend: &Arc<GpuBackend>, frame: Option<&StableFrame>) -> Option<Result<Plot, String>> {
+    pub fn update(&mut self, backend: &Arc<GpuBackend>, frame: Option<&DisplayFrame>) -> Option<Result<Plot, String>> {
         let mut result = None;
         if let Some(worker) = &self.worker {
             match worker.receive.try_recv() {

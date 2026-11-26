@@ -398,6 +398,7 @@ pub struct PlaybackRequest {
     pub revision: u64,
     pub start_frame: u64,
     pub project: ProjectData,
+    pub scene_linear_monitor: bool,
     #[cfg(any(target_os = "macos", windows))]
     pub audio_clock: Option<Arc<crate::audio_output::AudioClock>>,
 }

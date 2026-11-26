@@ -152,7 +152,25 @@ async function oneNewNode(before) {
 }
 async function addEffect(label) {
   const before = new Set((await headers()).map(element => nodeState(element).id));
-  await client.click(await button(`Add ${label} node`));
+  const viewport = await client.find({ id: 'EditorWindow::effects-scroll' });
+  const x = viewport.absolutePosition.x ?? 0;
+  const y = viewport.absolutePosition.y ?? 0;
+  const scroll = deltaY => client.value('dispatch_pointer_scroll', {
+    windowHandle: client.windowId, position: { x: x + 15, y: y + viewport.size.height / 2 },
+    deltaX: 0, deltaY,
+  });
+  await scroll(10000);
+  let effect;
+  for (let attempt = 0; attempt < 12 && !effect; attempt++) {
+    const tiles = await client.byLabel(`Add ${label} node`, { role: 'Button' });
+    effect = tiles.find(tile => {
+      const centerY = tile.absolutePosition.y + tile.size.height / 2;
+      return centerY >= y && centerY < y + viewport.size.height;
+    });
+    if (!effect) await scroll(-viewport.size.height * 0.55);
+  }
+  assert(effect, `Effect browser did not reveal ${label}`);
+  await client.click(effect);
   await click('Fit graph in view');
   return oneNewNode(before);
 }
@@ -870,6 +888,7 @@ async function runVideoCases() {
     await click('UNDO');
     await client.click(await combo()); await client.key('\uf700'); await client.key('\n');
     await click('Show still'); await waitColor('red');
+    await click('SAVE'); await waitState('Project saved');
     await close(); await launch(path); await waitState('clips 1');
     await click('Nodes workspace'); await selectClip('red.mp4');
     await click('Show still'); await waitColor('red'); await click('Show live'); await waitColor('cyan');

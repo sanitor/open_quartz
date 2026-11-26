@@ -29,7 +29,7 @@ or an explicit declaration.
 OpenQuartz Studio imports seekable HEVC Main10 files with explicit BT.2020
 nonconstant matrix and PQ or HLG metadata. The Library displays the hardware
 detected transfer and bit depth. Source preview and the SDR timeline use the
-VideoToolbox P010 planes on the GPU. The SDR view maps luminance using a smooth
+VideoToolbox or D3D12VA P010 planes on the GPU. The SDR view maps luminance using a smooth
 shoulder after conversion to linear Rec.709. Its HLG reference display uses
 1,000 cd/m² and system gamma 1.2.
 
@@ -46,10 +46,10 @@ target and 0.005 cd/m² minimum. Use the preset for material mastered to that
 target. The encoder writes an MP4 mastering display box. The target omits
 MaxCLL and MaxFALL.
 
-The export worker reads original VideoToolbox planes into AP1 RGBA16Float.
+The export worker reads the original hardware-decoded planes into AP1 RGBA16Float.
 Composition and Color Corrector work on that linear signal. The final shader
 converts to BT.2020 PQ and writes limited-range 10-bit P010 directly into
-IOSurface planes for VideoToolbox HEVC Main10. SDR H.264 stays the default.
+encoder surfaces for VideoToolbox or D3D12VA HEVC Main10. SDR H.264 stays the default.
 A queued export captures the selected profile. Nested sequences and legacy
 custom shader effects are rejected for this profile.
 
@@ -72,6 +72,38 @@ and checks the transfer, exact frame count, zero-based PTS and two 10-bit
 luminance patches.
 
 ## Managed sequence monitoring
+
+### Native HDR monitor
+
+Enable **Managed color · ACEScg** in Sequence settings, then select **Toggle HDR
+monitor**. Studio opens a movable program window on the same GPU as the editor.
+The window receives the same scene-linear timeline frame during playback and
+when paused. The editor monitor, scopes, thumbnails and reference gallery keep
+the SDR display transform.
+
+The native window uses FP16 extended linear sRGB where the adapter supports it.
+Windows presents the result through DXGI scRGB and macOS through Metal EDR.
+Studio maps highlights into the current display's headroom and reports **native
+HDR** or **SDR fallback** in Sequence settings. The monitor reevaluates display
+headroom while paused and while playing. Dragging it onto an SDR display or
+turning off HDR switches it to the SDR transform. The monitor closes from its
+title bar or from Sequence settings. Opening and closing the window pauses
+timeline playback at the current position. Export color profiles are set in the
+delivery dialog independently of the monitor window.
+
+Run `node scripts/video-editor.mjs test-ui-hdr-monitor` to open the native
+window, scrub the sequence and compare the editor's SDR pixels with the window
+open and closed. Set `OPEN_QUARTZ_EXPECT_HDR_MONITOR` to `native HDR` when
+running on a confirmed HDR output, or `SDR fallback` for an SDR output.
+The delivery suite separately decodes HDR10 and HLG files.
+
+For physical-display acceptance, open a sequence with a bright PQ or HLG
+reference patch. Keep playback running while moving the program window between
+an HDR and SDR display, then disconnect the HDR display while the window is on
+it. Check the status and picture after each transition. Repeat the move and
+disconnect while paused to confirm the last frame is remapped without seeking.
+
+### Editor SDR view
 
 Enable **Managed color · ACEScg** in Sequence settings to grade and composite
 in AP1 before the monitor's SDR display transform. The setting belongs to the
