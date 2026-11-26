@@ -16,7 +16,7 @@ ui-automation = ["slint/mcp"]
 base64 = "0.22"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
 cosmic-text = { version = "=0.18.2", default-features = false, features = ["std", "swash"] }
-open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video"] }
+open_quartz = { path = "../../crates/open_quartz", features = ["native-runtime", "native-video", "model-cache"] }
 slint_code_editor = { path = "../../crates/slint_code_editor" }
 slint = { version = "=1.18.1", features = ["renderer-femtovg-wgpu", "unstable-wgpu-30"] }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12", "metal", "vulkan"] }
@@ -31,7 +31,7 @@ sha2 = "0.10"
 oq-media = { path = "../../crates/oq-media", features = ["videotoolbox"] }
 
 [target.'cfg(windows)'.dependencies]
-open_quartz = { path = "../../crates/open_quartz", features = ["native-video-precise-d3d12"] }
+open_quartz = { path = "../../crates/open_quartz", features = ["native-video-precise-d3d12", "native-dml"] }
 oq-media = { path = "../../crates/oq-media", features = ["audio"] }
 windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }
 

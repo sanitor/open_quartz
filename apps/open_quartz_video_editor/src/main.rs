@@ -22,6 +22,7 @@ mod output_queue;
 mod timeline_viewport;
 mod color_scope;
 mod color_lut;
+mod person_matte;
 #[cfg(all(windows, feature = "ui-automation"))]
 #[path = "../../open_quartz_slint/src/automation_input.rs"]
 mod automation_input;

@@ -116,10 +116,14 @@ impl PreparedInferenceModel {
         super::image_task_contract(&self.config, &self.info)
     }
     pub fn into_parts(self) -> (PreparedModel, InferenceConfig) { (self.model, self.config) }
+    pub(crate) fn prepare_session(self, backend: &crate::rendering::GpuBackend) -> Result<(ResidentInferenceSession, InferenceConfig, InferenceSessionInfo), String> {
+        let session = ResidentInferenceSession::prepare(backend.device.clone(), backend.queue.clone(), self.model, &self.config)?;
+        Ok((session, self.config, self.info))
+    }
     pub fn attach(self, runtime: &mut crate::player::NativePlayer, node_id: String) -> Result<InferenceSessionInfo, String> {
         let backend = runtime.backend();
-        let session = ResidentInferenceSession::prepare(backend.device.clone(), backend.queue.clone(), self.model, &self.config)?;
-        runtime.load_resident_inference(node_id, session, self.config)
+        let (session, config, _) = self.prepare_session(&backend)?;
+        runtime.load_resident_inference(node_id, session, config)
     }
 }
 

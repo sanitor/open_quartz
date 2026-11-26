@@ -126,17 +126,18 @@ impl ClipPipeline {
             if node.id == SOURCE_ID {
                 continue;
             }
-            if !matches!(node.node_type, NodeType::Shader | NodeType::Constant | NodeType::Math | NodeType::ColorCorrector) {
-                return Err("Clip pipelines support only static Shader, Constant, Math and Color Corrector nodes".into());
+            if !matches!(node.node_type, NodeType::Shader | NodeType::Constant | NodeType::Math | NodeType::ColorCorrector | NodeType::Inference) {
+                return Err("Unsupported clip pipeline node type".into());
             }
             let data = &node.data;
+            let matte = crate::person_matte::is_effect(node);
             if data.input_mode.is_some() || data.input_data_type.is_some() || data.system_source.is_some()
                 || data.image_data_url.is_some() || data.raw_data_url.is_some()
                 || data.video_source_type.is_some() || data.video_url.is_some()
                 || data.video_file_path.is_some() || data.video_device_id.is_some()
-                || data.inference_source.is_some() || data.inference_model_id.is_some()
+                || (!matte && (node.node_type == NodeType::Inference || data.inference_source.is_some() || data.inference_model_id.is_some()
                 || data.inference_model_path.is_some() || data.inference_catalog_id.is_some()
-                || data.inference_policy.is_some() || data.feedback_enabled == Some(true)
+                || data.inference_policy.is_some() || data.inference_params.is_some())) || data.feedback_enabled == Some(true)
             {
                 return Err(format!("Node {} requests an unsupported external or temporal resource", node.id));
             }
@@ -185,7 +186,7 @@ impl ClipPipeline {
                 {
                     return Err(format!("Color Corrector node {} has invalid executable ports", node.id));
                 }
-            } else {
+            } else if !matte {
                 let parsed = parse_shader(&data.shader_code);
                 if let Some(error) = parsed.parse_error {
                     return Err(format!("Node {}: {error}", node.id));
@@ -333,6 +334,10 @@ impl ClipPipeline {
         })
     }
 
+    pub fn add_person_matte(&mut self, after: &str) -> Result<String, String> {
+        self.add_serial_factory(after, None, crate::person_matte::factory)
+    }
+
     pub(crate) fn is_lut(node: &ProjectNode) -> bool {
         node.data.shader_template_id.as_deref() == Some(crate::color_lut::TEMPLATE)
             && node.data.shader_code.starts_with("\n// OpenQuartz embedded ACEScg CUBE\n")
@@ -391,6 +396,11 @@ impl ClipPipeline {
         let primary = samplers.iter().find(|port| auxiliary.is_none_or(|aux| aux.id != port.id))
             .ok_or("Missing primary image input")?;
         let mut graph = aggregate.to_file().graph;
+        if node.node_type == NodeType::Inference {
+            let staged = graph.nodes.iter_mut().find(|candidate| candidate.id == node.id)
+                .expect("factory node is in the graph");
+            staged.data.inference_policy = Some(crate::person_matte::policy());
+        }
         graph.edit(&mut |edit| {
             for edge in &downstream {
                 edit.disconnect(&edge.id)?;
@@ -454,7 +464,7 @@ impl ClipPipeline {
     }
 }
 
-fn ports_match(actual: &[open_quartz::project::Port], expected: &[open_quartz::project::Port]) -> bool {
+pub(crate) fn ports_match(actual: &[open_quartz::project::Port], expected: &[open_quartz::project::Port]) -> bool {
     actual.len() == expected.len() && actual.iter().zip(expected).all(|(actual, expected)| {
         actual.label == expected.label && actual.data_type == expected.data_type && actual.direction == expected.direction
     })

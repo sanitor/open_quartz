@@ -41,7 +41,7 @@ const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 async function launch(path) {
   stdout = ''; stderr = '';
   child = spawn(binary, path ? ['--project', path] : [], {
-    env: { ...process.env, SLINT_MCP_PORT: String(serverPort), OPEN_QUARTZ_UI_CLOSE_STDIN: '1', OPEN_QUARTZ_EDITOR_RECOVERY_DIR: join(output, 'recovery') },
+    env: { ...process.env, SLINT_MCP_PORT: String(serverPort), OPEN_QUARTZ_UI_CLOSE_STDIN: '1', OPEN_QUARTZ_EDITOR_RECOVERY_DIR: join(output, 'recovery'), OPEN_QUARTZ_RENDER_QUEUE_DIR: join(output, 'render-queue') },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdout.on('data', data => stdout += data);

@@ -302,7 +302,7 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             )
         } else { "let mask_alpha = 1.0;".into() };
         let alpha = if !matches!(layer.source, LayerSource::Video { .. }) || clip.nodes.iter()
-            .any(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some()) { format!("({alpha}) * sample.a") } else { alpha };
+            .any(|node| crate::clip_pipeline::BranchComposite::from_node(node).is_some() || crate::person_matte::is_effect(node)) { format!("({alpha}) * sample.a") } else { alpha };
         let color = if request.managed_output {
             let mut id = edge.source.as_str();
             let working = loop {

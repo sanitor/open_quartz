@@ -306,7 +306,7 @@ pub fn inference_models() -> Vec<InferenceModelDescriptor> {
             "Background Removal",
             "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
             4_574_861,
-            "",
+            "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
             vec![port("onnx_in_image", "image", DataType::Sampler2d, PortDirection::Input)],
             vec![port("onnx_out_foreground", "foreground", DataType::Sampler2d, PortDirection::Output)],
             None,

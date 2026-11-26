@@ -7,7 +7,7 @@ import { packageVideoEditor } from './package-video-editor.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const [mode='dev',...args]=process.argv.slice(2);
-if(!['dev','test','test-portable','test-ui','test-ui-stills','test-ui-audio','test-ui-preview','test-ui-delivery','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-portable | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-ui-preview | test-ui-delivery | test-coverage | build | package');
+if(!['dev','test','test-portable','test-ui','test-ui-stills','test-ui-audio','test-ui-preview','test-ui-delivery','test-ui-matte','test-coverage','build','package'].includes(mode))throw Error('Usage: video-editor.mjs dev [--project FILE] | test | test-portable | test-ui [--smoke] | test-ui-stills | test-ui-audio | test-ui-preview | test-ui-delivery | test-ui-matte | test-coverage | build | package');
 if(mode==='test-ui' && (args.length>1 || args.some(arg=>arg!=='--smoke')))throw Error('Expected test-ui [--smoke]');
 const windows = process.platform === 'win32' && process.arch === 'x64';
 if (process.platform !== 'darwin' && !windows) throw Error('Video Editor supports macOS and Windows x64.');
@@ -28,9 +28,12 @@ const env = {
 };
 if (!windows) env.DYLD_LIBRARY_PATH = [sdk, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(delimiter);
 if (windows) {
+  await run(process.execPath, ['scripts/desktop.mjs', 'prepare']);
+  const inferenceRuntime = join(root, 'node_modules', '.cache', 'open-quartz', 'desktop-runtime-win32-x64');
+  env.ORT_DYLIB_PATH ??= join(inferenceRuntime, 'onnxruntime.dll');
   env.FFMPEG_DIR = join(root, 'apps/open_quartz_slint/runtime/ffmpeg-shared');
   const pathKey = Object.keys(env).find(name => name.toLowerCase() === 'path') || 'PATH';
-  env[pathKey] = [join(env.FFMPEG_DIR, 'bin'), env[pathKey]].filter(Boolean).join(delimiter);
+  env[pathKey] = [join(env.FFMPEG_DIR, 'bin'), inferenceRuntime, env[pathKey]].filter(Boolean).join(delimiter);
 }
 const manifest=join(root,'apps/open_quartz_video_editor/Cargo.toml');
 if(mode==='dev')await run('cargo',['run','--locked','--manifest-path',manifest,'--',...args],env);
@@ -70,7 +73,7 @@ async function runEditorUi(binary, options, testEnv) {
   }
   if (failures.length) throw new AggregateError(failures, 'Video Editor UI failed');
 }
-const uiModes = ['test-ui', 'test-ui-stills', 'test-ui-audio', 'test-ui-preview', 'test-ui-delivery'];
+const uiModes = ['test-ui', 'test-ui-stills', 'test-ui-audio', 'test-ui-preview', 'test-ui-delivery', 'test-ui-matte'];
 if (windows && [...uiModes, 'test-coverage'].includes(mode)) {
   // The packaged LGPL runtime remains the independent decoder for assertions.
   const { default: installer } = await import('@ffmpeg-installer/ffmpeg');
@@ -84,6 +87,8 @@ if (uiModes.includes(mode)) {
     await run(process.execPath, ['scripts/test-video-editor-nodes-ui.mjs', binary, '--still-only'], env);
   } else if (mode === 'test-ui-audio') {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--audio-only'], env);
+  } else if (mode === 'test-ui-matte') {
+    await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, '--matte-only'], env);
   } else if (mode === 'test-ui-preview' || mode === 'test-ui-delivery') {
     await run(process.execPath, ['scripts/test-video-editor-ui.mjs', binary, mode === 'test-ui-delivery' ? '--delivery-only' : '--preview-only'], env);
   } else {

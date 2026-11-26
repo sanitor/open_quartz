@@ -44,6 +44,7 @@ pub struct PreparedNativeGraph {
     pub(crate) backend: Arc<GpuBackend>,
     expected_revision: u32,
     pub(crate) dirty_images: Vec<String>,
+    inference: Vec<(String, crate::inference::ResidentInferenceSession, InferenceConfig, crate::inference::InferenceSessionInfo)>,
     #[cfg(feature = "native-video")]
     pub(crate) videos: Vec<(String, crate::media::sources::PreparedVideoSource)>,
     #[cfg(feature = "native-video")]
@@ -53,6 +54,24 @@ pub struct PreparedNativeGraph {
 }
 
 impl PreparedNativeGraph {
+    /// Prepare a resident inference model before making a graph visible.
+    pub fn stage_inference(&mut self, node_id: &str, model: crate::inference::PreparedInferenceModel) -> Result<(), String> {
+        let node = self.graph.nodes.iter().find(|node| node.id == node_id && node.node_type == NodeType::Inference)
+            .ok_or_else(|| format!("Invalid inference stage for node {node_id}"))?;
+        if self.inference.iter().any(|(id, ..)| id == node_id) {
+            return Err(format!("Invalid inference stage for node {node_id}"));
+        }
+        let (mut session, config, info) = model.prepare_session(&self.backend)?;
+        if node.data.inference_model_id.as_deref() != Some(&config.model_id)
+            || node.data.inference_policy.as_ref() != Some(&config.policy) {
+            return Err(format!("Inference model or execution policy does not match node {node_id}"));
+        }
+        session.set_frame_budget(self.backend.frame_budget())?;
+        self.stage_remove_texture(node_id);
+        self.inference.push((node_id.to_owned(), session, config, info));
+        Ok(())
+    }
+
     pub fn graph(&self) -> &Graph {
         &self.graph
     }
@@ -427,6 +446,7 @@ impl FramePipeline {
             backend: self.render_device.backend(),
             expected_revision: self.session.revision(),
             dirty_images: Vec::new(),
+            inference: Vec::new(),
             #[cfg(feature = "native-video")]
             videos: Vec::new(),
             #[cfg(feature = "native-video")]
@@ -797,6 +817,9 @@ impl FramePipeline {
                 .expect("staged image node belongs to the committed graph");
         }
         self.inference.sync_graph(graph, &mut self.session)?;
+        for (node_id, session, config, info) in prepared.inference {
+            self.inference.load(node_id, session, config, info)?;
+        }
         #[cfg(feature = "native-video")]
         {
             let node_ids = graph

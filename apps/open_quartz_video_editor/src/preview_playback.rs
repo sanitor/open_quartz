@@ -153,6 +153,7 @@ pub(super) fn prepare_region(
 ) -> Result<(PreparedNativeGraph, u64), String> {
     validate_dimensions(pipeline, request.width, request.height)?;
     let mut prepared = pipeline.prepare_graph(&key.graph)?;
+    crate::person_matte::stage(&mut prepared, configured.as_ref().map(|previous| &previous.graph), || Ok(()))?;
     let (limits, _) = request_limits(request, Rational::new(30, 1)?)?;
     prepared.configure_video_prefetch_limits(limits.max_surfaces, limits.max_bytes / 2)?;
     let mut opened = 0;
@@ -330,8 +331,13 @@ pub(super) fn run(render: RenderDevice, validation_receiver: mpsc::Receiver<Pipe
     loop {
         if closed.load(Ordering::Acquire) { break; }
         for validation in validation_receiver.try_iter() {
-            let result = (|| { validate_dimensions(&pipeline, validation.width, validation.height)?;
-                pipeline.prepare_graph(&pipeline_graph(&validation.pipeline, validation.width, validation.height)?)?; Ok(()) })();
+            let result = (|| {
+                validate_dimensions(&pipeline, validation.width, validation.height)?;
+                let mut prepared = pipeline.prepare_graph(&pipeline_graph(&validation.pipeline, validation.width, validation.height)?)?;
+                crate::person_matte::stage(&mut prepared, None, || {
+                    if closed.load(Ordering::Acquire) { Err("Person Matte preparation cancelled".into()) } else { Ok(()) }
+                })
+            })();
             let _ = validation.result.send(result);
         }
         if let Some(command) = latest.lock().ok().and_then(|mut latest| latest.take()) {

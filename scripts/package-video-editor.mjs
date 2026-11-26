@@ -116,6 +116,14 @@ async function packageWindows(root, binary, stage, archive) {
   await copyFile(binary, join(app, basename(binary)));
   await copyFile(join(root, 'LICENSE'), join(app, 'LICENSE.txt'));
   await copyWindowsCrt(app);
+  const inferenceRuntime = join(root, 'node_modules', '.cache', 'open-quartz', 'desktop-runtime-win32-x64');
+  for (const dll of ['onnxruntime.dll', 'DirectML.dll']) {
+    await copyFile(join(inferenceRuntime, dll), join(app, dll));
+  }
+  for (const notice of ['ONNXRUNTIME-LICENSE.txt', 'ONNXRUNTIME-NOTICES.txt', 'ONNXRUNTIME-SOURCE.txt']) {
+    await copyFile(join(inferenceRuntime, notice), join(runtime, notice));
+  }
+  await cp(join(inferenceRuntime, 'directml-distribution'), join(runtime, 'directml-distribution'), { recursive: true });
   const sdkBin = join(sdk, 'bin');
   for (const file of await readdir(sdkBin)) {
     if (file === 'ffmpeg.exe' || file.toLowerCase().endsWith('.dll')) {

@@ -14,10 +14,11 @@ const smoke = args.includes('--smoke');
 const audioOnly = args.includes('--audio-only');
 const previewOnly = args.includes('--preview-only');
 const deliveryOnly = args.includes('--delivery-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only'].includes(arg));
+const matteOnly = args.includes('--matte-only');
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -3337,11 +3338,81 @@ async function runVideoCases() {
  }, { core: true });
 }
 
+async function personMatteRoundTrip() {
+  await step('Composite a resident Person Matte across cuts, reopen and decode the export', async () => {
+    const portrait = resolve('tests/fixtures/inference/video.mp4');
+    const background = generate('matte-background.mp4', 'blue', 4, 30, '320x192');
+    const saved = join(output, 'person-matte.oqvideo.json');
+    const exported = join(output, 'person-matte.mp4');
+    const blue = ([r, g, b]) => r < 45 && g < 45 && b > 200;
+    const positions = [[0.16, 0.50], [0.49, 0.24]];
+    const monitorHasMatte = async () => {
+      const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+      const window = await client.windowProperties();
+      const image = decodePng(await client.screenshot());
+      const scale = image.width / (window.size.width / (window.scaleFactor || 1));
+      const width = Math.min(viewer.size.width, viewer.size.height * 16 / 9);
+      const height = width * 9 / 16;
+      const samples = positions.map(([x, y]) => {
+        const px = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2 + (x - 0.5) * width) * scale);
+        const py = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2 + (y - 0.5) * height) * scale);
+        const index = (py * image.width + px) * image.channels;
+        return image.pixels.subarray(index, index + 3);
+      });
+      return blue(samples[0]) && samples[1][0] > 55;
+    };
+    const waitMatte = () => client.waitFor(monitorHasMatte, { description: 'blue lower track through the mask with retained foreground', timeoutMs: 60000 });
+    await launch();
+    await fileAction('IMPORT', background, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await fileAction('IMPORT', portrait, 'Import media'); await waitState('assets 2');
+    await click('FIT TIMELINE'); await click('ADD TRACK');
+    const upper = center(await grip('Video 2'));
+    const lower = (await timeline('matte-background.mp4'))[0];
+    await client.drag(await assetCard('video.mp4'), { x: lower.absolutePosition.x + 1, y: upper.y + 24 });
+    await waitState('clips 2');
+    await click('Nodes workspace');
+    await click('Pipeline for video.mp4');
+    await click('Add Person Matte node');
+    await waitMatte();
+    await click('Edit workspace');
+    await client.click((await timeline('video.mp4'))[0]);
+    for (let i = 0; i < 4; i++) await click('NEXT');
+    await waitState('Frame 4 ');
+    await waitMatte();
+    await click('SPLIT'); await waitState('clips 3');
+    await waitMatte();
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    const data = JSON.parse(await readFile(saved, 'utf8')).data;
+    assert.equal(data.tracks[0].clips.length, 2);
+    for (const clip of data.tracks[0].clips) {
+      assert(clip.pipeline.graph.nodes.some(node => node.data.inferenceModelId === 'u2netp'));
+    }
+    await close(); await launch(saved); await waitState('clips 3');
+    await waitMatte();
+    await fileAction('EXPORT', exported, 'Export MP4');
+    await client.waitFor(async () => (await state()).includes('Export complete'),
+      { description: 'GPU Person Matte export completes', timeoutMs: 180000 });
+    for (const time of ['0', '0.75', '2.5']) {
+      const rgb = execFileSync(ffmpeg, ['-v', 'error', '-ss', time, '-i', exported, '-frames:v', '1',
+        '-vf', 'scale=320:180', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+      const [uncovered, subject] = positions.map(([x, y]) => {
+        const index = (Math.floor(y * 180) * 320 + Math.floor(x * 320)) * 3;
+        return rgb.subarray(index, index + 3);
+      });
+      assert(blue(uncovered) && subject[0] > 55, `foreground/background separation at ${time}s`);
+    }
+    await close();
+  }, { core: true });
+}
+
 try {
-  if (deliveryOnly) await hardwareDeliveryRoundTrip();
+  if (matteOnly) await personMatteRoundTrip();
+  else if (deliveryOnly) await hardwareDeliveryRoundTrip();
   else {
     if (audioOnly || (!smoke && !previewOnly)) await audioOnlyRoundTrip();
     if (!audioOnly) await runVideoCases();
+    if (!audioOnly && !previewOnly) await personMatteRoundTrip();
   }
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

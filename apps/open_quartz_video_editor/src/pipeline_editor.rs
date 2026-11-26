@@ -131,6 +131,7 @@ impl Controller {
                 effects.retain(|effect| effect.label != "Blend");
             }
             if category == "COMPOSITE" {
+                effects.insert(0, crate::PipelineEffect { label: crate::person_matte::LABEL.into(), index: -6, glyph: "M".into() });
                 effects.insert(0, crate::PipelineEffect { label: "Luma Mask".into(), index: -5, glyph: "M".into() });
                 effects.insert(0, crate::PipelineEffect { label: "Blend".into(), index: -4, glyph: "B".into() });
             }
@@ -232,7 +233,9 @@ impl Controller {
                 let Some(clip)=self.document.clip(&id)else{return;};
                 let mut pipeline=clip.pipeline.clone();
                 let after=self.pipeline_editor.selected.iter().next().map(String::as_str).unwrap_or(SOURCE_ID);
-                let result=if index==-3 { pipeline.add_corrector_serial(after) } else if index == -4 || index == -5 {
+                let result=if index==-3 { pipeline.add_corrector_serial(after) } else if index == -6 {
+                    pipeline.add_person_matte(after)
+                } else if index == -4 || index == -5 {
                     let operation = if index == -4 { crate::clip_pipeline::BranchComposite::Blend }
                         else { crate::clip_pipeline::BranchComposite::LumaMask };
                     pipeline.add_branch_composite(after, operation)
