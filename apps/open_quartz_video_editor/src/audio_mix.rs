@@ -161,6 +161,14 @@ impl AudioMix {
     }
 
     pub fn render(&mut self, start: u64, output: &mut [StereoSample]) -> Result<(), MediaError> {
+        self.render_block(start, output, true)
+    }
+
+    pub fn render_unclipped(&mut self, start: u64, output: &mut [StereoSample]) -> Result<(), MediaError> {
+        self.render_block(start, output, false)
+    }
+
+    fn render_block(&mut self, start: u64, output: &mut [StereoSample], clip: bool) -> Result<(), MediaError> {
         let end = start
             .checked_add(output.len() as u64)
             .ok_or("Audio render range overflow")?;
@@ -246,7 +254,7 @@ impl AudioMix {
         self.output_peak = 0.0;
         for sample in output.iter_mut().flatten() {
             self.output_peak = self.output_peak.max(sample.abs());
-            *sample = sample.clamp(-1.0, 1.0);
+            if clip { *sample = sample.clamp(-1.0, 1.0); }
         }
         Ok(())
     }

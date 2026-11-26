@@ -3,6 +3,7 @@ mod batch_media;
 mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod audio_mix;
+mod audio_delivery;
 #[cfg(any(target_os = "macos", windows))]
 mod audio_rate;
 #[cfg(any(target_os = "macos", windows))]

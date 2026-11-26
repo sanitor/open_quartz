@@ -28,7 +28,13 @@ Windows 和 macOS 共用仓库级 `npm run test:e2e:smoke` 和 `npm run test:e2e
 
 `npm run package:video-editor` 可将当前 Windows x64 版本打包为 `dist-desktop/OpenQuartz-Studio-*-windows-x64.zip`。解压整个 ZIP 后运行 `open_quartz_video_editor.exe`，运行库随包提供。
 
-macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio3` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
+macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-encode-r2-audio1-studio4` SDK 和开发测试使用的 FFmpeg helper。硬件视频路径在 Metal 和 VideoToolbox 上验收。设备或素材不满足硬件要求时会报告错误。
+
+### 音频交付
+
+从 **SEQUENCE → Audio delivery** 选择帧范围和新的 .audio 文件夹路径，可设置目标响度（LUFS）和真峰值上限（dBTP）。交付包含 48 kHz 立体声 24-bit PCM 的 mix.wav 和 loudness.json。报告记录调整前后的综合响度、真峰值和实际增益。真峰值上限优先，必要时降低增益，保留原有动态。静音或过短片段可能没有可测的综合响度。
+
+勾选 **Export stems** 会额外交付逐轨 WAV。分轨保留轨道增益和编辑，忽略轨道静音与独听，并沿用主混音的起止位置。嵌套序列音频包含在主混音中。可用 --audio-delivery-only 跑原生 UI 回归。
 
 ### 多机位剪辑
 

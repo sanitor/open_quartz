@@ -18,10 +18,11 @@ const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
 const transcriptOnly = args.includes('--transcript-only');
 const interchangeOnly = args.includes('--interchange-only');
+const audioDeliveryOnly = args.includes('--audio-delivery-only');
 const multicamOnly = args.includes('--multicam-only');
 const seekCloseOnly = args.includes('--seek-close-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only', '--multicam-only'].includes(arg));
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly, multicamOnly, audioDeliveryOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only', '--multicam-only', '--audio-delivery-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
 const tier = interchangeOnly ? 'interchange-only' : seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
@@ -3535,6 +3536,41 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function audioDeliveryRoundTrip() {
+  await step('Measure and deliver normalized 24-bit audio and a time-aligned track stem', async () => {
+    const source = join(output, 'delivery-tone.wav');
+    fixtureCommand(['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=44100:duration=2',
+      '-c:a', 'pcm_s16le', '-y', source]);
+    const out = join(output, 'delivery.audio');
+    await launch(); await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+    await click('Add delivery-tone.wav to timeline'); await waitState('audio clips 1');
+    await click('SEQUENCE'); await click('Audio delivery');
+    for (const [label, value] of [['File path', out], ['Target LUFS', '-20'], ['True peak ceiling', '-2'],
+      ['Export start frame', '15'], ['Export end frame (exclusive)', '45']]) {
+      await client.setValue(await client.find({label, role:'TextInput'}), value);
+    }
+    await click('Save audio delivery'); await waitState('Audio delivery complete');
+    const report = JSON.parse(await readFile(join(out, 'loudness.json'), 'utf8'));
+    assert.equal(report.samples, 48000);
+    assert.equal(report.target_lufs, -20);
+    assert.equal(report.ceiling_dbtp, -2);
+    assert(Math.abs(report.output.integrated_lufs + 20) < 0.2);
+    assert(report.output.true_peak_dbtp <= -2);
+    assert.deepEqual(report.stems.map(stem => stem.file), ['track-01.wav']);
+    for (const file of ['mix.wav', 'track-01.wav']) {
+      const pcm = fixtureCommand(['-i', join(out, file), '-c:a', 'pcm_s24le', '-f', 's24le', '-']);
+      assert.equal(pcm.length, 48000 * 2 * 3);
+      assert(pcm.some(value => value));
+    }
+    await click('SEQUENCE');
+    await fileAction('Audio delivery', out, 'Save audio delivery');
+    await waitState('Audio delivery folder already exists');
+    await fileAction('SAVE AS', join(output, 'audio-project.oqvideo.json'), 'Save project');
+    await waitState('Project saved');
+    await close();
+  }, {core: true});
+}
+
 async function multicamRoundTrip() {
   await step('Synchronize camera angles, cut and replace without changing sound', async () => {
     const red = join(output, 'camera-a.mp4');
@@ -3699,7 +3735,8 @@ async function seekCloseRoundTrip() {
 }
 
 try {
-  if (multicamOnly) await multicamRoundTrip();
+  if (audioDeliveryOnly) await audioDeliveryRoundTrip();
+  else if (multicamOnly) await multicamRoundTrip();
   else if (interchangeOnly) await interchangeRoundTrip();
   else if (seekCloseOnly) await seekCloseRoundTrip();
   else if (transcriptOnly) await transcriptRoundTrip();
@@ -3712,6 +3749,7 @@ try {
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
     if (!audioOnly && !previewOnly) await interchangeRoundTrip();
     if (!audioOnly && !previewOnly) await multicamRoundTrip();
+    if (!audioOnly && !previewOnly) await audioDeliveryRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();

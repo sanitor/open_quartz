@@ -56,6 +56,7 @@ enum IoResult {
     Open(u64, Result<EditorDocument, String>),
     ImportOtio(u64, Result<(EditorDocument, String), String>),
     ExportOtio(u64, Result<String, String>),
+    AudioDelivery(u64, Result<String, String>),
     Recover(u64, Option<PathBuf>, Result<EditorDocument, String>),
     Relink(u64, String, PathBuf, Result<(), String>),
 }
@@ -922,7 +923,7 @@ impl Controller {
                     self.request_preview();
                 }
             }
-            "export" | "export-srt" | "export-master" => {
+            "export" | "export-srt" | "export-master" | "deliver-audio" => {
                 if self.document.data.duration_frames() == 0 {
                     self.status("Add media to the timeline before exporting");
                 } else if self.pipeline_has_drafts() {
@@ -1024,7 +1025,7 @@ impl Controller {
         self.pause();
         if let Some(window) = self.window.upgrade() {
             window.set_file_dialog_kind(kind.into());
-            if matches!(kind, "export" | "export-srt" | "export-master") {
+            if matches!(kind, "export" | "export-srt" | "export-master" | "deliver-audio") {
                 window.set_export_resolution(0);
                 window.set_export_frame_rate(0);
                 window.set_export_quality(0);
@@ -1038,8 +1039,8 @@ impl Controller {
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Untitled.oqvideo.json".into())
                     .into()
-            } else if matches!(kind, "export" | "export-srt" | "export-master") {
-                let name = if kind == "export-srt" { "subtitles.srt" } else if kind == "export-master" { "master.mov" } else { "export.mp4" };
+            } else if matches!(kind, "export" | "export-srt" | "export-master" | "deliver-audio") {
+                let name = if kind == "export-srt" { "subtitles.srt" } else if kind == "export-master" { "master.mov" } else if kind == "deliver-audio" { "delivery.audio" } else { "export.mp4" };
                 self.document.path().and_then(|path| path.parent())
                     .map(|parent| parent.join(name).to_string_lossy().into_owned())
                     .unwrap_or_default().into()
@@ -1088,6 +1089,7 @@ impl Controller {
             "save-as" => rfd::FileDialog::new()
                 .set_file_name("Untitled.oqvideo.json")
                 .save_file(),
+            "deliver-audio" => rfd::FileDialog::new().add_filter("Audio delivery folder", &["audio"]).set_file_name("delivery.audio").save_file(),
             "export-master" => rfd::FileDialog::new().add_filter("ProRes MOV", &["mov"]).set_file_name("master.mov").save_file(),
             "export-srt" => rfd::FileDialog::new()
                 .add_filter("SubRip subtitles", &["srt"])
@@ -1122,6 +1124,10 @@ impl Controller {
     }
     fn file_submit(&mut self, kind: &str, path: PathBuf) {
         if self.busy {
+            return;
+        }
+        if kind == "deliver-audio" {
+            self.submit_audio_delivery(path);
             return;
         }
         if matches!(kind, "export" | "export-srt" | "export-master" | "queue-export") {
@@ -1804,6 +1810,40 @@ impl Controller {
             Err(error) => self.status(error),
         }
     }
+    fn submit_audio_delivery(&mut self, path: PathBuf) {
+        let Some(window) = self.window.upgrade() else { return; };
+        let options = (|| {
+            if !path.is_absolute() || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("audio")) {
+                return Err("Enter an absolute folder path ending in .audio".into());
+            }
+            let frames = export_frames(window.get_export_start_frame().as_str(),
+                window.get_export_end_frame().as_str(), self.document.duration_frames())?;
+            let settings = crate::audio_delivery::Settings::parse(window.get_delivery_target().as_str(),
+                window.get_delivery_peak().as_str(), window.get_delivery_stems())?;
+            Ok::<_, String>((frames, settings))
+        })();
+        match options {
+            Ok((frames, settings)) => {
+                window.set_file_dialog_open(false);
+                self.busy = true;
+                self.generation += 1;
+                let generation = self.generation;
+                let sender = self.io_send.clone();
+                let project = self.document.data.clone();
+                self.status("Measuring audio delivery?");
+                std::thread::spawn(move || {
+                    let result = crate::audio_delivery::export(project, frames, &path, settings);
+                    let _ = sender.send(IoResult::AudioDelivery(generation, result));
+                });
+            }
+            Err(error) => {
+                window.set_file_path(path.to_string_lossy().as_ref().into());
+                window.set_file_dialog_open(true);
+                self.status(error);
+            }
+        }
+    }
+
     fn submit_export(&mut self, path: PathBuf, kind: &str) {
         let Some(window) = self.window.upgrade() else { return; };
         let subtitles = kind == "export-srt";
@@ -2196,7 +2236,7 @@ impl Controller {
                         Err(error) => self.status(error),
                     }
                 }
-                IoResult::ExportOtio(generation, result) if generation == self.generation => {
+                IoResult::ExportOtio(generation, result) | IoResult::AudioDelivery(generation, result) if generation == self.generation => {
                     self.busy = false;
                     self.status(result.unwrap_or_else(|error| error));
                 }

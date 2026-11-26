@@ -474,6 +474,9 @@ export component EditorWindow inherits Window {
     in property <string> selected_clip_source_out: "0";
     in property <string> selected_clip_id: "";
     in property <bool> has_offline_assets;
+    in-out property <string> delivery_target: "-16";
+    in-out property <string> delivery_peak: "-1";
+    in-out property <bool> delivery_stems: true;
     in property <bool> source_visible;
     in property <[string]> camera_angles;
     in-out property <bool> multicam_open;
@@ -1919,6 +1922,7 @@ export component EditorWindow inherits Window {
                     HorizontalLayout {
                         spacing: 6px;
                         Button { text: "Import OTIO"; clicked => { root.settings_open = false; root.project_action("import-otio"); } }
+                        Button { text: "Audio delivery"; clicked => { root.settings_open = false; root.project_action("deliver-audio"); } }
                         Button { text: "ProRes master"; clicked => { root.settings_open = false; root.project_action("export-master"); } }
                         Button { text: "Export OTIO"; clicked => { root.settings_open = false; root.project_action("export-otio"); } }
                     }
@@ -2034,18 +2038,18 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.file_dialog_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 680px; height: root.file_dialog_kind == "import-files" ? 370px : root.file_dialog_kind == "export" ? 390px : (root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master") ? 318px : 264px; background: root.panel;
+                width: 680px; height: root.file_dialog_kind == "deliver-audio" ? 365px : root.file_dialog_kind == "import-files" ? 370px : root.file_dialog_kind == "export" ? 390px : (root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master") ? 318px : 264px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
                     padding: 24px; spacing: 12px;
-                    Text { text: root.file_dialog_kind == "import-otio" ? "Import timeline" : root.file_dialog_kind == "export-otio" ? "Export timeline" : root.file_dialog_kind == "export-master" ? "Export ProRes 422 HQ" : root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
+                    Text { text: root.file_dialog_kind == "deliver-audio" ? "Deliver audio" : root.file_dialog_kind == "import-otio" ? "Import timeline" : root.file_dialog_kind == "export-otio" ? "Export timeline" : root.file_dialog_kind == "export-master" ? "Export ProRes 422 HQ" : root.file_dialog_kind == "import-files" ? "Import multiple files" : root.file_dialog_kind == "relink-folder" ? "Find offline originals" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : root.file_dialog_kind == "export-srt" ? "Export subtitles" : root.file_dialog_kind == "import" ? "Import media" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "save-as" ? "Save project as" : root.file_dialog_kind == "export" ? "Export sequence" : "Relink missing media"; color: root.text; font-size: 18px; font-weight: 700; }
                     Text { text: root.file_dialog_kind == "import-files" ? "Paste one full file path per line, or use Browse." : root.file_dialog_kind == "relink-folder" ? "Paste a folder path, or use Browse to choose a folder." : "Paste a full local file path, or use Browse to choose a file."; color: root.secondary; font-size: 11px; }
                     if root.file_dialog_kind == "export": Text {
                         text: (root.export_profile == 1 ? "HEVC Main10 · declared BT.2020 / 1000-nit target" : root.export_profile == 2 ? "HEVC Main10 · BT.2020 HLG" : "H.264 MP4") + (root.audio_clips.length > 0 ? " + stereo AAC" : "") + " · Sequence ends at frame " + root.sequence_duration;
                         color: root.secondary; font-size: 11px;
                     }
-                    if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master": HorizontalLayout {
+                    if root.file_dialog_kind == "export" || root.file_dialog_kind == "export-srt" || root.file_dialog_kind == "export-master" || root.file_dialog_kind == "deliver-audio": HorizontalLayout {
                         spacing: 12px;
                         VerticalLayout {
                             spacing: 4px;
@@ -2057,6 +2061,18 @@ export component EditorWindow inherits Window {
                             Text { text: "End frame (exclusive)"; color: root.secondary; font-size: 12px; }
                             LineEdit { text <=> root.export_end_frame; accessible-label: "Export end frame (exclusive)"; }
                         }
+                    }
+                    if root.file_dialog_kind == "deliver-audio": HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            Text { text: "Target LUFS"; color: root.secondary; }
+                            LineEdit { text <=> root.delivery_target; accessible-label: "Target LUFS"; }
+                        }
+                        VerticalLayout {
+                            Text { text: "Ceiling dBTP"; color: root.secondary; }
+                            LineEdit { text <=> root.delivery_peak; accessible-label: "True peak ceiling"; }
+                        }
+                        CheckBox { text: "Export stems"; checked <=> root.delivery_stems; }
                     }
                     if root.file_dialog_kind == "export": HorizontalLayout {
                         spacing: 12px;
@@ -2092,7 +2108,7 @@ export component EditorWindow inherits Window {
                         if root.file_dialog_kind != "import-files": LineEdit {
                             accessible-label: "File path";
                             text <=> root.file_path;
-                            placeholder-text: root.file_dialog_kind == "export-master" ? "/path/to/master.mov" : root.file_dialog_kind == "import-otio" || root.file_dialog_kind == "export-otio" ? "/path/to/timeline.otio" : root.file_dialog_kind == "lut" ? "/path/to/grade.cube" : root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
+                            placeholder-text: root.file_dialog_kind == "deliver-audio" ? "/path/to/delivery.audio" : root.file_dialog_kind == "export-master" ? "/path/to/master.mov" : root.file_dialog_kind == "import-otio" || root.file_dialog_kind == "export-otio" ? "/path/to/timeline.otio" : root.file_dialog_kind == "lut" ? "/path/to/grade.cube" : root.file_dialog_kind == "srt" || root.file_dialog_kind == "export-srt" ? "/path/to/subtitles.srt" : root.file_dialog_kind == "import" || root.file_dialog_kind == "relink" ? "/path/to/media" : root.file_dialog_kind == "export" ? "/path/to/video.mp4" : "/path/to/project.oqvideo.json";
                             accepted(value) => { root.submit_file(); }
                         }
                         Button { text: "Browse…"; clicked => { root.project_action("browse-" + root.file_dialog_kind); } }
@@ -2107,7 +2123,7 @@ export component EditorWindow inherits Window {
                             text: "Add to queue";
                             clicked => { root.file_dialog_open = false; editor_focus.focus(); root.file_submit("queue-export", root.file_path); }
                         }
-                        Button { text: root.file_dialog_kind == "export-master" ? "Save ProRes master" : root.file_dialog_kind == "import-otio" ? "Open OTIO timeline" : root.file_dialog_kind == "export-otio" ? "Save OTIO timeline" : root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
+                        Button { text: root.file_dialog_kind == "deliver-audio" ? "Save audio delivery" : root.file_dialog_kind == "export-master" ? "Save ProRes master" : root.file_dialog_kind == "import-otio" ? "Open OTIO timeline" : root.file_dialog_kind == "export-otio" ? "Save OTIO timeline" : root.file_dialog_kind == "import-files" ? "Import selected files" : root.file_dialog_kind == "relink-folder" ? "Search folder" : root.file_dialog_kind == "save-as" ? "Save project" : root.file_dialog_kind == "open" ? "Open project" : root.file_dialog_kind == "relink" ? "Relink media" : root.file_dialog_kind == "export" ? "Export MP4" : root.file_dialog_kind == "export-srt" ? "Save SRT" : root.file_dialog_kind == "lut" ? "Load CUBE LUT" : root.file_dialog_kind == "srt" ? "Import subtitles" : "Import media"; primary: true; clicked => { root.submit_file(); } }
                     }
                 }
             }
