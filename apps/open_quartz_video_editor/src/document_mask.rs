@@ -57,7 +57,58 @@ pub(super) fn validate_tracking(clip: &Clip) -> Result<(), String> {
     Ok(())
 }
 
+impl Clip {
+    pub fn mask_center_at(&self, source_ns: u64) -> Option<[f32; 2]> {
+        let mask = self.mask?;
+        let index = self.mask_tracking.partition_point(|point| point.source_ns <= source_ns);
+        match (index.checked_sub(1).and_then(|index| self.mask_tracking.get(index)), self.mask_tracking.get(index)) {
+            (Some(left), Some(right)) => {
+                let blend = (source_ns - left.source_ns) as f64 / (right.source_ns - left.source_ns) as f64;
+                Some([left.x + (right.x - left.x) * blend as f32, left.y + (right.y - left.y) * blend as f32])
+            }
+            (Some(point), None) | (None, Some(point)) => Some([point.x, point.y]),
+            (None, None) => Some([mask.x, mask.y]),
+        }
+    }
+}
+
 impl EditorDocument {
+    pub fn correct_mask(&mut self, id: &str, frame: u64, field: &str, input: &str) -> Result<(), String> {
+        self.transact(|data| {
+            let (track, index) = data.writable_clip(id)?;
+            let clip = &data.tracks[track].clips[index];
+            let time = data.clip_source_time(clip, frame)?;
+            let first = clip.mask_tracking.first().ok_or("Track the mask before correcting drift")?;
+            let last = clip.mask_tracking.last().unwrap();
+            if !(first.source_ns..=last.source_ns).contains(&time) {
+                return Err("Move the playhead inside the tracked mask range".into());
+            }
+            let value = input.trim().parse::<f32>().map_err(|_| "Enter a mask percentage")? / 100.0;
+            if !(0.0..=1.0).contains(&value) { return Err("Enter a mask percentage from 0 to 100".into()); }
+            let [x, y] = clip.mask_center_at(time).ok_or("Choose a mask shape first")?;
+            let mut points = clip.mask_tracking.clone();
+            let limit = points.len() as u64 >= MAX_TRACKED_FRAMES;
+            let mut time = time;
+            if let Err(index) = points.binary_search_by_key(&time, |point| point.source_ns) {
+                if limit {
+                    time = [points[index - 1].source_ns, points[index].source_ns].into_iter()
+                        .min_by_key(|point| point.abs_diff(time)).unwrap();
+                } else {
+                    points.insert(index, MaskPosition { source_ns: time, x, y });
+                }
+            }
+            let center = clip.mask_center_at(time).ok_or("Choose a mask shape first")?;
+            let delta = value - center[usize::from(field == "y")];
+            for point in &mut points {
+                let t = (1.0 - point.source_ns.abs_diff(time) as f32 / 400_000_000.0).max(0.0);
+                let coordinate = if field == "x" { &mut point.x } else { &mut point.y };
+                *coordinate = (*coordinate + delta * t * t * (3.0 - 2.0 * t)).clamp(0.0, 1.0);
+            }
+            data.tracks[track].clips[index].mask_tracking = points;
+            Ok(())
+        })
+    }
+
     pub fn set_mask_tracking(&mut self, id: &str, revision: u64, points: Vec<MaskPosition>) -> Result<(), String> {
         self.transact_at(revision, |data| {
             let (track, index) = data.writable_clip(id)?;

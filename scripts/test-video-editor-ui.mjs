@@ -18,13 +18,14 @@ const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
 const transcriptOnly = args.includes('--transcript-only');
 const interchangeOnly = args.includes('--interchange-only');
+const gradeWorkflowOnly = args.includes('--grade-workflow-only');
 const audioDeliveryOnly = args.includes('--audio-delivery-only');
 const multicamOnly = args.includes('--multicam-only');
 const seekCloseOnly = args.includes('--seek-close-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly, multicamOnly, audioDeliveryOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only', '--multicam-only', '--audio-delivery-only'].includes(arg));
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly, seekCloseOnly, interchangeOnly, multicamOnly, audioDeliveryOnly, gradeWorkflowOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only', '--seek-close-only', '--interchange-only', '--multicam-only', '--audio-delivery-only', '--grade-workflow-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = interchangeOnly ? 'interchange-only' : seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = gradeWorkflowOnly ? 'grade-workflow-only' : audioDeliveryOnly ? 'audio-delivery-only' : multicamOnly ? 'multicam-only' : interchangeOnly ? 'interchange-only' : seekCloseOnly ? 'seek-close-only' : transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -203,6 +204,14 @@ async function maskTrackingRoundTrip(decodeOutput) {
    }, { description: white ? 'moving patch stays within the tracked monitor mask' : 'static mask excludes the moving patch' });
    for (let i = 0; i < 17; i++) await click('NEXT');
    await check(true);
+   await enter(await clipControl('Mask center X (%)'), 70);
+   await check(false);
+   await click('SAVE'); await waitState('Project saved');
+   const corrected = JSON.parse(await readFile(project, 'utf8')).data.tracks[0].clips[0].mask_tracking;
+   assert.equal(corrected.length, 36);
+   assert(Math.abs(corrected[17].x - 0.7) < 0.01);
+   assert.equal(corrected[0].x, clip.mask_tracking[0].x);
+   await click('UNDO'); await check(true);
    await client.click(await clipControl('Clear mask tracking', 'Button')); await check(false);
    await click('UNDO'); await check(true);
    if (verifyExport) {
@@ -3536,6 +3545,39 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function gradeWorkflowRoundTrip() {
+  await step('Match tone and color to a gallery still and reuse the active grade on another shot', async () => {
+    const reference = generate('reference-gray.mp4', '0x707070', 1);
+    const source = generate('dark-gray.mp4', '0x554038', 1);
+    await launch();
+    await fileAction('IMPORT', reference, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await fileAction('IMPORT', source, 'Import media'); await waitState('assets 2');
+    await click('ADD CLIP'); await waitState('clips 2');
+    await client.click((await timeline('reference-gray.mp4'))[0]);
+    await click('Nodes workspace');
+    await waitState('Frame 0 ');
+    await click('Grab still'); await waitState('Reference still captured');
+    await client.click((await timeline('dark-gray.mp4'))[0]);
+    await waitState('Frame 30 ');
+    await click('Match shot'); await waitState('Shot grade matched');
+    await click('Grade versions'); await click('Copy grade'); await waitState('Grade copied');
+    await click('Close versions');
+    await client.click((await timeline('reference-gray.mp4'))[0]); await waitState('Frame 0 ');
+    await click('Grade versions'); await click('Paste grade'); await click('Close versions');
+    const saved = join(output, 'matched-grade.oqvideo.json');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    const { data } = JSON.parse(await readFile(saved, 'utf8'));
+    const [first, second] = data.tracks[0].clips;
+    assert.deepEqual(first.pipeline, second.pipeline);
+    const corrector = second.pipeline.graph.nodes.find(node => node.type === 'colorcorrector').data.colorCorrector.primaries;
+    assert(corrector.exposure > 0);
+    assert(Math.abs(corrector.gain[0] - corrector.gain[2]) > 0.1);
+    assert.deepEqual([first.timeline_start, second.timeline_start], [0, 30]);
+    await close();
+  }, {core: true});
+}
+
 async function audioDeliveryRoundTrip() {
   await step('Measure and deliver normalized 24-bit audio and a time-aligned track stem', async () => {
     const source = join(output, 'delivery-tone.wav');
@@ -3562,6 +3604,17 @@ async function audioDeliveryRoundTrip() {
       assert.equal(pcm.length, 48000 * 2 * 3);
       assert(pcm.some(value => value));
     }
+    const limited = join(output, 'peak-limited.audio');
+    await click('SEQUENCE'); await click('Audio delivery');
+    for (const [label, value] of [['File path', limited], ['Target LUFS', '-10'], ['True peak ceiling', '-12']]) {
+      await client.setValue(await client.find({label, role:'TextInput'}), value);
+    }
+    await client.click(await client.find({label:'Export stems', role:'Checkbox'}));
+    await click('Save audio delivery'); await waitState('Audio delivery complete');
+    const capped = JSON.parse(await readFile(join(limited, 'loudness.json'), 'utf8'));
+    assert(capped.peak_limited);
+    assert(capped.output.true_peak_dbtp <= -12);
+    assert.deepEqual(capped.stems, []);
     await click('SEQUENCE');
     await fileAction('Audio delivery', out, 'Save audio delivery');
     await waitState('Audio delivery folder already exists');
@@ -3589,7 +3642,20 @@ async function multicamRoundTrip() {
     await client.click((await timeline('camera-a.mp4'))[0]);
     for (let frame = 0; frame < 5; frame++) await click('NEXT');
     await click('SEQUENCE'); await click('Camera angles');
-    await waitState('Frame 5 ');
+    await client.waitFor(async () => {
+      const viewer = await client.find({ label: 'Video preview', role: 'Image' });
+      const image = decodePng(await client.screenshot());
+      const window = await client.windowProperties();
+      const scale = image.width / (window.size.width / (window.scaleFactor || 1));
+      const width = Math.min(viewer.size.width, viewer.size.height * 16 / 9);
+      const height = width * 9 / 16;
+      const channel = (column, component) => {
+        const x = Math.floor((viewer.absolutePosition.x + viewer.size.width / 2 + width * column) * scale);
+        const y = Math.floor((viewer.absolutePosition.y + viewer.size.height / 2 - height / 4) * scale);
+        return image.pixels[(y * image.width + x) * image.channels + component];
+      };
+      return channel(-0.25, 0) > 215 && channel(0.25, 2) > 215;
+    }, { description: 'synchronized red and blue feeds in the camera monitor' });
     await client.key('2'); await waitState('clips 2');
     await click('Replace with camera-a.mp4');
     await waitState('Camera angle selected');
@@ -3735,7 +3801,11 @@ async function seekCloseRoundTrip() {
 }
 
 try {
-  if (audioDeliveryOnly) await audioDeliveryRoundTrip();
+  if (gradeWorkflowOnly) {
+    await maskTrackingRoundTrip(fixtureCommand);
+    await gradeWorkflowRoundTrip();
+  }
+  else if (audioDeliveryOnly) await audioDeliveryRoundTrip();
   else if (multicamOnly) await multicamRoundTrip();
   else if (interchangeOnly) await interchangeRoundTrip();
   else if (seekCloseOnly) await seekCloseRoundTrip();
@@ -3750,6 +3820,7 @@ try {
     if (!audioOnly && !previewOnly) await interchangeRoundTrip();
     if (!audioOnly && !previewOnly) await multicamRoundTrip();
     if (!audioOnly && !previewOnly) await audioDeliveryRoundTrip();
+    if (!audioOnly && !previewOnly) await gradeWorkflowRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();

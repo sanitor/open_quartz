@@ -661,6 +661,7 @@ export component EditorWindow inherits Window {
     in-out property <int> grade_index;
     in property <string> grade_name;
     callback grade_action(string, int, string);
+    in property <bool> grade_can_paste;
     callback track_action(string, string, string);
     callback audio_track_action(string, string, string);
     callback audio_clip_action(string, string, string);
@@ -1079,6 +1080,10 @@ export component EditorWindow inherits Window {
                             }
                             if root.reference_names.length > 0: Button {
                                 text: "Remove still"; clicked => { root.reference_action("remove", root.reference_index); }
+                            }
+                            if root.reference_names.length > 0: Button {
+                                text: "Match shot"; enabled: root.selected_clip_writable && !root.reference_viewing && !root.playing;
+                                clicked => { root.reference_action("match", root.reference_index); }
                             }
                         }
                         monitor_surface := Rectangle {
@@ -1830,7 +1835,7 @@ export component EditorWindow inherits Window {
             TouchArea { clicked => { root.grades_open = false; editor_focus.focus(); } }
             Rectangle {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                width: 410px; height: 226px; background: root.panel;
+                width: 410px; height: 256px; background: root.panel;
                 border-width: 1px; border-color: root.border; border-radius: 10px;
                 TouchArea { }
                 VerticalLayout {
@@ -1852,6 +1857,11 @@ export component EditorWindow inherits Window {
                         Button { text: "Duplicate grade"; clicked => { root.grade_action("duplicate", 0, ""); } }
                         Button { text: "Remove grade"; enabled: root.grade_names.length > 1; clicked => { root.grade_action("remove", 0, ""); } }
                         Button { text: "Close versions"; clicked => { root.grades_open = false; editor_focus.focus(); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "Copy grade"; clicked => { root.grade_action("copy", 0, ""); } }
+                        Button { text: "Paste grade"; enabled: root.grade_can_paste && root.selected_clip_writable; clicked => { root.grade_action("paste", 0, ""); } }
                     }
                 }
             }

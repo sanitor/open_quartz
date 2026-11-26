@@ -400,7 +400,14 @@ impl Controller {
             if let Some(controller) = weak.upgrade() {
                 let mut controller = controller.borrow_mut();
                 if let Some(id) = controller.selected_clip.clone() {
-                    let result = controller.document.edit_mask(&id, &field, &value);
+                    let frame = controller.playhead;
+                    let result = if matches!(field.as_str(), "x" | "y")
+                        && controller.document.clip(&id).is_some_and(|clip| !clip.mask_tracking.is_empty())
+                    {
+                        controller.document.correct_mask(&id, frame, &field, &value)
+                    } else {
+                        controller.document.edit_mask(&id, &field, &value)
+                    };
                     controller.finish_edit(result);
                 }
             }
@@ -1602,6 +1609,21 @@ impl Controller {
             return;
         }
         let Some(clip) = self.document.clip(&id) else { return; };
+        if action == "copy" {
+            if clip.title.is_some() { return; }
+            self.references.copied_grade = Some((clip.pipeline.clone(), clip.effect_keys.clone()));
+            self.publish_grades();
+            self.status("Grade copied");
+            return;
+        }
+        if action == "paste" {
+            if let Some((pipeline, keys)) = self.references.copied_grade.clone() {
+                let result = self.document.paste_grade(&id, pipeline, keys);
+                if result.is_ok() { self.pipeline_editor.reset(); }
+                self.finish_edit(result);
+            }
+            return;
+        }
         let grade = if action == "select" {
             let choices = clip.grade_options();
             let Some(choice) = choices.get(index as usize) else { return; };
@@ -1614,6 +1636,7 @@ impl Controller {
 
     fn publish_grades(&self) {
         let Some(window) = self.window.upgrade() else { return; };
+        window.set_grade_can_paste(self.references.copied_grade.is_some());
         let Some(clip) = self.selected_clip.as_deref().and_then(|id| self.document.clip(id))
             .filter(|clip| clip.title.is_none()) else {
             window.set_grade_available(false);
@@ -2464,6 +2487,15 @@ impl Controller {
             window.set_selected_frame(self.playhead.min(i32::MAX as u64) as i32);
             window.set_timecode(timecode(self.playhead, self.document.data.fps).into());
             window.set_playing(self.playing);
+            if let Some(clip) = self.selected_clip.as_deref().and_then(|id| self.document.clip(id)) {
+                if !clip.mask_tracking.is_empty() {
+                    if let Some([x, y]) = self.document.data.clip_source_time(clip, self.playhead)
+                        .ok().and_then(|time| clip.mask_center_at(time)) {
+                        window.set_mask_x(format!("{:.2}", x * 100.0).into());
+                        window.set_mask_y(format!("{:.2}", y * 100.0).into());
+                    }
+                }
+            }
         }
     }
     fn refresh_audio(&mut self, window: &EditorWindow) {

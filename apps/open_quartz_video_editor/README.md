@@ -36,6 +36,12 @@ macOS 启动命令会准备固定的 LGPL-only FFmpeg 8.1.1 `oq-vt-hw3-metal-enc
 
 勾选 **Export stems** 会额外交付逐轨 WAV。分轨保留轨道增益和编辑，忽略轨道静音与独听，并沿用主混音的起止位置。嵌套序列音频包含在主混音中。可用 --audio-delivery-only 跑原生 UI 回归。
 
+### 遮罩纠偏与镜头匹配
+
+运行 **Track mask forward** 后，可把播放头移到跟踪漂移的位置，在检查器修改 **Mask center X/Y**。修改以当前帧为中心向两侧平滑衰减，保留更远的跟踪采样。纠偏支持撤销，正常预览与导出共用修正轨迹。
+
+在 **Nodes** 里用 **Grab still** 保存参考镜头。暂停在仅有一个可见片段的 SDR 画面并选中它，点击 **Match exposure** 可根据两张画面的中间亮度添加可编辑的 Color Corrector。它提供曝光匹配的起点，可继续手动调色。**Grade versions → Copy grade / Paste grade** 可把当前节点图和参数关键帧复制到另一个镜头的活动调色方案，保留镜头的剪辑位置、速度和空间变换。可用 --grade-workflow-only 跑原生 UI 回归。
+
 ### 多机位剪辑
 
 在素材库选择一个机位，用源监视器定位所有机位都录到的同一事件，例如拍板落下的一帧，然后点击 **Set camera sync point**。每个机位分别登记一次，最多四个。再次登记同一素材会更新同步点。同步点随工程保存，可在 **SEQUENCE → Clear camera sync** 清空。

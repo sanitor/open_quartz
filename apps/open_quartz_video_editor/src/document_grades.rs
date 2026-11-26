@@ -63,6 +63,17 @@ impl Clip {
 }
 
 impl EditorDocument {
+    pub fn paste_grade(&mut self, id: &str, pipeline: ClipPipeline, keys: Vec<EffectKeys>) -> Result<(), String> {
+        self.transact(|data| {
+            let (track, index) = data.writable_clip(id)?;
+            let clip = &mut data.tracks[track].clips[index];
+            if clip.title.is_some() { return Err("Generated text clips do not have grades".into()); }
+            clip.pipeline = pipeline;
+            clip.effect_keys = keys;
+            Ok(())
+        })
+    }
+
     pub fn edit_grade(&mut self, id: &str, action: &str, value: &str) -> Result<(), String> {
         let new_id = new_id("grade", self.revision);
         self.transact(|data| {
