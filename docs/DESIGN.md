@@ -226,7 +226,7 @@ Color Corrector 的求值顺序为 White Balance → Exposure → Lift/Gamma/Gai
 
 Legacy输入按显式sRGB兼容策略转换，Corrector链保持AP1；Renderer、legacy Shader取样和预览在明示边界编码回sRGB，8-bit显示target截断到SDR范围，不把该截断塞进Corrector。注入的转换函数使用避开全部用户源码标识符的命名空间；混合domain的同一取样helper和managed textureGather明确拒绝。外部帧经资源Alias链进入活动Corrector时，必须证明alpha为Straight/Opaque，Premultiplied/Unknown在纹理变更前拒绝；纯bypass保留原alpha/provenance。
 
-冻结预览不自动标脏time/previousFrame源，不轮转已接受feedback历史；显式参数/源变化仍按dirty传播。暂停中提交图后仍可resume原clock。HDR解码、EDR监视、HDR编码/导出未交付。领域路线见[视频色彩提案§7](../apps/open_quartz_video_editor/RENDER_PIPELINE_EDITOR_DESIGN.md)，共享UI见[结构化算子编辑器](SLINT_UI_REFACTOR.md#structured-operator-ui)。
+冻结预览不自动标脏time/previousFrame源，不轮转已接受feedback历史；显式参数/源变化仍按dirty传播。暂停中提交图后仍可resume原clock。HDR解码、EDR监视、HDR编码/导出未交付。领域路线见[视频色彩提案§7](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/RENDER_PIPELINE_EDITOR_DESIGN.md)，共享UI见[结构化算子编辑器](SLINT_UI_REFACTOR.md#structured-operator-ui)。
 
 `apps/open_quartz_slint`和`apps/open_quartz_video_editor`**都是正式消费者**：共享core factory/commands、序列化、lowering、运行和Palette组件。原节点应用能创建、连线、编辑、复制/粘贴、undo/redo、save/open并真正GPU执行Corrector；视频应用复用上述能力，另处理clip边界与EditorDocument历史。不能只在视频app把Corrector展开成私有Shader，也不能只让原Slint显示节点却不执行。两端原有Legacy Shader保持结果；managed输入必须有明确domain，未知图像不默认为AP1。屏保包兼容性独立明确拒绝/验收，不因桌面节点可运行自动承诺导出可用。
 
@@ -275,9 +275,9 @@ flowchart TD
 
 图计划优先采用显式 Renderer 输出，也支持没有 Renderer 的末端纹理输入节点。资源尚在解码或推理时，可以暂时没有可呈现纹理；不能用空输出累计有效 Render FPS。
 
-**视频编辑器接入边界**：`apps/open_quartz_video_editor`已接入同一核心`submit_window`/源预取/稳定completion。preview worker持有单轨序列时钟与clip映射，按prefill/水位规划、deadline呈现、预热clip/gap；Controller只传Play snapshot或Exact意图并消费进度/图像，不再逐UI tick提交帧。宿主显式注入64 surfaces/2 GiB统一FrameBudget，局部窗口/稳定池按extent有界配置；核心默认512 MiB保持。详见[单轨有界流水及8K实测](../apps/open_quartz_video_editor/DESIGN.md#bounded-playback-proposal)，不另建app执行器或第二套预算/解码循环。
+**视频编辑器接入边界**：`apps/open_quartz_video_editor`已接入同一核心`submit_window`/源预取/稳定completion。preview worker持有单轨序列时钟与clip映射，按prefill/水位规划、deadline呈现、预热clip/gap；Controller只传Play snapshot或Exact意图并消费进度/图像，不再逐UI tick提交帧。宿主显式注入64 surfaces/2 GiB统一FrameBudget，局部窗口/稳定池按extent有界配置；核心默认512 MiB保持。详见[单轨有界流水及8K实测](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#bounded-playback-proposal)，不另建app执行器或第二套预算/解码循环。
 
-缓冲粒度遵循[异步阶段边界](../apps/open_quartz_video_editor/DESIGN.md#stage-queues-resource-lifetimes)，图内node使用资源依赖和正确读写生命周期，不默认逐node queue/CPU wait。未来多轨按[同序列帧join契约](../apps/open_quartz_video_editor/DESIGN.md#same-frame-track-join)规划内容，核心只认识显式需求/依赖/资源身份与预算，不认识track/clip业务；本次不新增多轨或空join服务。
+缓冲粒度遵循[异步阶段边界](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#stage-queues-resource-lifetimes)，图内node使用资源依赖和正确读写生命周期，不默认逐node queue/CPU wait。未来多轨按[同序列帧join契约](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#same-frame-track-join)规划内容，核心只认识显式需求/依赖/资源身份与预算，不认识track/clip业务；本次不新增多轨或空join服务。
 
 标量预检的事务范围不覆盖已经提交的 GPU work 或外部呈现。OutputHub backend dispatch 在候选状态提交后执行；GPU 执行、读回或 present 失败不意味着整帧设备状态自动回滚。
 
@@ -301,7 +301,7 @@ Slint 的图输出由 NativePlayer 交给 RenderDevice 呈现，当前生产路�
 
 `OutputKey` 以 node/port 标识输出；`OutputState` 携带 graph revision、output generation、evaluation/content stamp 和 payload。payload 类型可以表达值、bytes、resource 或 tensor handle，类型存在不代表所有设备传输路径已接通。
 
-普通 shader 的 GpuOutputHandle 是 live view，Arc 不阻止后续覆盖；Phase 1 新增 rendering::StableFramePool/StableFrame 用 GPU copy 形成稳定快照，借用源不被消耗，slot/bytes 双限额，池满 WouldBlock。NativePlayer::try_stable_preview 对临时背压返回 None，监视器最小双帧工作集无法满足时报 Capacity；RGBA32F 快照保留精度但 Slint 主预览只接 RGBA8。outputs 的 FrameSnapshotIdentity/FrameImageDescription 不依赖 wgpu，源内容/颜色/alpha 不明时明确 None/Unknown；不是将旧帧标成本次时钟。详细行为与[Phase 1 证据](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)相连；完整输入依赖绑定仍见[目标流水](#execution-rendering-split)。
+普通 shader 的 GpuOutputHandle 是 live view，Arc 不阻止后续覆盖；Phase 1 新增 rendering::StableFramePool/StableFrame 用 GPU copy 形成稳定快照，借用源不被消耗，slot/bytes 双限额，池满 WouldBlock。NativePlayer::try_stable_preview 对临时背压返回 None，监视器最小双帧工作集无法满足时报 Capacity；RGBA32F 快照保留精度但 Slint 主预览只接 RGBA8。outputs 的 FrameSnapshotIdentity/FrameImageDescription 不依赖 wgpu，源内容/颜色/alpha 不明时明确 None/Unknown；不是将旧帧标成本次时钟。详细行为与[Phase 1 证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)相连；完整输入依赖绑定仍见[目标流水](#execution-rendering-split)。
 
 SR3仍采用固定224→672网络profile，源图缩放入该网络、输出源尺寸×3；没有tiling或大图全分辨率质量/提速承诺。其他六个已支持的Metal catalog profile按各自任务契约运行，不由SR3的性能推导。模型weights/initial upload与一次性图片/framebuffer decode属于准备边界，不推广到生产逐帧CPU像素通道。输出lease随TextureHandle/GpuOutputHandle/Slint所有权保留，三槽推理池满时反压，释放后复用；Phase4再将这些应用输出资源接入共享FrameBudget。
 
@@ -521,7 +521,7 @@ Phase 1 已在 `outputs` 身份协议和 `rendering` GPU 资源上落地稳定�
 
 ### 预取和流水不是 UI 循环
 
-宿主只规划需求与呈现deadline，FramePipeline统一执行前瞻/水位/阶段完成。source worker允许解码未来帧，render worker按图/feedback顺序求值，稳定输出消费者可持有较早帧。Wake由source ready/GPU completion/最后consumer释放驱动，callback只发通知，不在原生析构器内重入GPU。scrub最新意图限制不套给播放窗口；完整编辑器映射和encoder见[编辑器§9](../apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)。
+宿主只规划需求与呈现deadline，FramePipeline统一执行前瞻/水位/阶段完成。source worker允许解码未来帧，render worker按图/feedback顺序求值，稳定输出消费者可持有较早帧。Wake由source ready/GPU completion/最后consumer释放驱动，callback只发通知，不在原生析构器内重入GPU。scrub最新意图限制不套给播放窗口；完整编辑器映射和encoder见[编辑器§9](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#9-预览缓存与-gpu-生命周期)。
 
 共享 Queue 不保证 GPU 转换/推理/合成相互并行；目标是减少不必要的宿主等待并重叠 I/O、解码、GPU 与编码，实际设备重叠必须测量。预取缓解启动延迟/抖动，不能弥补长期吞吐不足；实时可降明确标记的预览质量或跳过过时呈现，但不能跳过必需的 codec reference/时域依赖；导出反压而不丢帧。
 
@@ -534,16 +534,16 @@ Phase2切换到共享执行、Phase3引入精确PTS cursor；Phase4再把cursor�
 3. **Phase4实现与验收记录：** 有界窗口、低高水位、source/prewarm worker、共享credit、非阻塞import和资源释放唤醒；实际命令、计数与限制单列，不复用Phase3通过数。
 4. **Phase 5 及编辑器待实现：** 硬件编码/封装，再接时间线范围规划、资产适配和消费者策略；屏保保持独立 loop。同一阶段的精确源访问只服务原图 timeline→single-file source 映射，不是 NLE clip editing。
 
-具体顺序以[Phase 0～8 计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为准；每个实现 Phase 一个 commit，代码/单元/真实 E2E 与实际修订文档一同提交。[硬性协议](../apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)保留，整体 coverage 红色不标为全部通过或发布。
+具体顺序以[Phase 0～8 计划](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)为准；每个实现 Phase 一个 commit，代码/单元/真实 E2E 与实际修订文档一同提交。[硬性协议](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#142-每个-phase-的硬性完成与提交协议)保留，整体 coverage 红色不标为全部通过或发布。
 
-完整后续流水验收仍须包含：长 GOP/VFR、精确 PTS 与切点预热，受限表面下无死锁/泄漏，暂停/最终 scrub 正确，导出不丢帧且 drain 后提交；记录水位、阶段起止/等待、deadline miss 与资源归还，证明多帧跨阶段在途。Phase 2 的显式时间、稳定帧和单请求依赖完成不等于这些目标已通过；详细门槛见[编辑器验收](../apps/open_quartz_video_editor/DESIGN.md#15-回归与验收方案)。
+完整后续流水验收仍须包含：长 GOP/VFR、精确 PTS 与切点预热，受限表面下无死锁/泄漏，暂停/最终 scrub 正确，导出不丢帧且 drain 后提交；记录水位、阶段起止/等待、deadline miss 与资源归还，证明多帧跨阶段在途。Phase 2 的显式时间、稳定帧和单请求依赖完成不等于这些目标已通过；详细门槛见[编辑器验收](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#15-回归与验收方案)。
 
 <a id="validation"></a>
 ## 验证基线
 
 ### 2026-11-20 视频宿主有界窗口与8K
 
-单轨视频宿主已切换worker clock/snapshot/window/deadline呈现，核心增加安全stable budget配置、聚合最小工作集拒绝与准确FrameBudget生命周期峰值。核心native SDK完整452项通过（库330），图宿主82项通过/2项既有ignored，视频宿主55项通过。实际7680×4320 HEVC30全尺寸旁路/一/两Corrector在Release原生窗口运行，源预取/稳定输出与graph依赖复用同Device/Queue，未新增逐node queue；证据、测量口径和局限统一见[编辑器8K实测](../apps/open_quartz_video_editor/DESIGN.md#eight-k-playback-evidence)。不推断多轨/音频、其他平台或未运行的coverage gate已通过。
+单轨视频宿主已切换worker clock/snapshot/window/deadline呈现，核心增加安全stable budget配置、聚合最小工作集拒绝与准确FrameBudget生命周期峰值。核心native SDK完整452项通过（库330），图宿主82项通过/2项既有ignored，视频宿主55项通过。实际7680×4320 HEVC30全尺寸旁路/一/两Corrector在Release原生窗口运行，源预取/稳定输出与graph依赖复用同Device/Queue，未新增逐node queue；证据、测量口径和局限统一见[编辑器8K实测](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#eight-k-playback-evidence)。不推断多轨/音频、其他平台或未运行的coverage gate已通过。
 
 原生[Nodes/Corrector15/15](../test-results/clip-pipeline/nodes-ui-2026-11-20T09-20-46-290Z/report.html)、[时间线15/15](../test-results/phase6/ui-2026-11-20T09-21-24-613Z/report.html)通过。保留的8K工程另跑至EOF，实际交付全部0–239序列位置，最终sourcePTS及queue/ready清空正确；帧/IO状态分离，不以更快frame回执覆盖Save/Open成功。
 
@@ -563,13 +563,13 @@ macOS Apple M4 Pro / Metal实测：核心native-runtime/native-video完整SDK co
 
 ### 2026-11-12 Phase 6 原生视频编辑器
 
-macOS/Apple M4 Pro上真实OpenQuartz Studio窗口13/13 case通过：sequence rational设置，VideoToolbox红蓝素材probe/import，GPU真实首帧及audio-present提示，两素材单轨放置、move释放后commit/undo/redo、双边trim、精确45帧split、lift、overlap不提交、拖动Esc撤销草稿、顺序play/pause、`.oqvideo.json`原子保存/关闭/重开、缺素材offline呈现、不同内容relink拒绝、匹配指纹relink恢复预览。独立PNG oracle核对红/蓝/黑画面；保存文件逐字段核对序列设置/范围/source PTS，媒体文件不是源码创建项目mock。详情和截图见[Phase 6报告](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。应用18单测+实际UI插桩综合line/function/region=90.38/88.21/88.78%；root workspace293、原Slint80/2 ignored、UI19和rust dependency boundaries通过。既有SDK100%仍红，最新default=98.02/95.86/97.99%、native=94.03/87.09/92.13%，scope未改；未发布。
+macOS/Apple M4 Pro上真实OpenQuartz Studio窗口13/13 case通过：sequence rational设置，VideoToolbox红蓝素材probe/import，GPU真实首帧及audio-present提示，两素材单轨放置、move释放后commit/undo/redo、双边trim、精确45帧split、lift、overlap不提交、拖动Esc撤销草稿、顺序play/pause、`.oqvideo.json`原子保存/关闭/重开、缺素材offline呈现、不同内容relink拒绝、匹配指纹relink恢复预览。独立PNG oracle核对红/蓝/黑画面；保存文件逐字段核对序列设置/范围/source PTS，媒体文件不是源码创建项目mock。详情和截图见[Phase 6报告](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。应用18单测+实际UI插桩综合line/function/region=90.38/88.21/88.78%；root workspace293、原Slint80/2 ignored、UI19和rust dependency boundaries通过。既有SDK100%仍红，最新default=98.02/95.86/97.99%、native=94.03/87.09/92.13%，scope未改；未发布。
 
 产物与独立覆盖报告遵循仓库忽略规则，见`test-results/phase6/`。
 
 ### 2026-11-12 Phase 5 硬件导出
 
-同FramePipeline的真实macOS source→GPU反色→NV12→VideoToolbox H264→MP4与CLI已运行；12帧范围/source PTS/尾帧/颜色由独立FFmpeg+ffprobe核对，24帧NTSC B-frame重排/小池背压与ENOSPC/取消/源变化/目标竞争有真实回归。根workspace294、native-video核心297、Slint80（既有ignored2）、交互19/19、Shader34/34、七模型Image+Video15/15通过。SDK100% gate仍失败（本Phase default line/function/region 97.85/94.83/97.69%，native94.02/87.04/92.11%），未放宽scope；媒体独立16 tests通过、coverage78.35/69.77/79.21%。命令/报告及失败修复见[Phase5记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。不发布，不将headless说成编辑器UI完成。
+同FramePipeline的真实macOS source→GPU反色→NV12→VideoToolbox H264→MP4与CLI已运行；12帧范围/source PTS/尾帧/颜色由独立FFmpeg+ffprobe核对，24帧NTSC B-frame重排/小池背压与ENOSPC/取消/源变化/目标竞争有真实回归。根workspace294、native-video核心297、Slint80（既有ignored2）、交互19/19、Shader34/34、七模型Image+Video15/15通过。SDK100% gate仍失败（本Phase default line/function/region 97.85/94.83/97.69%，native94.02/87.04/92.11%），未放宽scope；媒体独立16 tests通过、coverage78.35/69.77/79.21%。命令/报告及失败修复见[Phase5记录](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。不发布，不将headless说成编辑器UI完成。
 
 ### 2026-11-12 Phase 4 有界前瞻与非阻塞阶段
 
@@ -577,7 +577,7 @@ FramePipeline窗口在source admission前预留图/推理/稳定输出工作集�
 
 启动prefill调整的是独立presentation wall-clock offset，不能回写已接受FrameStamp；第3帧推理可能已经在途，改变deadline字段会破坏完整stamp匹配。阶段回归强制在waiting-inference时完成prefill，验证最终同一stamp/像素且只有一个终态。所有内容/求值身份保持原值，呈现deadline换算不伪造source PTS。
 
-本轮native/backend504通过（1既有opt-in ignored），default workspace293，桌面80（2opt-in ignored），真实窗口19/19、shader34/34、最终七模型image/video窗口15/15与依赖边界通过。三轮真实VideoToolbox→GPU shader smoke在第1帧submitted与completion callback之间观测到decode4启动，生产CPU图像bytes=0；仅证明跨阶段在途，不宣称GPU timestamp/吞吐提升。命令、实际PTS/像素、trace、资源峰值和窗口报告见[Phase4实施证据](../apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)。
+本轮native/backend504通过（1既有opt-in ignored），default workspace293，桌面80（2opt-in ignored），真实窗口19/19、shader34/34、最终七模型image/video窗口15/15与依赖边界通过。三轮真实VideoToolbox→GPU shader smoke在第1帧submitted与completion callback之间观测到decode4启动，生产CPU图像bytes=0；仅证明跨阶段在途，不宣称GPU timestamp/吞吐提升。命令、实际PTS/像素、trace、资源峰值和窗口报告见[Phase4实施证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)。
 
 SDK scope/exclusions/100%阈值未改；最终default line/function/region=98.02/95.86/97.99%，native=94.21/87.53/92.27%。coverage tests通过但gates仍失败exit1、不发布；branch未instrument。oq-media独立硬解coverage lib3+decode7通过，78.46/70.00/79.96%，独立macOS CI报告不替代SDK门槛。
 
@@ -622,13 +622,13 @@ default 156+19、native 275+61 passed（另 1 既有 cached-model ignored）。�
 
 已在 Phase 2 单请求 FramePipeline 中实现 source request 到实际媒体 PTS 的闭环：NativePlayer 的 composition stamp/epoch 按 source playback rate 生成目标时间；macOS VideoToolbox exact source owner 在 pipeline 所属 worker 上使用 oq-media Session cursor，selected surface 导入同一 GPU owner 后才执行 graph/inference。向前沿 decoder 顺序消费，反向不连续用新 source epoch seek keyframe/flush/reorder/preroll；source timestamp 原样保留 rational，稳定输出在单视频源场景附带 source-relative actual PTS。硬件/cancellation/EOF 不回退CPU或旧纹理。
 
-内建64×64 synthetic H.264 source-time fixture 的SHA-256与双独立oracle、严格边界case、完整测试命令/平台限制及 UI/report 都列在[Phase3实施记录](../apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。VFR、2s nonzero start、B-frame/software-PTS+Y-marker pixel oracle与NativePlayer FramePipeline→GPU路径在Mac Metal通过。七模型实际 VideoToolbox image/video resident window回归15/15；这证明可见路径/旧consumer接续，不是对模型画质重新作数值reference或pipeline性能结论。
+内建64×64 synthetic H.264 source-time fixture 的SHA-256与双独立oracle、严格边界case、完整测试命令/平台限制及 UI/report 都列在[Phase3实施记录](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。VFR、2s nonzero start、B-frame/software-PTS+Y-marker pixel oracle与NativePlayer FramePipeline→GPU路径在Mac Metal通过。七模型实际 VideoToolbox image/video resident window回归15/15；这证明可见路径/旧consumer接续，不是对模型画质重新作数值reference或pipeline性能结论。
 
 Phase 3不等于异步 seek/UI scrub、任意多 source NLE映射或多帧窗口；VideoToolbox GPU import wait留存，source owner同步精确读取。仍待Phase4 watermark/prefetch/credits/non-blocking completion，Phase5真实硬件 encoder/mux。PTS信息只在唯一source语义成立时填单个 `ContentStamp.media_pts_ns`，不对多视频mix冒报。
 macOS Apple M4 Pro完整 native/backend suite 468 passed/1既有ignored；oq-media硬解定位E2E 6 passed；workspace 287 passed；desktop UI interaction 19/19；七模型 resident VideoToolbox image/video UI 15/15；Core API/feature dependency boundaries通过。完整测试命令与已知限制见上方Phase3实施记录。UI lane证明真实解码帧持续进入GPU inference并改变实际显示像素，不替代七模型CPU数值reference，也不代表跨平台seek能力。
 ### 2026-11-11 Phase 2 共享执行
 
-NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 FrameExecutionSession 的图/输出状态。默认 workspace 275、完整 native/backend 405（1 ignored）、桌面 80（2 ignored）通过；真实交互 19/19、Shader 像素 34/34。不存在 ORT 路径下，原始 SR3 的 Shader/VideoToolbox 视频→Renderer 完成播放、暂停、源码替图/恢复与正常关闭，逐帧 host image/tensor bytes=0。[需求映射、命令、报告及完整限制](../apps/open_quartz_video_editor/DESIGN.md#phase-2共享执行与原图宿主切换)。
+NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 FrameExecutionSession 的图/输出状态。默认 workspace 275、完整 native/backend 405（1 ignored）、桌面 80（2 ignored）通过；真实交互 19/19、Shader 像素 34/34。不存在 ORT 路径下，原始 SR3 的 Shader/VideoToolbox 视频→Renderer 完成播放、暂停、源码替图/恢复与正常关闭，逐帧 host image/tensor bytes=0。[需求映射、命令、报告及完整限制](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-2共享执行与原图宿主切换)。
 
 两个 SDK 100% coverage gates 仍失败：默认 line/function/region=96.11/95.30/95.96%，native=90.11/83.40/84.54%；迁入 execution 的代码纳入统计，未修改排除/阈值。未发布，未宣称 Phase 3 精确 seek 或 Phase 4 多帧窗口/credit 已完成。
 
@@ -716,14 +716,14 @@ NativePlayer 已走单请求 FramePipeline，PlaybackSession 复用无时钟 Fra
 | 共享无时钟执行与有界流水 | [`execution/session.rs`](../crates/open_quartz/src/execution/session.rs)、[`pipeline.rs`](../crates/open_quartz/src/execution/pipeline.rs)、[`window.rs`](../crates/open_quartz/src/execution/window.rs)、[`window_tests.rs`](../crates/open_quartz/src/execution/window_tests.rs) |
 | 播放会话与原生协调 | [`player/session.rs`](../crates/open_quartz/src/player/session.rs)、[`native.rs`](../crates/open_quartz/src/player/native.rs) |
 | 输出、订阅与 presentation | [`outputs/`](../crates/open_quartz/src/outputs/) |
-| 有界稳定输出与回归 | [`rendering/stable_frame.rs`](../crates/open_quartz/src/rendering/stable_frame.rs)、[`stable_frame_tests.rs`](../crates/open_quartz/src/rendering/stable_frame_tests.rs)、[`outputs/types.rs`](../crates/open_quartz/src/outputs/types.rs)；[Phase 1 验收记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围) |
+| 有界稳定输出与回归 | [`rendering/stable_frame.rs`](../crates/open_quartz/src/rendering/stable_frame.rs)、[`stable_frame_tests.rs`](../crates/open_quartz/src/rendering/stable_frame_tests.rs)、[`outputs/types.rs`](../crates/open_quartz/src/outputs/types.rs)；[Phase 1 验收记录](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围) |
 | GPU 执行、资源与平台导入 | [`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs)、[`executor.rs`](../crates/open_quartz/src/rendering/executor.rs)、[`videotoolbox.rs`](../crates/open_quartz/src/rendering/videotoolbox.rs)、[`dxgi.rs`](../crates/open_quartz/src/rendering/dxgi.rs) |
-| 视频源与媒体后端 | [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)、[`native.rs`](../crates/open_quartz/src/media/native.rs)、[`oq-media`](../crates/oq-media/) |
+| 视频源与媒体后端 | [`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)、[`native.rs`](../crates/open_quartz/src/media/native.rs)、[`oq-media`](https://github.com/sanitor/oq-media) |
 | 推理图任务与独立 runtime | [`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)、[`inference/pipeline.rs`](../crates/open_quartz/src/inference/pipeline.rs)、[`oq-inference/src/artifact.rs`](../crates/oq-inference/src/artifact.rs)、[`lib.rs`](../crates/oq-inference/src/lib.rs)、[`runtime.rs`](../crates/oq-inference/src/runtime.rs) |
 | 资源计划、模型准备与缓存 | [`resources/plan.rs`](../crates/open_quartz/src/resources/plan.rs)、[`models.rs`](../crates/open_quartz/src/resources/models.rs) |
 | 桌面控制与渲染桥 | [`app_controller.rs`](../apps/open_quartz_slint/src/app_controller.rs)、[`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)、[`inference_runtime.rs`](../apps/open_quartz_slint/src/inference_runtime.rs)、[`inspector_inference.rs`](../apps/open_quartz_slint/src/inspector_inference.rs) |
 | 项目与文件服务 | [`services/`](../apps/open_quartz_slint/src/services/) |
-| 独立代码编辑器 | [`slint_code_editor`](../crates/slint_code_editor/) |
+| 独立代码编辑器 | [`slint_code_editor`](https://github.com/sanitor/slint-code-editor) |
 | 屏保导出与独立宿主 | [`open_quartz_screensaver`](../crates/open_quartz_screensaver/)、[`native_host.rs`](../crates/open-quartz-screensaver-stub/src/native_host.rs) |
 | 唯一 Shader catalog | [`project/shader_catalog.json`](../crates/open_quartz/src/project/shader_catalog.json) |
 | 行为测试与原生 fixtures | owner 内 unit/coverage tests、[`核心 tests`](../crates/open_quartz/tests/)、[`fixtures`](../tests/fixtures/) |

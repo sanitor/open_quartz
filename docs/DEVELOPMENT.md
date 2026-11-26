@@ -6,7 +6,7 @@
 
 历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
-Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.md#pre-phase3-coverage)；Phase4当前命令/百分比按[阶段证据](../apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)单列，不复用Phase3结果。`npm run test:sdk-coverage`保留default/native两套scope及100% lines/functions/regions gates；在清理profile前保存`test-results/sdk-coverage/{default,native}.json`。复跑需准备desktop runtime并显式配置FFmpeg与ORT1.21路径，ORT只供reference。未将测试通过或line接近100%写成全部coverage gates通过。
+Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.md#pre-phase3-coverage)；Phase4当前命令/百分比按[阶段证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)单列，不复用Phase3结果。`npm run test:sdk-coverage`保留default/native两套scope及100% lines/functions/regions gates；在清理profile前保存`test-results/sdk-coverage/{default,native}.json`。复跑需准备desktop runtime并显式配置FFmpeg与ORT1.21路径，ORT只供reference。未将测试通过或line接近100%写成全部coverage gates通过。
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
@@ -26,7 +26,7 @@ advanced host 路径为 open_quartz::{compiler,evaluation,execution,player,outpu
 
 NativePlayer/RenderDevice 在原 render thread 与 Slint 共用 wgpu30 Metal Device/Queue：texture → GPU BT.601/resize224 → 完整四层 FP32 Conv/ReLU → PixelShuffle3/RGB → resident RGBA → Slint/Shader。固定网络 224→672，输出源尺寸 ×3，不是 tiling 或大图全分辨率质量承诺。source pixels 不经 CPU；模型/weights 解析和 initial upload 仅准备时进行。一次性文件图片/framebuffer decode-ingress 可 CPU 解码并上传，capture/reference/test readback 必须 opt in。TextureHandle/GpuOutputHandle/RenderUpdate/Slint 当前 handles 保留 lease，最多三槽，持有期间不复用，饱和 backpressure；queue order/fences 保证生命周期。
 
-Phase 1 稳定输出保留：主/选中预览使用有界 StableFramePool GPU detach copy；节点卡仍为 live view。Phase 2 shared FramePipeline 的 admission/completion 与无时钟 FrameExecutionSession 保留。Phase 3 macOS strict VideoToolbox file source 由其 owning render worker按每帧 `FrameEvaluationInput.stamp.timeline_ns/epoch` 同步调用 `Session::frame_at_ns`，PTS/time_base与source PTS进入最终单源 content stamp；精确source seek/EOF identity 在 [Phase 3 实施记录](../apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。本阶段没有 source-window/prefetch或解除 importer wait，也不对 Windows/Linux 宣称精确时间访问。稳定输出设备消费 completion 与媒体帧实际PTS是不同状态：GpuReady仍读 `frame.ready`，composition timeline不拿来冒充媒体 PTS。可重跑命令与结果按该 Phase 记录，本段描述不是回归通过数字。
+Phase 1 稳定输出保留：主/选中预览使用有界 StableFramePool GPU detach copy；节点卡仍为 live view。Phase 2 shared FramePipeline 的 admission/completion 与无时钟 FrameExecutionSession 保留。Phase 3 macOS strict VideoToolbox file source 由其 owning render worker按每帧 `FrameEvaluationInput.stamp.timeline_ns/epoch` 同步调用 `Session::frame_at_ns`，PTS/time_base与source PTS进入最终单源 content stamp；精确source seek/EOF identity 在 [Phase 3 实施记录](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-3精确-source-time)。本阶段没有 source-window/prefetch或解除 importer wait，也不对 Windows/Linux 宣称精确时间访问。稳定输出设备消费 completion 与媒体帧实际PTS是不同状态：GpuReady仍读 `frame.ready`，composition timeline不拿来冒充媒体 PTS。可重跑命令与结果按该 Phase 记录，本段描述不是回归通过数字。
 
 ### 桌面是否需要 FFI？
 
