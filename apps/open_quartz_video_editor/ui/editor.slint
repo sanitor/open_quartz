@@ -22,6 +22,7 @@ component NodeEffectTile inherits Rectangle {
     tile := TouchArea { accessible-role: button; accessible-label: "Add " + root.effect.label + " node"; enabled: root.enabled; clicked => { root.clicked(); } }
 }
 export struct ExportJobRow { path: string, phase: string, details: string, can_cancel: bool, can_retry: bool }
+export struct TranscriptRow { index: int, label: string, checked: bool }
 export struct AssetRow { id: string, name: string, details: string, online: bool, selected: bool, thumbnail: image, has_thumbnail: bool }
 export struct TrackRow { id: string, name: string, selected: bool, visible: bool, locked: bool, sync_ripple: bool, blend_mode: int, subtitles: bool }
 export struct AudioTrackRow { id: string, name: string, muted: bool, solo: bool, locked: bool, sync_ripple: bool, gain: string }
@@ -668,6 +669,12 @@ export component EditorWindow inherits Window {
     callback clip_timing_changed(field: string, value: string);
     in-out property <bool> sequence_managed_color;
     callback managed_color_changed(bool);
+    in property <bool> transcript_open;
+    in property <bool> transcript_busy;
+    in property <bool> transcript_can_build;
+    in-out property <string> transcript_query;
+    in property <[TranscriptRow]> transcript_rows;
+    callback transcript_action(string, int, string);
     in property <string> hdr_monitor_status: "HDR monitor closed";
     callback toggle_hdr_monitor();
     callback sequence_settings(width: string, height: string, fps_numerator: string, fps_denominator: string);
@@ -941,6 +948,10 @@ export component EditorWindow inherits Window {
                                 if root.proxy_status != "": Text { text: root.proxy_status; color: root.secondary; font-size: 11px; wrap: word-wrap; }
                             }
                             LineEdit { accessible-label: "Search media"; text <=> root.search_query; placeholder-text: "Search media"; edited(value) => { root.search_changed(value); } }
+                            if root.selected_asset_name != "": Button {
+                                text: "Transcribe selected media";
+                                clicked => { root.project_action("transcribe"); }
+                            }
                             HorizontalLayout { height: 30px; padding-left: 14px; padding-right: 12px; Text { text: "Project media"; color: root.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.assets.length + " items"; color: root.secondary; font-size: 11px; vertical-alignment: center; } }
                             ScrollView {
                                 horizontal-stretch: 1; vertical-stretch: 1;
@@ -1935,6 +1946,53 @@ export component EditorWindow inherits Window {
                         spacing: 10px;
                         Button { text: "Cancel"; clicked => { root.settings_open = false; editor_focus.focus(); } }
                         Button { text: "Apply settings"; primary: true; clicked => { root.sequence_settings(root.draft_width, root.draft_height, root.draft_fps_numerator, root.draft_fps_denominator); root.settings_open = false; editor_focus.focus(); } }
+                    }
+                }
+            }
+        }
+        if root.transcript_open: Rectangle {
+            width: parent.width; height: parent.height; background: #000000b0;
+            accessible-role: groupbox; accessible-label: "Transcript";
+            TouchArea {}
+            Rectangle {
+                width: min(parent.width - 40px, 720px); height: min(parent.height - 40px, 550px);
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                background: root.panel; border-radius: 8px;
+                VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    Text { text: root.transcript_busy ? "Transcribing locally…" : "Transcript"; color: root.text; }
+                    LineEdit {
+                        accessible-label: "Search transcript"; placeholder-text: "Search transcript";
+                        text <=> root.transcript_query;
+                        edited(value) => { root.transcript_action("search", -1, value); }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 8px;
+                            for row in root.transcript_rows: HorizontalLayout {
+                                spacing: 8px;
+                                CheckBox {
+                                    text: "Keep segment " + (row.index + 1); checked: row.checked;
+                                    toggled => { root.transcript_action("toggle", row.index, ""); }
+                                }
+                                Button {
+                                    text: row.label; horizontal-stretch: 1;
+                                    clicked => { root.transcript_action("seek", row.index, ""); }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: root.transcript_busy ? "Cancel transcription" : "Close transcript";
+                            clicked => { root.transcript_action("close", -1, ""); editor_focus.focus(); }
+                        }
+                        Button {
+                            text: "Create rough cut with subtitles"; primary: true; enabled: root.transcript_can_build;
+                            clicked => { root.transcript_action("build", -1, ""); editor_focus.focus(); }
+                        }
                     }
                 }
             }

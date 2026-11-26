@@ -25,6 +25,8 @@ mod pipeline_editor;
 mod monitor_transform;
 #[path = "motion_editor.rs"]
 mod motion_editor;
+#[path = "transcript_controller.rs"]
+mod transcript_controller;
 use motion_editor::MotionEditor;
 use monitor_transform::MonitorGesture;
 use pipeline_editor::{PipelineCommand, PipelineEditor};
@@ -133,6 +135,7 @@ pub struct Controller {
     #[cfg(any(target_os = "macos", windows))]
     proxies: crate::proxy::Proxies,
     pipeline_editor: PipelineEditor,
+    transcript: transcript_controller::TranscriptPanel,
 }
 impl Controller {
     pub fn new(
@@ -214,6 +217,7 @@ impl Controller {
             #[cfg(any(target_os = "macos", windows))]
             proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
+            transcript: Default::default(),
         }));
         window.set_project_status(description.into());
         Self::connect(&this, window);
@@ -235,6 +239,12 @@ impl Controller {
         this
     }
     fn connect(this: &Rc<RefCell<Self>>, window: &EditorWindow) {
+        let weak = Rc::downgrade(this);
+        window.on_transcript_action(move |action, index, query| {
+            if let Some(controller) = weak.upgrade() {
+                controller.borrow_mut().transcript_action(action.as_str(), index, query.as_str());
+            }
+        });
         let weak = Rc::downgrade(this);
         window.on_project_action(move |action| {
             if let Some(controller) = weak.upgrade() {
@@ -778,6 +788,7 @@ impl Controller {
             return;
         }
         match action {
+            "transcribe" => self.open_transcript(),
             "import" | "media" => self.import_dialog(),
             "import-files" | "relink-folder" => self.path_dialog(action),
             #[cfg(any(target_os = "macos", windows))]
@@ -1856,6 +1867,7 @@ impl Controller {
     }
 
     fn tick(&mut self) {
+        self.poll_transcript();
         let (status, open) = self.hdr_monitor.status();
         if let Some(window) = self.window.upgrade() {
             if window.get_hdr_monitor_status().as_str() != status {
@@ -2601,6 +2613,7 @@ impl Controller {
         window.set_project_dirty(self.document.is_dirty());
     }
     fn clear_images(&mut self) {
+        self.transcript = Default::default();
         self.motion = MotionEditor::default();
         self.color_scope.clear();
         self.references = Default::default();
@@ -2621,6 +2634,7 @@ impl Controller {
         self.displayed_ticket = None;
         self.pipeline_editor.reset();
         if let Some(window) = self.window.upgrade() {
+            window.set_transcript_open(false);
             window.set_color_scope_plot(slint::Image::default());
             window.set_color_scope_summary("Waiting for a program frame".into());
             window.set_monitor_image(slint::Image::default());
@@ -2851,6 +2865,7 @@ mod native_dialog_tests {
             #[cfg(any(target_os = "macos", windows))]
             proxies: Default::default(),
             pipeline_editor: PipelineEditor::default(),
+            transcript: Default::default(),
             selected_track: crate::document::DEFAULT_TRACK.into(),
             monitor_gesture: None,
             motion: MotionEditor::default(),

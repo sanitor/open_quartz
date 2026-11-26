@@ -13,6 +13,31 @@ struct Cue {
 }
 
 impl EditorDocument {
+    pub fn append_transcript_cut(
+        &mut self,
+        asset: &str,
+        selections: Vec<(std::ops::Range<u64>, String)>,
+    ) -> Result<(), String> {
+        if selections.is_empty() {
+            return Err("Select at least one transcript segment".into());
+        }
+        let mut draft = EditorDocument::new(self.data.clone())?;
+        draft.add_sequence(false)?;
+        let video_track = draft.data.tracks[0].id.clone();
+        let subtitle_id = new_id("transcript", self.revision);
+        let mut end = 0u64;
+        for (index, (range, text)) in selections.into_iter().enumerate() {
+            let length = range.end.checked_sub(range.start).ok_or("Invalid transcript range")?;
+            draft.place_visual_range(asset, &video_track, super::Placement::EmptySpace(Some(end)),
+                Some(range), &super::AudioDestination::Automatic)?;
+            subtitle_track(&mut draft.data, &subtitle_id)?.clips.push(generated_clip(
+                format!("{subtitle_id}-{index}"), end, length, subtitle(text),
+            ));
+            end = end.checked_add(length).ok_or("Transcript cut duration overflow")?;
+        }
+        self.transact(|data| { *data = draft.data; Ok(()) })
+    }
+
     pub fn add_subtitle(&mut self, start: u64) -> Result<(String, String), String> {
         let id = new_id("subtitle", self.revision);
         let mut track_id = new_id("subtitle-track", self.revision);
@@ -105,7 +130,7 @@ fn subtitle(text: String) -> Title {
 }
 
 // A cue includes samples at or after its start and strictly before its end.
-fn boundary_frame(fps: Rational, ns: u64) -> Result<u64, String> {
+pub(crate) fn boundary_frame(fps: Rational, ns: u64) -> Result<u64, String> {
     let scaled = u128::from(ns) * fps.numerator as u128;
     let frame = scaled.div_ceil(fps.denominator as u128 * 1_000_000_000);
     u64::try_from(frame).map_err(|_| "Subtitle position exceeds supported range".into())

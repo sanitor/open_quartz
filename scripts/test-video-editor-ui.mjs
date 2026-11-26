@@ -16,10 +16,11 @@ const previewOnly = args.includes('--preview-only');
 const deliveryOnly = args.includes('--delivery-only');
 const matteOnly = args.includes('--matte-only');
 const hdrMonitorOnly = args.includes('--hdr-monitor-only');
-assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
-const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only'].includes(arg));
+const transcriptOnly = args.includes('--transcript-only');
+assert([smoke, audioOnly, previewOnly, deliveryOnly, matteOnly, hdrMonitorOnly, transcriptOnly].filter(Boolean).length <= 1, 'Choose at most one test filter');
+const positional = args.filter(arg => !['--smoke', '--audio-only', '--preview-only', '--delivery-only', '--matte-only', '--hdr-monitor-only', '--transcript-only'].includes(arg));
 assert(positional.length <= 1 && positional.every(arg => !arg.startsWith('--')), 'Expected [binary] and an optional suite filter');
-const tier = hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
+const tier = transcriptOnly ? 'transcript-only' : hdrMonitorOnly ? 'hdr-monitor-only' : matteOnly ? 'matte-only' : deliveryOnly ? 'delivery-only' : audioOnly ? 'audio-only' : previewOnly ? 'preview-only' : smoke ? 'smoke' : 'full';
 const output=resolve(process.env.VIDEO_EDITOR_TEST_OUTPUT || `test-results/phase6/ui-${tier}-${new Date().toISOString().replaceAll(/[:.]/g,'-')}`);
 const binary=resolve(positional[0] || 'apps/open_quartz_video_editor/target/debug/open_quartz_video_editor');
 const ffmpeg=resolve(process.env.OPEN_QUARTZ_FFMPEG_PATH || 'apps/open_quartz_slint/runtime/ffmpeg');
@@ -36,7 +37,16 @@ async function launch(path){
   client=new SlintUiClient(`http://127.0.0.1:${port}/mcp`);
   await client.waitFor(async()=>{try{await client.init();await client.useWindow();return true;}catch{return false;}},{description:'native editor window'});
 }
-async function close(){await client.activate((await buttons('Close window'))[0]);const exit=await Promise.race([exited,delay(10000).then(()=>{throw Error('Window did not close normally');})]);assert.deepEqual(exit,{code:0,signal:null});report.launches.push(exit);await writeFile(join(output,`application-${report.launches.length}.log`),stdout+stderr);child=undefined;}
+async function close() {
+  await client.activate((await buttons('Close window'))[0]);
+  const exit = await Promise.race([exited, delay(10000, undefined, {ref: false}).then(() => {
+    throw Error('Window did not close normally');
+  })]);
+  report.launches.push(exit);
+  await writeFile(join(output, `application-${report.launches.length}.log`), stdout + stderr);
+  child = undefined;
+  assert.deepEqual(exit, {code: 0, signal: null});
+}
 const state=async()=> (await client.properties(client.rootHandle)).accessibleDescription;
 async function buttons(label) {
   return client.waitFor(async () => {
@@ -3470,8 +3480,52 @@ async function hdrMonitorRoundTrip() {
   }, { core: true });
 }
 
+async function transcriptRoundTrip() {
+  await step('Transcribe real speech locally, seek by text and export the rough cut captions', async () => {
+    const audio = process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO;
+    assert(audio && process.env.OPEN_QUARTZ_WHISPER_MODEL, 'The transcript regression needs a local model and JFK speech fixture');
+    const source = join(output, 'speech.mp4');
+    fixtureCommand(['-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=30', '-i', audio,
+      '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', source]);
+    await launch(); await fileAction('IMPORT', source, 'Import media'); await waitState('assets 1');
+    await client.click(await assetCard('speech.mp4'));
+    await click('Transcribe selected media');
+    const spoken = () => client.query({label: /country/i, role: 'Button'});
+    await client.waitFor(async () => (await spoken()).length >= 2, {timeoutMs: 120000, description: 'Whisper recognizes the source speech'});
+    const search = await client.find({label: 'Search transcript', role: 'TextInput'});
+    await client.click(search);
+    await client.key('for your country');
+    const filtered = await client.waitFor(async () => {
+      const rows = await spoken();
+      return rows.length === 1 && rows[0];
+    }, {description: 'Filter transcript to the selected phrase'});
+    await client.click(filtered);
+    await client.waitFor(async () => !(await client.query({label: 'Transcript', role: 'Groupbox'})).length,
+      {description: 'Selecting text returns to the source monitor'});
+    await client.waitFor(async () => Number(/source PTS (\d+) ns/.exec(await state())?.[1]) > 1_000_000_000,
+      {description: 'Source monitor displays the recognized phrase timestamp'});
+    await click('Transcribe selected media');
+    await client.click(await client.find({label: 'Keep segment 2', role: 'Checkbox'}));
+    await click('Create rough cut with subtitles'); await waitState('clips 2');
+    await click('UNDO'); await waitState('clips 0');
+    await click('REDO'); await waitState('clips 2');
+    const project = join(output, 'rough-cut.oqvideo.json');
+    const srt = join(output, 'rough-cut.srt');
+    await fileAction('SAVE AS', project, 'Save project'); await waitState('Project saved');
+    const {data} = JSON.parse(await readFile(project, 'utf8'));
+    assert.equal(data.other_sequences.length, 1);
+    assert(data.tracks.find(track => !track.subtitles).clips[0].source_in_pts > 0);
+    assert.match(data.tracks.find(track => track.subtitles).clips[0].title.text, /for your country/i);
+    await close(); await launch(project); await waitState('clips 2');
+    await fileAction('Export SRT', srt, 'Save SRT'); await waitState('Subtitle file exported');
+    assert.match(await readFile(srt, 'utf8'), /for your country/i);
+    await close();
+  }, {core: true});
+}
+
 try {
-  if (hdrMonitorOnly) await hdrMonitorRoundTrip();
+  if (transcriptOnly) await transcriptRoundTrip();
+  else if (hdrMonitorOnly) await hdrMonitorRoundTrip();
   else if (matteOnly) await personMatteRoundTrip();
   else if (deliveryOnly) await hardwareDeliveryRoundTrip();
   else {
@@ -3479,6 +3533,7 @@ try {
     if (!audioOnly) await runVideoCases();
     if (!audioOnly && !previewOnly) await personMatteRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
+    if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
   }
   report.passed=true;
 }catch(error){report.error=error.stack;try{await client.screenshot(join(output,'failure.png'));await writeFile(join(output,'failure-tree.json'),JSON.stringify(await client.tree(),null,2));}catch{}throw error;

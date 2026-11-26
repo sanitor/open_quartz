@@ -152,6 +152,14 @@ Nodes architecture and truthful implementation limits: [RENDER_PIPELINE_EDITOR_D
 
 ## 验证
 
+### 本地转录与文本粗剪
+
+安装 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 的 `whisper-cli` 并准备本地模型。启动 Studio 前将 `OPEN_QUARTZ_WHISPER_MODEL` 设为模型路径。可用 `OPEN_QUARTZ_WHISPER_CLI` 指定可执行文件，或将其加入 PATH。默认自动识别语言，也可用 `OPEN_QUARTZ_WHISPER_LANGUAGE` 指定。Studio 在临时目录提取音频，在本机执行识别，取消或关闭面板会终止正在执行的任务。
+
+在素材库选中带音频的视频，点击 **Transcribe selected media**。搜索后点击一条结果可跳到源监视器对应位置。勾选要保留的语句，点击 **Create rough cut with subtitles** 生成独立序列。所选语句按源时间顺序拼接，保留链接音频并自动生成字幕。一次撤销可移除整次粗剪操作。保存工程会保留生成的片段和字幕，转录面板内容仅保留于当前会话。字幕可用 **Export SRT** 导出。
+
+原生回归使用 whisper.cpp v1.7.6、`ggml-tiny.en.bin` 和该项目的 `samples/jfk.wav`。配置模型及 CLI，设置 `OPEN_QUARTZ_WHISPER_LANGUAGE=en` 和 `OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO`（WAV 路径），运行 `node scripts/test-video-editor-ui.mjs <应用路径> --transcript-only`。
+
 从仓库根目录执行：
 
 ```sh

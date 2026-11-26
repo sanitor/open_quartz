@@ -16,7 +16,7 @@ mod transition;
 #[path = "document_title.rs"]
 mod title;
 #[path = "document_subtitle.rs"]
-mod subtitle;
+pub(crate) mod subtitle;
 pub use title::Title;
 pub use transition::DissolveSide;
 #[path = "document_animation.rs"]
