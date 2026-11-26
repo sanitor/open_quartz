@@ -9,11 +9,11 @@ pub(super) struct MaskTask {
 }
 
 impl Controller {
-    pub(super) fn start_mask_tracking(&mut self) {
+    pub(super) fn start_mask_tracking(&mut self, similarity: bool) {
         if self.mask_tracking.is_some() {
             return;
         }
-        let result = self.make_mask_tracking_task();
+        let result = self.make_mask_tracking_task(similarity);
         match result {
             Ok(task) => {
                 self.pause();
@@ -27,7 +27,7 @@ impl Controller {
         }
     }
 
-    fn make_mask_tracking_task(&self) -> Result<MaskTask, String> {
+    fn make_mask_tracking_task(&self, similarity: bool) -> Result<MaskTask, String> {
         let id = self
             .selected_clip
             .as_deref()
@@ -78,6 +78,7 @@ impl Controller {
                     fps,
                     mask,
                     &times,
+                    similarity,
                     &worker_flag,
                 );
                 let _ = send.send(result);

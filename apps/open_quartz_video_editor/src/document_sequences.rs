@@ -215,6 +215,7 @@ impl EditorDocument {
                     .find(|name| !existing.iter().any(|(_, existing)| *existing == name)).unwrap()
             };
             if !duplicate {
+                next.grade = SharedGrade::default();
                 next.tracks = vec![VideoTrack::new(DEFAULT_TRACK.into(), "Video 1".into())];
                 next.audio_tracks.clear();
                 next.markers.clear();

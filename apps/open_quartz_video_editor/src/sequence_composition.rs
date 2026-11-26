@@ -269,8 +269,8 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
             (String::new(), format!("vec2f({:.9e}, {:.9e})", crop.left, crop.top),
                 format!("vec2f({:.9e}, {:.9e})", 1.0 - crop.right, 1.0 - crop.bottom))
         };
-        let mask_center = if let Some(tracked) = &layer.tracked_mask {
-            let names = [format!("mask_x{index}"), format!("mask_y{index}")];
+        let mask_pose = if let Some(tracked) = &layer.tracked_mask {
+            let names = ["x", "y", "scale", "rotation"].map(|axis| format!("mask_{axis}{index}"));
             for (axis, name) in names.iter().enumerate() {
                 bindings.push_str(&format!("@group(0) @binding({mask_binding}) var<uniform> {name}: f32;\n"));
                 mask_binding += 1;
@@ -278,26 +278,50 @@ fn composition(request: &PreviewRequest, clock: Option<NodeClock>) -> Result<Gra
                 let rate = f64::from(layer.speed_percent) / 100.0;
                 let keys = tracked.points.iter().map(|point| open_quartz::project::UniformAnimationKey {
                     time: start + (i128::from(point.source_ns) - i128::from(tracked.source_start_ns)) as f64 / (1.0e9 * rate),
-                    value: if axis == 0 { point.x } else { point.y },
+                    value: [point.x, point.y, point.scale, point.rotation.to_radians()][axis],
                     curve: open_quartz::project::Curve::Linear,
                 }).collect::<Vec<_>>();
                 mask_animations.insert(name.clone(), keys);
             }
-            Some(format!("vec2f({}, {})", names[0], names[1]))
+            Some(format!("vec4f({}, {}, {}, {})", names[0], names[1], names[2], names[3]))
         } else { None };
         let mask_setup = if let Some(mask) = layer.mask {
+            let pose = mask_pose.unwrap_or_else(|| format!("vec4f({:.9e}, {:.9e}, 1.0, 0.0)", mask.x, mask.y));
             let distance = match mask.shape {
-                crate::document::MaskShape::Rectangle => "max(mask_uv.x, mask_uv.y)",
-                crate::document::MaskShape::Ellipse => "length(mask_uv)",
+                crate::document::MaskShape::Rectangle => "max(abs(mask_uv.x), abs(mask_uv.y))".into(),
+                crate::document::MaskShape::Ellipse => "length(mask_uv)".into(),
+                crate::document::MaskShape::Polygon => {
+                    let polygon = mask.polygon.ok_or("Missing polygon vertices")?;
+                    let edge = |[x, y]: [f32; 2]| format!("vec2f({:.9e}, {:.9e})", x * 2.0 - 1.0, y * 2.0 - 1.0);
+                    let mut code = format!("fn polygon{index}(p: vec2f) -> f32 {{ var inside = false; var distance = 4.0;");
+                    for (a, b) in polygon.edges() {
+                        code.push_str(&format!(r#"{{
+                            let a = {}; let b = {}; let side = b - a;
+                            let fraction = clamp(dot(p - a, side) / dot(side, side), 0.0, 1.0);
+                            distance = min(distance, length(p - a - side * fraction));
+                            if ((a.y > p.y) != (b.y > p.y)) {{
+                                if (p.x < a.x + (p.y - a.y) * side.x / side.y) {{ inside = !inside; }}
+                            }}
+                        }}"#, edge(a), edge(b)));
+                    }
+                    code.push_str("return 1.0 + select(distance, -distance, inside); }\n");
+                    animation_code.push_str(&code);
+                    format!("polygon{index}(mask_uv)")
+                }
             };
             let gate = if mask.feather == 0.0 {
                 format!("select(0.0, 1.0, {distance} <= 1.0)")
             } else {
                 format!("(1.0 - smoothstep({:.9e}, 1.0, {distance}))", 1.0 - mask.feather)
             };
-            let center = mask_center.unwrap_or_else(|| format!("vec2f({:.9e}, {:.9e})", mask.x, mask.y));
             format!(
-                "let mask_uv = abs((p - {center}) * 2.0 / vec2f({:.9e}, {:.9e})); let mask_alpha = {gate};",
+                "let mask_pose = {pose};
+                 let mask_size = vec2f(textureDimensions(layer{index}));
+                 let offset = (p - mask_pose.xy) * mask_size;
+                 let c = cos(mask_pose.w); let s = sin(mask_pose.w);
+                 let rotated = vec2f(c * offset.x + s * offset.y, -s * offset.x + c * offset.y);
+                 let mask_uv = rotated * 2.0 / (mask_size * mask_pose.z * vec2f({:.9e}, {:.9e}));
+                 let mask_alpha = {gate};",
                 mask.width, mask.height,
             )
         } else { "let mask_alpha = 1.0;".into() };

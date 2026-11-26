@@ -6,6 +6,50 @@ pub enum MaskShape {
     #[default]
     Rectangle,
     Ellipse,
+    Polygon,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Polygon {
+    count: usize,
+    vertices: [[f32; 2]; 12],
+}
+
+impl Polygon {
+    fn parse(input: &str) -> Result<Self, String> {
+        let mut polygon = Self { count: 0, vertices: [[0.0; 2]; 12] };
+        for entry in input.split_whitespace() {
+            let (x, y) = entry.split_once(',').ok_or("Enter polygon vertices as x,y pairs")?;
+            let parse = |value: &str| value.parse::<f32>().map(|value| value / 100.0)
+                .map_err(|_| "Enter polygon vertex coordinates from 0 to 100".to_owned());
+            *polygon.vertices.get_mut(polygon.count).ok_or("Use at most 12 polygon vertices")? = [parse(x)?, parse(y)?];
+            polygon.count += 1;
+        }
+        polygon.validate()?;
+        Ok(polygon)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !(3..=12).contains(&self.count)
+            || self.points().iter().flatten().any(|value| !(0.0..=1.0).contains(value))
+            || self.edges().any(|(a, b)| a == b)
+        {
+            return Err("Use 3 to 12 distinct neighboring vertices between 0 and 100".into());
+        }
+        Ok(())
+    }
+
+    fn points(&self) -> &[[f32; 2]] { &self.vertices[..self.count] }
+
+    pub fn edges(&self) -> impl Iterator<Item = ([f32; 2], [f32; 2])> + '_ {
+        self.points().iter().copied().zip(self.points().iter().copied().cycle().skip(1))
+    }
+
+    pub fn text(&self) -> String {
+        self.points().iter().map(|[x, y]| format!("{:.3},{:.3}", x * 100.0, y * 100.0))
+            .collect::<Vec<_>>().join(" ")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
@@ -17,11 +61,13 @@ pub struct Mask {
     pub width: f32,
     pub height: f32,
     pub feather: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<Polygon>,
 }
 
 impl Default for Mask {
     fn default() -> Self {
-        Self { shape: MaskShape::Rectangle, x: 0.5, y: 0.5, width: 0.75, height: 0.75, feather: 0.0 }
+        Self { shape: MaskShape::Rectangle, x: 0.5, y: 0.5, width: 0.75, height: 0.75, feather: 0.0, polygon: None }
     }
 }
 
@@ -31,6 +77,9 @@ impl Mask {
             || [self.width, self.height].iter().any(|value| !(0.01..=1.0).contains(value))
         {
             return Err("Mask position and feather must be 0–100%; width and height must be 1–100%".into());
+        }
+        if self.shape == MaskShape::Polygon {
+            self.polygon.ok_or("Polygon mask needs vertices")?.validate()?;
         }
         Ok(())
     }
@@ -44,14 +93,23 @@ pub struct MaskPosition {
     pub source_ns: u64,
     pub x: f32,
     pub y: f32,
+    #[serde(default = "identity_scale", skip_serializing_if = "is_identity_scale")]
+    pub scale: f32,
+    #[serde(default, skip_serializing_if = "is_zero_rotation")]
+    pub rotation: f32,
 }
+
+fn identity_scale() -> f32 { 1.0 }
+fn is_identity_scale(value: &f32) -> bool { *value == 1.0 }
+fn is_zero_rotation(value: &f32) -> bool { *value == 0.0 }
 
 pub(super) fn validate_tracking(clip: &Clip) -> Result<(), String> {
     let points = &clip.mask_tracking;
     if points.is_empty() { return Ok(()); }
     if clip.mask.is_none() || points.len() == 1 || points.len() as u64 > MAX_TRACKED_FRAMES
         || points.windows(2).any(|pair| pair[0].source_ns >= pair[1].source_ns)
-        || points.iter().any(|point| !(0.0..=1.0).contains(&point.x) || !(0.0..=1.0).contains(&point.y)) {
+        || points.iter().any(|point| !(0.0..=1.0).contains(&point.x) || !(0.0..=1.0).contains(&point.y)
+            || !(0.5..=2.0).contains(&point.scale) || !(-360.0..=360.0).contains(&point.rotation)) {
         return Err("Invalid tracked mask coordinates or source times".into());
     }
     Ok(())
@@ -94,7 +152,12 @@ impl EditorDocument {
                     time = [points[index - 1].source_ns, points[index].source_ns].into_iter()
                         .min_by_key(|point| point.abs_diff(time)).unwrap();
                 } else {
-                    points.insert(index, MaskPosition { source_ns: time, x, y });
+                    let left = points[index - 1];
+                    let right = points[index];
+                    let t = (time - left.source_ns) as f32 / (right.source_ns - left.source_ns) as f32;
+                    points.insert(index, MaskPosition { source_ns: time, x, y,
+                        scale: left.scale + t * (right.scale - left.scale),
+                        rotation: left.rotation + t * (right.rotation - left.rotation) });
                 }
             }
             let center = clip.mask_center_at(time).ok_or("Choose a mask shape first")?;
@@ -128,8 +191,14 @@ impl EditorDocument {
                     "0" => { clip.mask = None; clip.mask_tracking.clear(); return Ok(()); }
                     "1" => MaskShape::Rectangle,
                     "2" => MaskShape::Ellipse,
+                    "3" => {
+                        if mask.polygon.is_none() { mask.polygon = Some(Polygon::parse("50,0 100,100 0,100")?); }
+                        MaskShape::Polygon
+                    }
                     _ => return Err("Unknown mask shape".into()),
                 };
+            } else if field == "polygon" && mask.shape == MaskShape::Polygon {
+                mask.polygon = Some(Polygon::parse(input)?);
             } else {
                 if clip.mask.is_none() { return Err("Choose a mask shape first".into()); }
                 let value = input.trim().parse::<f32>().map_err(|_| "Enter a mask percentage")? / 100.0;

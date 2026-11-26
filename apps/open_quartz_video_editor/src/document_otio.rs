@@ -53,6 +53,9 @@ pub(crate) fn export(data: &ProjectData, revision: u64, path: &Path) -> Result<S
     let fps = rate(data.fps);
     let mut tracks = Vec::new();
     let mut losses = BTreeSet::new();
+    if !data.sequence_grade.is_identity() || data.tracks.iter().any(|track| !track.grade.is_identity()) {
+        losses.insert("track and timeline grades");
+    }
     let assets: HashMap<_, _> = data
         .assets
         .iter()

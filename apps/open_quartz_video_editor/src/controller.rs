@@ -855,7 +855,7 @@ impl Controller {
             },
             "import-srt" => self.path_dialog("srt"),
             #[cfg(any(target_os = "macos", windows))]
-            "track-mask" => self.start_mask_tracking(),
+            "track-mask" | "track-mask-similarity" => self.start_mask_tracking(action == "track-mask-similarity"),
             #[cfg(any(target_os = "macos", windows))]
             "cancel-mask-tracking" => self.cancel_mask_tracking(),
             "clear-mask-tracking" => {
@@ -2776,9 +2776,11 @@ impl Controller {
                 None => 0,
                 Some(crate::document::MaskShape::Rectangle) => 1,
                 Some(crate::document::MaskShape::Ellipse) => 2,
+                Some(crate::document::MaskShape::Polygon) => 3,
             });
             window.set_mask_x(format!("{:.2}", mask.x * 100.0).into());
             window.set_mask_y(format!("{:.2}", mask.y * 100.0).into());
+            window.set_mask_polygon(mask.polygon.map_or(String::new(), |polygon| polygon.text()).into());
             window.set_mask_width(format!("{:.2}", mask.width * 100.0).into());
             window.set_mask_height(format!("{:.2}", mask.height * 100.0).into());
             window.set_mask_feather(format!("{:.2}", mask.feather * 100.0).into());

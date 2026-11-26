@@ -10,6 +10,7 @@ pub(crate) fn track_mask(
     fps: Rational,
     mask: document::Mask,
     source_times: &[u64],
+    similarity: bool,
     cancel: &AtomicBool,
 ) -> Result<Vec<document::MaskPosition>, String> {
     let mut pipeline =
@@ -45,17 +46,23 @@ pub(crate) fn track_mask(
                     / 256) as u8,
             );
         }
-        let (x, y) = match &mut tracker {
-            Some(template) => Template::locate(template, &pixels, &gray)?,
+        let (x, y, scale, rotation) = match &mut tracker {
+            Some(template) if similarity => Template::locate_similarity(template, &pixels, &gray)?,
+            Some(template) => {
+                let (x, y) = Template::locate(template, &pixels, &gray)?;
+                (x, y, 1.0, 0.0)
+            }
             None => {
                 tracker = Some(Template::new(mask, &pixels, &gray)?);
-                (mask.x, mask.y)
+                (mask.x, mask.y, 1.0, 0.0)
             }
         };
         trail.push(document::MaskPosition {
             source_ns: time,
             x,
             y,
+            scale,
+            rotation,
         });
     }
     Ok(trail)
@@ -120,6 +127,8 @@ struct Template {
     half_width: i32,
     half_height: i32,
     samples: Vec<u8>,
+    scale: f32,
+    rotation: f32,
 }
 
 impl Template {
@@ -153,6 +162,8 @@ impl Template {
             half_width,
             half_height,
             samples,
+            scale: 1.0,
+            rotation: 0.0,
         })
     }
 
@@ -179,6 +190,46 @@ impl Template {
         self.x = best.2;
         self.y = best.3;
         Ok((self.x as f32 / w as f32, self.y as f32 / h as f32))
+    }
+
+    fn locate_similarity(&mut self, image: &GpuPreviewImage, gray: &[u8]) -> Result<(f32, f32, f32, f32), String> {
+        let (width, height) = (image.width as i32, image.height as i32);
+        let mut pose = (self.x, self.y, self.scale, self.rotation);
+        let score = |(x, y, scale, angle): (i32, i32, f32, f32)| -> u32 {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let mut error = 0;
+            let pitch = (self.half_width * 2 + 1) as usize;
+            for v in (-self.half_height..=self.half_height).step_by(2) {
+                for u in (-self.half_width..=self.half_width).step_by(2) {
+                    let px = x + (scale * (cos * u as f32 - sin * v as f32)).round() as i32;
+                    let py = y + (scale * (sin * u as f32 + cos * v as f32)).round() as i32;
+                    if !(0..width).contains(&px) || !(0..height).contains(&py) { return u32::MAX; }
+                    let baseline = self.samples[(v + self.half_height) as usize * pitch + (u + self.half_width) as usize];
+                    error += u32::from(gray[(py * width + px) as usize].abs_diff(baseline));
+                }
+            }
+            error
+        };
+        let mut best = score(pose);
+        for (radius, offset, scale_step, degrees) in [(SEARCH, 2, 0.08, 8.0), (2, 1, 0.04, 4.0)] {
+            let (x, y, scale, angle) = pose;
+            for dy in (-radius..=radius).step_by(offset) {
+                for dx in (-radius..=radius).step_by(offset) {
+                    for ds in [0.0, scale_step, -scale_step] {
+                        for da in [0.0, degrees, -degrees] {
+                            let candidate = (x + dx, y + dy, (scale + ds).clamp(0.5, 2.0), (angle + da).clamp(-360.0, 360.0));
+                            let error = score(candidate);
+                            if error < best { best = error; pose = candidate; }
+                        }
+                    }
+                }
+            }
+        }
+        if best > (self.half_width as u32 + 1) * (self.half_height as u32 + 1) * 32 {
+            return Err("Mask tracker lost the reference pattern".into());
+        }
+        (self.x, self.y, self.scale, self.rotation) = pose;
+        Ok((self.x as f32 / width as f32, self.y as f32 / height as f32, self.scale, self.rotation))
     }
 }
 
@@ -228,5 +279,29 @@ mod tests {
         let mut template = Template::new(mask, &image, &sample(0)).unwrap();
         assert_eq!(template.locate(&image, &sample(4)).unwrap(), (0.38, 0.5));
         assert!(Template::new(mask, &image, &vec![0; 1500]).is_err());
+    }
+
+    #[test]
+    fn similarity_tracker_follows_rotation_and_scale() {
+        let image = GpuPreviewImage {
+            rgba: Vec::new(), width: 96, height: 80,
+            scale_submit: Duration::ZERO, readback: Duration::ZERO,
+        };
+        let render = |cx: f32, cy: f32, scale: f32, angle: f32| {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            (0..image.height).flat_map(|y| (0..image.width).map(move |x| {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let u = (dx * cos + dy * sin) / scale;
+                let v = (-dx * sin + dy * cos) / scale;
+                if u.abs() > 14.0 || v.abs() > 13.0 { return 5; }
+                (110.0 + 60.0 * (u * 0.6 + v * 0.24).sin() + 40.0 * (v * 0.62).cos()) as u8
+            })).collect::<Vec<_>>()
+        };
+        let mask = document::Mask { width: 0.35, height: 0.35, ..Default::default() };
+        let mut tracker = Template::new(mask, &image, &render(48.0, 40.0, 1.0, 0.0)).unwrap();
+        let pose = tracker.locate_similarity(&image, &render(50.0, 42.0, 1.12, 12.0)).unwrap();
+        assert!((pose.0 * 96.0 - 50.0).abs() < 1.1 && (pose.1 * 80.0 - 42.0).abs() < 1.1, "{pose:?}");
+        assert!((pose.2 - 1.12).abs() < 0.07 && (pose.3 - 12.0).abs() <= 4.1, "{pose:?}");
     }
 }

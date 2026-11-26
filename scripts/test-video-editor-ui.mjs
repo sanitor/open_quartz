@@ -221,6 +221,10 @@ async function maskTrackingRoundTrip(decodeOutput) {
        '-an', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
      assert(pixels[(90 * 320 + 128) * 3] > 210, 'tracked clip export keeps the moving patch');
    }
+   for (let i = 0; i < 17; i++) await click('PREVIOUS');
+   await waitState('playhead 0 frames');
+   await client.click(await clipControl('Track scale and rotation', 'Button'));
+   await waitState('Mask tracking complete');
    await click('SAVE'); await waitState('Project saved'); await close();
  }, { core: true });
 }
@@ -3545,6 +3549,29 @@ async function transcriptRoundTrip() {
   }, {core: true});
 }
 
+async function polygonMaskRoundTrip() {
+  await step('Export a custom polygon mask with a transparent exterior', async () => {
+    const input = generate('polygon-source.mp4', 'red', 1);
+    const movie = join(output, 'polygon.mp4');
+    const saved = join(output, 'polygon.oqvideo.json');
+    await launch(); await fileAction('IMPORT', input, 'Import media'); await waitState('assets 1');
+    await click('ADD CLIP'); await waitState('clips 1');
+    await client.click((await timeline('polygon-source.mp4'))[0]);
+    await client.click(await clipControl('Mask shape', 'Combobox'));
+    for (let index = 0; index < 3; index++) await client.key('\uf701');
+    await client.key('\n');
+    await enter(await clipControl('Polygon vertices (x,y %)'), '50,0 95,95 5,95');
+    await fileAction('SAVE AS', saved, 'Save project'); await waitState('Project saved');
+    const {data} = JSON.parse(await readFile(saved, 'utf8'));
+    assert.deepEqual(data.tracks[0].clips[0].mask.polygon.vertices.slice(0, 3), [[0.5,0],[0.95,0.95],[0.05,0.95]]);
+    await fileAction('EXPORT', movie, 'Export MP4'); await waitState('Export complete');
+    const pixels = fixtureCommand(['-i', movie, '-vf', 'scale=32:18', '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+    assert(pixels[(9 * 32 + 16) * 3] > 215);
+    assert(pixels[(5 * 32 + 5) * 3] < 25);
+    await close();
+  }, {core: true});
+}
+
 async function sharedGradeRoundTrip() {
   await step('Grade a picture track and the full timeline, then verify the delivered pixels', async () => {
     const gray = generate('shared-grade.mp4', '0x606060', 1);
@@ -3829,6 +3856,7 @@ async function seekCloseRoundTrip() {
 
 try {
   if (gradeWorkflowOnly) {
+    await polygonMaskRoundTrip();
     await sharedGradeRoundTrip();
     await maskTrackingRoundTrip(fixtureCommand);
     await gradeWorkflowRoundTrip();
@@ -3850,6 +3878,7 @@ try {
     if (!audioOnly && !previewOnly) await audioDeliveryRoundTrip();
     if (!audioOnly && !previewOnly) await gradeWorkflowRoundTrip();
     if (!audioOnly && !previewOnly) await sharedGradeRoundTrip();
+    if (!audioOnly && !previewOnly) await polygonMaskRoundTrip();
     if (!audioOnly) await hdrMonitorRoundTrip();
     if (!audioOnly && process.env.OPEN_QUARTZ_TEST_TRANSCRIPT_AUDIO) await transcriptRoundTrip();
     if (!audioOnly) await seekCloseRoundTrip();
