@@ -15,7 +15,7 @@ Slint 允许用户组合基础元素与现有控件，定义、导出和复用�
 ## 2. 现状与问题边界
 
 - 原生应用在 [`apps/open_quartz_slint/Cargo.toml`](../apps/open_quartz_slint/Cargo.toml) 精确锁定 `slint`/`slint-build` 1.18.1，使用 `renderer-femtovg-wgpu` 和 wgpu 30，声明 Rust 1.92。原生宿主当前不依赖 WebView；Slint 和 NativeHost 共用 GPU 设备与队列（[`render_bridge.rs`](../apps/open_quartz_slint/src/render_bridge.rs)）。
-- 当前 [`CodeEditor`](../crates/slint_code_editor/ui/code_editor.slint) 由 Slint Image/FocusScope/TouchArea/标准工具控件组合，Rust [`Document`](../crates/slint_code_editor/src/document.rs) 使用 cosmic-text 0.18.2 拥有编辑文档与排版；同一字形布局处理着色、光标、选区、命中和实际可见行号。旧应用内 `code_editor.rs`/`.slint` 与元数据转发已删除，Inspector 只消费组件事件、维护草稿并 Apply。
+- 当前 [`CodeEditor`](https://github.com/sanitor/slint-code-editor/blob/master/ui/code_editor.slint) 由 Slint Image/FocusScope/TouchArea/标准工具控件组合，Rust [`Document`](https://github.com/sanitor/slint-code-editor/blob/master/src/document.rs) 使用 cosmic-text 0.18.2 拥有编辑文档与排版；同一字形布局处理着色、光标、选区、命中和实际可见行号。旧应用内 `code_editor.rs`/`.slint` 与元数据转发已删除，Inspector 只消费组件事件、维护草稿并 Apply。
 - 当前真实窗口证据包含双语言实例、多色像素、Unicode、只读切换、查找替换与文本 Undo/Redo，应用场景含显式提交、GPU 输出和保存重开。MCP key 事件进入真实 FocusScope，但**不是系统键盘或输入法候选操作验收**；辅助技术值和动作也不等于读屏器完整文本导航。
 - Web 版 [`ShaderEditor.tsx`](../src/components/SidePanel/ShaderEditor.tsx) 使用 CodeMirror 6 和 `@iizukak/codemirror-lang-wgsl`（Lezer/JS），与原生不是同一控件；语法分类可以参考，但不是可直接链接的 Rust 组件。已有 `naga::front::wgsl::parse_str` 用于 WGSL 解析，现有执行层的注释/关键字识别是辅助逻辑，不输出供高亮使用的完整词法 span；naga lexer 在私有模块内。
 - [Slint TextInput](https://docs.slint.dev/latest/docs/slint/reference/keyboard-input/textinput/) 的公开属性是统一 `color`；[`StyledText`](https://docs.slint.dev/latest/docs/slint/reference/elements/styledtext/) 是显示元素而非编辑器。[Slint 上游富文本编辑 issue #2723](https://github.com/slint-ui/slint/issues/2723) 在调研时仍 open。源码事实以锁定版本为准，在线文档为 latest。
@@ -232,12 +232,12 @@ flowchart TD
 
 ### 11.1 实际结构
 
-- [`crates/slint_code_editor`](../crates/slint_code_editor) 是独立 Cargo workspace，`publish = false`，只依赖 Slint、cosmic-text、arboard 和 Unicode segmentation；没有 OpenQuartz、naga、graph 或 GPU 执行层依赖。
-- [`document.rs`](../crates/slint_code_editor/src/document.rs)：单一 cosmic-text Editor、Change 事务历史、只读/选区/Unicode grapheme 编辑、原始 CRLF 保存、布局命中与可见区域 raster。颜色不进入文本历史；程序替换全文清空历史。只发布已提交文本的 SharedString 快照，不把 preedit 当作已保存源码。
-- [`syntax.rs`](../crates/slint_code_editor/src/syntax.rs)：WGSL/JSON/Plain 的独立、无第三方依赖词法层，嵌套/未闭合注释、转义字符串、十六进制浮点与 WGSL `f/h/i/u` 后缀；函数分类是启发式，不替代 naga/GPU 验证。也支持宿主返回自定义 `Highlight` byte ranges。
-- [`theme.rs`](../crates/slint_code_editor/src/theme.rs)：独立调色板；组件提供 light/dark 开关，Rust Document 可设置 Theme。示例演示 custom provider，不复制控件实现。
-- [`lib.rs`](../crates/slint_code_editor/src/lib.rs)：每窗口 Runtime、多实例路由、单个公开 winit IME 过滤器、生成桥接绑定宏；Slint model lease 销毁时释放文档。组件的 `.slint` 不导入应用主题或业务控件。
-- [`examples/editor.rs`](../crates/slint_code_editor/examples/editor.rs) / [`ui/demo.slint`](../crates/slint_code_editor/ui/demo.slint)：独立 WGSL/JSON 双实例、Plain/主题/只读和 custom provider 开关。`npm run dev:editor` 可启动；`npm run test:editor` 执行组件回归。集成说明见 [开发文档](DEVELOPMENT.md#可复用-slint-编辑器)。
+- [`crates/slint_code_editor`](https://github.com/sanitor/slint-code-editor) 是独立 Cargo workspace，`publish = false`，只依赖 Slint、cosmic-text、arboard 和 Unicode segmentation；没有 OpenQuartz、naga、graph 或 GPU 执行层依赖。
+- [`document.rs`](https://github.com/sanitor/slint-code-editor/blob/master/src/document.rs)：单一 cosmic-text Editor、Change 事务历史、只读/选区/Unicode grapheme 编辑、原始 CRLF 保存、布局命中与可见区域 raster。颜色不进入文本历史；程序替换全文清空历史。只发布已提交文本的 SharedString 快照，不把 preedit 当作已保存源码。
+- [`syntax.rs`](https://github.com/sanitor/slint-code-editor/blob/master/src/syntax.rs)：WGSL/JSON/Plain 的独立、无第三方依赖词法层，嵌套/未闭合注释、转义字符串、十六进制浮点与 WGSL `f/h/i/u` 后缀；函数分类是启发式，不替代 naga/GPU 验证。也支持宿主返回自定义 `Highlight` byte ranges。
+- [`theme.rs`](https://github.com/sanitor/slint-code-editor/blob/master/src/theme.rs)：独立调色板；组件提供 light/dark 开关，Rust Document 可设置 Theme。示例演示 custom provider，不复制控件实现。
+- [`lib.rs`](https://github.com/sanitor/slint-code-editor/blob/master/src/lib.rs)：每窗口 Runtime、多实例路由、单个公开 winit IME 过滤器、生成桥接绑定宏；Slint model lease 销毁时释放文档。组件的 `.slint` 不导入应用主题或业务控件。
+- [`examples/editor.rs`](https://github.com/sanitor/slint-code-editor/blob/master/examples/editor.rs) / [`ui/demo.slint`](https://github.com/sanitor/slint-code-editor/blob/master/ui/demo.slint)：独立 WGSL/JSON 双实例、Plain/主题/只读和 custom provider 开关。`npm run dev:editor` 可启动；`npm run test:editor` 执行组件回归。集成说明见 [开发文档](DEVELOPMENT.md#可复用-slint-编辑器)。
 
 ### 11.2 实跑发现并修复的问题
 

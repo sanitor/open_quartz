@@ -2,7 +2,7 @@
 
 ## 当前开发入口（Rust Slint）
 
-`npm run dev` 启动 Open Quartz 桌面，`npm run dev:video-editor` 启动 OpenQuartz Studio。`npm run build` 和 `npm run package:video-editor` 生成各自的平台包。Windows 另外提供独立 `.scr`。桌面与 Studio 的 Rust 测试分别运行 `npm run test:desktop` 和 `npm run test:video-editor`，两平台共用 `npm run test:e2e:full`。`npm run test:desktop:export` 用独立解码验证 SDK 的硬件 H.264 导出和逐帧像素。
+在本仓运行 `npm run dev` 启动 Open Quartz 桌面，运行 `npm run build` 生成平台包。Windows 另提供独立 `.scr`。`npm run test:desktop` 运行桌面 Rust 测试，`npm run test:e2e:full` 运行桌面端到端回归，`npm run test:desktop:export` 用独立解码验证 SDK 的硬件 H.264 导出和像素。Studio 的开发、测试和打包命令见 [独立仓 README](https://github.com/sanitor/oq-studio#build-from-source)。
 
 历史 resident cutover 基线：workspace 270、native/backend 372、桌面 79、真实模型 opt-in 2、UI 18/18、Shader 34/34、依赖边界与 macOS portable 打包通过；当时真实原生窗口显示 SR3 共享纹理，不存在的 ORT 路径不影响生产执行。它们不是 Phase 2 重测结果。两项未放宽的整体 100% coverage gates 仍失败；百分比、命令范围和画面见[设计验证基线](DESIGN.md#validation)。旧 ORT/CoreML 与 Phase 1 记录同样不作为 Phase 2 验收，其他平台能力不由 Apple Metal 结果推断。
 
@@ -67,7 +67,6 @@ npm run prepare:inference            # 固定哈希模型与已提交图像/视�
 npm run test:desktop:inference       # 七模型生产链路 + 独立 CPU oracle + 原生 UI E2E
 npm run test:desktop:inference:ui    # 重用已完成 production.json，只运行原生窗口套件
 npm run test:desktop:inference:performance # 独立性能采样，不作为 UI FPS 门槛
-npm run test:editor                 # 独立编辑器 workspace
 npm run check:rust-boundaries
 npm run test:sdk-coverage
 ```
@@ -112,9 +111,9 @@ The hardware export command drives the same SDK contract suite on D3D12 and Vide
 
 ### 可复用 Slint 编辑器
 
-`crates/slint_code_editor` 是本仓孵化的独立 Cargo workspace，不依赖 OpenQuartz。`npm run dev:editor` 启动 WGSL/JSON 双实例示例，`npm run test:editor` 运行组件测试。OpenQuartz 通过 path dependency 消费组件；后续拆仓不需要迁移应用的 graph/SDK/GPU 代码。
+Open Quartz 通过 crates.io 使用 `slint_code_editor`。组件的源码、示例和测试由 [独立仓](https://github.com/sanitor/slint-code-editor) 维护。
 
-组件使用说明随包放置：[简体中文](../crates/slint_code_editor/README.zh-CN.md) / [English](../crates/slint_code_editor/README.md)，包含独立应用接入、Slint 属性/回调/函数参考及当前支持边界。
+组件使用说明随包放置：[简体中文](https://github.com/sanitor/slint-code-editor/blob/master/README.zh-CN.md) / [English](https://github.com/sanitor/slint-code-editor/blob/master/README.md)，包含独立应用接入、Slint 属性/回调/函数参考及当前支持边界。
 
 消费者的 `slint-build` include paths 添加该包的 `ui/`，在 `.slint` 中导入 `CodeEditor` 并向根编译单元导出 `CodeEditorBridge`。Rust 在窗口创建后、显示前调用 `slint_code_editor::install_editor!(window, CodeEditorBridge)` 一次。宏返回该窗口的 `Rc<RefCell<Runtime>>`；自定义高亮可通过组件的 `document-handle` 与 `Runtime::document_mut(...).set_provider(...)` 接入，再调用组件 `refresh()`。provider 返回有序、不重叠、非空且位于 UTF-8 字符边界的 `Highlight` 区间；不合法输出会明确触发契约断言，不视为编译诊断。示例含真实 custom provider 开关。
 

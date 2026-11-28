@@ -207,7 +207,6 @@ cargo test --workspace               # core, media, exporter and stub workspace
 npm run test:desktop                 # Slint tests with native runtime preparation
 npm run test:desktop:ui              # real native-window interactions
 npm run test:desktop:shaders         # catalog Shader GPU/pixel acceptance
-npm run test:editor                 # independent Slint editor workspace
 npm run check:rust-boundaries        # default/native feature and public API boundaries
 npm run test:sdk-coverage            # Rust core coverage gates
 ```

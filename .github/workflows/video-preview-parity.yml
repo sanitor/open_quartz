@@ -44,8 +44,6 @@ jobs:
           name: hardware-parity-${{ matrix.platform }}
           path: |
             test-results/slint-ui/
-            test-results/phase6/
-            test-results/clip-pipeline/
             test-results/inference-e2e/
             test-results/phase5/
           if-no-files-found: warn

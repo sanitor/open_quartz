@@ -1040,7 +1040,7 @@ Rust:
 | Output contract / registry / backend; GPU / readback / presenter | [`outputs/hub.rs`](../crates/open_quartz/src/outputs/hub.rs)；[`rendering/device.rs`](../crates/open_quartz/src/rendering/device.rs) |
 | ONNX sessions / pending / workers / accepted completions | 内部 InferenceTasks：[`inference/tasks.rs`](../crates/open_quartz/src/inference/tasks.rs)；[`inference/`](../crates/open_quartz/src/inference/) |
 | Typed resource planning | [`resources/plan.rs`](../crates/open_quartz/src/resources/plan.rs) |
-| Graph video sources / platform source / independent media | 内部 VideoSources：[`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)；[`media/native.rs`](../crates/open_quartz/src/media/native.rs)；[`oq-media/`](../crates/oq-media/) |
+| Graph video sources / platform source / independent media | 内部 VideoSources：[`media/sources.rs`](../crates/open_quartz/src/media/sources.rs)；[`media/native.rs`](../crates/open_quartz/src/media/native.rs)；[`oq-media/`](https://github.com/sanitor/oq-media) |
 | Screen saver | [`project/screen_saver.rs`](../crates/open_quartz/src/project/screen_saver.rs)、`crates/open-quartz-screensaver-stub/` |
 | Slint UI app | `apps/open_quartz_slint/` |
 | Slint AppController / Graph projection / Render bridge | `apps/open_quartz_slint/src/app_controller.rs`、`graph_view_model.rs`、`render_bridge.rs` |

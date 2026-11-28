@@ -1,7 +1,7 @@
 # 跨平台媒体编解码与 Slint 组件架构设计
 
 > 状态：Phase6已交付独立macOS OpenQuartz Studio单轨剪辑；完整跨平台会话与可复用媒体组件仍为提案。当前生产实时图与编辑预览只接受hardware buffer/texture，不允许软件RGBA fallback；桌面原图coverage cutover实测与未通过gate见[DESIGN](DESIGN.md#validation)，旧结果不得复用。产品仍为Rust/Slint原生桌面和独立Windows `.scr`，Web/Tauri/WASM已退役。
-> 2026-11-12当前实施：Phase4使用有界source worker/窗口/共享credit；Phase5增加同FramePipeline的macOS headless ExportJob，GPU SDR sRGB RGBA→BT709 limited NV12→hardware-required H264→MP4；Phase6独立编辑器在同一FramePipeline实现单轨素材剪辑与GPU监视器。oq-media不依赖图/UI/wgpu。范围、PTS、source identity、写失败、reorder与真实UI证据见[Phase记录](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。组件化媒体播放器、完整多平台及编辑器导出UI仍未交付。
+> 2026-11-12当前实施：Phase4使用有界source worker/窗口/共享credit；Phase5增加同FramePipeline的macOS headless ExportJob，GPU SDR sRGB RGBA→BT709 limited NV12→hardware-required H264→MP4；Phase6独立编辑器在同一FramePipeline实现单轨素材剪辑与GPU监视器。oq-media不依赖图/UI/wgpu。范围、PTS、source identity、写失败、reorder与真实UI证据见[Phase记录](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。组件化媒体播放器、完整多平台及编辑器导出UI仍未交付。
 
 ## 1. 决策与目标
 
@@ -204,7 +204,7 @@ GPU adapter 接收受控 lease，验证 decoder 和渲染 adapter、device、格
 
 多消费者的租约要等实际 GPU submission 完成才能归还，不以“Slint 已收到 Image”或“Rust 变量释放”作为 GPU 完成。Slint 1.18.1 的纹理 Image 不提供任意导入 lease 的通用消费完成协议：优先转换进宿主控制的显示纹理池，验证 Slint 与 host 的队列排序、呈现保留和回收机制；池大小有界，不能靠无限保留帧避免闪烁。若无法证明采样完成，零 CPU presenter 尚未通过门槛，必须显式选用受支持的拷贝呈现路径或拒绝严格模式。
 
-2026-11-11 Phase 1 已实现图输出的独立 StableFramePool（三槽/256 MiB 默认、slot/bytes 双限额）与 NativePlayer 稳定主预览，不修改 oq-media 原生帧类型。macOS 用受控 Metal texture alias 的 native drop guard 让 Slint Image/缓存的 texture clone 保 slot；原子释放通知由池维护转换为 queue completion，不在原生析构中重入 wgpu。实际窗口部分绘制没有触发原窗口 AfterRendering，故不能仅靠 notifier 回收。生产无 CPU 图像回传，但新增 GPU detach copy 需要计量；其他平台的 lease/notifier 方案尚未验收。源时间/完整同帧依赖与预取仍为后续 Phase，详见[Phase 1 实现/证据](../apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。
+2026-11-11 Phase 1 已实现图输出的独立 StableFramePool（三槽/256 MiB 默认、slot/bytes 双限额）与 NativePlayer 稳定主预览，不修改 oq-media 原生帧类型。macOS 用受控 Metal texture alias 的 native drop guard 让 Slint Image/缓存的 texture clone 保 slot；原子释放通知由池维护转换为 queue completion，不在原生析构中重入 wgpu。实际窗口部分绘制没有触发原窗口 AfterRendering，故不能仅靠 notifier 回收。生产无 CPU 图像回传，但新增 GPU detach copy 需要计量；其他平台的 lease/notifier 方案尚未验收。源时间/完整同帧依赖与预取仍为后续 Phase，详见[Phase 1 实现/证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#144-当前实施记录与后续范围)。
 
 OpenQuartz 仍由 `RenderBridge::initialize` 创建共享 wgpu Device/Queue，并注入图与 presenter。独立播放器示例可由 Slint adapter 创建同类 shared context，再注入核心；不会让 `MediaView::new` 隐式创建另一个 GPU。设备丢失时提升 GPU generation，停止使用旧纹理、释放/取消待提交作业，重新协商或明确失败。
 
@@ -282,9 +282,9 @@ Phase3曾在render worker同步选帧；Phase4将精确cursor移动到有界sour
 
 图稳定输出和原生 FrameLease 是相邻但不同契约：媒体库保原生 surface，GPU 适配器将其映射到统一图像描述和稳定输出池；不能在媒体 crate 再定义一套依赖 wgpu/NodeId 的帧类型。首阶段禁止 CPU 图像回传，平台无法提供所需互操作就拒绝；独立媒体产品未来可选策略不放宽 OpenQuartz 约束。
 
-需要测量冷启动/切点预热、长 GOP/VFR、缓存命中与实际 seek 次数、decode/GPU/encode 的起止与等待、buffer 低/高水位、surface 占用、过期任务回收及 export 前进性。小池/慢消费者下正确性和有界性先通过，再以真实时间线证明阶段重叠；线程数、UI 刷新率、纯模型吞吐都不能替代端到端流水证据。详细判据见[编辑器真实媒体验收](../apps/open_quartz_video_editor/DESIGN.md#152-真实媒体与-gpu)。
+需要测量冷启动/切点预热、长 GOP/VFR、缓存命中与实际 seek 次数、decode/GPU/encode 的起止与等待、buffer 低/高水位、surface 占用、过期任务回收及 export 前进性。小池/慢消费者下正确性和有界性先通过，再以真实时间线证明阶段重叠；线程数、UI 刷新率、纯模型吞吐都不能替代端到端流水证据。详细判据见[编辑器真实媒体验收](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#152-真实媒体与-gpu)。
 
-本目标按[实施 Phase 计划](../apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)落地：Phase 3 精确源时间访问，Phase 4 窗口/水位/非阻塞完成，Phase 5 真实编码与封装。每 Phase 的 codec/时间/队列错误路径单元测试及真实硬件端到端场景随实现提交，记录样本许可/hash、实际 PTS、独立解码预期和资源回收证据；不将模拟 codec、过往截图或 unavailable runner 算作通过。设计、默认水位、支持矩阵与 build identity 按实测在同一 Phase commit 修订。
+本目标按[实施 Phase 计划](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#141-phase-提交序列与依赖)落地：Phase 3 精确源时间访问，Phase 4 窗口/水位/非阻塞完成，Phase 5 真实编码与封装。每 Phase 的 codec/时间/队列错误路径单元测试及真实硬件端到端场景随实现提交，记录样本许可/hash、实际 PTS、独立解码预期和资源回收证据；不将模拟 codec、过往截图或 unavailable runner 算作通过。设计、默认水位、支持矩阵与 build identity 按实测在同一 Phase commit 修订。
 
 ## 9. 会话与导出状态机
 
@@ -506,7 +506,7 @@ A 阶段把 B/C 所需的最小 Slint presenter POC 一起做，C 才将 API 整
 - 真实 Slint/Metal 窗口验证 stopped 首帧、显式 Play、Pause/Resume、Stop 以及图 Renderer 的共享 GPU 输出。`npm run build` 生成的原生 ZIP 已在工作区外解压，清除 FFmpeg/ORT/DYLD overrides 后通过 LaunchServices 打开，实际播放 128×72 视频；证据保留于忽略目录 `test-results/media-hardware/`。
 - 历史首轮回归结果：`cargo test -p oq-media --features videotoolbox --locked` 通过 3 项；当时执行层及 NativeHost 回归通过 233 项，真实 Slint 窗口自动化 17/17 通过。独立 `decode` 示例实际解出 12 帧 128×72 HEVC/P010，报告 `hardware: Some(true)`。当时回归同时删除了旧覆盖率测试修改全进程 FFmpeg 环境变量的实现断言，避免并发用例丢失运行库路径；这些结果不验证后续核心职责/绑定清理。
 - 这不是整个设计的完成声明：Windows 仍使用原 D3D12/RGBA 路径，Linux/相机仍使用既有后端；尚未实现独立 `MediaView`/`MediaPlayer`、任意 seek、编码导出或全平台统一控制协议。Intel macOS、Windows/Linux 实机、1080p/4K 性能与长跑仍未验收；后续 8K 专项结果见下一条。
-- macOS NV12 性能修复：SDK 的解码输出由 OpenGL 兼容改为 Metal 兼容，构建/缓存标识与运行时校验切换为 `oq-vt-hw2-metal`。8K 实验、单变量根因证据、正式 SDK 复测及历史 Tauri 链路口径见 [`oq-media` 文档](../crates/oq-media/README.md#8k-性能与-opengl-兼容慢路径)；此前 8-bit 约 50 FPS 的记录不是硬件极限。
+- macOS NV12 性能修复：SDK 的解码输出由 OpenGL 兼容改为 Metal 兼容，构建/缓存标识与运行时校验切换为 `oq-vt-hw2-metal`。8K 实验、单变量根因证据、正式 SDK 复测及历史 Tauri 链路口径见 [`oq-media` 文档](https://github.com/sanitor/oq-media/blob/master/README.md#8k-性能与-opengl-兼容慢路径)；此前 8-bit 约 50 FPS 的记录不是硬件极限。
 
 
 ## 18. 参考与证据性质
