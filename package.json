@@ -23,7 +23,7 @@
     "dev:desktop:ui": "node scripts/desktop.mjs dev-ui",
     "build:desktop:ui": "node scripts/desktop.mjs build-ui",
     "test:sdk-coverage": "node scripts/desktop.mjs test-sdk-coverage",
-    "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
+    "check:rust-boundaries": "node scripts/desktop.mjs check-rust-boundaries",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
     "build:screensaver-stub": "node scripts/build-screensaver-stub.mjs",
     "clean": "rm -rf dist-desktop node_modules/.cache/open-quartz apps/open_quartz_slint/target apps/open_quartz_slint/runtime target/screensaver-stub"

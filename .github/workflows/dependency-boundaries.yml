@@ -15,4 +15,5 @@ jobs:
           node-version: 22
       - run: cargo test -p open_quartz --no-default-features
       - run: cargo test --workspace
+      - run: npm ci
       - run: npm run check:rust-boundaries

@@ -11,9 +11,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
 const uiModes = ['test-ui', 'test-ui-shaders', 'test-ui-corrector', 'test-inference', 'test-ui-inference'];
 const smoke = appArgs.length === 1 && appArgs[0] === '--smoke';
-if (!['dev', 'build', 'prepare', 'test', 'test-sdk-coverage', ...uiModes, 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode)
+if (!['dev', 'build', 'prepare', 'test', 'test-sdk-coverage', 'check-rust-boundaries', ...uiModes, 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode)
     || (appArgs.length && !['dev', 'dev-ui'].includes(mode) && !(smoke && uiModes.includes(mode)))) {
-  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-sdk-coverage | test-ui|test-ui-shaders|test-ui-corrector|test-inference|test-ui-inference [--smoke] | test-inference-performance | build-ui');
+  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-sdk-coverage | check-rust-boundaries | test-ui|test-ui-shaders|test-ui-corrector|test-inference|test-ui-inference [--smoke] | test-inference-performance | build-ui');
 }
 const platform = process.platform;
 const arch = process.arch;
@@ -323,6 +323,8 @@ if (mode === 'prepare') {
   console.log(`[desktop] Runtime: ${runtime}`);
 } else if (mode === 'test-inference-performance') {
   await run(process.execPath, ['scripts/inference-performance.mjs'], { env });
+} else if (mode === 'check-rust-boundaries') {
+  await run(process.execPath, ['scripts/check-rust-boundaries.mjs'], { env });
 } else if (['test', 'test-sdk-coverage'].includes(mode)) {
   if (platform === 'win32') {
     // The redistributable LGPL runtime can decode H.264. The test fixture
