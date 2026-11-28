@@ -652,6 +652,9 @@ fn sample_ns(frame: u64, time_base: oq_media::RationalTimeBase) -> Result<u64, S
     u64::try_from(value).map_err(|_| "export source time exceeds nanosecond capacity".into())
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(windows, feature = "native-video-precise-d3d12"))
+))]
 #[path = "export_tests.rs"]
 mod tests;

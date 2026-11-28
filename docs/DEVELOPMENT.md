@@ -90,6 +90,8 @@ The desktop UI harness sends the native CloseRequested event and checks the exit
 
 The shader E2E compares displayed pixels against the CPU oracle at the physical pixel origin used by Slint. Both Windows and macOS snap the origin before sampling, while preserving the fractional fitted size for the linear filter. Pixel tolerances are unchanged.
 
+The hardware export command drives the same SDK contract suite on D3D12 and VideoToolbox. It checks exact timestamps and pixels, cancellation before and after encoder admission, source mutation, preservation of an existing output, and cleanup of temporary MP4 files. The Windows test renders the shared VFR fixture at 320x192 because hardware H.264 drivers can reject the original 64x64 coded size.
+
 
 ### 七模型推理 E2E 回归
 

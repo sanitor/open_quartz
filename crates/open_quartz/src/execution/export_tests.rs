@@ -6,10 +6,16 @@ use oq_media::RationalTimeBase;
 use serde_json::json;
 use std::time::Duration;
 
+// Keep the VFR source fixture small while using a coded size supported by
+// hardware encoders that reject 64x64.
+const ENCODE_WIDTH: u32 = if cfg!(windows) { 320 } else { 64 };
+const ENCODE_HEIGHT: u32 = if cfg!(windows) { 192 } else { 64 };
+const ENCODE_RGB_BYTES: usize = ENCODE_WIDTH as usize * ENCODE_HEIGHT as usize * 3;
+
 fn graph() -> crate::Graph {
     serde_json::from_value(json!({"nodes":[
         {"id":"video","type":"input","position":{"x":0,"y":0},"data":{"type":"input","label":"video","shaderCode":"","inputMode":"video","inputDataType":"sampler2D","inputs":[],"outputs":[{"id":"out","label":"image","dataType":"sampler2D","direction":"output"}],"uniforms":{}}},
-        {"id":"effect","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"invert","shaderCode":"@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { let color=textureSample(image,imageSampler,uv);return vec4f(vec3f(1.0)-color.rgb,1.0);}","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":64,"height":64}},
+        {"id":"effect","type":"shader","position":{"x":0,"y":0},"data":{"type":"shader","label":"invert","shaderCode":"@fragment fn main(@location(0) uv:vec2f)->@location(0) vec4f { let color=textureSample(image,imageSampler,uv);return vec4f(vec3f(1.0)-color.rgb,1.0);}","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[{"id":"out","label":"fragColor","dataType":"vec4","direction":"output"}],"uniforms":{},"autoSize":false,"width":ENCODE_WIDTH,"height":ENCODE_HEIGHT}},
         {"id":"renderer","type":"renderer","position":{"x":0,"y":0},"data":{"type":"renderer","label":"renderer","shaderCode":"","inputs":[{"id":"in","label":"image","dataType":"sampler2D","direction":"input"}],"outputs":[],"uniforms":{}}}
     ],"edges":[{"id":"a","source":"video","sourceHandle":"out","target":"effect","targetHandle":"in"},{"id":"b","source":"effect","sourceHandle":"out","target":"renderer","targetHandle":"in"}]})).unwrap()
 }
@@ -40,8 +46,8 @@ fn config(path: &std::path::Path) -> ExportConfig {
         output_node_id: "renderer".into(),
         frames: 1..13,
         encoder: EncoderConfig {
-            width: 64,
-            height: 64,
+            width: ENCODE_WIDTH,
+            height: ENCODE_HEIGHT,
             time_base: RationalTimeBase {
                 numerator: 1,
                 denominator: 10,
@@ -74,13 +80,18 @@ fn ffmpeg() -> std::process::Command {
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH");
     command
 }
+#[cfg(windows)]
+const PASSTHROUGH: [&str; 2] = ["-fps_mode", "passthrough"];
+#[cfg(target_os = "macos")]
+const PASSTHROUGH: [&str; 2] = ["-vsync", "0"];
+
 fn decoded(path: &std::path::Path) -> Vec<u8> {
     let output = ffmpeg()
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(path)
-        .args([
-            "-an", "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
-        ])
+        .arg("-an")
+        .args(PASSTHROUGH)
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
         .output()
         .unwrap();
     assert!(
@@ -134,24 +145,15 @@ fn resident_decode_effect_nv12_hardware_encode_mp4_has_exact_range_pts_tail_and_
     let bytes = decoded(&output);
     assert_eq!(
         bytes.len(),
-        12 * 64 * 64 * 3,
+        12 * ENCODE_RGB_BYTES,
         "drained MP4 must contain exactly the half-open requested range"
     );
     let oracle = ffmpeg()
         .args(["-hide_banner", "-loglevel", "info", "-copyts", "-i"])
         .arg(fixture())
-        .args([
-            "-an",
-            "-vf",
-            "showinfo,extractplanes=y",
-            "-vsync",
-            "0",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "gray",
-            "-",
-        ])
+        .args(["-an", "-vf", "showinfo,extractplanes=y"])
+        .args(PASSTHROUGH)
+        .args(["-f", "rawvideo", "-pix_fmt", "gray", "-"])
         .output()
         .unwrap();
     assert!(oracle.status.success());
@@ -204,7 +206,7 @@ fn resident_decode_effect_nv12_hardware_encode_mp4_has_exact_range_pts_tail_and_
             .position(|pts| *pts + 0.000001 >= target)
             .expect("software oracle target");
         let source = &oracle.stdout[selected * 64 * 64..(selected + 1) * 64 * 64];
-        let actual = &bytes[index * 64 * 64 * 3..(index + 1) * 64 * 64 * 3];
+        let actual = &bytes[index * ENCODE_RGB_BYTES..(index + 1) * ENCODE_RGB_BYTES];
         let expected_mean =
             source.iter().map(|value| transformed(*value)).sum::<f64>() / source.len() as f64;
         let actual_mean =
@@ -309,7 +311,7 @@ fn invalid_range_dimensions_and_source_target_alias_are_rejected_before_export()
     assert!(ExportJob::new(prepare(&fixture()), invalid).is_err());
     assert!(!output.exists());
     let mut invalid = config(&output);
-    invalid.encoder.width = 63;
+    invalid.encoder.width = ENCODE_WIDTH - 1;
     assert!(ExportJob::new(prepare(&fixture()), invalid).is_err());
     assert!(!output.exists());
     let mut invalid = config(&fixture());

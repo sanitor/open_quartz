@@ -28,6 +28,8 @@ if (windows) {
 }
 delete env.CARGO_BUILD_TARGET;
 env.OPEN_QUARTZ_FFMPEG_PATH = ffmpeg;
+execFileSync('cargo', ['test', '--locked', '-p', 'open_quartz', '--lib', '--features', features,
+  'execution::pipeline::export::tests', '--', '--test-threads=1'], { env, stdio: 'inherit' });
 const mediaEnv = { ...env, DYLD_LIBRARY_PATH: '', DYLD_FALLBACK_LIBRARY_PATH: '' };
 const resultRoot = resolve('test-results/phase5');
 await mkdir(resultRoot, { recursive: true });
