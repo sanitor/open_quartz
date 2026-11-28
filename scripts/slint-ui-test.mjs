@@ -54,14 +54,26 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
     const running = current;
     current = undefined;
     stopping = (async () => {
+      const deadline = setTimeout(() => running.child.kill('SIGKILL'), 10_000);
       try {
-        if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGTERM');
-        const force = setTimeout(() => running.child.kill('SIGKILL'), 5000);
-        try { await running.exited; } finally { clearTimeout(force); }
+        if (running.child.exitCode === null && running.child.signalCode === null) {
+          running.child.stdin.end('close\n');
+        }
+        const shutdown = await running.exited;
         await new Promise((accept) => running.log.end(accept));
-      } finally { stopping = undefined; }
+        return shutdown;
+      } finally {
+        clearTimeout(deadline);
+        stopping = undefined;
+      }
     })();
     return stopping;
+  }
+
+  function requireNormalClose(shutdown) {
+    if (shutdown?.code !== 0 || shutdown?.signal) {
+      throw new Error(`Normal window close failed: ${JSON.stringify(shutdown)}`);
+    }
   }
 
   function fail(error) {
@@ -70,8 +82,10 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
   }
 
   async function restart({ project } = {}) {
-    await stop();
+    const restarting = Boolean(current);
+    const shutdown = await stop();
     signal.throwIfAborted();
+    if (restarting) requireNormalClose(shutdown);
     launchNumber += 1;
     const args = project ? ['--project', project] : [];
     const logPath = join(directory, `application-${launchNumber}.log`);
@@ -81,6 +95,8 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
       env: { ...process.env, SLINT_MCP_PORT: String(port), OPEN_QUARTZ_UI_CLOSE_STDIN: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // A child that dies before it accepts CloseRequested can close its stdin first.
+    child.stdin.on('error', () => {});
     child.stdout.pipe(log, { end: false });
     child.stderr.pipe(log, { end: false });
     let exit;
@@ -156,16 +172,8 @@ export async function runUiTests(binary, { outputDir = process.env.SLINT_UI_OUTP
     ]);
     signal.throwIfAborted();
     if (current?.child.exitCode !== null || current?.child.signalCode !== null) throw new Error('Application exited unexpectedly');
-    const closing = current;
-    current = undefined; // This exit is expected; all earlier exits remain failures.
-    const closeDeadline = setTimeout(() => closing.child.kill('SIGKILL'), 10_000);
-    let shutdown;
-    try {
-      closing.child.stdin.end('close\n');
-      shutdown = await closing.exited;
-      await new Promise((accept) => closing.log.end(accept));
-      if (shutdown?.code !== 0 || shutdown?.signal) throw new Error(`Normal window close failed: ${JSON.stringify(shutdown)}`);
-    } finally { clearTimeout(closeDeadline); }
+    const shutdown = await stop();
+    requireNormalClose(shutdown);
     report = { passed: true, suite, tier, startedAt, finishedAt: new Date().toISOString(), launches, scenarios,
       shutdown: { event: 'CloseRequested', injection: 'ui-automation stdin → event loop', ...shutdown } };
     console.log(`[slint-ui] PASS\n[slint-ui] Screenshots and report: ${directory}`);

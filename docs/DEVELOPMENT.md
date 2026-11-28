@@ -86,6 +86,8 @@ npm run test:sdk-coverage
 
 OpenQuartz Studio 拆仓后在其独立 checkout 运行同名 `test:e2e:smoke` 和 `test:e2e:full`。见 [Studio 的 E2E 命令](https://github.com/sanitor/oq-studio#build-from-source)。
 
+The desktop UI harness sends the native CloseRequested event and checks the exit result before reopening a project or moving to the next GPU scenario.
+
 
 ### 七模型推理 E2E 回归
 
