@@ -46,10 +46,10 @@ function rendererPixels(png, preview, windowProperties, width, height) {
   assert.ok(fit >= 1, `Renderer preview too small for ${width}×${height} texel sampling`);
   const left = (preview.absolutePosition?.x ?? 0) + (preview.size.width - width * fit) / 2;
   const top = (preview.absolutePosition?.y ?? 0) + (preview.size.height - height * fit) / 2;
-  // The Windows renderer snaps the origin to a physical pixel, while
-  // retaining the fractional scaling of the fitted image.
-  const physicalLeft = process.platform === 'win32' ? Math.round(left * sx) : left * sx;
-  const physicalTop = process.platform === 'win32' ? Math.round(top * sy) : top * sy;
+  // Slint snaps the image origin to a physical pixel on both desktop renderers
+  // while retaining its fitted size for linear filtering.
+  const physicalLeft = Math.round(left * sx);
+  const physicalTop = Math.round(top * sy);
   const pixels = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {

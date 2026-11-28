@@ -88,6 +88,8 @@ OpenQuartz Studio 拆仓后在其独立 checkout 运行同名 `test:e2e:smoke` �
 
 The desktop UI harness sends the native CloseRequested event and checks the exit result before reopening a project or moving to the next GPU scenario.
 
+The shader E2E compares displayed pixels against the CPU oracle at the physical pixel origin used by Slint. Both Windows and macOS snap the origin before sampling, while preserving the fractional fitted size for the linear filter. Pixel tolerances are unchanged.
+
 
 ### 七模型推理 E2E 回归
 
