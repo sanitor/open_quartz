@@ -2,13 +2,13 @@
 
 use std::env;
 use std::fs;
-use std::process::{self, Command, Stdio};
+use std::process;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::evaluation::EngineEvent;
-use crate::media::native::{find_ffmpeg, NativeVideoConfig, NativeVideoSourceKind};
+use crate::media::native::{NativeVideoConfig, NativeVideoSourceKind};
 use crate::project::model::InputMode;
 
 use super::*;
@@ -50,9 +50,6 @@ fn planned_dirty_node_count(host: &mut NativePlayer, input: &mut SessionFrameInp
 
 #[test]
 fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
-    let Ok(ffmpeg) = find_ffmpeg() else {
-        return;
-    };
     let directory = env::temp_dir().join(format!(
         "open-quartz-video-lifecycle-{}-{}",
         process::id(),
@@ -63,29 +60,12 @@ fn video_to_image_same_id_drops_decoder_and_preserves_image_textures() {
     ));
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("source.mp4");
-    let status = Command::new(ffmpeg)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=blue:s=64x64:r=10",
-            "-frames:v",
-            "8",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-y",
-        ])
-        .arg(&path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success(), "failed to generate the video fixture");
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/white_h264_high_64x64.mp4"),
+        &path,
+    )
+    .expect("copy the pinned H.264 fixture for the hardware lifecycle test");
 
     let nodes: Vec<_> = [("source", "video"), ("unchanged", "image")]
         .into_iter()
