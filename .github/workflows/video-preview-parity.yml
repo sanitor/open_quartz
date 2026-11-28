@@ -36,6 +36,7 @@ jobs:
       - run: npm run test:desktop
       - run: npm run test:desktop:export
       - run: npm run test:e2e:full
+      - run: npm run test:desktop:inference:contracts
 
       - uses: actions/upload-artifact@v4
         if: always()

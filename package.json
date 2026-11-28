@@ -17,6 +17,7 @@
     "prepare:inference": "node scripts/prepare-inference-e2e.mjs",
     "test:desktop:inference": "node scripts/desktop.mjs test-inference",
     "test:desktop:export": "node scripts/test-hardware-export.mjs",
+    "test:desktop:inference:contracts": "node scripts/desktop.mjs test-inference-contracts",
     "test:desktop:inference:ui": "node scripts/desktop.mjs test-ui-inference",
     "test:desktop:inference:performance": "node scripts/desktop.mjs test-inference-performance",
     "report:desktop:ui": "node scripts/slint-ui-report.mjs",
