@@ -22,7 +22,7 @@
     "report:desktop:ui": "node scripts/slint-ui-report.mjs",
     "dev:desktop:ui": "node scripts/desktop.mjs dev-ui",
     "build:desktop:ui": "node scripts/desktop.mjs build-ui",
-    "test:sdk-coverage": "node scripts/test-sdk-coverage.mjs",
+    "test:sdk-coverage": "node scripts/desktop.mjs test-sdk-coverage",
     "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
     "build:screensaver-stub": "node scripts/build-screensaver-stub.mjs",

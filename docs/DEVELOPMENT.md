@@ -8,6 +8,8 @@
 
 Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.md#pre-phase3-coverage)；Phase4当前命令/百分比按[阶段证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)单列，不复用Phase3结果。`npm run test:sdk-coverage`保留default/native两套scope及100% lines/functions/regions gates；在清理profile前保存`test-results/sdk-coverage/{default,native}.json`。复跑需准备desktop runtime并显式配置FFmpeg与ORT1.21路径，ORT只供reference。未将测试通过或line接近100%写成全部coverage gates通过。
 
+The SDK coverage command prepares the desktop runtime and supplies the same FFmpeg SDK, executable and ORT paths as the native desktop tests on both platforms. The native lane still requires a physical GPU for hardware assertions.
+
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
 `oq-media` 在 macOS 通过 VideoToolbox 和 CoreVideo/Metal 解码、转换与交付视频，在 Windows 通过 D3D12VA 和 D3D12 执行这些操作。`npm run prepare:desktop` 准备当前平台固定版本的 LGPL FFmpeg 运行库和 SDK。媒体架构与首轮实现见[跨平台媒体编解码与 Slint 组件架构](MEDIA_CODEC_ARCHITECTURE.md#171-首轮实现与验收历史证据)。
@@ -77,10 +79,12 @@ npm run test:sdk-coverage
 
 | 命令 | 范围 |
 |---|---|
-| `npm run test:e2e:smoke` | Desktop 原生交互的核心流程、每个 Shader 类别一个用例、Color Corrector 核心流程、Video Editor Edit 和 Nodes 核心用例、U²Net-P 图像与视频推理 |
-| `npm run test:e2e:full` | 全部 Desktop 交互、Shader、Corrector、Video Editor Edit 和 Nodes 用例，以及七个推理模型的完整生产、CPU 数值对照与原生窗口回归 |
+| `npm run test:e2e:smoke` | Open Quartz 核心桌面交互、每个 Shader 类别的代表用例、Color Corrector 核心流程、U²Net-P 图像与视频推理 |
+| `npm run test:e2e:full` | Open Quartz 全部桌面交互、Shader、Color Corrector 和七个推理模型的生产链路、独立 CPU 数值对照与原生窗口回归 |
 
-两个入口均在具备 Metal 和 VideoToolbox 的 macOS 主机运行。单独检查可用 `npm run test:desktop:ui:smoke` 或 `npm run test:video-editor:ui:smoke`，现有不加 `--smoke` 的应用命令继续执行各自的全量用例。冒烟与全量复用同一套用例实现。新用例默认进入全量，核心用例显式加入冒烟。推理冒烟只准备并执行选中的模型，产物默认写到 `test-results/inference-e2e-smoke/`。
+两个入口均可在具有原生 GPU 和硬件解码的 Windows 与 macOS 主机运行。Windows 使用 Direct3D 12 和 D3D12VA，macOS 使用 Metal 和 VideoToolbox。冒烟与全量复用同一套用例实现。新用例默认进入全量，核心用例显式加入冒烟。推理冒烟只准备并执行选中的模型，产物默认写到 `test-results/inference-e2e-smoke/`。
+
+OpenQuartz Studio 拆仓后在其独立 checkout 运行同名 `test:e2e:smoke` 和 `test:e2e:full`。见 [Studio 的 E2E 命令](https://github.com/sanitor/oq-studio#build-from-source)。
 
 
 ### 七模型推理 E2E 回归

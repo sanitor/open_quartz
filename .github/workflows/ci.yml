@@ -36,16 +36,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Prepare native desktop runtimes
-        run: npm run prepare:desktop
-
-      - name: Configure Windows native dependencies
+      - name: Configure Windows bindgen
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          "FFMPEG_DIR=$pwd\apps\open_quartz_slint\runtime\ffmpeg-shared" >> $env:GITHUB_ENV
-          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
-          "$pwd\node_modules\.cache\open-quartz\desktop-runtime-win32-x64" >> $env:GITHUB_PATH
+        run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV'
 
       - name: Enforce 100% Rust SDK coverage
         run: npm run test:sdk-coverage

@@ -11,9 +11,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const [mode = 'dev', ...appArgs] = process.argv.slice(2);
 const uiModes = ['test-ui', 'test-ui-shaders', 'test-ui-corrector', 'test-inference', 'test-ui-inference'];
 const smoke = appArgs.length === 1 && appArgs[0] === '--smoke';
-if (!['dev', 'build', 'prepare', 'test', ...uiModes, 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode)
+if (!['dev', 'build', 'prepare', 'test', 'test-sdk-coverage', ...uiModes, 'test-inference-performance', 'dev-ui', 'build-ui'].includes(mode)
     || (appArgs.length && !['dev', 'dev-ui'].includes(mode) && !(smoke && uiModes.includes(mode)))) {
-  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-ui|test-ui-shaders|test-ui-corrector|test-inference|test-ui-inference [--smoke] | test-inference-performance | build-ui');
+  throw new Error('Usage: node scripts/desktop.mjs dev|dev-ui [application arguments] | build | prepare | test | test-sdk-coverage | test-ui|test-ui-shaders|test-ui-corrector|test-inference|test-ui-inference [--smoke] | test-inference-performance | build-ui');
 }
 const platform = process.platform;
 const arch = process.arch;
@@ -323,14 +323,20 @@ if (mode === 'prepare') {
   console.log(`[desktop] Runtime: ${runtime}`);
 } else if (mode === 'test-inference-performance') {
   await run(process.execPath, ['scripts/inference-performance.mjs'], { env });
-} else if (mode === 'test') {
+} else if (['test', 'test-sdk-coverage'].includes(mode)) {
   if (platform === 'win32') {
     // The redistributable LGPL runtime can decode H.264. The test fixture
     // generator uses a separate encoder and is never copied into the package.
     const { default: installer } = await import('@ffmpeg-installer/ffmpeg');
     env.OPEN_QUARTZ_TEST_FFMPEG_PATH = installer.path;
   }
-  await run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
+  if (mode === 'test-sdk-coverage') {
+    // Coverage is for the root Cargo workspace, not the desktop app's target tree.
+    delete env.CARGO_TARGET_DIR;
+    await run(process.execPath, ['scripts/test-sdk-coverage.mjs'], { env });
+  } else {
+    await run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
+  }
 } else {
   if (platform === 'win32') {
     await run(process.execPath, ['scripts/build-screensaver-stub.mjs'], { env });
