@@ -13,7 +13,7 @@ async fn shared_device() -> (RenderDevice, RenderDeviceInfo, GpuBackend, wgpu::A
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
-            force_fallback_adapter: !cfg!(target_os = "macos"),
+            force_fallback_adapter: false,
             compatible_surface: None,
             apply_limit_buckets: false,
         })

@@ -8,7 +8,7 @@
 
 Phase3前覆盖加固及Phase3完成后的历史记录见[验证记录](DESIGN.md#pre-phase3-coverage)；Phase4当前命令/百分比按[阶段证据](https://github.com/sanitor/oq-studio/blob/master/apps/open_quartz_video_editor/DESIGN.md#phase-4有界前瞻与非阻塞流水)单列，不复用Phase3结果。`npm run test:sdk-coverage`保留default/native两套scope及100% lines/functions/regions gates；在清理profile前保存`test-results/sdk-coverage/{default,native}.json`。复跑需准备desktop runtime并显式配置FFmpeg与ORT1.21路径，ORT只供reference。未将测试通过或line接近100%写成全部coverage gates通过。
 
-The SDK coverage command prepares the desktop runtime and supplies the same FFmpeg SDK, executable and ORT paths as the native desktop tests on both platforms. The native lane runs serially on a physical GPU. On Windows it enables the production precise D3D12 source and DirectML features. The source lifecycle test uses the same checked-in H.264 fixture on both platforms.
+The SDK coverage command prepares the desktop runtime and supplies the same FFmpeg SDK, executable and ORT paths as the native desktop tests on both platforms. The native lane runs serially on a physical GPU. On Windows it enables the production precise D3D12 source and DirectML features. The source lifecycle test uses the same checked-in H.264 fixture on both platforms. Shared-device rendering tests request the same native hardware backend as the app on both platforms.
 
 Android/Java/JNI 专用 glue 已移出本仓，不再构建 `open_quartz_jni` 或维护 Java SDK 源码对齐检查。依赖锁文件中的第三方 Android/JNI/browser 包属于跨平台库的目标依赖，不代表本仓保留这些产品或桥接层。
 
